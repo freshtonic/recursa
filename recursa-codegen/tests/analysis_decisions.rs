@@ -98,6 +98,13 @@ fn grammar_with_decisions(reverse_alternatives: bool) -> GrammarDescription {
         left_declaration,
         ContainerShape::Direct,
     ));
+    let left_tail_declaration = declaration(&mut grammar, "Choice::Left::tail", 33);
+    let left_tail = grammar.push_site(ParseSite::new(
+        choice,
+        tokens[2],
+        left_tail_declaration,
+        ContainerShape::Direct,
+    ));
     let right_declaration = declaration(&mut grammar, "Choice::Right", 32);
     let right_site = grammar.push_site(ParseSite::new(
         choice,
@@ -105,14 +112,21 @@ fn grammar_with_decisions(reverse_alternatives: bool) -> GrammarDescription {
         right_declaration,
         ContainerShape::Direct,
     ));
+    let right_tail_declaration = declaration(&mut grammar, "Choice::Right::tail", 34);
+    let right_tail = grammar.push_site(ParseSite::new(
+        choice,
+        tokens[2],
+        right_tail_declaration,
+        ContainerShape::Direct,
+    ));
     let mut alternatives = vec![
         Alternative {
             declaration: left_declaration,
-            sites: vec![left_site],
+            sites: vec![left_site, left_tail],
         },
         Alternative {
             declaration: right_declaration,
-            sites: vec![right_site],
+            sites: vec![right_site, right_tail],
         },
     ];
     if reverse_alternatives {
@@ -144,6 +158,29 @@ fn analysis_freezes_all_follow_recipes_and_permutation_invariant_dispatch() {
     assert!(canonical.contains("follow Mixed::a static+caller"));
     assert!(canonical.contains("follow Mixed::b caller"));
     assert!(canonical.contains("follow Static::a static"));
+
+    let enum_dispatch = output
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.kind() == DispatchKind::Enum)
+        .expect("the enum dispatch is frozen");
+    assert_eq!(enum_dispatch.trie().recovery_commitment(), None);
+    assert!(
+        enum_dispatch
+            .trie()
+            .edges()
+            .iter()
+            .all(|edge| edge.next().recovery_commitment().is_some())
+    );
+    assert!(
+        enum_dispatch.trie().edges().iter().all(|edge| {
+            edge.next().edges().iter().all(|leaf| {
+                leaf.next().edges().is_empty() && leaf.next().recovery_commitment().is_some()
+            })
+        }),
+        "a unique consumed leaf remains a frozen recovery commitment",
+    );
 
     let reversed = grammar_with_decisions(true);
     let reversed_output = analyze(&reversed)

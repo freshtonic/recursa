@@ -63,6 +63,8 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
     let source = fs::read_to_string(&main).expect("read Pratt consumer");
     let assertions = r#"
     let explorer = grammar::Expr::explorer();
+    assert!(!explorer.capabilities().recovery());
+    assert!(explorer.explore("a +").is_none());
     let variants = explorer
         .schema()
         .root()

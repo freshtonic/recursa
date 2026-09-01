@@ -200,6 +200,7 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert!(schema.root().qualified_name().ends_with("grammar::Record"));
     assert!(adapter.capabilities().pretty());
     assert!(adapter.capabilities().arbitrary());
+    assert!(adapter.capabilities().recovery());
     assert!(schema.nodes().any(|node| node.qualified_name().ends_with("private_nodes::Hidden")));
     let duplicate_names = schema.nodes().filter(|node| node.name() == "Duplicate")
         .map(|node| node.qualified_name()).collect::<Vec<_>>();
@@ -229,6 +230,18 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
         "ReCoRd:alpha 42",
     );
 
+    let explored = adapter.explore("ReCoRd:alpha 42")
+        .expect("compound roots advertise recovery")
+        .expect("valid source explores");
+    let recursa::explorer::Exploration::Complete(explored_document) = explored else {
+        panic!("valid source produces a complete Explorer document")
+    };
+    assert_eq!(explored_document.source(), Some("ReCoRd:alpha 42"));
+    assert_eq!(
+        explored_document.root().span(),
+        Some(recursa::Span::new(0, 15).unwrap()),
+    );
+
     let lexical_failure = adapter.parse("record:alpha @ #").err().expect("lexical failure");
     assert_eq!(lexical_failure.source(), "record:alpha @ #");
     assert_eq!(lexical_failure.diagnostics().len(), 2);
@@ -238,6 +251,41 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert_eq!(lexical_failure.diagnostics()[0].text(), "@");
     assert_eq!(lexical_failure.diagnostics()[0].span(), recursa::Span::new(13, 14).unwrap());
     assert_eq!(lexical_failure.diagnostics()[1].text(), "#");
+
+    let lexical_recovery = adapter.explore("record:alpha @ #")
+        .expect("compound roots advertise recovery")
+        .expect("finalized lexical records recover without re-lexing");
+    let recursa::explorer::Exploration::Recovered(lexical_recovery) = lexical_recovery else {
+        panic!("lexical errors produce a recovery projection")
+    };
+    assert_eq!(lexical_recovery.diagnostics().len(), 2);
+    for (strict, recovered) in lexical_failure
+        .diagnostics()
+        .iter()
+        .zip(lexical_recovery.diagnostics())
+    {
+        assert_eq!(recovered.kind(), strict.kind());
+        assert_eq!(recovered.span(), strict.span());
+        assert_eq!(recovered.text(), strict.text());
+        assert_eq!(recovered.found(), strict.found());
+        assert_eq!(
+            recovered.expected().collect::<Vec<_>>(),
+            strict.expected().collect::<Vec<_>>(),
+        );
+        assert_eq!(recovered.message(), strict.message());
+        assert_eq!(
+            recovered.action(),
+            Some(recursa::explorer::RecoveryAction::Skipped {
+                span: recursa::Span::new(13, 16).unwrap(),
+            }),
+        );
+    }
+    let lexical_parts = lexical_recovery.root().parts().collect::<Vec<_>>();
+    let recursa::explorer::RecoveryPart::Skipped(lexical_skipped) = lexical_parts[3] else {
+        panic!("the lexical suffix is one maximal skipped part")
+    };
+    assert_eq!(lexical_skipped.span(), recursa::Span::new(13, 16).unwrap());
+    assert!(lexical_skipped.items().all(|item| item.schema().is_none()));
 
     let token_failure = adapter.parse("record:42").err().expect("token failure");
     let [token_diagnostic] = token_failure.diagnostics() else {
@@ -251,6 +299,81 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert!(token_diagnostic.found().unwrap().contains("[0-9]+"));
     assert!(token_diagnostic.expected().any(|expected| expected.contains("[A-Za-zé]+")));
 
+    let recovered_token = adapter.explore("record:42")
+        .expect("compound roots advertise recovery")
+        .expect("a missing required field before a valid suffix is recoverable");
+    let recursa::explorer::Exploration::Recovered(recovered_token) = recovered_token else {
+        panic!("strict token failure produces a recovery document")
+    };
+    assert_eq!(
+        recovered_token.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(7, 7).unwrap(),
+        }),
+    );
+    let token_parts = recovered_token.root().parts().collect::<Vec<_>>();
+    assert_eq!(token_parts.len(), 4);
+    let recursa::explorer::RecoveryPart::Missing(missing_label) = token_parts[2] else {
+        panic!("the required label is missing before the optional count")
+    };
+    assert_eq!(missing_label.element().name(), "label");
+    let recursa::explorer::RecoveryPart::Element(count) = token_parts[3] else {
+        panic!("the valid optional count suffix remains recognized")
+    };
+    assert_eq!(count.schema().name(), "count");
+    assert_eq!(count.span(), recursa::Span::new(7, 9).unwrap());
+
+    let skipped = adapter.explore("record:!alpha")
+        .expect("compound roots advertise recovery")
+        .expect("unexpected syntax before a restart token is recoverable");
+    let recursa::explorer::Exploration::Recovered(skipped) = skipped else {
+        panic!("strict token failure produces a recovery document")
+    };
+    assert_eq!(
+        skipped.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Skipped {
+            span: recursa::Span::new(7, 8).unwrap(),
+        }),
+    );
+    let skipped_parts = skipped.root().parts().collect::<Vec<_>>();
+    assert_eq!(skipped_parts.len(), 4);
+    let recursa::explorer::RecoveryPart::Skipped(discarded) = skipped_parts[2] else {
+        panic!("the invalid prefix is owned by one skipped part")
+    };
+    assert_eq!(discarded.span(), recursa::Span::new(7, 8).unwrap());
+    let discarded_items = discarded.items().collect::<Vec<_>>();
+    assert_eq!(discarded_items.len(), 1);
+    assert_eq!(discarded_items[0].schema().unwrap().canonical_text(), Some("!"));
+    let recursa::explorer::RecoveryPart::Element(label) = skipped_parts[3] else {
+        panic!("recovery retries and recognizes the label restart")
+    };
+    assert_eq!(label.schema().name(), "label");
+    assert_eq!(label.span(), recursa::Span::new(8, 13).unwrap());
+
+    let progress_source = format!("record:{}alpha", "!".repeat(256));
+    let progress = adapter
+        .explore(&progress_source)
+        .expect("compound roots advertise recovery")
+        .expect("a long invalid run terminates through the public seam");
+    let recursa::explorer::Exploration::Recovered(progress) = progress else {
+        panic!("a long invalid run produces recovery")
+    };
+    let trace = progress.progress_trace();
+    assert_eq!(trace.input_records(), 259);
+    assert!(trace.entered_frames() >= 2);
+    assert_eq!(trace.entered_frames(), trace.closed_frames());
+    assert!(trace.guarded_states() <= trace.state_bound());
+    assert!(trace.is_within_bound());
+    let progress_parts = progress.root().parts().collect::<Vec<_>>();
+    assert_eq!(progress_parts.len(), 4, "skipped input is not rescanned");
+    let recursa::explorer::RecoveryPart::Skipped(progress_skip) = progress_parts[2] else {
+        panic!("the long invalid run is retained as one maximal skipped part")
+    };
+    assert_eq!(progress_skip.items().count(), 256);
+    assert!(progress.diagnostics().iter().all(|diagnostic| {
+        diagnostic.kind() != recursa::explorer::ParseDiagnosticKind::InvariantViolation
+    }));
+
     let eof_failure = adapter.parse("record:").err().expect("EOF failure");
     let [eof_diagnostic] = eof_failure.diagnostics() else {
         panic!("one EOF diagnostic")
@@ -260,6 +383,46 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert_eq!(eof_diagnostic.text(), "");
     assert_eq!(eof_diagnostic.found(), None);
 
+    let recovered = adapter.explore("record:")
+        .expect("compound roots advertise recovery")
+        .expect("missing required syntax is recoverable");
+    let recursa::explorer::Exploration::Recovered(recovered) = recovered else {
+        panic!("strict EOF failure produces a recovery document")
+    };
+    assert_eq!(recovered.source(), "record:");
+    assert_eq!(recovered.diagnostics().len(), eof_failure.diagnostics().len());
+    assert_eq!(recovered.diagnostics()[0].kind(), eof_diagnostic.kind());
+    assert_eq!(recovered.diagnostics()[0].span(), eof_diagnostic.span());
+    assert_eq!(recovered.diagnostics()[0].text(), eof_diagnostic.text());
+    assert_eq!(recovered.diagnostics()[0].found(), eof_diagnostic.found());
+    assert_eq!(
+        recovered.diagnostics()[0].expected().collect::<Vec<_>>(),
+        eof_diagnostic.expected().collect::<Vec<_>>(),
+    );
+    assert_eq!(recovered.diagnostics()[0].message(), eof_diagnostic.message());
+    assert_eq!(recovered.diagnostics()[0].owner().unwrap().name(), "Record");
+    assert_eq!(recovered.diagnostics()[0].site().unwrap().name(), "label");
+    assert_eq!(
+        recovered.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(7, 7).unwrap(),
+        }),
+    );
+    let root = recovered.root();
+    assert_eq!(root.schema().qualified_name(), schema.root().qualified_name());
+    assert!(root.committed_variant().is_none());
+    assert_eq!(root.extent(), recursa::Span::new(0, 7).unwrap());
+    assert!(!root.is_complete());
+    let parts = root.parts().collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    assert!(matches!(parts[0], recursa::explorer::RecoveryPart::Element(_)));
+    assert!(matches!(parts[1], recursa::explorer::RecoveryPart::Element(_)));
+    let recursa::explorer::RecoveryPart::Missing(missing) = parts[2] else {
+        panic!("required label is represented by one missing part")
+    };
+    assert_eq!(missing.element().name(), "label");
+    assert_eq!(missing.at(), recursa::Span::new(7, 7).unwrap());
+
     let trailing_failure = adapter.parse("record:alpha 42 beta").err().expect("trailing input");
     let [trailing_diagnostic] = trailing_failure.diagnostics() else {
         panic!("one trailing-input diagnostic")
@@ -267,6 +430,25 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert_eq!(trailing_diagnostic.kind(), recursa::explorer::ParseDiagnosticKind::TrailingInput);
     assert_eq!(trailing_diagnostic.text(), "beta");
     assert_eq!(trailing_diagnostic.expected().collect::<Vec<_>>(), ["end of input"]);
+
+    let trailing_recovery = adapter.explore("record:alpha 42 beta")
+        .expect("compound roots advertise recovery")
+        .expect("trailing input is recoverable");
+    let recursa::explorer::Exploration::Recovered(trailing_recovery) = trailing_recovery else {
+        panic!("trailing input produces a recovery projection")
+    };
+    assert_eq!(trailing_recovery.diagnostics().len(), 1);
+    assert_eq!(
+        trailing_recovery.diagnostics()[0].kind(),
+        recursa::explorer::ParseDiagnosticKind::TrailingInput,
+    );
+    assert_eq!(trailing_recovery.diagnostics()[0].message(), trailing_diagnostic.message());
+    assert_eq!(
+        trailing_recovery.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Skipped {
+            span: recursa::Span::new(16, 20).unwrap(),
+        }),
+    );
 
     let unicode = adapter.parse("record:café 42").expect("Unicode content parses");
     assert_eq!(unicode.source(), Some("record:café 42"));
@@ -320,6 +502,42 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     exact_fused(&lexical.tokens());
     exact_fused(&lexical.errors());
 
+    let nested_adapter = grammar::NestedRecovery::explorer();
+    let nested = nested_adapter.explore("create pair view")
+        .expect("compound nested roots advertise recovery")
+        .expect("nested FOLLOW recovery succeeds");
+    let recursa::explorer::Exploration::Recovered(nested) = nested else {
+        panic!("a missing nested field produces a recovery document")
+    };
+    assert_eq!(
+        nested.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(12, 12).unwrap(),
+        }),
+    );
+    let nested_parts = nested.root().parts().collect::<Vec<_>>();
+    assert_eq!(nested_parts.len(), 3);
+    let recursa::explorer::RecoveryPart::Element(pair_element) = nested_parts[1] else {
+        panic!("the owner retains its nested Pair")
+    };
+    let recursa::explorer::RecoveryValue::Node(pair) = pair_element.value() else {
+        panic!("the Pair recovery value remains construction-free")
+    };
+    assert_eq!(pair.schema().name(), "Pair");
+    assert_eq!(pair.extent(), recursa::Span::new(7, 12).unwrap());
+    let pair_parts = pair.parts().collect::<Vec<_>>();
+    assert_eq!(pair_parts.len(), 2);
+    let recursa::explorer::RecoveryPart::Missing(nested_label) = pair_parts[1] else {
+        panic!("the deepest Pair frame owns the missing label")
+    };
+    assert_eq!(nested_label.element().name(), "field_0");
+    assert_eq!(nested_label.at(), recursa::Span::new(12, 12).unwrap());
+    let recursa::explorer::RecoveryPart::Element(owner_suffix) = nested_parts[2] else {
+        panic!("the owner recognizes its suffix after the child unwinds")
+    };
+    assert_eq!(owner_suffix.schema().name(), "view");
+    assert_eq!(owner_suffix.span(), recursa::Span::new(12, 16).unwrap());
+
     let entry_adapter = grammar::Entry::explorer();
     let variants = entry_adapter.schema().root().variants()
         .map(|variant| (variant.name(), variant.elements().len()))
@@ -328,11 +546,431 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     let empty = entry_adapter.parse("empty").expect("enum root parses");
     assert_eq!(empty.root().active_variant().unwrap().name(), "Empty");
 
+    let empty_with_invalid_suffix = entry_adapter.explore("empty nope")
+        .expect("fixed-only enum branches advertise recovery")
+        .expect("a unique fixed leaf commits before invalid trailing input");
+    let recursa::explorer::Exploration::Recovered(empty_with_invalid_suffix) =
+        empty_with_invalid_suffix
+    else {
+        panic!("invalid trailing input produces recovery under the committed branch")
+    };
+    assert_eq!(
+        empty_with_invalid_suffix.root().committed_variant().unwrap().name(),
+        "Empty",
+        "a consumed unique dispatch leaf commits even when it has no descendants",
+    );
+
+    let committed_adapter = grammar::RecoveryChoice::explorer();
+    let empty_single_variant = committed_adapter.explore("")
+        .expect("non-Pratt enum roots advertise recovery")
+        .expect("EOF before dispatch commitment is recoverable");
+    let recursa::explorer::Exploration::Recovered(empty_single_variant) = empty_single_variant else {
+        panic!("empty enum input produces recovery")
+    };
+    assert!(
+        empty_single_variant.root().committed_variant().is_none(),
+        "shared descendants cannot precommit before a frozen dispatch edge is consumed",
+    );
+
+    let committed = committed_adapter.explore("right nope")
+        .expect("non-Pratt enum roots advertise recovery")
+        .expect("committed enum syntax recovers");
+    let recursa::explorer::Exploration::Recovered(committed) = committed else {
+        panic!("invalid committed enum source produces recovery")
+    };
+    assert_eq!(committed.root().committed_variant().unwrap().name(), "Right");
+    assert!(!committed.root().is_complete());
+    assert_eq!(
+        committed.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Skipped {
+            span: recursa::Span::new(6, 10).unwrap(),
+        }),
+    );
+    assert_eq!(committed.diagnostics()[1].kind(), recursa::explorer::ParseDiagnosticKind::MissingSyntax);
+    assert_eq!(
+        committed.diagnostics()[1].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(10, 10).unwrap(),
+        }),
+    );
+
+    let uncommitted = entry_adapter.explore("42")
+        .expect("non-Pratt enum roots advertise recovery")
+        .expect("uncommitted enum syntax recovers without guessing");
+    let recursa::explorer::Exploration::Recovered(uncommitted) = uncommitted else {
+        panic!("invalid uncommitted enum source produces recovery")
+    };
+    assert!(uncommitted.root().committed_variant().is_none());
+    let uncommitted_parts = uncommitted.root().parts().collect::<Vec<_>>();
+    assert!(matches!(uncommitted_parts.as_slice(), [
+        recursa::explorer::RecoveryPart::Skipped(_),
+    ]));
+    assert_eq!(uncommitted.diagnostics().len(), 2);
+    assert_eq!(
+        uncommitted.diagnostics()[1].kind(),
+        recursa::explorer::ParseDiagnosticKind::UnresolvedAlternative,
+    );
+    assert_eq!(uncommitted.diagnostics()[1].owner().unwrap().name(), "Entry");
+    assert!(uncommitted.diagnostics()[1].site().is_none());
+
     let repeated_adapter = grammar::SomeCounts::explorer();
     let repeated_schema = repeated_adapter.schema().root().elements().nth(1).unwrap();
     assert_eq!(repeated_schema.cardinality(), recursa::explorer::Cardinality::OptionalOneOrMore);
     let repeated = repeated_adapter.parse("right 1:2").expect("repetition root parses");
     assert_eq!(repeated.root().elements().nth(1).unwrap().children().len(), 2);
+
+    let missing_after_separator = repeated_adapter.explore("right 1:")
+        .expect("optional nonempty repetition advertises recovery")
+        .expect("a committed repetition recovers at EOF");
+    let recursa::explorer::Exploration::Recovered(missing_after_separator) =
+        missing_after_separator
+    else {
+        panic!("a non-trailing separator produces recovery")
+    };
+    let repeated_parts = missing_after_separator.root().parts().collect::<Vec<_>>();
+    assert!(matches!(repeated_parts.as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Separator(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+    let recursa::explorer::RecoveryPart::Separator(separator) = repeated_parts[2] else {
+        unreachable!()
+    };
+    assert_eq!(separator.schema().name(), "COLON");
+    assert_eq!(separator.span(), recursa::Span::new(7, 8).unwrap());
+    assert_eq!(
+        missing_after_separator.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(8, 8).unwrap(),
+        }),
+    );
+
+    let resumed_repetition = repeated_adapter.explore("right 1::2")
+        .expect("optional nonempty repetition advertises recovery")
+        .expect("repetition resumes after skipped input");
+    let recursa::explorer::Exploration::Recovered(resumed_repetition) = resumed_repetition else {
+        panic!("an extra separator produces recovery")
+    };
+    assert!(matches!(resumed_repetition.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Separator(_),
+        recursa::explorer::RecoveryPart::Skipped(_),
+        recursa::explorer::RecoveryPart::Element(_),
+    ]));
+
+    let missing_separator = repeated_adapter.explore("right 1 2")
+        .expect("separated repetitions advertise recovery")
+        .expect("a missing separator recovers before the next occurrence");
+    let recursa::explorer::Exploration::Recovered(missing_separator) = missing_separator else {
+        panic!("a missing separator produces recovery")
+    };
+    assert!(matches!(missing_separator.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+        recursa::explorer::RecoveryPart::Element(_),
+    ]));
+    assert_eq!(
+        missing_separator.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Missing {
+            at: recursa::Span::new(8, 8).unwrap(),
+        }),
+    );
+
+    let required_counts = grammar::RequiredCounts::explorer().explore("create")
+        .expect("required nonempty repetition advertises recovery")
+        .expect("required nonempty repetition recovers at EOF");
+    let recursa::explorer::Exploration::Recovered(required_counts) = required_counts else {
+        panic!("a missing required repetition produces recovery")
+    };
+    assert!(matches!(required_counts.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+
+    let zero_values = grammar::ZeroLabelsThenSuffix::explorer().explore("left")
+        .expect("zero-or-more containers advertise recovery")
+        .expect("zero occurrences remain valid before a later failure");
+    let recursa::explorer::Exploration::Recovered(zero_values) = zero_values else {
+        panic!("the later suffix failure produces recovery")
+    };
+    assert!(matches!(zero_values.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+    assert_eq!(zero_values.diagnostics().len(), 1);
+    assert_eq!(zero_values.diagnostics()[0].site().unwrap().name(), "materialized");
+
+    let absent_values = grammar::OptionalCountsThenSuffix::explorer().explore("right view")
+        .expect("optional nonempty containers advertise recovery")
+        .expect("an absent optional container remains valid before a later failure");
+    let recursa::explorer::Exploration::Recovered(absent_values) = absent_values else {
+        panic!("the later required suffix produces recovery")
+    };
+    assert!(matches!(absent_values.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+    assert_eq!(absent_values.diagnostics().len(), 1);
+
+    let fixed_steps = grammar::MultipleRequiredAttachment::explorer().explore("")
+        .expect("fixed attachments advertise recovery")
+        .expect("all required attachment sites recover at EOF");
+    let recursa::explorer::Exploration::Recovered(fixed_steps) = fixed_steps else {
+        panic!("missing fixed attachment sites produce recovery")
+    };
+    assert_eq!(
+        fixed_steps.root().parts().filter(|part| {
+            matches!(part, recursa::explorer::RecoveryPart::Missing(_))
+        }).count(),
+        5,
+    );
+    assert!(fixed_steps.progress_trace().guarded_states() >= 5);
+    for (index, diagnostic) in fixed_steps.diagnostics().iter().enumerate() {
+        assert!(fixed_steps.diagnostics()[index + 1..].iter().all(|other| {
+            diagnostic.kind() != other.kind()
+                || diagnostic.span() != other.span()
+                || diagnostic.owner().map(|owner| owner.qualified_name())
+                    != other.owner().map(|owner| owner.qualified_name())
+                || diagnostic.site().map(|site| site.name())
+                    != other.site().map(|site| site.name())
+                || diagnostic.expected().collect::<Vec<_>>()
+                    != other.expected().collect::<Vec<_>>()
+                || diagnostic.action() != other.action()
+        }), "exact diagnostic keys are deduplicated");
+    }
+
+    let duplicate_keys = grammar::DuplicateRequiredAttachment::explorer().explore("")
+        .expect("duplicate required sites advertise recovery")
+        .expect("duplicate required sites recover at EOF");
+    let recursa::explorer::Exploration::Recovered(duplicate_keys) = duplicate_keys else {
+        panic!("duplicate missing sites produce recovery")
+    };
+    let duplicate_missing_expected = duplicate_keys.root().parts().filter_map(|part| {
+        let recursa::explorer::RecoveryPart::Missing(missing) = part else {
+            return None;
+        };
+        Some(missing.expected().collect::<Vec<_>>())
+    }).collect::<Vec<_>>();
+    assert_eq!(
+        duplicate_missing_expected,
+        [
+            vec!["fixed:CREATE"],
+            vec!["fixed:CREATE"],
+            vec!["fixed:CREATE"],
+            vec![r#"content:"[A-Za-zé]+":priority=None"#],
+        ],
+        "all identical missing recovery parts remain in the projection",
+    );
+    assert_eq!(
+        duplicate_keys.diagnostics().iter().filter(|diagnostic| {
+            diagnostic.kind() == recursa::explorer::ParseDiagnosticKind::MissingSyntax
+                && diagnostic.expected().eq(["fixed:CREATE"])
+        }).count(),
+        1,
+        "two identical generated MissingSyntax keys collapse to one diagnostic",
+    );
+
+    let atomic_optional = grammar::StandaloneAtomicOptional::explorer().explore("or replace")
+        .expect("atomic optional fixed syntax advertises recovery")
+        .expect("a later required value recovers after the committed optional sequence");
+    let recursa::explorer::Exploration::Recovered(atomic_optional) = atomic_optional else {
+        panic!("the missing semantic value produces recovery")
+    };
+    let atomic_optional_part_count = atomic_optional.root().parts().count();
+    let atomic_optional_trace = atomic_optional.progress_trace();
+    assert_eq!(atomic_optional_part_count, 3);
+    assert!(
+        atomic_optional_part_count
+            <= atomic_optional_trace.guarded_states() - atomic_optional_trace.closed_frames(),
+        "each non-closing guarded transition emits at most one recovery part",
+    );
+    assert!(
+        atomic_optional_trace.guarded_states() >= 6,
+        "the committed two-token standalone sequence uses two guarded transitions",
+    );
+
+    let attached_atomic = grammar::AtomicOptionalAttachment::explorer().explore("or replace")
+        .expect("atomic attached fixed syntax advertises recovery")
+        .expect("a later required value recovers after the committed attached sequence");
+    let recursa::explorer::Exploration::Recovered(attached_atomic) = attached_atomic else {
+        panic!("the missing attached semantic value produces recovery")
+    };
+    let attached_atomic_part_count = attached_atomic.root().parts().count();
+    let attached_atomic_trace = attached_atomic.progress_trace();
+    assert_eq!(attached_atomic_part_count, 3);
+    assert!(
+        attached_atomic_part_count
+            <= attached_atomic_trace.guarded_states() - attached_atomic_trace.closed_frames(),
+        "attached optional tokens advance through distinct guarded transitions",
+    );
+    assert!(
+        attached_atomic_trace.guarded_states() >= 5,
+        "the committed two-token attached sequence uses two guarded transitions: {attached_atomic_trace:?}",
+    );
+
+    let atomic_presence = grammar::AtomicPresence::explorer().explore("or replace")
+        .expect("atomic presence syntax advertises recovery")
+        .expect("a later required value recovers after the committed presence sequence");
+    let recursa::explorer::Exploration::Recovered(atomic_presence) = atomic_presence else {
+        panic!("the missing presence tail produces recovery")
+    };
+    let atomic_presence_part_count = atomic_presence.root().parts().count();
+    let atomic_presence_trace = atomic_presence.progress_trace();
+    assert!(
+        atomic_presence_part_count
+            <= atomic_presence_trace.guarded_states() - atomic_presence_trace.closed_frames(),
+        "presence sequence tokens advance through distinct guarded transitions",
+    );
+    assert!(
+        atomic_presence_trace.guarded_states() >= 8,
+        "the committed two-token presence sequence uses two guarded transitions",
+    );
+
+    let trailing_repetition = grammar::ManyLabels::explorer().explore("left alpha::")
+        .expect("trailing repetition advertises recovery")
+        .expect("trailing repetition skips one extra separator");
+    let recursa::explorer::Exploration::Recovered(trailing_repetition) = trailing_repetition else {
+        panic!("an extra trailing separator produces recovery")
+    };
+    assert!(matches!(trailing_repetition.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Separator(_),
+        recursa::explorer::RecoveryPart::Skipped(_),
+    ]));
+
+    let optional_fixed = grammar::OptionalFillers::explorer().explore("record")
+        .expect("optional fixed groups advertise recovery")
+        .expect("recognized optional syntax survives a later failure");
+    let recursa::explorer::Exploration::Recovered(optional_fixed) = optional_fixed else {
+        panic!("a missing semantic tail produces recovery")
+    };
+    assert!(matches!(optional_fixed.root().parts().collect::<Vec<_>>().as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+
+    let presence = grammar::WrappedPresence::explorer()
+        .explore("create materialized view")
+        .expect("fixed presence groups advertise recovery")
+        .expect("presence attachments survive a later failure");
+    let recursa::explorer::Exploration::Recovered(presence) = presence else {
+        panic!("a missing field after fixed presence syntax produces recovery")
+    };
+    let presence_parts = presence.root().parts().collect::<Vec<_>>();
+    assert!(matches!(presence_parts.as_slice(), [
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Element(_),
+        recursa::explorer::RecoveryPart::Missing(_),
+    ]));
+    let presence_tokens = presence_parts[..3].iter().map(|part| {
+        let recursa::explorer::RecoveryPart::Element(element) = part else {
+            unreachable!()
+        };
+        let recursa::explorer::RecoveryValue::Token(token) = element.value() else {
+            unreachable!()
+        };
+        token.schema().canonical_text().unwrap()
+    }).collect::<Vec<_>>();
+    assert_eq!(presence_tokens, ["CREATE", "MATERIALIZED", "VIEW"]);
+
+    let attached = grammar::AttachedOptionalFillers::explorer()
+        .explore("create materialized")
+        .expect("semantic fixed attachments advertise recovery")
+        .expect("attachment suffixes remain recognizable after a missing child");
+    let recursa::explorer::Exploration::Recovered(attached) = attached else {
+        panic!("a missing attached semantic child produces recovery")
+    };
+    let attached_parts = attached.root().parts().collect::<Vec<_>>();
+    let attached_tags = attached_parts
+        .iter()
+        .map(|part| match part {
+            recursa::explorer::RecoveryPart::Element(_) => "element",
+            recursa::explorer::RecoveryPart::Separator(_) => "separator",
+            recursa::explorer::RecoveryPart::Missing(_) => "missing",
+            recursa::explorer::RecoveryPart::Skipped(_) => "skipped",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(attached_tags, ["element", "missing", "element"]);
+    let recursa::explorer::RecoveryPart::Missing(attached_label) = attached_parts[1] else {
+        unreachable!()
+    };
+    assert_eq!(attached_label.element().name(), "label");
+
+    let nested_attachment = grammar::NestedWith::explorer().explore("alpha with pair")
+        .expect("nested semantic attachments advertise recovery")
+        .expect("attachment syntax is retained before nested recovery unwinds");
+    let recursa::explorer::Exploration::Recovered(nested_attachment) = nested_attachment else {
+        panic!("a nested failure after an attachment produces recovery")
+    };
+    assert!(nested_attachment.root().parts().any(|part| {
+        let recursa::explorer::RecoveryPart::Element(element) = part else {
+            return false;
+        };
+        let recursa::explorer::RecoveryValue::Token(token) = element.value() else {
+            return false;
+        };
+        token.schema().canonical_text() == Some("WITH")
+    }));
+
+    let unicode_recovery = adapter.explore("record:!café")
+        .expect("compound roots advertise recovery")
+        .expect("UTF-8 recovery boundaries are checked");
+    let recursa::explorer::Exploration::Recovered(unicode_recovery) = unicode_recovery else {
+        panic!("the skipped punctuation produces recovery")
+    };
+    let unicode_parts = unicode_recovery.root().parts().collect::<Vec<_>>();
+    let recursa::explorer::RecoveryPart::Skipped(unicode_skip) = unicode_parts[2] else {
+        panic!("the punctuation is retained as skipped input")
+    };
+    assert_eq!(unicode_skip.span(), recursa::Span::new(7, 8).unwrap());
+    let recursa::explorer::RecoveryPart::Element(unicode_label) = unicode_parts[3] else {
+        panic!("the UTF-8 label is retained after synchronization")
+    };
+    assert_eq!(unicode_label.span(), recursa::Span::new(8, 13).unwrap());
+
+    let same_eof = grammar::NestedRecovery::explorer().explore("create pair")
+        .expect("nested roots advertise recovery")
+        .expect("distinct nested EOF sites recover");
+    let recursa::explorer::Exploration::Recovered(same_eof) = same_eof else {
+        panic!("nested and owner EOF failures produce recovery")
+    };
+    assert_eq!(same_eof.diagnostics().len(), 2);
+    assert_eq!(same_eof.diagnostics()[0].span(), recursa::Span::new(11, 11).unwrap());
+    assert_eq!(same_eof.diagnostics()[1].span(), recursa::Span::new(11, 11).unwrap());
+    assert_eq!(same_eof.diagnostics()[0].owner().unwrap().name(), "Pair");
+    assert_eq!(same_eof.diagnostics()[1].owner().unwrap().name(), "NestedRecovery");
+    assert_ne!(
+        same_eof.diagnostics()[0].site().unwrap().name(),
+        same_eof.diagnostics()[1].site().unwrap().name(),
+        "distinct EOF sites are not deduplicated",
+    );
+
+    let restart_stop = grammar::RestartStopOwner::explorer().explore("pair left")
+        .expect("restart/stop overlap roots advertise recovery")
+        .expect("restart/stop overlap is diagnosed without guessing");
+    let recursa::explorer::Exploration::Recovered(restart_stop) = restart_stop else {
+        panic!("restart/stop overlap produces recovery")
+    };
+    let child = restart_stop.root().parts().find_map(|part| {
+        let recursa::explorer::RecoveryPart::Element(element) = part else {
+            return None;
+        };
+        let recursa::explorer::RecoveryValue::Node(node) = element.value() else {
+            return None;
+        };
+        Some(node)
+    }).expect("the uncommitted child projection is retained");
+    assert!(child.committed_variant().is_none());
+    assert!(restart_stop.diagnostics().iter().any(|diagnostic| {
+        diagnostic.kind() == recursa::explorer::ParseDiagnosticKind::UnresolvedAlternative
+            && diagnostic.owner().is_some_and(|owner| owner.name() == "RestartStopChoice")
+    }));
 
     let private = grammar::PrivateRoot::explorer()
         .parse("left ~secret")
@@ -372,6 +1010,66 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
         "explorer fixture failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn recovery_documents_cannot_construct_or_convert_to_complete_values() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    let proof = r#"
+fn recovery_into_authored(
+    recovery: recursa::explorer::RecoveryDocument<'static>,
+) -> grammar::Record<'static> {
+    recovery.into()
+}
+
+fn recovery_into_parsed(
+    recovery: recursa::explorer::RecoveryDocument<'static>,
+) -> recursa::Parsed<'static, grammar::Record<'static>> {
+    recovery.into()
+}
+
+fn recovery_into_complete_document(
+    recovery: recursa::explorer::RecoveryDocument<'static>,
+) -> recursa::explorer::ExplorerDocument<'static> {
+    recovery.into()
+}
+
+fn recovery_node_into_complete_view(
+    node: &'static recursa::explorer::RecoveryNode,
+) -> recursa::explorer::Node<'static> {
+    node.into()
+}
+
+fn recovery_node_cannot_be_reconstructed(
+    node: recursa::explorer::RecoveryNode,
+) -> recursa::explorer::RecoveryNode {
+    recursa::explorer::RecoveryNode { ..node }
+}
+
+"#;
+    fs::write(
+        &main,
+        source.replace("fn main() {", &format!("{proof}fn main() {{")),
+    )
+    .expect("add recovery construction boundary proof");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(
+        !output.status.success(),
+        "recovery conversions must not compile"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.matches("the trait bound").count() >= 4
+            && stderr.contains("RecoveryDocument")
+            && stderr.contains("ExplorerDocument")
+            && stderr.contains("Record")
+            && stderr.contains("private"),
+        "compile-fail proof failed for an unrelated reason:\n{stderr}",
     );
 }
 
@@ -778,7 +1476,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_9", "protocol_999"))
+    fs::write(&root, source.replace("protocol_10", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);

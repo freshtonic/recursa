@@ -169,6 +169,13 @@ pub type MaybeCount<'input> = Box<Option<Box<Count<'input>>>>;
 #[tok(PAIR, this)]
 pub struct Pair<'input>(pub Box<Label<'input>>, pub Option<Box<Count<'input>>>);
 
+/// A nested child must leave its owner suffix unconsumed during recovery.
+#[derive(recursa::Node)]
+#[tok(CREATE, this, VIEW)]
+pub struct NestedRecovery<'input> {
+    pub pair: Box<Pair<'input>>,
+}
+
 #[derive(recursa::Node)]
 #[tok(LEFT, this)]
 pub struct ManyLabels<'input> {
@@ -184,6 +191,50 @@ pub struct SomeCounts<'input> {
 }
 
 #[derive(recursa::Node)]
+#[tok(CREATE, this)]
+pub struct RequiredCounts<'input> {
+    #[sep(COLON)]
+    pub values: recursa::Vec1<Box<Count<'input>>>,
+}
+
+/// A zero-occurrence `Vec` remains absent while a later fixed suffix recovers.
+#[derive(recursa::Node)]
+#[tok(LEFT, this, MATERIALIZED)]
+pub struct ZeroLabelsThenSuffix<'input> {
+    #[sep(COLON)]
+    pub values: Vec<Box<Label<'input>>>,
+}
+
+/// An absent `Option<Vec1<_>>` remains valid while a later fixed suffix recovers.
+#[derive(recursa::Node)]
+#[tok(RIGHT, this, VIEW, MATERIALIZED)]
+pub struct OptionalCountsThenSuffix<'input> {
+    #[sep(COLON)]
+    pub values: Option<Box<recursa::Vec1<Box<Count<'input>>>>>,
+}
+
+/// Each required attachment token is recovered by its own guarded transition.
+#[derive(recursa::Node)]
+pub struct MultipleRequiredAttachment<'input> {
+    #[tok(CREATE, LEFT, this, RIGHT, VIEW)]
+    pub label: Label<'input>,
+}
+
+/// Repeated identical required sites prove exact diagnostic deduplication is non-vacuous.
+#[derive(recursa::Node)]
+pub struct DuplicateRequiredAttachment<'input> {
+    #[tok(CREATE, CREATE, CREATE, this)]
+    pub label: Label<'input>,
+}
+
+/// A committed two-token optional group advances one token per recovery transition.
+#[derive(recursa::Node)]
+#[tok(optional(OR, REPLACE), this)]
+pub struct StandaloneAtomicOptional<'input> {
+    pub label: Label<'input>,
+}
+
+#[derive(recursa::Node)]
 pub enum Entry<'input> {
     Record {
         value: Box<Box<Record<'input>>>,
@@ -193,6 +244,34 @@ pub enum Entry<'input> {
     },
     #[tok(EMPTY)]
     Empty,
+}
+
+/// Distinct fixed prefixes commit recovery before a branch field fails.
+#[derive(recursa::Node)]
+pub enum RecoveryChoice<'input> {
+    Right {
+        #[tok(RIGHT)]
+        count: Count<'input>,
+    },
+    Left {
+        #[tok(LEFT)]
+        label: Label<'input>,
+    },
+}
+
+/// A nested enum restart may overlap its owner's fixed FOLLOW token.
+#[derive(recursa::Node)]
+pub enum RestartStopChoice {
+    #[tok(LEFT)]
+    Left,
+    #[tok(RIGHT)]
+    Right,
+}
+
+#[derive(recursa::Node)]
+#[tok(PAIR, this, LEFT)]
+pub struct RestartStopOwner {
+    pub choice: RestartStopChoice,
 }
 
 #[derive(recursa::Node)]

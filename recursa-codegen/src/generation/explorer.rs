@@ -1271,6 +1271,10 @@ pub(super) fn validate_explorer_collisions(
             node.module,
             explorer_parse_function(application.parse_index).to_string(),
         )?;
+        reserve(
+            node.module,
+            explorer_explore_function(application.parse_index).to_string(),
+        )?;
         if checked_root_nodes.insert(root.node)
             && authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer")
         {
@@ -1693,7 +1697,6 @@ pub(super) fn render_node_application_explorer(
     let explorer_generics = explorer_impl_generics(plan, application);
     let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
     let (entry_impl_generics, _, entry_where_clause) = explorer_generics.split_for_impl();
-
     let (node_body, child_count_body, child_body) = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
             let schema = explorer_schema_static(node_index, None);
@@ -1803,6 +1806,13 @@ pub(super) fn render_node_application_explorer(
         let grammar_schema = explorer_grammar_schema_static(node_index);
         let sample = explorer_sample_function(node_index);
         let parse = explorer_parse_function(node_index);
+        let explore = explorer_explore_function(node_index);
+        let recovery_callback = if explorer_recovery_available(plan, application.application) {
+            quote!(Some(#explore))
+        } else {
+            quote!(None)
+        };
+        let recovery_plan = explorer_recovery_plan_static(node_index);
         let explorer_lex = explorer_lex_function();
         let pretty = root.capabilities.pretty;
         let pretty_body = if pretty {
@@ -1870,6 +1880,32 @@ pub(super) fn render_node_application_explorer(
                 )
             }
 
+            fn #explore<'__recursa_input>(
+                source: &'__recursa_input str,
+            ) -> Result<
+                #facade::explorer::Exploration<'__recursa_input>,
+                #facade::explorer::ExplorationError<'__recursa_input>,
+            > {
+                let lexed = #module_anchor::lex(source);
+                let lexical_errors = lexed.errors().map(|error| error.span()).collect::<Vec<_>>();
+                let mut strict_input = lexed.input();
+                match #facade::__private::explorer_parse_document::<#ty, _>(
+                    &mut strict_input.inner,
+                    lexical_errors,
+                ) {
+                    Ok(document) => Ok(#facade::explorer::Exploration::Complete(document)),
+                    Err(failure) => {
+                        let mut recovery_input = lexed.input();
+                        #facade::__private::explorer_recover_document(
+                            &mut recovery_input.inner,
+                            failure,
+                            &#module_anchor::#recovery_plan,
+                        )
+                        .map(#facade::explorer::Exploration::Recovered)
+                    }
+                }
+            }
+
             #sample_function
 
             unsafe impl #entry_impl_generics #facade::__private::ExplorerRoot
@@ -1902,6 +1938,7 @@ pub(super) fn render_node_application_explorer(
                             arbitrary,
                             #module_anchor::#explorer_lex,
                             #parse,
+                            #recovery_callback,
                             sample,
                         )
                     }
@@ -1942,6 +1979,71 @@ pub(super) fn render_node_application_explorer(
     }
 }
 
+/// Reports whether every Node reachable from one root has a #94 recovery body.
+/// Pratt reachability keeps the entire root unavailable until #97 supplies its
+/// binding-power-aware interpreter states.
+fn explorer_recovery_available(plan: &EmissionPlan, root: MaterializedApplicationId) -> bool {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(application) = pending.pop() {
+        if !visited.insert(application) {
+            continue;
+        }
+        let (_, application) = explorer_application_parse_plan(&plan.nodes, application);
+        let element_groups = match &application.body {
+            NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+            NodeBodyPlan::Enum { variants, dispatch } => {
+                // A balanced-delimiter cut selects structurally rather than
+                // through the bounded trie; its recovery interpreter is not
+                // part of this slice.
+                if dispatch.balanced.is_some() {
+                    return false;
+                }
+                variants
+                    .iter()
+                    .map(|variant| variant.elements.as_slice())
+                    .collect()
+            }
+            NodeBodyPlan::Pratt(_) => return false,
+        };
+        for element in element_groups.into_iter().flatten() {
+            let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+                continue;
+            };
+            let SemanticParseProjection::Direct {
+                explorer_terminal,
+                container,
+                attachment,
+                ..
+            } = projection.as_ref()
+            else {
+                continue;
+            };
+            // A sparse consume-vs-skip viability decision is a frozen product
+            // this slice cannot interpret yet; recovery must not fall back to
+            // the raw selector where the frozen plan refines the choice.
+            let container = attachment
+                .as_ref()
+                .map_or(container.as_ref(), |attachment| {
+                    attachment.semantic.as_ref()
+                });
+            if matches!(
+                container,
+                PlannedContainer::Optional {
+                    decision: Some(_),
+                    ..
+                }
+            ) {
+                return false;
+            }
+            if let ExplorerTerminalPlan::Node(child) = explorer_terminal {
+                pending.push(*child);
+            }
+        }
+    }
+    true
+}
+
 /// Names the static schema emitted for one Node application and optional variant.
 pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
     match variant {
@@ -1960,6 +2062,11 @@ pub(super) fn explorer_lex_function() -> Ident {
 /// Returns the private parse callback name for one materialized root.
 pub(super) fn explorer_parse_function(node_index: usize) -> Ident {
     format_ident!("__recursa_explorer_parse_{node_index}")
+}
+
+/// Returns the generated construction-free exploration callback name.
+pub(super) fn explorer_explore_function(node_index: usize) -> Ident {
+    format_ident!("__recursa_explorer_explore_{node_index}")
 }
 
 /// Names a root application's deterministic sample callback.
@@ -2027,6 +2134,618 @@ pub(super) fn render_explorer_token_schemas(
     quote!(#(#definitions)*)
 }
 
+/// Names one generated construction-free recovery Node recipe.
+pub(super) fn explorer_recovery_node_static(node_index: usize) -> Ident {
+    format_ident!("__RECURSA_EXPLORER_RECOVERY_NODE_{node_index}")
+}
+
+/// Names one generated root recovery plan.
+pub(super) fn explorer_recovery_plan_static(node_index: usize) -> Ident {
+    format_ident!("__RECURSA_EXPLORER_RECOVERY_PLAN_{node_index}")
+}
+
+/// Emits one pooled `&'static FollowSet` place for construction-free recovery data.
+///
+/// Every recovery expectation reuses the validated grammar-wide expectation
+/// pool; recovery introduces no expectation storage of its own. The only
+/// unpooled shape is the canonical empty expectation of a variant-free enum,
+/// which reuses the shared empty FOLLOW static.
+fn recovery_expected_ref(plan: &EmissionPlan, expected: &ExpectedSet) -> proc_macro2::TokenStream {
+    let module_anchor = &plan.module_anchor;
+    if let Some(index) = plan.expected_sets.id(expected) {
+        quote!(&#module_anchor::__RECURSA_EXPECTED_SETS[#index])
+    } else {
+        assert!(
+            expected.is_empty(),
+            "a non-empty recovery expectation is missing from the grammar-wide pool",
+        );
+        quote!(&#module_anchor::__RECURSA_EMPTY_FOLLOW)
+    }
+}
+
+/// Renders one frozen FOLLOW policy for the construction-free interpreter.
+///
+/// Pratt stop tokens carried by a caller-relative FOLLOW are static stop
+/// evidence for recovery synchronization, exactly as they are for strict
+/// failure reporting.
+fn render_recovery_follow(plan: &EmissionPlan, follow: &PlannedFollow) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    match follow {
+        PlannedFollow::Caller => {
+            quote!(#facade::__private::explorer_recovery_caller_follow())
+        }
+        PlannedFollow::Static(expected) => {
+            let expected = recovery_expected_ref(plan, expected);
+            quote!(#facade::__private::explorer_recovery_static_follow(#expected))
+        }
+        PlannedFollow::StaticAndCaller(expected) | PlannedFollow::CallerAndPrattStops(expected) => {
+            let expected = recovery_expected_ref(plan, expected);
+            quote!(#facade::__private::explorer_recovery_static_and_caller_follow(#expected))
+        }
+    }
+}
+
+/// Renders one immutable fixed-token sequence from frozen expected sets.
+fn render_recovery_fixed_sequence(
+    plan: &EmissionPlan,
+    prefix: &str,
+    tokens: &[AttachedFixedParsePlan],
+) -> (proc_macro2::TokenStream, Ident) {
+    let facade = &plan.facade;
+    let values = tokens
+        .iter()
+        .map(|token| {
+            let expected = recovery_expected_ref(plan, &token.expected);
+            quote!(#facade::__private::explorer_recovery_fixed_plan(#expected))
+        })
+        .collect::<Vec<_>>();
+    let sequence = format_ident!("{prefix}_SEQUENCE");
+    let count = values.len();
+    let definition = quote! {
+        static #sequence: [#facade::__private::ExplorerRecoveryFixedPlanData; #count] =
+            [#(#values),*];
+    };
+    (definition, sequence)
+}
+
+/// Renders required and atomic-optional syntax surrounding one presence site.
+fn render_recovery_fixed_syntax(
+    plan: &EmissionPlan,
+    prefix: &str,
+    syntax: &[AttachedFixedSyntaxParsePlan],
+) -> (proc_macro2::TokenStream, Ident) {
+    let facade = &plan.facade;
+    let mut definitions = Vec::new();
+    let mut values = Vec::new();
+    for (index, operation) in syntax.iter().enumerate() {
+        match operation {
+            AttachedFixedSyntaxParsePlan::Required(token) => {
+                let expected = recovery_expected_ref(plan, &token.expected);
+                values.push(quote!(
+                    #facade::__private::explorer_recovery_required_fixed_syntax(#expected)
+                ));
+            }
+            AttachedFixedSyntaxParsePlan::Optional(tokens) => {
+                let nested_prefix = format!("{prefix}_OPTIONAL_{index}");
+                let (nested_definitions, sequence) =
+                    render_recovery_fixed_sequence(plan, &nested_prefix, tokens);
+                definitions.push(nested_definitions);
+                values.push(quote!(
+                    #facade::__private::explorer_recovery_optional_fixed_syntax(&#sequence)
+                ));
+            }
+        }
+    }
+    let operations = format_ident!("{prefix}_OPERATIONS");
+    let count = values.len();
+    definitions.push(quote! {
+        static #operations:
+            [#facade::__private::ExplorerRecoveryFixedSyntaxPlanData; #count] =
+            [#(#values),*];
+    });
+    (quote!(#(#definitions)*), operations)
+}
+
+/// Renders one construction-free element recipe from already-frozen parse products.
+fn render_recovery_element_plan(
+    plan: &EmissionPlan,
+    explorer: &ExplorerPlan,
+    node_index: usize,
+    variant: Option<usize>,
+    element_index: usize,
+    element: &ElementParsePlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let schema = explorer_element_schema_static(node_index, variant, element_index);
+    let stop = render_recovery_follow(
+        plan,
+        element
+            .recovery_stop
+            .as_ref()
+            .expect("materialized recovery elements retain their frozen FOLLOW"),
+    );
+    let (kind_definitions, kind) = match &element.kind {
+        ElementParseKind::Fixed { expected, .. } => {
+            let expected = recovery_expected_ref(plan, expected);
+            (
+                quote!(),
+                quote!(#facade::__private::explorer_recovery_fixed_kind(#expected)),
+            )
+        }
+        ElementParseKind::OptionalFixedTokenGroup { tokens, .. } => {
+            let prefix = format!(
+                "__RECURSA_EXPLORER_RECOVERY_OPTIONAL_FIXED_{node_index}_{}_{}",
+                variant.map_or_else(|| "S".to_owned(), |variant| variant.to_string()),
+                element_index,
+            );
+            let (definitions, sequence) = render_recovery_fixed_sequence(plan, &prefix, tokens);
+            (
+                definitions,
+                quote!(#facade::__private::explorer_recovery_optional_fixed_kind(&#sequence)),
+            )
+        }
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::FixedPresence {
+                before,
+                sequence,
+                after,
+                ..
+            } => {
+                let prefix = format!(
+                    "__RECURSA_EXPLORER_RECOVERY_PRESENCE_{node_index}_{}_{}",
+                    variant.map_or_else(|| "S".to_owned(), |variant| variant.to_string()),
+                    element_index,
+                );
+                let (before_definitions, before) =
+                    render_recovery_fixed_syntax(plan, &format!("{prefix}_BEFORE"), before);
+                let (sequence_definitions, sequence) =
+                    render_recovery_fixed_sequence(plan, &format!("{prefix}_VALUE"), sequence);
+                let (after_definitions, after) =
+                    render_recovery_fixed_syntax(plan, &format!("{prefix}_AFTER"), after);
+                (
+                    quote!(#before_definitions #sequence_definitions #after_definitions),
+                    quote!(
+                    #facade::__private::explorer_recovery_fixed_presence_kind(
+                        &#before,
+                        &#sequence,
+                        &#after,
+                    )
+                    ),
+                )
+            }
+            SemanticParseProjection::Direct {
+                explorer_terminal,
+                container,
+                attachment,
+                ..
+            } => {
+                let terminal = match explorer_terminal {
+                    ExplorerTerminalPlan::Node(application) => {
+                        let target = explorer_application_parse_plan(&plan.nodes, *application)
+                            .1
+                            .parse_index;
+                        let target = explorer_recovery_node_static(target);
+                        quote!(#facade::__private::explorer_recovery_node_terminal(&#target))
+                    }
+                    ExplorerTerminalPlan::Content(token) => {
+                        let target = explorer_content_token_schema_static(explorer, *token);
+                        quote!(#facade::__private::explorer_recovery_content_terminal(&#target))
+                    }
+                };
+                let attachment_prefix = format!(
+                    "__RECURSA_EXPLORER_RECOVERY_ATTACHMENT_{node_index}_{}_{}",
+                    variant.map_or_else(|| "S".to_owned(), |variant| variant.to_string()),
+                    element_index,
+                );
+                let (attachment_definitions, before, after) = attachment.as_ref().map_or_else(
+                    || (quote!(), quote!(&[]), quote!(&[])),
+                    |attachment| {
+                        let (before_definitions, before) = render_recovery_fixed_syntax(
+                            plan,
+                            &format!("{attachment_prefix}_BEFORE"),
+                            &attachment.before,
+                        );
+                        let (after_definitions, after) = render_recovery_fixed_syntax(
+                            plan,
+                            &format!("{attachment_prefix}_AFTER"),
+                            &attachment.after,
+                        );
+                        (
+                            quote!(#before_definitions #after_definitions),
+                            quote!(&#before),
+                            quote!(&#after),
+                        )
+                    },
+                );
+                let container_plan = attachment
+                    .as_ref()
+                    .map_or(container.as_ref(), |attachment| {
+                        attachment.semantic.as_ref()
+                    });
+                let (container_definitions, container) = match container_plan {
+                    PlannedContainer::Direct {
+                        child_follow,
+                        required_failure,
+                    } => {
+                        let restart = render_recovery_follow(plan, required_failure);
+                        let child = render_recovery_follow(plan, child_follow);
+                        (
+                            quote!(),
+                            quote!(#facade::__private::explorer_recovery_direct_container(
+                                #restart,
+                                #child,
+                            )),
+                        )
+                    }
+                    // A sparse viability decision keeps the owning root
+                    // recovery-unavailable; the rendered fallback selector is
+                    // inert until the decision graph gains a recovery
+                    // interpreter.
+                    PlannedContainer::Optional {
+                        selector,
+                        decision: _,
+                        child_follow,
+                    } => {
+                        let restart = recovery_expected_ref(plan, selector);
+                        let child = render_recovery_follow(plan, child_follow);
+                        (
+                            quote!(),
+                            quote!(#facade::__private::explorer_recovery_optional_container(
+                                #restart,
+                                #child,
+                            )),
+                        )
+                    }
+                    PlannedContainer::Repeated {
+                        operation,
+                        element_selector,
+                        separator_selector,
+                        optional_trailing,
+                        stop,
+                        child_follow,
+                        minimum_failure,
+                        continuation_failure,
+                        after_separator_failure,
+                    } => {
+                        let element_selector = recovery_expected_ref(plan, element_selector);
+                        let separator = separator_selector.as_ref().map_or_else(
+                            || quote!(None),
+                            |selector| {
+                                let selector = recovery_expected_ref(plan, selector);
+                                quote!(Some(#selector))
+                            },
+                        );
+                        let repeat_stop = render_recovery_follow(plan, stop);
+                        let child = render_recovery_follow(plan, child_follow);
+                        let minimum_failure = minimum_failure.as_deref().map_or_else(
+                            || quote!(None),
+                            |failure| {
+                                let value = render_recovery_follow(plan, failure);
+                                quote!(Some(#value))
+                            },
+                        );
+                        let continuation = render_recovery_follow(plan, continuation_failure);
+                        let after_separator_failure =
+                            after_separator_failure.as_deref().map_or_else(
+                                || quote!(None),
+                                |failure| {
+                                    let value = render_recovery_follow(plan, failure);
+                                    quote!(Some(#value))
+                                },
+                            );
+                        let (minimum, presence) = match operation {
+                            ContainerOperation::ZeroOrMore => (
+                                quote!(#facade::__private::ExplorerRecoveryMinimumData::Zero),
+                                quote!(#facade::__private::ExplorerRecoveryRepetitionPresenceData::Required),
+                            ),
+                            ContainerOperation::OneOrMore => (
+                                quote!(#facade::__private::ExplorerRecoveryMinimumData::One),
+                                quote!(#facade::__private::ExplorerRecoveryRepetitionPresenceData::Required),
+                            ),
+                            ContainerOperation::OptionalOneOrMore => (
+                                quote!(#facade::__private::ExplorerRecoveryMinimumData::One),
+                                quote!(#facade::__private::ExplorerRecoveryRepetitionPresenceData::Optional),
+                            ),
+                            ContainerOperation::Direct | ContainerOperation::Optional => {
+                                unreachable!("repeated plan retains a repeated operation")
+                            }
+                        };
+                        let trailing = if *optional_trailing {
+                            quote!(#facade::__private::ExplorerRecoveryTrailingSeparatorData::Allowed)
+                        } else {
+                            quote!(#facade::__private::ExplorerRecoveryTrailingSeparatorData::Forbidden)
+                        };
+                        (
+                            quote!(),
+                            quote!(#facade::__private::explorer_recovery_repeated_container(
+                                #minimum,
+                                #presence,
+                                #element_selector,
+                                #separator,
+                                #trailing,
+                                #repeat_stop,
+                                #child,
+                                #minimum_failure,
+                                #continuation,
+                                #after_separator_failure,
+                            )),
+                        )
+                    }
+                };
+                (
+                    quote!(#attachment_definitions #container_definitions),
+                    quote!(#facade::__private::explorer_recovery_semantic_kind(
+                            #terminal,
+                            #container,
+                            #before,
+                            #after,
+                    )),
+                )
+            }
+        },
+    };
+    quote! {{
+        #kind_definitions
+        #facade::__private::explorer_recovery_element_plan(
+            &#schema,
+            #stop,
+            #kind,
+        )
+    }}
+}
+
+/// Renders one frozen predictive graph into immutable runtime dispatch statics.
+///
+/// The joined plan stores canonical states in one arena; shared suffix states
+/// are emitted once and referenced by every incoming edge, preserving the
+/// frozen graph shape without recomputing dispatch meaning.
+fn render_recovery_dispatch_graph(
+    plan: &EmissionPlan,
+    node_index: usize,
+    dispatch: &PredictiveDispatchPlan,
+) -> (proc_macro2::TokenStream, Ident) {
+    let facade = &plan.facade;
+    let mut definitions = Vec::new();
+    for (index, state) in dispatch.states.iter().enumerate() {
+        let mut edges = Vec::new();
+        for edge in &state.edges {
+            let child = format_ident!(
+                "__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{}",
+                edge.next.index()
+            );
+            let expected = recovery_expected_ref(plan, &edge.position.expected);
+            let text = match &edge.position.text_predicate {
+                None | Some(PlannedTextPredicate::Any) => {
+                    quote!(#facade::__private::explorer_recovery_text_any())
+                }
+                Some(PlannedTextPredicate::Exact(text)) => {
+                    quote!(#facade::__private::explorer_recovery_text_exact(#text))
+                }
+                Some(PlannedTextPredicate::OneOf(options)) => {
+                    quote!(#facade::__private::explorer_recovery_text_one_of(&[#(#options),*]))
+                }
+                Some(PlannedTextPredicate::NotIn(options)) => {
+                    quote!(#facade::__private::explorer_recovery_text_not_in(&[#(#options),*]))
+                }
+            };
+            edges.push(quote! {
+                #facade::__private::explorer_recovery_dispatch_edge(
+                    #expected,
+                    #text,
+                    &#child,
+                )
+            });
+        }
+        let edge_count = edges.len();
+        let edges_name =
+            format_ident!("__RECURSA_EXPLORER_RECOVERY_DISPATCH_EDGES_{node_index}_{index}");
+        let node_name = format_ident!("__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{index}");
+        // The runtime selector tries exact edges before terminals, so both
+        // immediate and fallback-after-edges terminals select unconditionally
+        // once no edge matches; only caller-FOLLOW terminals stay conditional.
+        let target = state.target.map_or_else(
+            || quote!(None),
+            |target| {
+                let variant = target.variant;
+                let condition = if matches!(target.mode, crate::DispatchTerminalMode::CallerFollow) {
+                    quote!(#facade::__private::ExplorerRecoveryDispatchTerminalConditionData::CallerFollow)
+                } else {
+                    quote!(#facade::__private::ExplorerRecoveryDispatchTerminalConditionData::Unconditional)
+                };
+                quote!(Some(#facade::__private::explorer_recovery_dispatch_target(
+                    #facade::__private::explorer_recovery_variant_index(#variant),
+                    #condition,
+                )))
+            },
+        );
+        let commit = state.recovery_commit.map_or_else(
+            || quote!(None),
+            |variant| quote!(Some(#facade::__private::explorer_recovery_variant_index(#variant))),
+        );
+        definitions.push(quote! {
+            static #edges_name:
+                [#facade::__private::ExplorerRecoveryDispatchEdgeData; #edge_count] =
+                [#(#edges),*];
+            static #node_name: #facade::__private::ExplorerRecoveryDispatchNodeData =
+                #facade::__private::explorer_recovery_dispatch_node(
+                    #target,
+                    #commit,
+                    &#edges_name,
+                );
+        });
+    }
+    let root = format_ident!(
+        "__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{}",
+        dispatch.root.index()
+    );
+    (quote!(#(#definitions)*), root)
+}
+
+/// Renders the immutable grammar-erased recovery payload shared by root callbacks.
+fn render_recovery_static_plan(
+    plan: &EmissionPlan,
+    explorer: &ExplorerPlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let nodes = plan.nodes.iter().flat_map(|node| {
+        node.parse_applications.iter().map(move |application| {
+            let node_index = application.parse_index;
+            let schema = explorer_schema_static(node_index, None);
+            let recovery_node = explorer_recovery_node_static(node_index);
+            match &application.body {
+                NodeBodyPlan::Struct { elements, .. } => {
+                    let elements_name = format_ident!(
+                        "__RECURSA_EXPLORER_RECOVERY_ELEMENTS_{node_index}"
+                    );
+                    let elements = elements
+                        .iter()
+                        .enumerate()
+                        .map(|(index, element)| {
+                            render_recovery_element_plan(
+                                plan,
+                                explorer,
+                                node_index,
+                                None,
+                                index,
+                                element,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let count = elements.len();
+                    quote! {
+                        static #elements_name:
+                            [#facade::__private::ExplorerRecoveryElementPlanData; #count] =
+                            [#(#elements),*];
+                        static #recovery_node: #facade::__private::ExplorerRecoveryNodePlanData =
+                            #facade::__private::explorer_recovery_struct_plan(
+                                &#schema,
+                                &#elements_name,
+                            );
+                    }
+                }
+                NodeBodyPlan::Enum { variants, dispatch } => {
+                    let (dispatch_definitions, dispatch_name) =
+                        render_recovery_dispatch_graph(plan, node_index, dispatch);
+                    let restart = recovery_expected_ref(plan, &dispatch.restart);
+                    let variant_definitions = variants
+                        .iter()
+                        .enumerate()
+                        .map(|(variant_index, variant)| {
+                            let elements_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_ELEMENTS_{node_index}_{variant_index}"
+                            );
+                            let elements = variant
+                                .elements
+                                .iter()
+                                .enumerate()
+                                .map(|(element_index, element)| {
+                                    render_recovery_element_plan(
+                                        plan,
+                                        explorer,
+                                        node_index,
+                                        Some(variant_index),
+                                        element_index,
+                                        element,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let element_count = elements.len();
+                            let schema =
+                                explorer_schema_static(node_index, Some(variant_index));
+                            let variant_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_VARIANT_{node_index}_{variant_index}"
+                            );
+                            quote! {
+                                static #elements_name:
+                                    [#facade::__private::ExplorerRecoveryElementPlanData; #element_count] =
+                                    [#(#elements),*];
+                                static #variant_name:
+                                    #facade::__private::ExplorerRecoveryVariantPlanData =
+                                    #facade::__private::explorer_recovery_variant_plan(
+                                        &#schema,
+                                        &#elements_name,
+                                    );
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let variant_names = (0..variants.len()).map(|variant_index| {
+                        format_ident!(
+                            "__RECURSA_EXPLORER_RECOVERY_VARIANT_{node_index}_{variant_index}"
+                        )
+                    });
+                    let variants_name =
+                        format_ident!("__RECURSA_EXPLORER_RECOVERY_VARIANTS_{node_index}");
+                    let variant_count = variants.len();
+                    quote! {
+                        #dispatch_definitions
+                        #(#variant_definitions)*
+                        static #variants_name:
+                            [#facade::__private::ExplorerRecoveryVariantPlanData; #variant_count] =
+                            [#(#variant_names),*];
+                        static #recovery_node: #facade::__private::ExplorerRecoveryNodePlanData =
+                            #facade::__private::explorer_recovery_enum_plan(
+                                &#schema,
+                                &#variants_name,
+                                &#dispatch_name,
+                                #restart,
+                            );
+                    }
+                }
+                NodeBodyPlan::Pratt(_) => quote! {
+                    static #recovery_node: #facade::__private::ExplorerRecoveryNodePlanData =
+                        #facade::__private::explorer_recovery_pratt_unavailable_plan(&#schema);
+                },
+            }
+        })
+    });
+    let token_schemas = (0..plan.kind_count).map(|kind| {
+        explorer
+            .tokens
+            .iter()
+            .find(|token| usize::from(token.kind_index) == kind)
+            .map_or_else(
+                || quote!(None),
+                |token| {
+                    let schema = explorer_token_schema_static(token.kind_index);
+                    quote!(Some(&#schema))
+                },
+            )
+    });
+    let token_schema_count = plan.kind_count;
+    let token_schemas_name = format_ident!("__RECURSA_EXPLORER_RECOVERY_TOKEN_SCHEMAS");
+    let roots = explorer.roots.iter().map(|root| {
+        let node_index = explorer_application_parse_plan(&plan.nodes, root.application)
+            .1
+            .parse_index;
+        let recovery_node = explorer_recovery_node_static(node_index);
+        let recovery_plan = explorer_recovery_plan_static(node_index);
+        let text_equivalence = if matches!(plan.text_equivalence, TextEquivalence::AsciiInsensitive)
+        {
+            quote!(#facade::__private::ExplorerRecoveryTextEquivalenceData::AsciiInsensitive)
+        } else {
+            quote!(#facade::__private::ExplorerRecoveryTextEquivalenceData::Sensitive)
+        };
+        quote! {
+            static #recovery_plan: #facade::__private::ExplorerRecoveryPlanData =
+                #facade::__private::explorer_recovery_plan(
+                    &#module_anchor::__RECURSA_GRAMMAR,
+                    &#recovery_node,
+                    &#module_anchor::__RECURSA_EMPTY_FOLLOW,
+                    &#token_schemas_name,
+                    #text_equivalence,
+                );
+        }
+    });
+    quote! {
+        #(#nodes)*
+        static #token_schemas_name:
+            [Option<&#facade::__private::ExplorerTokenSchemaData>; #token_schema_count] =
+            [#(#token_schemas),*];
+        #(#roots)*
+    }
+}
+
 /// Renders the complete static grammar schema shared by adapter callbacks.
 pub(super) fn render_explorer_static_schema(
     plan: &EmissionPlan,
@@ -2034,6 +2753,7 @@ pub(super) fn render_explorer_static_schema(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let tokens = render_explorer_token_schemas(plan, explorer);
+    let recovery = render_recovery_static_plan(plan, explorer);
     let nodes = explorer.nodes.iter().map(|node| {
         let node_index = explorer_application_parse_plan(&plan.nodes, node.application)
             .1
@@ -2087,6 +2807,7 @@ pub(super) fn render_explorer_static_schema(
             [&#facade::__private::ExplorerTokenSchemaData; #token_schema_count] =
             [#(#all_tokens),*];
         #(#grammars)*
+        #recovery
     }
 }
 
