@@ -5,7 +5,7 @@ user-facing promise; private items explain ownership, invariants, and phase boun
 change the implementation safely. Documentation-hidden items are still a matching-version ABI for
 generated code and must be documented even though normal Rustdoc output omits them.
 
-CI applies one stable, three-layer gate to the six authored library packages. The example packages
+CI applies one stable, three-layer gate to the seven authored library packages. The example packages
 are consumers rather than library surfaces, so they remain outside this gate. Do not replace these
 commands with a workspace-wide invocation that accidentally includes examples.
 
@@ -19,6 +19,7 @@ cargo clippy \
   -p recursa \
   -p recursa-core \
   -p recursa-codegen \
+  -p recursa-diagrams \
   -p recursa-macros \
   -p recursa-test \
   -p recursa-explorer \
@@ -62,6 +63,7 @@ RUSTDOCFLAGS="--document-private-items -D rustdoc::broken_intra_doc_links" \
   -p recursa \
   -p recursa-core \
   -p recursa-codegen \
+  -p recursa-diagrams \
   -p recursa-macros \
   -p recursa-test \
   -p recursa-explorer \

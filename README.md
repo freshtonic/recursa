@@ -184,7 +184,7 @@ The `recursa` facade has no default features. Optional features are:
 | Feature | Capability |
 |---|---|
 | `arbitrary` | Generated `arbitrary::Arbitrary` implementations when configured by the grammar |
-| `diagrams` | Matching facade support for generated Rustdoc railroad diagrams |
+| `diagrams` | Matching facade support for generated Rustdoc railroad diagrams, rendered only under `cargo doc` |
 | `explorer` | Grammar-erased Explorer adapter, recovery, and document-framing contracts |
 | `serde` | Generated Serde implementations when configured by the grammar |
 
@@ -203,6 +203,7 @@ to those adapters.
 | [`recursa`](recursa) | User-facing facade for authoring macros and runtime contracts |
 | [`recursa-codegen`](recursa-codegen) | Build-time source analysis, semantic analysis, diagnostics, and generation |
 | [`recursa-core`](recursa-core) | Grammar-erased runtime, parsed provenance, traversal, and Pretty support |
+| [`recursa-diagrams`](recursa-diagrams) | Published railroad-diagram plans and doc-time SVG rendering |
 | [`recursa-macros`](recursa-macros) | Matching-version structural loaders re-exported by the facade |
 | [`recursa-test`](recursa-test) | Reserved package; currently no public test harness |
 | [`recursa-explorer`](recursa-explorer) | Supported loopback launcher and bundled interactive Explorer UI |

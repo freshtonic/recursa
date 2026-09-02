@@ -6,6 +6,7 @@ members = [
     "recursa",
     "recursa-core",
     "recursa-codegen",
+    "recursa-diagrams",
     "recursa-macros",
     "recursa-test",
     "recursa-explorer",

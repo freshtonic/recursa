@@ -17,7 +17,7 @@ include = ["src/**", "README.md", "LICENSE"]
 [features]
 default = []
 arbitrary = []
-diagrams = []
+diagrams = ["dep:recursa-diagrams"]
 explorer = []
 serde = []
 
@@ -26,6 +26,7 @@ proc-macro = true
 
 [dependencies]
 proc-macro-crate = "3"
+recursa-diagrams = { version = "=0.1.0", path = "../recursa-diagrams", optional = true }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full", "visit-mut"] }

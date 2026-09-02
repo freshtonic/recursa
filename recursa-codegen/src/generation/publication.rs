@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// Generation-relative directory holding the encoded diagram plan and doc-time SVG files.
+const DIAGRAM_DIRECTORY: &str = "diagrams";
+/// File name of the encoded diagram plan inside [`DIAGRAM_DIRECTORY`].
+const PLAN_FILE_NAME: &str = "diagrams.plan";
+
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
@@ -106,6 +111,13 @@ pub(super) fn stage_and_publish(
     let loader_map = render_loader_map(rendered);
     fs::write(staging.join("loader-map"), loader_map)
         .map_err(|error| format!("cannot stage the Node loader map: {error}"))?;
+    if let Some(diagram_plan) = &rendered.diagram_plan {
+        let directory = staging.join(DIAGRAM_DIRECTORY);
+        fs::create_dir(&directory)
+            .map_err(|error| format!("cannot stage the diagram directory: {error}"))?;
+        fs::write(directory.join(PLAN_FILE_NAME), diagram_plan)
+            .map_err(|error| format!("cannot stage the diagram plan: {error}"))?;
+    }
     fs::rename(staging, published)
         .map_err(|error| format!("cannot cross the Generation publication barrier: {error}"))?;
     Ok(())
@@ -117,6 +129,7 @@ fn validate_reusable_generation(
     rendered: &RenderedGeneration,
 ) -> Result<(), String> {
     let loader_map = render_loader_map(rendered);
+    let diagram_plan = format!("{DIAGRAM_DIRECTORY}/{PLAN_FILE_NAME}");
     let expected_files = std::iter::once(("root.rs", rendered.root.as_str()))
         .chain(std::iter::once(("loader-map", loader_map.as_str())))
         .chain(
@@ -124,6 +137,12 @@ fn validate_reusable_generation(
                 .nodes
                 .iter()
                 .map(|(name, source)| (name.as_str(), source.as_str())),
+        )
+        .chain(
+            rendered
+                .diagram_plan
+                .iter()
+                .map(|plan| (diagram_plan.as_str(), plan.as_str())),
         );
     for (name, expected) in expected_files {
         let path = published.join(name);

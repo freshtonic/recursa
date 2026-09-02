@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 12;
+const PRIVATE_PROTOCOL: u32 = 13;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
@@ -251,6 +251,174 @@ fn valid_node_file(name: &str) -> bool {
             !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
         })
     })
+}
+
+/// Attaches doc-time railroad documentation to one generated item.
+///
+/// Generated output carries this attribute only under `cfg(doc)`, so ordinary builds strip it
+/// before expansion and never render or embed diagram markup. While `cargo doc` expands it, the
+/// attribute decodes the diagram plan published by the selected Generation, renders the requested
+/// Node, content-token, or aggregate document, writes the standalone SVG next to the plan, and
+/// prepends the Rustdoc document to the item. Arguments are `aggregate`, `node = INDEX`, or
+/// `token = INDEX` in canonical Generation order.
+#[cfg(feature = "diagrams")]
+#[proc_macro_attribute]
+pub fn __recursa_diagram_doc(arguments: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let documentation = match diagram_documentation(arguments.into()) {
+        Ok(documentation) => documentation,
+        Err(error) => {
+            let error = error.into_compile_error();
+            return quote!(#error #item).into();
+        }
+    };
+    quote!(#[doc = #documentation] #item).into()
+}
+
+/// Which published diagram one generated attribute requests.
+#[cfg(feature = "diagrams")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiagramRequest {
+    /// The aggregate grammar document listing every diagram.
+    Aggregate,
+    /// One Node diagram by canonical parse-plan index.
+    Node(usize),
+    /// One content-token diagram by canonical token index.
+    Token(usize),
+}
+
+/// Parses the closed argument grammar of [`__recursa_diagram_doc`].
+#[cfg(feature = "diagrams")]
+fn parse_diagram_request(arguments: proc_macro2::TokenStream) -> syn::Result<DiagramRequest> {
+    let span = proc_macro2::Span::call_site();
+    let error = || {
+        syn::Error::new(
+            span,
+            "expected `aggregate`, `node = INDEX`, or `token = INDEX`",
+        )
+    };
+    let mut tokens = arguments.into_iter();
+    let keyword = match tokens.next() {
+        Some(proc_macro2::TokenTree::Ident(keyword)) => keyword.to_string(),
+        _ => return Err(error()),
+    };
+    if keyword == "aggregate" {
+        return tokens
+            .next()
+            .map_or(Ok(DiagramRequest::Aggregate), |_| Err(error()));
+    }
+    match tokens.next() {
+        Some(proc_macro2::TokenTree::Punct(punct)) if punct.as_char() == '=' => {}
+        _ => return Err(error()),
+    }
+    let index = match tokens.next() {
+        Some(proc_macro2::TokenTree::Literal(literal)) => literal
+            .to_string()
+            .trim_end_matches("usize")
+            .parse::<usize>()
+            .map_err(|_| error())?,
+        _ => return Err(error()),
+    };
+    if tokens.next().is_some() {
+        return Err(error());
+    }
+    match keyword.as_str() {
+        "node" => Ok(DiagramRequest::Node(index)),
+        "token" => Ok(DiagramRequest::Token(index)),
+        _ => Err(error()),
+    }
+}
+
+/// Renders the requested Rustdoc document from the selected Generation's published plan.
+///
+/// The standalone SVG is written beside the plan on a best-effort basis: documentation must still
+/// render when the Generation directory is read-only.
+#[cfg(feature = "diagrams")]
+fn diagram_documentation(arguments: proc_macro2::TokenStream) -> syn::Result<String> {
+    let request = parse_diagram_request(arguments)?;
+    let span = proc_macro2::Span::call_site();
+    let selected = selected_output().ok_or_else(|| {
+        syn::Error::new(
+            span,
+            "error[RCA9001]: selected Generation has no readable root output",
+        )
+    })?;
+    let directory = selected.directory.join(recursa_diagrams::DIAGRAM_DIRECTORY);
+    let plan = selected_diagram_plan(&directory).map_err(|detail| {
+        syn::Error::new(
+            span,
+            format!("error[RCA9005]: selected Generation has no readable diagram plan: {detail}"),
+        )
+    })?;
+    let missing = |what: &str| {
+        syn::Error::new(
+            span,
+            format!("error[RCA9005]: selected Generation diagram plan has no {what}"),
+        )
+    };
+    match request {
+        DiagramRequest::Aggregate => Ok(recursa_diagrams::render_aggregate_document(&plan)),
+        DiagramRequest::Node(index) => {
+            let node = plan
+                .nodes
+                .get(index)
+                .ok_or_else(|| missing(&format!("Node {index}")))?;
+            let (document, svg) = recursa_diagrams::render_node_document(node, plan.anchor_depth);
+            write_standalone_svg(
+                &directory,
+                &recursa_diagrams::node_svg_file_name(index),
+                &svg,
+            );
+            Ok(document)
+        }
+        DiagramRequest::Token(index) => {
+            let token = plan
+                .tokens
+                .get(index)
+                .ok_or_else(|| missing(&format!("content token {index}")))?;
+            let (document, svg) = recursa_diagrams::render_token_document(token, plan.anchor_depth);
+            write_standalone_svg(
+                &directory,
+                &recursa_diagrams::token_svg_file_name(index),
+                &svg,
+            );
+            Ok(document)
+        }
+    }
+}
+
+/// Decodes and caches the published diagram plan for one Generation directory.
+#[cfg(feature = "diagrams")]
+fn selected_diagram_plan(directory: &Path) -> Result<Arc<recursa_diagrams::DiagramPlan>, String> {
+    static PLANS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<recursa_diagrams::DiagramPlan>>>> =
+        OnceLock::new();
+    let plans = PLANS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut plans = plans
+        .lock()
+        .map_err(|_| "diagram plan cache is poisoned".to_owned())?;
+    if let Some(plan) = plans.get(directory) {
+        return Ok(Arc::clone(plan));
+    }
+    let encoded = fs::read_to_string(directory.join(recursa_diagrams::PLAN_FILE_NAME))
+        .map_err(|error| error.to_string())?;
+    let plan = Arc::new(
+        recursa_diagrams::DiagramPlan::decode(&encoded).map_err(|error| error.to_string())?,
+    );
+    plans.insert(directory.to_path_buf(), Arc::clone(&plan));
+    Ok(plan)
+}
+
+/// Writes one rendered SVG atomically beside the plan, ignoring filesystem failures.
+#[cfg(feature = "diagrams")]
+fn write_standalone_svg(directory: &Path, name: &str, svg: &str) {
+    let target = directory.join(name);
+    if fs::read_to_string(&target).is_ok_and(|existing| existing == svg) {
+        return;
+    }
+    let staging = directory.join(format!(".{name}.{}", std::process::id()));
+    if fs::write(&staging, svg).is_ok() && fs::rename(&staging, &target).is_err() {
+        let _ = fs::remove_file(&staging);
+    }
 }
 
 /// Declares the grammar's tokens for build-time analysis and generation.
