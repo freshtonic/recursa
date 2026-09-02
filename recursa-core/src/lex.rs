@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use regex_automata::meta::Regex;
 use regex_automata::{Anchored, Input as RegexInput};
 
@@ -419,6 +423,50 @@ impl CompiledLexMatcher {
     }
 }
 
+/// Reference-counted compiled table shared across `lex` calls on one thread.
+type CompiledLexTable = Rc<[(CompiledLexMatcher, LexRule)]>;
+
+/// Identity key for one grammar's static lexical rule table.
+///
+/// A `&'static [LexRule]` is uniquely and permanently identified by its data
+/// pointer and length: distinct grammars own distinct statics at distinct
+/// addresses that live for the whole program, so the pair never aliases and
+/// never dangles.
+type CompiledLexTableKey = (usize, usize);
+
+thread_local! {
+    /// Per-thread cache of compiled lexical rule tables keyed by static-slice identity.
+    ///
+    /// Compiling one `Regex` per generated rule dominates realistic
+    /// multi-statement workloads, where `lex` is called once per short
+    /// statement. The compiled matchers are a pure function of the rules, so
+    /// reusing them across calls is a construction optimization that leaves the
+    /// emitted tokens, spans, trivia, and diagnostics byte-identical. The cache
+    /// is thread-local: each thread owns its own compiled `Regex` values and
+    /// their internal lazy-DFA caches, so no matcher state is ever shared across
+    /// threads and the result stays deterministic. Entries are keyed on
+    /// `&'static` identity, so the cache holds at most one entry per grammar for
+    /// the life of the thread.
+    static COMPILED_LEX_TABLES: RefCell<HashMap<CompiledLexTableKey, CompiledLexTable>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Returns this thread's compiled matcher table for `rules`, compiling it once.
+fn compiled_lex_table(rules: &'static [LexRule]) -> CompiledLexTable {
+    let key = (rules.as_ptr() as usize, rules.len());
+    COMPILED_LEX_TABLES.with(|cache| {
+        if let Some(table) = cache.borrow().get(&key) {
+            return Rc::clone(table);
+        }
+        let table: CompiledLexTable = rules
+            .iter()
+            .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
+            .collect();
+        cache.borrow_mut().insert(key, Rc::clone(&table));
+        table
+    })
+}
+
 /// Selects one raw lexical winner without applying root operator-fence suppression.
 fn select_raw_lex_match(
     remaining: &str,
@@ -465,10 +513,8 @@ pub fn lex<'input>(
     rules: &'static [LexRule],
     lexical_error_kind: TokenKind,
 ) -> LexResult<'input> {
-    let compiled = rules
-        .iter()
-        .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
-        .collect::<Vec<_>>();
+    let table = compiled_lex_table(rules);
+    let compiled: &[(CompiledLexMatcher, LexRule)] = &table;
     let mut root_matches = Vec::new();
     let mut operator_decisions = Vec::new();
     let mut relevant_boundaries = Vec::new();
@@ -483,7 +529,7 @@ pub fn lex<'input>(
         let remaining = &source[offset..];
         root_matches.clear();
         operator_decisions.clear();
-        for (matcher, rule) in &compiled {
+        for (matcher, rule) in compiled {
             let Some(found) = matcher.matched(remaining) else {
                 continue;
             };
@@ -515,7 +561,7 @@ pub fn lex<'input>(
         for &boundary in &relevant_boundaries {
             local_decisions.push(LocalLexDecision {
                 boundary,
-                selected: select_raw_lex_match(&remaining[boundary..], &compiled),
+                selected: select_raw_lex_match(&remaining[boundary..], compiled),
             });
         }
         for operator_run in &mut operator_decisions {
