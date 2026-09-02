@@ -192,6 +192,8 @@ pub(super) struct RenderedGeneration {
     pub(super) node_anchors: Vec<String>,
     /// Loader source that selects this Generation identity.
     pub(super) selector: String,
+    /// Encoded diagram plan rendered by the facade while `cargo doc` expands generated attributes.
+    pub(super) diagram_plan: Option<String>,
 }
 
 /// Supplies an immutable emission plan and its boundary-specific checks to rendering.
@@ -273,6 +275,10 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
         .map_err(|error| format!("Generation selector rendering is invalid Rust: {error}"))?;
     let selector_body = selector_tokens.to_string();
     let selector = format!("// recursa-generation:{}\n{selector_body}", plan.identity);
+    #[cfg(feature = "diagrams")]
+    let diagram_plan = plan.diagrams.as_ref().map(DiagramPlan::encode);
+    #[cfg(not(feature = "diagrams"))]
+    let diagram_plan = None;
     Ok(RenderedGeneration {
         root,
         nodes,
@@ -282,6 +288,7 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
             .map(|node| node.loader_anchor.clone())
             .collect(),
         selector,
+        diagram_plan,
     })
 }
 
@@ -540,13 +547,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let protocol = format_ident!("protocol_{private_protocol}");
     let grammar_name = &plan.grammar_name;
     #[cfg(feature = "diagrams")]
-    let aggregate_diagram = plan.diagrams.as_ref().map(|diagrams| {
-        let documentation = syn::LitStr::new(
-            &render_aggregate_diagram_document(diagrams),
-            proc_macro2::Span::call_site(),
-        );
+    let aggregate_diagram = plan.diagrams.as_ref().map(|_| {
         quote! {
-            #[doc = #documentation]
+            #[cfg_attr(doc, #facade::__recursa_diagram_doc(aggregate))]
             pub mod grammar_docs {}
         }
     });
@@ -1336,17 +1339,10 @@ pub(super) fn render_node(
     let configured_traits = render_node_configured_traits(plan, node, node_index);
     let explorer = render_node_explorer(plan, node, node_index);
     #[cfg(feature = "diagrams")]
-    let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
-        let diagram = &diagrams.nodes[node_index];
-        syn::LitStr::new(
-            &render_node_diagram_document(diagram, diagrams.anchor_depth),
-            proc_macro2::Span::call_site(),
-        )
-    });
-    #[cfg(feature = "diagrams")]
-    let diagram_attribute = diagram_documentation
+    let diagram_attribute = plan
+        .diagrams
         .as_ref()
-        .map(|documentation| quote!(#[doc = #documentation]));
+        .map(|_| quote!(#[cfg_attr(doc, #facade::__recursa_diagram_doc(node = #node_index))]));
     #[cfg(not(feature = "diagrams"))]
     let diagram_attribute = proc_macro2::TokenStream::new();
     let view_pretty = plan.pretty.nodes[node_index].is_some().then(|| {

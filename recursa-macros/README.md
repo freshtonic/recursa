@@ -11,7 +11,9 @@ protocol, capabilities, selected root, and Node declarations during Rust
 compilation. They are not an independent parser-generator frontend.
 
 The `arbitrary`, `diagrams`, `explorer`, and `serde` features mirror facade
-capabilities for the generated-code compatibility check. Select those features
+capabilities for the generated-code compatibility check. `diagrams` also
+supplies the `cfg(doc)`-only attribute that renders published diagram plans
+while `cargo doc` runs. Select those features
 through `recursa` and, where generation is involved, `recursa-codegen`.
 
 Generated output layout and the loader protocol are private matching-version

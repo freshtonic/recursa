@@ -205,7 +205,8 @@ No features are enabled by default.
 
 - `arbitrary` supplies facade support for configured generated `Arbitrary`
   implementations.
-- `diagrams` supplies the matching facade capability for generated diagrams.
+- `diagrams` supplies the matching facade capability for generated diagrams and
+  renders them, with standalone SVG files, only while `cargo doc` runs.
 - `explorer` exposes grammar-erased strict documents and construction-free
   recovery projections plus generated document framing. `Adapter::explore` returns `None` when a reachable
   grammar form does not yet support recovery; `Adapter::parse` is unchanged.

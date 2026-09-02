@@ -11,6 +11,7 @@ const LIBRARY_ROOTS: &[&str] = &[
     "recursa/src/lib.rs",
     "recursa-core/src/lib.rs",
     "recursa-codegen/src/lib.rs",
+    "recursa-diagrams/src/lib.rs",
     "recursa-macros/src/lib.rs",
     "recursa-test/src/lib.rs",
     "recursa-explorer/src/lib.rs",

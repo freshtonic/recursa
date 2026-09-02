@@ -106,7 +106,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "railroad",
+ "recursa-diagrams",
  "regex-automata",
  "regex-syntax",
  "syn 2.0.119",
@@ -120,6 +120,13 @@ dependencies = [
  "arbitrary",
  "regex-automata",
  "serde",
+]
+
+[[package]]
+name = "recursa-diagrams"
+version = "0.1.0"
+dependencies = [
+ "railroad",
 ]
 
 [[package]]
@@ -137,6 +144,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "recursa-diagrams",
  "syn 2.0.119",
 ]
 

@@ -24,7 +24,7 @@ include = [
 
 [features]
 default = []
-diagrams = ["dep:railroad"]
+diagrams = ["dep:recursa-diagrams"]
 explorer = []
 
 [dependencies]
@@ -33,7 +33,7 @@ prettyplease = "0.2"
 quote = "1"
 regex-automata = "0.4"
 regex-syntax = "0.8"
-railroad = { version = "=0.3.6", default-features = false, optional = true }
+recursa-diagrams = { version = "=0.1.0", path = "../recursa-diagrams", optional = true }
 syn = { version = "2", features = ["extra-traits", "full", "parsing", "visit"] }
 unicode-ident = "1"
 

@@ -1183,6 +1183,54 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
         String::from_utf8_lossy(&output.stderr),
     );
 
+    let generation = generation_directories(&target_dir(&package))
+        .into_iter()
+        .next()
+        .expect("diagram fixture publishes one Generation");
+    let mut attributes = 0;
+    for entry in fs::read_dir(&generation).expect("read diagram Generation") {
+        let path = entry.expect("read diagram artifact").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let emitted = fs::read_to_string(&path).expect("read diagram Rust artifact");
+            assert!(
+                !emitted.contains("<svg"),
+                "generated source must defer SVG rendering to `cargo doc` in {}",
+                path.display(),
+            );
+            attributes += emitted.matches("__recursa_diagram_doc").count();
+        }
+    }
+    assert!(
+        attributes > 0,
+        "generated source carries cfg(doc) diagram attributes"
+    );
+    let diagrams = generation.join("diagrams");
+    assert!(
+        diagrams.join("diagrams.plan").is_file(),
+        "the Generation publishes its encoded diagram plan"
+    );
+    let standalone = fs::read_dir(&diagrams)
+        .expect("read diagram directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "svg"))
+        .collect::<Vec<_>>();
+    assert!(
+        standalone.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("node-"))
+        }),
+        "cargo doc writes standalone Node SVG files beside the plan: {standalone:?}"
+    );
+    for path in &standalone {
+        let svg = fs::read_to_string(path).expect("read standalone SVG");
+        assert!(
+            svg.starts_with("<svg"),
+            "{} is not an SVG document",
+            path.display()
+        );
+    }
+
     let docs = rendered_rustdoc(&package);
     let aggregate = docs
         .iter()
@@ -1478,7 +1526,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_12", "protocol_999"))
+    fs::write(&root, source.replace("protocol_13", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);

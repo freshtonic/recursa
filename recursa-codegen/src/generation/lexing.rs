@@ -655,16 +655,11 @@ pub(super) fn render_token_binding(
         proc_macro2::Span::call_site(),
     );
     #[cfg(feature = "diagrams")]
-    let token_diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
-        syn::LitStr::new(
-            &render_token_diagram_document(&diagrams.tokens[binding.token], diagrams.anchor_depth),
-            proc_macro2::Span::call_site(),
-        )
+    let token_diagram_attribute = plan.diagrams.as_ref().map(|_| {
+        let facade = &plan.facade;
+        let token_index = binding.token;
+        quote!(#[cfg_attr(doc, #facade::__recursa_diagram_doc(token = #token_index))])
     });
-    #[cfg(feature = "diagrams")]
-    let token_diagram_attribute = token_diagram_documentation
-        .as_ref()
-        .map(|documentation| quote!(#[doc = #documentation]));
     #[cfg(not(feature = "diagrams"))]
     let token_diagram_attribute = proc_macro2::TokenStream::new();
     quote! {

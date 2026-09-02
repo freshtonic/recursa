@@ -818,22 +818,6 @@ impl EmissionPlan {
             .map(|syntax| plan_framing(syntax, lowered, &nodes))
             .transpose()?;
         #[cfg(feature = "diagrams")]
-        let authoritative_diagrams = resolved
-            .build_inputs
-            .diagrams
-            .then(|| {
-                plan_diagrams(
-                    lowered,
-                    resolved,
-                    &nodes,
-                    &tokens,
-                    &token_bindings,
-                    &kind_names,
-                    &kind_static_texts,
-                )
-            })
-            .transpose()?;
-        #[cfg(feature = "diagrams")]
         let diagrams = resolved
             .build_inputs
             .diagrams
@@ -854,7 +838,7 @@ impl EmissionPlan {
         #[cfg(not(feature = "diagrams"))]
         let diagram_enabled = false;
         #[cfg(feature = "diagrams")]
-        let frozen_diagrams = authoritative_diagrams.as_ref().map(plan_family_identity);
+        let frozen_diagrams = diagrams.as_ref().map(plan_family_identity);
         #[cfg(not(feature = "diagrams"))]
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();

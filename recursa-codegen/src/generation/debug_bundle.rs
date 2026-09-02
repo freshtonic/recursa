@@ -373,7 +373,7 @@ pub(super) fn render_debug_capability_fragments(
     #[cfg(feature = "diagrams")]
     if let Some(diagrams) = &plan.diagrams {
         let documentation = syn::LitStr::new(
-            &render_aggregate_diagram_document(diagrams),
+            &recursa_diagrams::render_aggregate_document(diagrams),
             proc_macro2::Span::call_site(),
         );
         fragments.push((
@@ -382,7 +382,7 @@ pub(super) fn render_debug_capability_fragments(
         ));
         for node in &diagrams.nodes {
             let documentation = syn::LitStr::new(
-                &render_node_diagram_document(node, diagrams.anchor_depth),
+                &recursa_diagrams::render_node_document(node, diagrams.anchor_depth).0,
                 proc_macro2::Span::call_site(),
             );
             fragments.push((
@@ -392,7 +392,7 @@ pub(super) fn render_debug_capability_fragments(
         }
         for token in &diagrams.tokens {
             let documentation = syn::LitStr::new(
-                &render_token_diagram_document(token, diagrams.anchor_depth),
+                &recursa_diagrams::render_token_document(token, diagrams.anchor_depth).0,
                 proc_macro2::Span::call_site(),
             );
             fragments.push((

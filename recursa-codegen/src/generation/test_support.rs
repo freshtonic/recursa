@@ -1057,11 +1057,39 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
     assert!(topology.contains("infix lbp=10 rbp=11 Add"));
     assert!(topology.contains("infix lbp=15 rbp=16 Custom"));
     assert!(topology.contains("postfix bp=40 Factorial"));
-    let aggregate = render_aggregate_diagram_document(diagrams);
+    let aggregate = recursa_diagrams::render_aggregate_document(diagrams);
     assert!(aggregate.contains("## Content tokens"));
     for binding in &plan.token_bindings {
         let rendered = render_token_binding(&plan, binding).to_string();
-        assert!(rendered.contains("RECURSA_TOKEN_DIAGRAM"));
+        assert!(
+            rendered.contains("cfg_attr (doc , recursa :: __recursa_diagram_doc (token ="),
+            "token bindings defer diagram rendering to `cargo doc`:\n{rendered}"
+        );
+        assert!(!rendered.contains("<svg"));
+    }
+    let decoded = DiagramPlan::decode(&diagrams.encode()).expect("published plans round-trip");
+    assert_eq!(&decoded, diagrams);
+    let rendered = render(&plan).expect("render the diagram-enabled plan");
+    assert_eq!(
+        rendered.diagram_plan.as_deref(),
+        Some(diagrams.encode().as_str())
+    );
+    assert!(
+        rendered
+            .root
+            .contains("cfg_attr (doc , recursa :: __recursa_diagram_doc (aggregate))"),
+        "the root defers the aggregate document to `cargo doc`:\n{}",
+        rendered.root
+    );
+    assert!(!rendered.root.contains("<svg"));
+    for (index, (name, source)) in rendered.nodes.iter().enumerate() {
+        assert!(
+            source.contains(&format!(
+                "cfg_attr (doc , recursa :: __recursa_diagram_doc (node = {index}usize))"
+            )),
+            "{name} defers its Node diagram to `cargo doc`:\n{source}"
+        );
+        assert!(!source.contains("<svg"), "{name} embeds SVG");
     }
 }
 
@@ -2701,6 +2729,7 @@ pub(super) fn incomplete_staging_is_unselectable() {
         nodes: vec![("node-0.rs".to_owned(), "fn node() {}".to_owned())],
         node_anchors: vec!["anchor-0".to_owned()],
         selector: "fn selected() {}".to_owned(),
+        diagram_plan: None,
     };
     assert_eq!(
         stage_and_publish(&staging, &published, &rendered, || {
@@ -2745,6 +2774,7 @@ fn publication_fixture(identity: &str) -> RenderedGeneration {
         selector: format!(
             "// recursa-generation:{identity}\ninclude!(concat!(env!(\"OUT_DIR\"), \"/recursa-generations/{identity}/root.rs\"));\n"
         ),
+        diagram_plan: Some(format!("// {identity} diagram plan")),
     }
 }
 

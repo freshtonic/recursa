@@ -334,7 +334,7 @@ The explorer-adapter declaration that recovery or a configured Pretty or Arbitra
 _Avoid_: Runtime trait reflection, feature flag
 
 **Railroad diagram**:
-A Rustdoc-embedded SVG that renders a Node's grammar structure or a content-bearing regex token through compositional railroad geometry.
+A Rustdoc-embedded SVG that renders a Node's grammar structure or a content-bearing regex token through compositional railroad geometry. The generator publishes only the semantic diagram plan; the facade renders SVG and writes standalone files while `cargo doc` expands generated attributes.
 _Avoid_: Syntax box, generated production string
 
 **Diagram label**:

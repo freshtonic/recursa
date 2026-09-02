@@ -1,0 +1,21 @@
+[package]
+name = "recursa-diagrams"
+version = "0.1.0"
+description = "Semantic railroad-diagram plans and Rustdoc SVG rendering for Recursa"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/recursa-diagrams"
+readme = "README.md"
+keywords = ["parser", "grammar", "railroad", "diagram", "rustdoc"]
+categories = ["parsing", "visualization"]
+include = ["src/**", "README.md", "LICENSE"]
+
+[dependencies]
+railroad = { version = "=0.3.6", default-features = false }
+
+[dev-dependencies]
+roxmltree = "0.21"

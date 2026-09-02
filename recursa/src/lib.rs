@@ -17,6 +17,14 @@ pub use recursa_core::{
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
 
+/// Doc-time railroad diagram attachment reserved for Recursa-generated code.
+///
+/// Generated items carry this attribute under `cfg(doc)`; it is a matching-version
+/// ABI, not a public documentation API.
+#[cfg(feature = "diagrams")]
+#[doc(hidden)]
+pub use recursa_macros::__recursa_diagram_doc;
+
 /// Runtime operations reserved for Recursa-generated code.
 ///
 /// This is a matching-version ABI and is not a general-purpose parsing API.
@@ -31,7 +39,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            12,
+            13,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
