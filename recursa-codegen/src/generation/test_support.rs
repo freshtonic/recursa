@@ -2985,6 +2985,7 @@ struct Root {
 
     let generation = Generation {
         report: success.build_report,
+        reused: false,
     };
     assert!(generation.report().warnings().next().is_some());
     assert_eq!(
@@ -3034,4 +3035,204 @@ fn assert_no_transaction_staging(out_dir: &Path) {
             );
         }
     }
+}
+
+/// Grammar whose analysis reports warnings, so reuse must replay them.
+const REUSE_GRAMMAR: &str = r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+struct Inner { maybe: Option<Select> }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}
+"#;
+
+/// One in-process generation run over a package directory and an output directory.
+fn generate_reuse_fixture(
+    package: &Path,
+    out_dir: &Path,
+    debug_directory: Option<PathBuf>,
+) -> (Generation, Vec<String>) {
+    let request = GenerateRequest {
+        out_dir: out_dir.to_path_buf(),
+        manifest_dir: package.to_path_buf(),
+        selected_root: PathBuf::from("grammar.rs"),
+        debug_directory,
+        cfg: CargoCfgSnapshot::default(),
+    };
+    let mut cargo = Vec::new();
+    let generation = generate_with(&request, &mut cargo).expect("the reuse fixture generates");
+    (generation, cargo)
+}
+
+/// Keeps only the Cargo warning directives of one build-script output.
+fn warning_lines(cargo: &[String]) -> Vec<String> {
+    cargo
+        .iter()
+        .filter(|line| line.starts_with("cargo::warning="))
+        .cloned()
+        .collect()
+}
+
+/// Keeps only the Cargo invalidation directives of one build-script output.
+fn invalidation_lines(cargo: &[String]) -> Vec<String> {
+    cargo
+        .iter()
+        .filter(|line| line.starts_with("cargo::rerun-if-"))
+        .cloned()
+        .collect()
+}
+
+pub(super) fn unchanged_sources_reuse_the_published_generation_without_analysis() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(package.path().join("grammar.rs"), REUSE_GRAMMAR).unwrap();
+    let output = tempfile::tempdir().unwrap();
+
+    let (first, first_cargo) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!first.reused());
+    assert!(first.report().warnings().next().is_some());
+    let identity = selected_generation(output.path()).expect("first run selects a Generation");
+    assert!(!warning_lines(&first_cargo).is_empty());
+    assert!(output.path().join("recursa-reuse").is_dir());
+
+    let (second, second_cargo) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(
+        second.reused(),
+        "unchanged sources must reuse the Generation"
+    );
+    assert!(second.report().warnings().next().is_none());
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some(identity.as_str())
+    );
+    assert_eq!(
+        warning_lines(&second_cargo),
+        warning_lines(&first_cargo),
+        "reuse must replay exactly the recorded warnings"
+    );
+    assert_eq!(
+        invalidation_lines(&second_cargo),
+        invalidation_lines(&first_cargo),
+        "reuse must keep every Cargo invalidation directive"
+    );
+    assert_no_transaction_staging(output.path());
+}
+
+pub(super) fn comment_only_edits_reuse_the_published_generation() {
+    let package = tempfile::tempdir().unwrap();
+    let grammar = package.path().join("grammar.rs");
+    fs::write(&grammar, REUSE_GRAMMAR).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let (first, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!first.reused());
+    let identity = selected_generation(output.path()).unwrap();
+
+    let edited = format!("// leading comment\n{REUSE_GRAMMAR}\n/* trailing\n   block */\n");
+    fs::write(&grammar, edited).unwrap();
+    let (second, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(
+        second.reused(),
+        "comment-only edits must reuse the Generation"
+    );
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some(identity.as_str())
+    );
+}
+
+pub(super) fn semantic_edits_do_not_reuse_the_published_generation() {
+    let package = tempfile::tempdir().unwrap();
+    let grammar = package.path().join("grammar.rs");
+    fs::write(&grammar, REUSE_GRAMMAR).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let (first, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!first.reused());
+    let identity = selected_generation(output.path()).unwrap();
+
+    let edited = format!(
+        "{REUSE_GRAMMAR}\n#[derive(recursa::Node)]\nstruct Extra {{ first: Select, second: Select }}\n"
+    );
+    fs::write(&grammar, edited).unwrap();
+    let (second, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!second.reused(), "a semantic edit must analyze again");
+    let relocated = selected_generation(output.path()).unwrap();
+    assert_ne!(relocated, identity);
+
+    // Going back to the first grammar hits the first entry again.
+    fs::write(&grammar, REUSE_GRAMMAR).unwrap();
+    let (third, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(third.reused());
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some(identity.as_str())
+    );
+}
+
+pub(super) fn missing_or_incomplete_generations_are_not_reused() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(package.path().join("grammar.rs"), REUSE_GRAMMAR).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let (first, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!first.reused());
+    let identity = selected_generation(output.path()).unwrap();
+    let published = output.path().join("recursa-generations").join(&identity);
+
+    // A Generation directory that lost its loader map is never re-selected.
+    fs::remove_file(published.join("loader-map")).unwrap();
+    invalidate_selection(output.path()).unwrap();
+    let key = fs::read_dir(output.path().join("recursa-reuse"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .find(|name| name.starts_with("r_"))
+        .expect("the first run recorded a reuse entry");
+    assert!(reuse_published(output.path(), &key).unwrap().is_none());
+    assert!(!output.path().join(SELECTED_GENERATION).exists());
+
+    // A missing Generation directory falls through to a fresh publication.
+    fs::remove_dir_all(&published).unwrap();
+    let (second, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(
+        !second.reused(),
+        "a missing Generation must be published again"
+    );
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some(identity.as_str())
+    );
+    assert!(published.join("loader-map").is_file());
+
+    let (third, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(third.reused());
+}
+
+pub(super) fn debug_directory_requests_bypass_reuse() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(package.path().join("grammar.rs"), REUSE_GRAMMAR).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let (first, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(!first.reused());
+
+    let debug = tempfile::tempdir().unwrap();
+    let (second, _) = generate_reuse_fixture(
+        package.path(),
+        output.path(),
+        Some(debug.path().to_path_buf()),
+    );
+    assert!(
+        !second.reused(),
+        "a debug bundle request must run the complete pipeline"
+    );
+    assert!(second.report().warnings().next().is_some());
+
+    let (third, _) = generate_reuse_fixture(package.path(), output.path(), None);
+    assert!(third.reused());
 }

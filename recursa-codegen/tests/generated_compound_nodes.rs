@@ -1324,6 +1324,46 @@ fn semantically_neutral_source_edits_reuse_the_published_generation() {
         after, before,
         "a comment-only edit must not relocate the published Generation"
     );
+    assert_eq!(
+        reuse_markers(&target_dir(&package)),
+        BTreeSet::from(["true".to_owned()]),
+        "a comment-only edit must reuse the published Generation without analyzing again"
+    );
+}
+
+#[test]
+fn unchanged_sources_reuse_the_published_generation_without_analysis() {
+    let package = scaffold_fixture();
+    let first = run_fixture(&package);
+    assert!(
+        first.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let before = generation_directories(&target_dir(&package));
+    assert!(!before.is_empty());
+    assert_eq!(
+        reuse_markers(&target_dir(&package)),
+        BTreeSet::from(["false".to_owned()]),
+        "the first build must analyze and publish"
+    );
+
+    // Touching the grammar makes Cargo rerun the build script with unchanged content.
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    fs::write(&grammar, source).expect("rewrite compound grammar unchanged");
+    let second = run_fixture(&package);
+    assert!(
+        second.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(generation_directories(&target_dir(&package)), before);
+    assert_eq!(
+        reuse_markers(&target_dir(&package)),
+        BTreeSet::from(["true".to_owned()]),
+        "an unchanged grammar must reuse the published Generation"
+    );
 }
 
 fn scaffold_fixture() -> Fixture {
@@ -1551,6 +1591,29 @@ fn rendered_diagram<'document>(document: &'document str, label: &str) -> &'docum
 
 fn target_dir(package: &Fixture) -> PathBuf {
     package.path().join("target")
+}
+
+/// Collects the reuse markers the fixture build script writes beside each `OUT_DIR`.
+fn reuse_markers(target: &Path) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![target.join("debug/build")];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "recursa-reused")
+            {
+                found.insert(fs::read_to_string(&path).expect("read reuse marker"));
+            }
+        }
+    }
+    found
 }
 
 fn generation_directories(target: &Path) -> BTreeSet<PathBuf> {

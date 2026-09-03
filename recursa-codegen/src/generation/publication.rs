@@ -89,7 +89,7 @@ pub(super) fn publish_with_checkpoint(
         staged?;
     }
     checkpoint(PublicationCheckpoint::BeforeSelection)?;
-    select_generation(out_dir, rendered, || {
+    select_generation(out_dir, &rendered.selector, || {
         checkpoint(PublicationCheckpoint::DuringSelection)
     })
 }
@@ -170,7 +170,7 @@ fn render_loader_map(rendered: &RenderedGeneration) -> String {
 /// Atomically replaces the structural-loader selector after its target is fully published.
 pub(super) fn select_generation(
     out_dir: &Path,
-    rendered: &RenderedGeneration,
+    selector: &str,
     during_selection: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let nonce = staging_nonce()?;
@@ -178,7 +178,7 @@ pub(super) fn select_generation(
         ".recursa-selector-{}-{nonce}.rs",
         std::process::id()
     ));
-    if let Err(error) = fs::write(&staging, &rendered.selector) {
+    if let Err(error) = fs::write(&staging, selector) {
         let _ = fs::remove_file(&staging);
         return Err(format!("cannot stage the Generation selector: {error}"));
     }
