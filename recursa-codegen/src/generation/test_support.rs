@@ -461,12 +461,12 @@ pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
 
     assert_eq!(instrumentation.frozen_dispatch_nodes_rendered, 129);
     assert!(
-        rendered.contains("static __RECURSA_PRATT_STATES_9000_2000000 : & [u8] = b\""),
+        rendered.contains("static __RECURSA_PRATT_9000_2000000 : recursa :: __private :: DispatchTable = recursa :: __private :: dispatch_table (b\""),
         "large Pratt state tables must be one packed literal rather than one HIR tuple per row",
     );
     assert!(
-        rendered.contains("fn __recursa_decode_pratt_"),
-        "packed Pratt tables retain a generated fixed-width decoder",
+        !rendered.contains("fn __recursa_decode_pratt_"),
+        "packed Pratt tables decode through the runtime walker, not a generated decoder",
     );
     assert!(
         !rendered.contains("type __RecursaPrattStateRow"),
@@ -481,10 +481,13 @@ pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
         rendered
             .matches("fn __recursa_pratt_match_position_")
             .count(),
-        1,
-        "one table-driven matcher handles every Pratt position",
+        0,
+        "the runtime table walker matches Pratt positions; no per-table matcher is generated",
     );
-    assert!(rendered.contains("static __RECURSA_PRATT_POSITIONS_"));
+    assert!(
+        rendered.contains("context . select_pratt (& __RECURSA_PRATT_9000_2000000 ,"),
+        "Pratt selection walks its table through the runtime",
+    );
 }
 
 pub(super) fn pratt_branches_are_typechecked_in_isolated_helpers() {
@@ -689,7 +692,7 @@ pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
     );
     let rendered = quote!(#items #selection).to_string();
     assert!(
-        rendered.contains("static __RECURSA_DISPATCH_STATES_9001_1000000 : & [u8] = b\""),
+        rendered.contains("static __RECURSA_DISPATCH_9001_1000000 : recursa :: __private :: DispatchTable = recursa :: __private :: dispatch_table (b\""),
         "ordinary dispatch must use one packed state literal; inline bytes={}",
         rendered.len(),
     );
@@ -698,8 +701,8 @@ pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
         "ordinary dispatch must not emit one HIR tuple per state",
     );
     assert!(
-        rendered.contains("static __RECURSA_DISPATCH_EDGES_9001_1000000"),
-        "ordinary dispatch must emit one compact edge table",
+        rendered.contains("context . select_predictive (& __RECURSA_DISPATCH_9001_1000000 ,"),
+        "ordinary dispatch selects through the runtime table walker",
     );
     assert_eq!(
         rendered.matches("fn __recursa_dispatch_position_").count(),
@@ -710,10 +713,10 @@ pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
         rendered
             .matches("fn __recursa_dispatch_match_position_")
             .count(),
-        1,
-        "one table-driven matcher handles every ordinary position",
+        0,
+        "the runtime table walker matches positions; no per-table matcher is generated",
     );
-    assert!(rendered.contains("static __RECURSA_DISPATCH_POSITIONS_"));
+    assert!(!rendered.contains("fn __recursa_decode_dispatch_"));
     assert!(
         rendered.len() < 40_000,
         "a 129-state graph must remain compact; bytes={}",
@@ -743,10 +746,15 @@ pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
     );
     let rendered = quote!(#items #selection).to_string();
 
-    assert!(rendered.contains("table [slot .. slot + 1]"));
-    assert!(rendered.contains("target / 3 , target % 3"));
-    assert!(!rendered.contains("* 1usize"));
-    assert!(!rendered.contains("target / 2"));
+    assert!(
+        rendered.contains(", & [] , 1usize , &")
+            && rendered.contains(":: __RECURSA_EXPECTED_SETS ,)"),
+        "a single-digit table records width 1 and no spellings: {rendered}",
+    );
+    assert!(!rendered.contains("fn __recursa_decode_dispatch_"));
+    assert!(rendered.contains(
+        "context . select_predictive (& __RECURSA_DISPATCH_9002_3000000 , 0usize , 0usize) ?"
+    ));
 }
 
 pub(super) fn grammar_wide_expected_set_pool_is_canonical() {

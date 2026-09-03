@@ -3,6 +3,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
+use crate::dispatch::{DispatchTable, decode_target};
 use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord, TriviaRecord};
 use crate::{FollowSet, GrammarInfo, HasSpan, ParseError, Span};
 
@@ -1403,6 +1404,121 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         }
         let span = self.consumed_span_from(start);
         self.finish_with_children(value, span, occurrences.into_iter().flatten())
+    }
+
+    /// Walks one frozen predictive dispatch graph and returns the selected branch.
+    ///
+    /// The terminal rules are the ones the generated inline walker used: an immediate
+    /// target selects at once; a caller-FOLLOW target selects at end of input or when the
+    /// lookahead belongs to the caller FOLLOW; edges are tried in frozen order; a
+    /// fallback target selects after every edge failed; otherwise the failure names the
+    /// state's expectation, unioned with the caller FOLLOW for caller-FOLLOW targets.
+    pub fn select_predictive(
+        &self,
+        table: &DispatchTable,
+        root: usize,
+        initial_depth: usize,
+    ) -> Result<usize, ParseError> {
+        let mut state = root;
+        let mut depth = initial_depth;
+        loop {
+            let [target, edge_start, edge_count, expected_index] = table.state::<4>(state);
+            let expected = &table.expected()[expected_index];
+            let target = decode_target(target);
+            if let Some((variant, mode)) = target {
+                if mode == 0
+                    || self.peek(depth).is_none()
+                    || (mode == 1
+                        && self
+                            .peek(depth)
+                            .is_some_and(|record| self.follow.contains(record.kind)))
+                {
+                    return Ok(variant);
+                }
+            }
+            if let Some(next) =
+                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
+            {
+                state = next;
+                depth += 1;
+                continue;
+            }
+            if let Some((variant, 2)) = target {
+                return Ok(variant);
+            }
+            if target.is_some_and(|(_, mode)| mode == 1) {
+                let expected = expected
+                    .union(self.follow)
+                    .expect("matching generated dispatch/FOLLOW widths");
+                return Err(self.unexpected_at(depth, &expected));
+            }
+            return Err(self.unexpected_at(depth, expected));
+        }
+    }
+
+    /// Walks one frozen Pratt selection graph and returns the selected branch, if any,
+    /// with the lookahead depth reached.
+    pub fn select_pratt(
+        &self,
+        table: &DispatchTable,
+        root: usize,
+        caller_follow: &FollowSet,
+    ) -> (Option<usize>, usize) {
+        let mut state = root;
+        let mut depth = 0usize;
+        loop {
+            let [target, edge_start, edge_count] = table.state::<3>(state);
+            if let Some(next) =
+                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
+            {
+                state = next;
+                depth += 1;
+                continue;
+            }
+            if let Some((variant, mode)) = decode_target(target) {
+                if mode != 1
+                    || self.peek(depth).is_none()
+                    || self
+                        .peek(depth)
+                        .is_some_and(|record| caller_follow.contains(record.kind))
+                {
+                    return (Some(variant), depth);
+                }
+            }
+            return (None, depth);
+        }
+    }
+
+    /// Walks one frozen optional consume-vs-skip decision graph.
+    ///
+    /// `Some(true)` consumes, `Some(false)` skips, and `None` defers to the container's
+    /// root kind selector.
+    pub fn select_optional(&self, table: &DispatchTable, root: usize) -> Option<bool> {
+        let mut state = root;
+        let mut depth = 0usize;
+        loop {
+            let [caller_action, unconditional_action, edge_start, edge_count] =
+                table.state::<4>(state);
+            if let Some(next) =
+                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
+            {
+                state = next;
+                depth += 1;
+                continue;
+            }
+            if caller_action != 0
+                && (self.peek(depth).is_none()
+                    || self
+                        .peek(depth)
+                        .is_some_and(|record| self.follow.contains(record.kind)))
+            {
+                return Some(caller_action == 1);
+            }
+            if unconditional_action != 0 {
+                return Some(unconditional_action == 1);
+            }
+            return None;
+        }
     }
 
     /// Runs one generated recursive parser with its planned FOLLOW and capture policy.
