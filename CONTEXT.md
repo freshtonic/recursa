@@ -133,6 +133,10 @@ _Avoid_: Persistent ID registry, implicit positional coupling
 One complete, successfully published logical output produced from a lowered grammar under a matching emitter and protocol.
 _Avoid_: Generated file, lowered grammar
 
+**Reuse index**:
+The per-`OUT_DIR` record, keyed by the discovered grammar source, configuration, and generator, that names the published Generation and its warnings so an unchanged grammar re-selects that Generation without analysis.
+_Avoid_: Generation cache, incremental analysis
+
 **Generation protocol**:
 The private compatibility contract shared by one Recursa release's generator, structural loaders, generated output, and facade runtime.
 _Avoid_: Public ABI, generated-file format

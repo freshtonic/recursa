@@ -16,7 +16,8 @@ use std::{collections::BTreeSet, path::Path};
 use crate::analysis::analyze_for_generation;
 use crate::build_diagnostic::diagnostic_code_spec;
 use crate::discovery::{
-    DiscoveryDiagnostic, DiscoveryDiagnosticKind, DiscoveryInput, discover_module_tree,
+    DiscoveredModuleTree, DiscoveryDiagnostic, DiscoveryDiagnosticKind, DiscoveryInput,
+    discover_module_tree,
 };
 use crate::lexical::{
     FixedTokenClass, LexicalDefinitionMetadata, LexicalDiagnostic, LexicalDiagnosticCode,
@@ -113,6 +114,20 @@ pub(crate) struct SourceAnalysisSuccess {
     pub(crate) build_report: BuildReport,
 }
 
+/// Discovered module tree with the diagnostics accepted so far.
+///
+/// Discovery is the only stage that must run on every build-script invocation,
+/// because Cargo invalidation directives come from it. Everything after it can
+/// be skipped when a published Generation already matches the discovered source.
+pub(crate) struct DiscoveredSourceTree {
+    /// Reproducible paths, configuration, and environment dependencies.
+    pub(crate) discovery_inputs: DiscoveryInputs,
+    /// Complete logical module tree in traversal order.
+    pub(crate) tree: DiscoveredModuleTree,
+    /// Diagnostics accepted by discovery, carried into the remaining stages.
+    collector: DiagnosticCollector,
+}
+
 /// Analyzes one selected Rust grammar tree through all dependent stages.
 ///
 /// The first failing stage returns every independent error from that stage and
@@ -122,7 +137,15 @@ pub(crate) fn analyze_source_tree(
     input: SourceAnalysisInput<'_>,
     cargo: &mut impl CargoOutput,
 ) -> Result<SourceAnalysisSuccess, GenerateError> {
-    // Run discovery, resolution, modeling, materialization, lexical planning, lowering, and semantic analysis in dependency order.
+    let discovered = discover_source_tree(&input, cargo)?;
+    analyze_discovered_tree(discovered, &input, cargo)
+}
+
+/// Runs discovery alone and emits its Cargo invalidation directives.
+pub(crate) fn discover_source_tree(
+    input: &SourceAnalysisInput<'_>,
+    cargo: &mut impl CargoOutput,
+) -> Result<DiscoveredSourceTree, GenerateError> {
     let mut collector = DiagnosticCollector::default();
     let discovery = discover_module_tree(DiscoveryInput {
         manifest_dir: input.manifest_dir,
@@ -146,9 +169,28 @@ pub(crate) fn analyze_source_tree(
             cargo,
         ));
     };
+    Ok(DiscoveredSourceTree {
+        discovery_inputs: discovery.discovery_inputs,
+        tree,
+        collector,
+    })
+}
+
+/// Runs resolution, modeling, materialization, lexical planning, lowering, and semantic analysis
+/// over an already discovered module tree.
+pub(crate) fn analyze_discovered_tree(
+    discovered: DiscoveredSourceTree,
+    input: &SourceAnalysisInput<'_>,
+    cargo: &mut impl CargoOutput,
+) -> Result<SourceAnalysisSuccess, GenerateError> {
+    let DiscoveredSourceTree {
+        discovery_inputs,
+        tree,
+        mut collector,
+    } = discovered;
 
     let resolution = resolve_local_semantics(ResolutionInput {
-        discovery_inputs: discovery.discovery_inputs,
+        discovery_inputs,
         tree,
         cfg: &input.cfg,
     });
@@ -382,7 +424,18 @@ fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
 /// this boundary. Such indistinguishable directives are emitted once while the structured report
 /// remains lossless for programmatic consumers.
 pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) {
+    for directive in warning_directives(report) {
+        cargo.emit(directive);
+    }
+}
+
+/// Renders the deduplicated Cargo warning directives of one build report, in emission order.
+///
+/// Publication persists these lines beside the reuse index so a later build that reuses the
+/// published Generation without analyzing again can replay exactly the same warnings.
+pub(crate) fn warning_directives(report: &BuildReport) -> Vec<String> {
     let mut emitted = BTreeSet::new();
+    let mut directives = Vec::new();
     for warning in report.warnings() {
         let location = cargo_one_line(&warning.primary().location().map_or_else(
             || "<global>".to_owned(),
@@ -401,9 +454,10 @@ pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) 
             remedy,
         );
         if emitted.insert(directive.clone()) {
-            cargo.emit(directive);
+            directives.push(directive);
         }
     }
+    directives
 }
 
 /// Escapes control characters so one Cargo warning occupies exactly one output line.
