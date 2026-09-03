@@ -51,19 +51,21 @@ pub mod __private {
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
         ElementSchemaData as ExplorerElementSchemaData,
-        ElementTargetData as ExplorerElementTargetData, ExplorerNode, ExplorerRoot,
-        ExplorerRootFamily, GrammarTablesData as ExplorerGrammarTablesData,
+        ElementTargetData as ExplorerElementTargetData, ExplorerField, ExplorerNode, ExplorerRoot,
+        ExplorerRootFamily, ExplorerSeq, GrammarTablesData as ExplorerGrammarTablesData,
         NodeData as ExplorerNodeData, NodeSchemaData as ExplorerNodeSchemaData,
         SampleFn as ExplorerSampleFn, TokenSchemaData as ExplorerTokenSchemaData,
         VariantSchemaData as ExplorerVariantSchemaData, construct_adapter as explorer_adapter,
         content_token_target as explorer_content_token_target,
-        element_schema as explorer_element_schema, grammar_tables as explorer_grammar_tables,
-        lex_record as explorer_lex_record, lex_result as explorer_lex_result,
-        node as explorer_node, node_child as explorer_node_child,
-        node_schema as explorer_node_schema, node_target as explorer_node_target,
-        parse_root as explorer_parse_root, pretty_root as explorer_pretty_root,
-        token_node as explorer_token_node, token_schema as explorer_token_schema,
-        variant_schema as explorer_variant_schema,
+        element_schema as explorer_element_schema, field_many as explorer_field_many,
+        field_one as explorer_field_one, field_optional as explorer_field_optional,
+        field_optional_many as explorer_field_optional_many,
+        grammar_tables as explorer_grammar_tables, lex_record as explorer_lex_record,
+        lex_result as explorer_lex_result, node as explorer_node,
+        node_child as explorer_node_child, node_schema as explorer_node_schema,
+        node_target as explorer_node_target, parse_root as explorer_parse_root,
+        pretty_root as explorer_pretty_root, token_node as explorer_token_node,
+        token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
     };
     #[cfg(feature = "explorer")]
     pub use crate::framing::{

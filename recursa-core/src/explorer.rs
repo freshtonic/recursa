@@ -803,12 +803,13 @@ impl<'document> Element<'document> {
         Children {
             element: self,
             index: 0,
-            len: self
-                .node
-                .data
-                .value
-                .__recursa_explorer_child_count(self.index),
+            len: self.field().len(),
         }
+    }
+
+    /// Returns the erased semantic field for this element in the active shape.
+    fn field(self) -> ExplorerField<'document> {
+        self.node.data.value.__recursa_explorer_field(self.index)
     }
 }
 
@@ -874,12 +875,15 @@ impl<'document> Iterator for Children<'document> {
         }
         let index = self.index;
         self.index += 1;
-        let data = self.element.node.data.value.__recursa_explorer_child(
-            self.element.node.data.cursor,
-            self.element.index,
-            index,
-        )?;
-        Some(Node { data })
+        let element = self.element;
+        let child = element.field().get(index)?;
+        let mut cursor = element.node.data.cursor.child(element.index).child(index);
+        if let Some(attachment_child) = element.schema.attachment_child {
+            cursor = cursor.child(attachment_child);
+        }
+        Some(Node {
+            data: child.__recursa_explorer_node(cursor),
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1011,6 +1015,8 @@ pub struct ElementSchemaData {
     target: Option<ElementTargetData>,
     /// Token descriptor for fixed syntax and content-token fields.
     token: Option<&'static TokenSchemaData>,
+    /// Attachment child ordinal that owns each semantic child occurrence.
+    attachment_child: Option<usize>,
 }
 
 #[doc(hidden)]
@@ -1082,8 +1088,8 @@ enum SchemaData {
 /// Private lazy protocol implemented by matching generated Node bodies.
 ///
 /// # Safety
-/// Implementations must return schema entries, child ordinals, cursors, and
-/// semantic references from the same Generation and active Node shape.
+/// Implementations must return schema entries and semantic field references
+/// from the same Generation and active Node shape.
 #[doc(hidden)]
 pub unsafe trait ExplorerNode {
     /// Returns this value's active schema, occurrence cursor, and erased value.
@@ -1092,16 +1098,119 @@ pub unsafe trait ExplorerNode {
         cursor: ViewCursor<'document>,
     ) -> NodeData<'document>;
 
-    /// Returns the number of semantic children for one active element ordinal.
-    fn __recursa_explorer_child_count(&self, element: usize) -> usize;
+    /// Returns the erased semantic field behind one active element ordinal.
+    ///
+    /// Child counting and child cursors derive from this field and the static
+    /// element schema, so generated bodies carry no per-element traversal code.
+    fn __recursa_explorer_field(&self, element: usize) -> ExplorerField<'_>;
+}
 
-    /// Returns one semantic child occurrence by element and repetition ordinal.
-    fn __recursa_explorer_child<'document>(
+unsafe impl<T: ExplorerNode + ?Sized> ExplorerNode for Box<T> {
+    fn __recursa_explorer_node<'document>(
         &'document self,
         cursor: ViewCursor<'document>,
-        element: usize,
-        child: usize,
-    ) -> Option<NodeData<'document>>;
+    ) -> NodeData<'document> {
+        (**self).__recursa_explorer_node(cursor)
+    }
+
+    fn __recursa_explorer_field(&self, element: usize) -> ExplorerField<'_> {
+        (**self).__recursa_explorer_field(element)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// Erased semantic content of one grammar element in an active Node shape.
+pub enum ExplorerField<'document> {
+    /// Fixed syntax, or an absent optional child.
+    None,
+    /// Exactly one present child value.
+    One(
+        /// Erased child value implementing the generated Node protocol.
+        &'document dyn ExplorerNode,
+    ),
+    /// A repeated child sequence in source order.
+    Many(
+        /// Erased indexed access to the repeated child values.
+        &'document dyn ExplorerSeq,
+    ),
+}
+
+impl<'document> ExplorerField<'document> {
+    /// Number of child occurrences behind this field.
+    fn len(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::One(_) => 1,
+            Self::Many(values) => values.len(),
+        }
+    }
+
+    /// One child value by repetition ordinal.
+    fn get(self, index: usize) -> Option<&'document dyn ExplorerNode> {
+        match self {
+            Self::None => None,
+            Self::One(value) => (index == 0).then_some(value),
+            Self::Many(values) => values.get(index),
+        }
+    }
+}
+
+/// Erased indexed access to a repeated semantic field.
+#[doc(hidden)]
+pub trait ExplorerSeq {
+    /// Number of child values.
+    fn len(&self) -> usize;
+    /// One child value by repetition ordinal.
+    fn get(&self, index: usize) -> Option<&dyn ExplorerNode>;
+}
+
+impl<T: ExplorerNode> ExplorerSeq for Vec<T> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn get(&self, index: usize) -> Option<&dyn ExplorerNode> {
+        self.as_slice()
+            .get(index)
+            .map(|value| value as &dyn ExplorerNode)
+    }
+}
+
+impl<T: ExplorerNode> ExplorerSeq for crate::Vec1<T> {
+    fn len(&self) -> usize {
+        crate::Vec1::len(self)
+    }
+
+    fn get(&self, index: usize) -> Option<&dyn ExplorerNode> {
+        self.as_slice()
+            .get(index)
+            .map(|value| value as &dyn ExplorerNode)
+    }
+}
+
+#[doc(hidden)]
+/// Erases one required child value.
+pub fn field_one<T: ExplorerNode>(value: &T) -> ExplorerField<'_> {
+    ExplorerField::One(value)
+}
+
+#[doc(hidden)]
+/// Erases one optional child value.
+pub fn field_optional<T: ExplorerNode>(value: Option<&T>) -> ExplorerField<'_> {
+    value.map_or(ExplorerField::None, |value| ExplorerField::One(value))
+}
+
+#[doc(hidden)]
+/// Erases one repeated child sequence.
+pub fn field_many<S: ExplorerSeq>(values: &S) -> ExplorerField<'_> {
+    ExplorerField::Many(values)
+}
+
+#[doc(hidden)]
+/// Erases one optional repeated child sequence.
+pub fn field_optional_many<S: ExplorerSeq>(values: Option<&S>) -> ExplorerField<'_> {
+    values.map_or(ExplorerField::None, |values| ExplorerField::Many(values))
 }
 
 /// Private root protocol implemented only for generated source-visible roots.
@@ -1208,6 +1317,7 @@ pub const fn element_schema(
     cardinality: Cardinality,
     target: Option<ElementTargetData>,
     token: Option<&'static TokenSchemaData>,
+    attachment_child: Option<usize>,
 ) -> ElementSchemaData {
     ElementSchemaData {
         name,
@@ -1215,6 +1325,7 @@ pub const fn element_schema(
         cardinality,
         target,
         token,
+        attachment_child,
     }
 }
 
@@ -1526,6 +1637,7 @@ mod tests {
         Cardinality::One,
         Some(node_target(&CHILD)),
         None,
+        None,
     )];
     static ROOT: NodeSchemaData = node_schema("Root", "grammar::Root", &ROOT_ELEMENTS, &[]);
     static NODES: [&NodeSchemaData; 2] = [&ROOT, &CHILD];
@@ -1546,17 +1658,8 @@ mod tests {
             node(self, &CHILD, None, cursor)
         }
 
-        fn __recursa_explorer_child_count(&self, _: usize) -> usize {
-            0
-        }
-
-        fn __recursa_explorer_child<'document>(
-            &'document self,
-            _: ViewCursor<'document>,
-            _: usize,
-            _: usize,
-        ) -> Option<NodeData<'document>> {
-            None
+        fn __recursa_explorer_field(&self, _: usize) -> ExplorerField<'_> {
+            ExplorerField::None
         }
     }
 
@@ -1572,18 +1675,11 @@ mod tests {
             node(self, &ROOT, None, cursor)
         }
 
-        fn __recursa_explorer_child_count(&self, element: usize) -> usize {
-            usize::from(element == 0)
-        }
-
-        fn __recursa_explorer_child<'document>(
-            &'document self,
-            cursor: ViewCursor<'document>,
-            element: usize,
-            child: usize,
-        ) -> Option<NodeData<'document>> {
-            (element == 0 && child == 0)
-                .then(|| self.child.__recursa_explorer_node(cursor.child(0).child(0)))
+        fn __recursa_explorer_field(&self, element: usize) -> ExplorerField<'_> {
+            match element {
+                0 => field_one(&self.child),
+                _ => ExplorerField::None,
+            }
         }
     }
 
