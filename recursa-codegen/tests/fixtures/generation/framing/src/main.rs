@@ -13,20 +13,8 @@ fn main() {
         "$raw$opaque; 'still raw'$raw$\r\n",
         "put 'tail';",
     );
-    let complete = grammar::Entry::frame(complete_source).expect("framing invariants hold");
-    let grammar::FrameResult::Complete(complete) = complete else {
-        let grammar::FrameResult::Recovered(recovered) = complete else {
-            unreachable!()
-        };
-        panic!(
-            "all islands are strict and payload is terminated: framing={:?}; islands={:?}",
-            recovered.diagnostics(),
-            recovered
-                .islands()
-                .map(|island| (island.span(), island.diagnostics()))
-                .collect::<Vec<_>>()
-        )
-    };
+    let complete = grammar::Entry::frame(complete_source)
+        .unwrap_or_else(|failure| panic!("all islands are strict and payload is terminated: {failure:?}"));
     assert_eq!(complete.source(), complete_source);
     assert_eq!(complete.render_exact(), complete_source);
     assert_eq!(complete.typed_islands().count(), 4);
@@ -72,96 +60,75 @@ fn main() {
             .all(|gap| gap.span().start() >= island.start() && gap.span().end() <= island.end()));
         assert!(!source.contains("put 'tail';") || source == "put 'tail';");
     }
-    assert_owned_once(complete_source, complete.parts().map(|part| part.span()));
+    let payload = complete
+        .parts()
+        .find_map(|part| match part {
+            grammar::CompletePart::Payload(payload) => Some(payload),
+            _ => None,
+        })
+        .expect("the copy island opens one payload region");
+    assert_eq!(payload.data_text(), "\r\none;two\r\n");
+    assert_eq!(&complete_source[payload.terminator_span().range()], "\\.\r\n");
+    assert_owned_once(complete_source, complete.spans());
 
-    let recovered_source = concat!(
+    // The first failing island rejects the whole document with its own strict
+    // diagnostic; later valid islands are never parsed into a partial result.
+    let rejected_source = concat!(
         "put 'first';\n",
         "copy ;\n",
         "put 'not payload';\n",
         "broken;\n",
         "put 'later';",
     );
-    let recovered = grammar::Entry::frame(recovered_source).expect("syntax is recoverable");
-    let grammar::FrameResult::Recovered(recovered) = recovered else {
-        panic!("ordinary island failures erase the whole partition")
-    };
-    assert_eq!(recovered.source(), recovered_source);
-    assert_eq!(recovered.render_exact(), recovered_source);
+    let rejection = reject(rejected_source);
+    assert_eq!(rejection.source(), rejected_source);
     assert_eq!(
-        recovered.islands().count(),
-        5,
-        "parts={:?}",
-        recovered.parts().map(|part| part.span()).collect::<Vec<_>>()
+        &rejected_source[rejection.island().range()],
+        "copy ;",
+        "the rejected extent is the first failing statement-sized candidate",
     );
-    assert!(recovered.islands().all(|island| island.root().schema().name() == "Entry"));
-    assert!(recovered
-        .islands()
-        .all(|island| island.progress_trace().is_within_bound()));
-    let replayed = recovered.islands().collect::<Vec<_>>();
-    for index in [0, 2, 4] {
-        assert!(
-            replayed[index].diagnostics().is_empty(),
-            "strictly valid erased islands must not gain a spurious diagnostic",
-        );
-    }
-    assert_owned_once(recovered_source, recovered.parts().map(|part| part.span()));
+    assert!(rejection.framing().is_none(), "a syntax failure has no framing cause");
+    assert_eq!(rejection.diagnostics().len(), 1);
+    assert_eq!(
+        rejection.diagnostics()[0].kind(),
+        recursa::explorer::ParseDiagnosticKind::UnexpectedToken,
+    );
+    assert_eq!(rejection.diagnostics()[0].span(), recursa::Span::new(18, 19).unwrap());
+    assert_eq!(rejection.span(), recursa::Span::new(18, 19).unwrap());
+    assert_eq!(rejection.to_string(), rejection.diagnostics()[0].message());
 
+    // A boundary spelling consumed by nested syntax never becomes a framing
+    // boundary, so the rejected extent ends at the first candidate at or after
+    // the strict failure.
     let bounded_missing_source = "put ('a';'b';\nput 'later';";
-    let bounded_missing = grammar::Entry::frame(bounded_missing_source)
-        .expect("missing island syntax is recoverable");
-    let grammar::FrameResult::Recovered(bounded_missing) = bounded_missing else {
-        panic!("missing island syntax cannot be complete")
-    };
-    let first_missing_island = bounded_missing
-        .islands()
-        .next()
-        .expect("first recovered island");
-    let missing_at = first_missing_island
-        .diagnostics()
-        .iter()
-        .filter_map(|diagnostic| match diagnostic.action() {
-            Some(recursa::explorer::RecoveryAction::Missing { at }) => Some(at),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        missing_at.contains(&recursa::Span::new(12, 12).unwrap()),
-        "missing actions must include the first island boundary: {missing_at:?}; diagnostics={:?}",
-        first_missing_island.diagnostics(),
+    let bounded_missing = reject(bounded_missing_source);
+    assert_eq!(
+        &bounded_missing_source[bounded_missing.island().range()],
+        "put ('a';'b';",
+    );
+    assert_eq!(
+        bounded_missing.diagnostics()[0].span(),
+        recursa::Span::new(12, 13).unwrap(),
+        "the strict failure is the boundary spelling that closes no group",
     );
 
     let malformed_nested_source = "put ( ; 'b'); put 'later';";
-    let malformed_nested = grammar::Entry::frame(malformed_nested_source)
-        .expect("malformed nested syntax is recoverable");
-    let grammar::FrameResult::Recovered(malformed_nested) = malformed_nested else {
-        panic!("missing nested syntax cannot be complete")
-    };
+    let malformed_nested = reject(malformed_nested_source);
     assert_eq!(
-        malformed_nested
-            .islands()
-            .map(|island| island.span())
-            .collect::<Vec<_>>(),
-        [
-            recursa::Span::new(0, 13).unwrap(),
-            recursa::Span::new(14, 26).unwrap(),
-        ],
+        &malformed_nested_source[malformed_nested.island().range()],
+        "put ( ;",
         "a nested separator is not a framing boundary",
     );
-    assert_owned_once(
-        malformed_nested_source,
-        malformed_nested.parts().map(|part| part.span()),
+    assert_eq!(
+        malformed_nested.diagnostics()[0].span(),
+        recursa::Span::new(6, 7).unwrap(),
     );
 
-    for (source, islands) in [(";", 1), (";;", 2)] {
-        let framed = grammar::Entry::frame(source).expect("empty islands are recoverable");
-        let grammar::FrameResult::Recovered(framed) = framed else {
-            panic!("a boundary-only island cannot be complete")
-        };
-        assert_eq!(framed.islands().count(), islands);
-        assert!(framed
-            .islands()
-            .all(|island| !island.diagnostics().is_empty()));
-        assert_owned_once(source, framed.parts().map(|part| part.span()));
+    for source in [";", ";;"] {
+        let rejection = reject(source);
+        assert_eq!(rejection.island(), recursa::Span::new(0, 1).unwrap());
+        assert_eq!(rejection.diagnostics()[0].span(), recursa::Span::new(0, 1).unwrap());
+        assert!(rejection.framing().is_none());
     }
 
     for source in ["", " \r\n", "-- comment only", "put 'no newline';"] {
@@ -170,131 +137,95 @@ fn main() {
         assert_owned_once(source, framed.spans());
     }
 
-    let unterminated = grammar::Entry::frame("copy 'x';\r\ndata")
-        .expect("missing payload termination is recoverable");
-    let grammar::FrameResult::Recovered(unterminated) = unterminated else {
-        panic!("missing payload terminator cannot be complete")
-    };
-    let payload = unterminated.payloads().next().expect("payload suffix retained");
-    assert_eq!(payload.data_text(), "\r\ndata");
-    assert_eq!(payload.terminator_span(), None);
-    assert!(unterminated
-        .diagnostics()
-        .iter()
-        .any(|diagnostic| diagnostic.code() == "RCA5001"));
+    let unterminated_source = "copy 'x';\r\ndata";
+    let unterminated = reject(unterminated_source);
+    assert!(unterminated.diagnostics().is_empty());
+    let framing = unterminated
+        .framing()
+        .expect("a missing payload terminator names its framing cause");
+    assert_eq!(framing.code(), "RCA5001");
+    assert_eq!(
+        framing.kind(),
+        grammar::FrameDiagnosticKind::MissingPayloadTerminator
+    );
+    assert_eq!(
+        &unterminated_source[unterminated.island().range()],
+        "\r\ndata",
+        "the rejected extent is the unterminated payload suffix",
+    );
+    assert_eq!(
+        framing.span(),
+        recursa::Span::new(unterminated_source.len(), unterminated_source.len()).unwrap(),
+    );
+    assert!(unterminated.to_string().contains("\\\\."));
 
     for source in ["copy 'x';\nbody\n\\.\n", "copy 'x';\r\nbody\r\n\\.\r\n"] {
         let framed = grammar::Entry::frame(source).expect("physical-line terminator is valid");
-        assert!(matches!(framed, grammar::FrameResult::Complete(_)));
+        assert_eq!(framed.typed_islands().count(), 1);
+        assert_owned_once(source, framed.spans());
     }
     for source in ["copy 'x';\\.\n", "copy 'x';\nbody\n\\."] {
-        let framed = grammar::Entry::frame(source).expect("invalid terminator is recoverable");
-        let grammar::FrameResult::Recovered(framed) = framed else {
-            panic!("same-line or missing-newline terminator cannot be complete")
-        };
-        assert!(framed
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code() == "RCA5001"));
+        let rejection = reject(source);
+        assert_eq!(
+            rejection.framing().map(grammar::FrameDiagnostic::code),
+            Some("RCA5001"),
+            "same-line or missing-newline terminator cannot complete the payload",
+        );
     }
 
     let ambiguous_source = "put 'one' put 'two'";
-    let ambiguous = grammar::Entry::frame(ambiguous_source)
-        .expect("ambiguous ownership is recoverable and fail-closed");
-    let grammar::FrameResult::Recovered(ambiguous) = ambiguous else {
-        panic!("a missing island boundary cannot be complete")
-    };
-    assert_eq!(ambiguous.render_exact(), ambiguous_source);
-    let ambiguous_diagnostics = ambiguous.diagnostics();
-    assert_eq!(ambiguous_diagnostics.len(), 1);
-    assert_eq!(ambiguous_diagnostics[0].code(), "RCA5002");
+    let ambiguous = reject(ambiguous_source);
+    assert_eq!(ambiguous.island(), recursa::Span::new(0, 19).unwrap());
+    let framing = ambiguous
+        .framing()
+        .expect("a missing island boundary names its framing cause");
+    assert_eq!(framing.code(), "RCA5002");
+    assert_eq!(framing.kind(), grammar::FrameDiagnosticKind::MissingBoundary);
     assert_eq!(
-        ambiguous_diagnostics[0].span(),
+        framing.span(),
         recursa::Span::new(10, 13).unwrap(),
-        "the strict restart-token failure belongs to the frame, not the shortened island",
+        "the leftover restart token is the missing-boundary location",
     );
+    assert_eq!(ambiguous.span(), framing.span());
+    let [leftover] = ambiguous.diagnostics() else {
+        panic!("a missing boundary retains exactly one strict diagnostic")
+    };
+    assert_eq!(leftover.span(), recursa::Span::new(10, 13).unwrap());
     assert!(
-        ambiguous_diagnostics[0]
-            .message()
-            .contains("unexpected fixed:put"),
-        "the frame must retain the strict restart-token diagnostic: {}",
-        ambiguous_diagnostics[0].message(),
+        leftover.message().contains("fixed:put"),
+        "framing must retain the strict trailing-token diagnostic: {}",
+        leftover.message(),
     );
     let strict_failure = match grammar::Entry::explorer().parse(ambiguous_source) {
         Ok(_) => panic!("the same boundary-less source must fail strict Explorer parsing"),
         Err(failure) => failure,
     };
-    let [strict_diagnostic] = strict_failure.diagnostics() else {
-        panic!("strict parsing must retain exactly one diagnostic")
-    };
     assert_eq!(
-        strict_diagnostic.kind(),
-        recursa::explorer::ParseDiagnosticKind::UnexpectedToken,
+        strict_failure.diagnostics(),
+        ambiguous.diagnostics(),
+        "framing and Explorer share one strict diagnostic conversion",
     );
-    assert_eq!(strict_diagnostic.span(), ambiguous_diagnostics[0].span());
-    assert!(
-        ambiguous_diagnostics[0]
-            .message()
-            .starts_with(strict_diagnostic.message()),
-        "framing must preserve the shared strict diagnostic conversion",
-    );
-    let ambiguous_islands = ambiguous.islands().collect::<Vec<_>>();
-    assert_eq!(ambiguous_islands.len(), 1);
-    assert_eq!(
-        ambiguous_islands[0].span(),
-        recursa::Span::new(0, 9).unwrap()
-    );
-    assert!(ambiguous_islands[0].diagnostics().is_empty());
-    for diagnostic in ambiguous_islands[0].diagnostics() {
-        assert!(diagnostic.span().start() >= ambiguous_islands[0].span().start());
-        assert!(diagnostic.span().end() <= ambiguous_islands[0].span().end());
-        match diagnostic.action() {
-            Some(recursa::explorer::RecoveryAction::Missing { at }) => {
-                assert!(at.start() >= ambiguous_islands[0].span().start());
-                assert!(at.end() <= ambiguous_islands[0].span().end());
-            }
-            Some(recursa::explorer::RecoveryAction::Skipped { span }) => {
-                assert!(span.start() >= ambiguous_islands[0].span().start());
-                assert!(span.end() <= ambiguous_islands[0].span().end());
-            }
-            None => {}
-        }
-    }
-    let unresolved = ambiguous
-        .parts()
-        .find_map(|part| match part {
-            grammar::RecoveredPart::Unresolved(region) => Some(*region),
-            _ => None,
-        })
-        .expect("unassignable EOF suffix is retained explicitly");
-    assert_eq!(unresolved.text(), " put 'two'");
-    assert_eq!(unresolved.span(), recursa::Span::new(9, 19).unwrap());
-    assert_owned_once(ambiguous_source, ambiguous.parts().map(|part| part.span()));
 
     let unrelated_source = "put 'one' 'unrelated'";
-    let unrelated = grammar::Entry::frame(unrelated_source)
-        .expect("unrelated trailing input is recoverable without guessing a restart");
-    let grammar::FrameResult::Recovered(unrelated) = unrelated else {
-        panic!("a missing island boundary cannot be complete")
-    };
-    assert_eq!(unrelated.islands().count(), 1);
+    let unrelated = reject(unrelated_source);
     assert_eq!(
-        unrelated.islands().next().unwrap().span(),
+        unrelated.island(),
         recursa::Span::new(0, unrelated_source.len()).unwrap(),
     );
-    assert!(!unrelated
-        .parts()
-        .any(|part| matches!(part, grammar::RecoveredPart::Unresolved(_))));
-    assert_owned_once(unrelated_source, unrelated.parts().map(|part| part.span()));
+    assert_eq!(
+        unrelated.framing().map(grammar::FrameDiagnostic::code),
+        Some("RCA5002"),
+    );
+    assert_eq!(
+        unrelated.diagnostics()[0].span(),
+        recursa::Span::new(10, 21).unwrap(),
+    );
 
     // A final island that parses strictly to end of input without its
-    // boundary is Complete and keeps its authored value.
+    // boundary is complete and keeps its authored value.
     let final_island_source = "put 'one'";
     let final_island = grammar::Entry::frame(final_island_source)
-        .expect("a strict boundary-less final island has valid ownership");
-    let grammar::FrameResult::Complete(final_island) = final_island else {
-        panic!("a strict boundary-less final island must frame complete")
-    };
+        .expect("a strict boundary-less final island frames complete");
     assert_eq!(final_island.render_exact(), final_island_source);
     let final_typed = final_island.typed_islands().collect::<Vec<_>>();
     assert_eq!(final_typed.len(), 1);
@@ -302,18 +233,12 @@ fn main() {
         final_typed[0].source().expect("final island provenance"),
         "put 'one'",
     );
-    assert_owned_once(
-        final_island_source,
-        final_island.parts().map(|part| part.span()),
-    );
+    assert_owned_once(final_island_source, final_island.spans());
 
     // Earlier bounded islands and a strict boundary-less final island agree.
     let mixed_final_source = "put 'a';\r\nput 'b'";
     let mixed_final = grammar::Entry::frame(mixed_final_source)
-        .expect("a mixed document with a strict final island has valid ownership");
-    let grammar::FrameResult::Complete(mixed_final) = mixed_final else {
-        panic!("a strict boundary-less final island must not erase earlier islands")
-    };
+        .expect("a mixed document with a strict final island frames complete");
     assert_eq!(mixed_final.render_exact(), mixed_final_source);
     assert_eq!(
         mixed_final
@@ -322,28 +247,21 @@ fn main() {
             .collect::<Vec<_>>(),
         ["put 'a';", "put 'b'"],
     );
-    assert_owned_once(mixed_final_source, mixed_final.parts().map(|part| part.span()));
+    assert_owned_once(mixed_final_source, mixed_final.spans());
 
-    // An earlier failure still erases a strict boundary-less final island.
+    // An earlier failure rejects the document before a strict final island.
     let failed_then_final_source = "broken;\nput 'later'";
-    let failed_then_final = grammar::Entry::frame(failed_then_final_source)
-        .expect("an earlier island failure is recoverable");
-    let grammar::FrameResult::Recovered(failed_then_final) = failed_then_final else {
-        panic!("an earlier island failure cannot frame complete")
-    };
-    assert_eq!(failed_then_final.render_exact(), failed_then_final_source);
-    assert_eq!(failed_then_final.islands().count(), 2);
-    assert_owned_once(
-        failed_then_final_source,
-        failed_then_final.parts().map(|part| part.span()),
+    let failed_then_final = reject(failed_then_final_source);
+    assert_eq!(
+        &failed_then_final_source[failed_then_final.island().range()],
+        "broken;",
     );
+    assert!(!failed_then_final.diagnostics().is_empty());
+    assert!(failed_then_final.framing().is_none());
 
     let trailing_trivia_source = "put 'one' \r\n-- trailing";
     let trailing_trivia = grammar::Entry::frame(trailing_trivia_source)
-        .expect("trailing trivia has deterministic EOF-gap ownership");
-    let grammar::FrameResult::Complete(trailing_trivia) = trailing_trivia else {
-        panic!("trailing trivia after a strict final island must frame complete")
-    };
+        .expect("trailing trivia after a strict final island frames complete");
     assert_eq!(trailing_trivia.render_exact(), trailing_trivia_source);
     let trailing_parts = trailing_trivia.parts().collect::<Vec<_>>();
     assert_eq!(trailing_parts.len(), 2);
@@ -354,17 +272,11 @@ fn main() {
     assert_eq!(gap.span(), recursa::Span::new(9, 23).unwrap());
     assert_eq!(gap.text(), " \r\n-- trailing");
     assert_eq!(trailing_trivia.typed_islands().count(), 1);
-    assert_owned_once(
-        trailing_trivia_source,
-        trailing_trivia.parts().map(|part| part.span()),
-    );
+    assert_owned_once(trailing_trivia_source, trailing_trivia.spans());
 
     let shared_base_source = "put 'lead';\r\nALPHA BETA GAMMA;";
     let shared_base = grammar::Entry::frame(shared_base_source)
-        .expect("shared-base-kind framing invariants hold");
-    let grammar::FrameResult::Complete(shared_base) = shared_base else {
-        panic!("semantic targets sharing a base kind must frame strictly")
-    };
+        .expect("semantic targets sharing a base kind frame strictly");
     assert_eq!(shared_base.render_exact(), shared_base_source);
     assert_eq!(
         shared_base
@@ -373,12 +285,20 @@ fn main() {
             .collect::<Vec<_>>(),
         ["put 'lead';", "ALPHA BETA GAMMA;"],
     );
-    assert_owned_once(
-        shared_base_source,
-        shared_base.parts().map(|part| part.span()),
-    );
+    assert_owned_once(shared_base_source, shared_base.spans());
 
     println!("framing-ok");
+}
+
+/// Frames one document that must be rejected as ordinary invalid input.
+fn reject(source: &str) -> grammar::FrameRejection<'_> {
+    match grammar::Entry::frame(source) {
+        Ok(_) => panic!("{source:?} must be rejected"),
+        Err(grammar::FrameFailure::Rejected(rejection)) => rejection,
+        Err(grammar::FrameFailure::Fatal(fatal)) => {
+            panic!("{source:?} must reject as ordinary input, not fatally: {fatal}")
+        }
+    }
 }
 
 fn assert_owned_once(source: &str, spans: impl IntoIterator<Item = recursa::Span>) {

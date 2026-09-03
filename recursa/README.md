@@ -177,13 +177,14 @@ recursa::grammar! {
 }
 ```
 
-`Entry::frame(source)` returns `FrameResult::Complete` only when every island
-parses strictly and every payload terminates. Complete islands expose
-`Parsed<Entry>`. Any ordinary island, ownership, or payload failure instead
-returns `FrameResult::Recovered`: all strict values are discarded and every
-island is replayed through construction-free recovery, including later valid
-islands. Recovery, atomic raw regions, and payload regions provide exact text,
-spans, and diagnostics but no AST conversion or `Pretty` capability.
+`Entry::frame(source)` returns a `CompleteFrame` only when every island parses
+strictly and every payload terminates. Complete islands expose `Parsed<Entry>`.
+The first ordinary island, ownership, or payload failure instead returns
+`FrameFailure::Rejected`: a `FrameRejection` names the failing island extent,
+carries that island's strict parse diagnostics, and reports the framing cause
+when the island itself parsed but lacked its boundary or payload terminator.
+No strict value survives a rejection. Atomic raw regions and payload regions
+provide exact text and spans but no AST conversion or `Pretty` capability.
 
 `payload(after = ...)` must name a reachable variant of the framing island. It
 is selected only after the complete strict island commits that variant; a COPY-
@@ -207,9 +208,9 @@ No features are enabled by default.
   implementations.
 - `diagrams` supplies the matching facade capability for generated diagrams and
   renders them, with standalone SVG files, only while `cargo doc` runs.
-- `explorer` exposes grammar-erased strict documents and construction-free
-  recovery projections plus generated document framing. `Adapter::explore` returns `None` when a reachable
-  grammar form does not yet support recovery; `Adapter::parse` is unchanged.
+- `explorer` exposes grammar-erased strict documents plus generated document
+  framing. Strict parsing is the only source operation: `Adapter::parse`
+  returns one complete document or structured diagnostics.
 - `serde` supplies facade support for configured generated Serde
   implementations.
 

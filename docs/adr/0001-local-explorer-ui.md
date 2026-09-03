@@ -21,9 +21,9 @@ protocol and offers no remote bind, permissive CORS, Node toolchain, WASM
 build, or plugin system.
 
 Strict parsing returns either a complete Explorer document or structured
-diagnostics; it never returns a partial Explorer document. After that strict
-failure, the Explorer may separately project recovery structure as decided in
-[ADR 0002](0002-separate-explorer-recovery-projection.md).
+diagnostics; it never returns a partial Explorer document. The Explorer offers
+no recovery projection after a strict failure, as decided in
+[ADR 0003](0003-strict-only-explorer-and-framing.md).
 
 ## Consequences
 

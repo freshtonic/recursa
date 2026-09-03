@@ -3,8 +3,8 @@
 Document framing is a generated exact-source adapter for languages whose input
 alternates between repeated grammar islands and regions that must remain raw.
 It is available when the `explorer` feature is enabled for both the `recursa`
-facade and `recursa-codegen`; its recovery path reuses the same generated,
-construction-free recovery plan as Explorer.
+facade and `recursa-codegen`. Framing uses strict parsing only; it has no
+recovery path.
 
 ## Declaration
 
@@ -40,55 +40,63 @@ adapter contains no authored callback or runtime rule configuration.
 
 ## Transactional result
 
-Generation adds `Entry::frame(source) -> Result<FrameResult<Entry>,
-FrameError>`. `FrameError` is reserved for invalid generated identities, spans,
-partitions, or progress invariants and retains the complete source.
+Generation adds `Entry::frame(source) -> Result<CompleteFrame<Entry>,
+FrameFailure>`.
 
-An ordinary syntax, ownership, or missing-terminator failure is not fatal. It
-selects `FrameResult::Recovered` and discards every strict authored value from
-the first pass. Framing then replays every frozen island through the
-construction-free recovery interpreter. A later valid island is therefore a
-`RecoveredIsland` and cannot be converted into an authored Node or
-`Parsed<Entry>`. Each recovered island exposes its recovery root, diagnostics,
-and finite-machine progress trace.
+`CompleteFrame` is returned only when every island parses strictly and every
+payload terminates. Its islands retain strict `Parsed<Entry>` values. A final
+island does not need a trailing boundary: when its strict parse consumes every
+significant token to end of input, the document completes and the island keeps
+its authored value, with only trivia permitted after it as the end-of-file gap.
 
-Only a wholly successful document selects `FrameResult::Complete`. Its islands
-retain strict `Parsed<Entry>` values. A final island does not need a trailing
-boundary: when its strict parse consumes every significant token to end of
-input, the document completes and the island keeps its authored value, with
-only trivia permitted after it as the end-of-file gap. A final island that
-fails strictly, or that leaves significant source unconsumed, keeps the
-fail-closed recovered behavior. Both results expose the borrowed source
-and `render_exact`; only authored values have structured `Pretty` rendering.
+`FrameFailure` has two variants:
+
+- `FrameFailure::Rejected(FrameRejection)` is ordinary invalid input. The
+  rejection retains the complete source, the extent of the first failing island
+  candidate (`island()`), that candidate's strict parse diagnostics
+  (`diagnostics()`), and a framing cause (`framing()`) when the island itself
+  parsed strictly but the document could not continue. The framing causes are
+  `RCA5001`, a complete payload-opening island without its standalone
+  terminator, and `RCA5002`, a complete island followed by significant source
+  without its required boundary. A rejection never contains an authored value,
+  and later islands are not parsed.
+- `FrameFailure::Fatal(FrameError)` is reserved for invalid generated
+  identities, spans, partitions, or progress invariants (`RCA5090`) and retains
+  the complete source.
+
+For a syntax failure the rejected extent runs from the island start to the end
+of the first candidate boundary at or after the failure location, or to the end
+of input when no candidate boundary follows it. The failure is a missing
+boundary, and carries the `RCA5002` framing cause, when the source before the
+failing token is itself a complete strict island; the strict diagnostic is the
+same one that Explorer parsing reports for the same source. A missing
+terminator reports the unterminated payload suffix as the rejected extent with
+no strict diagnostics.
 
 Each island's `Parsed::source()` is the bounded island slice, including its
-framing boundary when one is present. Captured occurrence spans remain absolute offsets in the
-complete framed document; they are not rebased into that slice. Call
-`Parsed::source_bounds()` to inspect the absolute window and
+framing boundary when one is present. Captured occurrence spans remain absolute
+offsets in the complete framed document; they are not rebased into that slice.
+Call `Parsed::source_bounds()` to inspect the absolute window and
 `Parsed::local_source_range(span)` before using an occurrence span to index
 `Parsed::source()`. This preserves document-wide span correlation without
 making later-island indexing unsafe or ambiguous.
 
 ## Exact ownership
 
-The ordered framing parts own every source byte exactly once. Ownership covers
-the beginning-of-file gap, inter-item gaps, island content and boundary,
-atomic regions, payload data and control line, and the end-of-file gap. Empty,
-trivia-only, comment-only, CRLF, and missing-final-newline inputs preserve their
-original bytes. Concatenating part spans reconstructs the source exactly.
-Boundary-only and consecutive-boundary inputs are ordinary missing islands:
-the boundary advances framing, while recovery supplies deterministic missing
-syntax diagnostics.
+The ordered parts of a complete frame own every source byte exactly once.
+Ownership covers the beginning-of-file gap, inter-item gaps, island content and
+boundary, atomic regions, payload data and control line, and the end-of-file
+gap. Empty, trivia-only, comment-only, CRLF, and missing-final-newline inputs
+preserve their original bytes. Concatenating part spans reconstructs the source
+exactly. A boundary-only input is an ordinary rejected island: the island
+grammar decides whether an empty island parses.
 
 Closed lexical regions remain atomic. Boundary spellings inside a closed
-string, comment, nested region, or payload do not split an island. If a unique
-continuation cannot be assigned, recovery retains the remaining source as an
-unresolved part and reports fail-closed ownership rather than guessing. A
-delimiter candidate becomes a framing boundary only when generated recovery
-completes the island while leaving that exact token unconsumed as root FOLLOW;
-nested grammar separators are therefore consumed by their nested owner. At
-EOF, the generated application FIRST set—including struct, enum, and Pratt
-roots—is the only evidence that can split a distinct unresolved suffix.
+string, comment, nested region, or payload do not split an island. A boundary
+candidate ends an island only when the island parses strictly up to that exact
+token; boundary spellings consumed by nested grammar structure therefore stay
+inside their island, and a failure inside such a structure is reported with
+the strict diagnostic at its exact location.
 
 ## Payloads
 
@@ -98,7 +106,6 @@ the terminator as a complete standalone physical line beginning at BOF or
 immediately after LF and ending in LF (with an optional preceding CR), so
 boundary spellings inside payload data remain data. A same-line marker or a
 final marker without its required line ending remains payload data.
-`PayloadRegion::data_span` and
-`terminator_span` are distinct; the latter includes its original line ending.
-A missing terminator retains the complete suffix as payload data and reports a
-recoverable framing diagnostic.
+`PayloadRegion::data_span` and `terminator_span` are distinct; the latter
+includes its original line ending. A missing terminator rejects the document
+with the `RCA5001` framing cause at end of input.

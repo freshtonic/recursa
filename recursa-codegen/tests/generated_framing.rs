@@ -23,7 +23,7 @@ struct Fixture {
 }
 
 #[test]
-fn generated_framing_partitions_mixed_source_and_erases_every_island_after_failure() {
+fn generated_framing_partitions_mixed_source_and_rejects_the_first_failing_island() {
     let package = scaffold_fixture();
     let output = run_fixture(&package);
     assert!(
@@ -65,29 +65,29 @@ fn framing_references_follow_normal_import_alias_resolution() {
 }
 
 #[test]
-fn recovered_and_raw_framing_surfaces_have_no_authored_conversion_or_pretty() {
+fn rejected_and_raw_framing_surfaces_have_no_authored_conversion_or_pretty() {
     let package = scaffold_fixture();
     let probes = [
         (
-            "recovered AST conversion",
+            "rejection AST conversion",
             "into_ast",
             r#"use recursa_generated_framing::grammar;
 
-fn escape(frame: grammar::RecoveredFrame<'static>) -> grammar::Entry<'static> {
-    frame.into_ast()
+fn escape(rejection: grammar::FrameRejection<'static>) -> grammar::Entry<'static> {
+    rejection.into_ast()
 }
 
 fn main() {}
 "#,
         ),
         (
-            "recovered Pretty rendering",
+            "rejection Pretty rendering",
             "render",
             r#"use recursa::Pretty as _;
 use recursa_generated_framing::grammar;
 
-fn escape(frame: &grammar::RecoveredFrame<'static>) {
-    let _ = frame.render();
+fn escape(rejection: &grammar::FrameRejection<'static>) {
+    let _ = rejection.render();
 }
 
 fn main() {}
@@ -173,7 +173,7 @@ fn framing_generation_rejects_an_unreachable_payload_variant() {
 }
 
 #[test]
-fn struct_framing_uses_generated_restart_evidence_for_an_unassignable_suffix() {
+fn struct_framing_rejects_an_unassignable_suffix_with_its_strict_diagnostic() {
     let package = scaffold_fixture();
     let grammar = package.path.join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read framing grammar");
@@ -193,23 +193,20 @@ fn struct_framing_uses_generated_restart_evidence_for_an_unassignable_suffix() {
 
 fn main() {
     let source = "put 'one' put 'two'";
-    let framed = grammar::StructEntry::frame(source).expect("ownership ambiguity is recoverable");
-    let grammar::FrameResult::Recovered(framed) = framed else {
-        panic!("a missing struct-island boundary cannot be complete")
+    let failure = grammar::StructEntry::frame(source)
+        .err()
+        .expect("a missing struct-island boundary is rejected");
+    let grammar::FrameFailure::Rejected(rejection) = failure else {
+        panic!("a missing boundary is ordinary invalid input, not a fatal failure")
     };
-    assert_eq!(
-        framed.islands().map(|island| island.span()).collect::<Vec<_>>(),
-        [recursa::Span::new(0, 9).unwrap()],
-    );
-    let unresolved = framed
-        .parts()
-        .find_map(|part| match part {
-            grammar::RecoveredPart::Unresolved(region) => Some(*region),
-            _ => None,
-        })
-        .expect("generated struct restart evidence retains the suffix");
-    assert_eq!(unresolved.span(), recursa::Span::new(9, 19).unwrap());
-    assert_eq!(unresolved.text(), " put 'two'");
+    assert_eq!(rejection.island(), recursa::Span::new(0, 19).unwrap());
+    let framing = rejection
+        .framing()
+        .expect("the missing boundary names its framing cause");
+    assert_eq!(framing.code(), "RCA5002");
+    assert_eq!(framing.span(), recursa::Span::new(10, 13).unwrap());
+    assert_eq!(rejection.diagnostics().len(), 1);
+    assert_eq!(rejection.diagnostics()[0].span(), recursa::Span::new(10, 13).unwrap());
 }
 "#,
     )
