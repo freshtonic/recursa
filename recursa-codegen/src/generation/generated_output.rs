@@ -8,7 +8,67 @@ use super::*;
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
-    use super::{super::test_support, WordClassifierPlan, render_word_classifiers};
+    use quote::quote;
+
+    use super::{
+        super::test_support, WordClassifierPlan, apply_generated_lint_boundary,
+        render_word_classifiers,
+    };
+
+    #[test]
+    fn lint_policy_is_applied_once_per_generated_scope() {
+        let generated = quote! {
+            __recursa_generation_handshake!(g_1);
+            pub struct NodeView<'view> { value: &'view Node }
+            impl<'view> NodeView<'view> { fn view(self) {} }
+            impl Parse for Node {}
+            fn __recursa_parse_variant_0() {}
+            static __RECURSA_ELEMENTS_0: [u8; 1] = [0];
+            pub(crate) static __RECURSA_SCHEMA_0: u8 = 0;
+            const CAPTURE_POLICY: u8 = 0;
+            const _: fn() = || {};
+            pub(super) fn keeps_its_level() {}
+            pub type Alias = u8;
+            __recursa_if_explorer! {
+                fn __recursa_explorer_0() {}
+                impl Explore for Node {}
+            }
+        };
+        let bounded = apply_generated_lint_boundary(generated, "node_0")
+            .expect("bounded output is valid Rust")
+            .to_string();
+
+        let policy_count = bounded.matches("# [allow (dead_code ,").count();
+        assert_eq!(policy_count, 7, "output:\n{bounded}");
+        assert!(bounded.contains("__recursa_generation_handshake ! (g_1) ;"));
+        assert!(bounded.contains("mod __recursa_lint_scope_node_0_0 {"));
+        assert!(bounded.contains("mod __recursa_lint_scope_node_0_1 {"));
+        assert!(bounded.contains("pub (super) fn __recursa_parse_variant_0 ()"));
+        assert!(bounded.contains("pub (super) static __RECURSA_ELEMENTS_0"));
+        assert!(bounded.contains("pub (super) const CAPTURE_POLICY"));
+        assert!(bounded.contains("pub (crate) static __RECURSA_SCHEMA_0"));
+        // The gate body is bounded first, so its scope module takes index 0.
+        assert!(bounded.contains("use __recursa_lint_scope_node_0_0 :: * ;"));
+        assert!(!bounded.contains("pub (crate) use __recursa_lint_scope_node_0_0"));
+        assert!(bounded.contains("pub (crate) use __recursa_lint_scope_node_0_1 :: * ;"));
+        assert!(bounded.contains("pub (super) fn keeps_its_level ()"));
+        assert!(!bounded.contains("pub (super) pub (super) fn"));
+        assert!(bounded.contains("pub type Alias = u8 ;"));
+        assert_eq!(bounded.matches("const _ : () = {").count(), 2);
+        assert!(bounded.contains("impl < 'view > NodeView < 'view >"));
+        assert!(bounded.contains("impl Parse for Node"));
+        assert!(bounded.contains("impl Explore for Node"));
+        assert!(bounded.contains("const _ : fn () = | | { } ;"));
+        assert!(!bounded.contains(")] impl"), "impls carry no attribute of their own");
+        assert!(!bounded.contains(")] const _ : fn"));
+        assert!(!bounded.contains(")] fn "), "free functions carry no attribute of their own");
+        assert!(!bounded.contains(")] static "));
+        let allowed_prefix = bounded
+            .split("pub struct NodeView")
+            .next()
+            .expect("struct prefix");
+        assert!(allowed_prefix.trim_end().ends_with(")]"));
+    }
 
     #[test]
     fn word_classification_reads_source_once_and_shards_large_vocabularies() {
@@ -246,7 +306,7 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
     rendering
         .validate_rendered_rust(&root_tokens)
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
-    let root_tokens = apply_generated_lint_boundary(root_tokens)
+    let root_tokens = apply_generated_lint_boundary(root_tokens, "root")
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
     let root = root_tokens.to_string();
     let mut instrumentation = RenderInstrumentation::default();
@@ -257,7 +317,7 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
         rendering
             .validate_rendered_rust(&tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
-        let tokens = apply_generated_lint_boundary(tokens)
+        let tokens = apply_generated_lint_boundary(tokens, &format!("node_{index}"))
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         nodes.push((name, tokens.to_string()));
     }
@@ -292,54 +352,164 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
     })
 }
 
-/// Applies the closed generated-code lint policy to concrete generated items.
+/// Renders the closed generated-code lint policy as one outer attribute.
+fn generated_lint_policy() -> proc_macro2::TokenStream {
+    quote! {
+        #[allow(
+            dead_code,
+            non_camel_case_types,
+            private_bounds,
+            private_interfaces,
+            unreachable_patterns,
+            unused_variables,
+            clippy::blocks_in_conditions,
+            clippy::borrowed_box,
+            clippy::collapsible_if,
+            clippy::match_single_binding,
+            clippy::needless_borrow,
+            clippy::needless_return,
+            clippy::never_loop,
+            clippy::new_ret_no_self,
+            clippy::possible_missing_else,
+            clippy::unnecessary_literal_unwrap
+        )]
+    }
+}
+
+/// Applies the closed generated-code lint policy once per generated scope boundary.
 ///
 /// The source files are loaded into a downstream module with `include!`, where a file-level inner
-/// attribute is not permitted and an attribute on the `include!` invocation is ignored. Applying
-/// the policy to each concrete item keeps handwritten downstream items under their crate's lint
-/// settings. Rust ignores lint attributes on macro invocations, so the known pass-through
-/// capability gates are traversed and the policy is applied to the concrete items in their token
-/// bodies. Structural handshake and loader macros remain unchanged.
+/// attribute is not permitted and an attribute on the `include!` invocation is ignored. The policy
+/// is therefore applied to scope boundaries that the generated file owns, which keeps handwritten
+/// downstream items under their crate's lint settings while avoiding one attribute per item:
+///
+/// - `impl` blocks and anonymous constants move into one `const _: () = { ... };` block. Impls are
+///   global, so the move changes no path.
+/// - Private and `pub(crate)` functions, statics, and named constants move into one private
+///   module that is glob-imported back into the enclosing scope. Private items become
+///   `pub(super)` there, which is the same reach they had as private items of the enclosing
+///   module. `pub(crate)` items keep their visibility and the glob import is `pub(crate)`, so
+///   absolute `crate::` paths from other generated files still resolve.
+/// - Every other item is nameable by downstream code at its original path and keeps an
+///   individual attribute.
+///
+/// Rust ignores lint attributes on macro invocations, so the known pass-through capability gates
+/// are traversed and the same boundaries are built inside their token bodies. Structural
+/// handshake and loader macros remain unchanged. The `scope` name keeps the private module names
+/// unique when several generated files load into one downstream module.
 fn apply_generated_lint_boundary(
     tokens: proc_macro2::TokenStream,
+    scope: &str,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    let mut next_scope = 0usize;
+    bound_lint_scope(tokens, scope, &mut next_scope)
+}
+
+/// Builds the lint scope boundaries for one item list and, recursively, its capability gates.
+fn bound_lint_scope(
+    tokens: proc_macro2::TokenStream,
+    scope: &str,
+    next_scope: &mut usize,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let file = syn::parse2::<syn::File>(tokens)?;
+    let policy = generated_lint_policy();
     let mut rendered = proc_macro2::TokenStream::new();
+    let mut scoped_impls = Vec::new();
+    let mut scoped_privates = Vec::new();
+    let mut reexport_crate_wide = false;
     for item in file.items {
-        let bounded = if let syn::Item::Macro(mut item) = item {
-            if item.mac.path.is_ident("__recursa_if_arbitrary")
-                || item.mac.path.is_ident("__recursa_if_serde")
-                || item.mac.path.is_ident("__recursa_if_explorer")
-            {
-                item.mac.tokens = apply_generated_lint_boundary(item.mac.tokens)?;
+        match item {
+            syn::Item::Macro(mut item) => {
+                if item.mac.path.is_ident("__recursa_if_arbitrary")
+                    || item.mac.path.is_ident("__recursa_if_serde")
+                    || item.mac.path.is_ident("__recursa_if_explorer")
+                {
+                    item.mac.tokens = bound_lint_scope(item.mac.tokens, scope, next_scope)?;
+                }
+                rendered.extend(quote!(#item));
             }
-            quote!(#item)
+            syn::Item::Impl(_) => scoped_impls.push(item),
+            syn::Item::Const(constant) if constant.ident == "_" => {
+                scoped_impls.push(syn::Item::Const(constant));
+            }
+            syn::Item::Fn(mut function) if is_scoped_visibility(&function.vis) => {
+                reexport_crate_wide |= scope_visibility(&mut function.vis);
+                scoped_privates.push(syn::Item::Fn(function));
+            }
+            syn::Item::Static(mut statik) if is_scoped_visibility(&statik.vis) => {
+                reexport_crate_wide |= scope_visibility(&mut statik.vis);
+                scoped_privates.push(syn::Item::Static(statik));
+            }
+            syn::Item::Const(mut constant) if is_scoped_visibility(&constant.vis) => {
+                reexport_crate_wide |= scope_visibility(&mut constant.vis);
+                scoped_privates.push(syn::Item::Const(constant));
+            }
+            item => rendered.extend(quote!(#policy #item)),
+        }
+    }
+    if !scoped_privates.is_empty() {
+        let module = format_ident!("__recursa_lint_scope_{scope}_{next_scope}");
+        *next_scope += 1;
+        let import = if reexport_crate_wide {
+            quote!(pub(crate) use #module::*;)
         } else {
-            quote! {
-                #[allow(
-                    dead_code,
-                    non_camel_case_types,
-                    private_bounds,
-                    private_interfaces,
-                    unreachable_patterns,
-                    unused_variables,
-                    clippy::blocks_in_conditions,
-                    clippy::borrowed_box,
-                    clippy::collapsible_if,
-                    clippy::match_single_binding,
-                    clippy::needless_borrow,
-                    clippy::needless_return,
-                    clippy::never_loop,
-                    clippy::new_ret_no_self,
-                    clippy::possible_missing_else,
-                    clippy::unnecessary_literal_unwrap
-                )]
-                #item
-            }
+            quote!(use #module::*;)
         };
-        rendered.extend(bounded);
+        rendered.extend(quote! {
+            #policy
+            mod #module {
+                #[allow(unused_imports)]
+                use super::*;
+                #(#scoped_privates)*
+            }
+            #[allow(unused_imports)]
+            #import
+        });
+    }
+    if !scoped_impls.is_empty() {
+        rendered.extend(quote! {
+            #policy
+            const _: () = {
+                #(#scoped_impls)*
+            };
+        });
     }
     Ok(rendered)
+}
+
+/// Reports whether an item may move into a lint scope module.
+///
+/// Private and `pub(crate)` items move. Any other visibility stays at its original module level
+/// because a nested module would change the meaning of `pub(super)` and of `pub(in path)`, and
+/// public API must keep its documented path.
+fn is_scoped_visibility(visibility: &Visibility) -> bool {
+    match visibility {
+        Visibility::Inherited => true,
+        Visibility::Restricted(_) => is_crate_visibility(visibility),
+        Visibility::Public(_) => false,
+    }
+}
+
+/// Rewrites a scoped item's visibility for its new module and reports crate-wide reach.
+///
+/// Private items become `pub(super)`, which restores their original reach from inside the scope
+/// module. `pub(crate)` items keep their visibility and return `true` so the enclosing scope
+/// re-exports the module crate-wide.
+fn scope_visibility(visibility: &mut Visibility) -> bool {
+    if is_crate_visibility(visibility) {
+        return true;
+    }
+    *visibility = syn::parse_quote!(pub(super));
+    false
+}
+
+/// Reports whether a visibility is exactly `pub(crate)`.
+fn is_crate_visibility(visibility: &Visibility) -> bool {
+    matches!(
+        visibility,
+        Visibility::Restricted(restricted)
+            if restricted.in_token.is_none() && restricted.path.is_ident("crate")
+    )
 }
 
 /// Generated root fragments that exist only when a grammar retains classified trivia.
