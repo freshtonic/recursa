@@ -1249,28 +1249,22 @@ pub(super) fn validate_explorer_collisions(
             explorer_schema_static(parse_index, None).to_string(),
         )?;
         let variants = match &explorer_node.body {
-            ExplorerNodeBodyPlan::Struct(variant) => vec![(None, variant.elements.len())],
+            ExplorerNodeBodyPlan::Struct(_) => vec![None],
             ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
-                variants
-                    .iter()
-                    .enumerate()
-                    .map(|(index, variant)| (Some(index), variant.elements.len()))
-                    .collect()
+                (0..variants.len()).map(Some).collect()
             }
         };
-        for (variant, element_count) in variants {
+        for variant in variants {
             if let Some(variant) = variant {
                 reserve(
                     root_module,
                     explorer_schema_static(parse_index, Some(variant)).to_string(),
                 )?;
             }
-            for element in 0..element_count {
-                reserve(
-                    root_module,
-                    explorer_element_schema_static(parse_index, variant, element).to_string(),
-                )?;
-            }
+            reserve(
+                root_module,
+                explorer_elements_static(parse_index, variant).to_string(),
+            )?;
         }
     }
     let mut checked_root_nodes = BTreeSet::new();
@@ -1561,17 +1555,11 @@ pub(super) fn render_token_explorer(
                     )
                 }
 
-                fn __recursa_explorer_child_count(&self, _element: usize) -> usize {
-                    0
-                }
-
-                fn __recursa_explorer_child<'document>(
-                    &'document self,
-                    _cursor: #facade::__private::ViewCursor<'document>,
+                fn __recursa_explorer_field(
+                    &self,
                     _element: usize,
-                    _child: usize,
-                ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
-                    None
+                ) -> #facade::__private::ExplorerField<'_> {
+                    #facade::__private::ExplorerField::None
                 }
             }
         }
@@ -1698,7 +1686,7 @@ pub(super) fn render_node_application_explorer(
     let explorer_generics = explorer_impl_generics(plan, application);
     let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
     let (entry_impl_generics, _, entry_where_clause) = explorer_generics.split_for_impl();
-    let (node_body, child_count_body, child_body) = match (&application.body, &explorer_node.body) {
+    let (node_body, field_body) = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
             let schema = explorer_schema_static(node_index, None);
             let bindings = elements
@@ -1713,19 +1701,16 @@ pub(super) fn render_node_application_explorer(
                     )),
                 })
                 .collect::<Vec<_>>();
-            let count = render_explorer_variant_child_count(explorer, elements, &bindings);
-            let child = render_explorer_variant_child(facade, explorer, elements, &bindings);
+            let field = render_explorer_variant_field(facade, explorer, elements, &bindings);
             (
                 quote!(#facade::__private::explorer_node(self, &#module_anchor::#schema, None, cursor)),
-                count,
-                child,
+                field,
             )
         }
         (NodeBodyPlan::Enum { variants, .. }, ExplorerNodeBodyPlan::Enum(explorer_variants)) => {
             let base = explorer_schema_static(node_index, None);
             let mut node_arms = Vec::new();
-            let mut count_arms = Vec::new();
-            let mut child_arms = Vec::new();
+            let mut field_arms = Vec::new();
             for (variant_index, explorer) in explorer_variants.iter().enumerate() {
                 let variant = variants
                     .iter()
@@ -1738,25 +1723,20 @@ pub(super) fn render_node_application_explorer(
                     .map(|binding| binding.map(|binding| quote!(#binding)))
                     .collect::<Vec<_>>();
                 let active = explorer_schema_static(node_index, Some(variant_index));
-                let count =
-                    render_explorer_variant_child_count(explorer, &variant.elements, &bindings);
-                let child =
-                    render_explorer_variant_child(facade, explorer, &variant.elements, &bindings);
+                let field =
+                    render_explorer_variant_field(facade, explorer, &variant.elements, &bindings);
                 node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
-                count_arms.push(quote!(#pattern => #count,));
-                child_arms.push(quote!(#pattern => #child,));
+                field_arms.push(quote!(#pattern => #field,));
             }
             (
                 quote!(match self { #(#node_arms)* }),
-                quote!(match self { #(#count_arms)* }),
-                quote!(match self { #(#child_arms)* }),
+                quote!(match self { #(#field_arms)* }),
             )
         }
         (NodeBodyPlan::Pratt(pratt), ExplorerNodeBodyPlan::Pratt(explorer_variants)) => {
             let base = explorer_schema_static(node_index, None);
             let mut node_arms = Vec::new();
-            let mut count_arms = Vec::new();
-            let mut child_arms = Vec::new();
+            let mut field_arms = Vec::new();
             for (variant_index, explorer) in explorer_variants.iter().enumerate() {
                 let variant = if variant_index < pratt.nud.len() {
                     pratt
@@ -1782,18 +1762,14 @@ pub(super) fn render_node_application_explorer(
                     .map(|binding| binding.map(|binding| quote!(#binding)))
                     .collect::<Vec<_>>();
                 let active = explorer_schema_static(node_index, Some(variant_index));
-                let count =
-                    render_explorer_variant_child_count(explorer, &variant.elements, &bindings);
-                let child =
-                    render_explorer_variant_child(facade, explorer, &variant.elements, &bindings);
+                let field =
+                    render_explorer_variant_field(facade, explorer, &variant.elements, &bindings);
                 node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
-                count_arms.push(quote!(#pattern => #count,));
-                child_arms.push(quote!(#pattern => #child,));
+                field_arms.push(quote!(#pattern => #field,));
             }
             (
                 quote!(match self { #(#node_arms)* }),
-                quote!(match self { #(#count_arms)* }),
-                quote!(match self { #(#child_arms)* }),
+                quote!(match self { #(#field_arms)* }),
             )
         }
         _ => unreachable!("typed explorer and parse Node bodies have identical shapes"),
@@ -1917,18 +1893,11 @@ pub(super) fn render_node_application_explorer(
                     #node_body
                 }
 
-                fn __recursa_explorer_child_count(&self, element: usize) -> usize {
-                    #child_count_body
-                }
-
-                fn __recursa_explorer_child<'document>(
-                    &'document self,
-                    cursor: #facade::__private::ViewCursor<'document>,
+                fn __recursa_explorer_field(
+                    &self,
                     element: usize,
-                    child: usize,
-                ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
-                    let _ = (&cursor, child);
-                    #child_body
+                ) -> #facade::__private::ExplorerField<'_> {
+                    #field_body
                 }
             }
 
@@ -2098,21 +2067,15 @@ pub(super) fn explorer_content_token_schema_static(
     explorer_token_schema_static(kind_index)
 }
 
-/// Names one element descriptor by Node, variant, and source-order index.
-pub(super) fn explorer_element_schema_static(
-    node_index: usize,
-    variant: Option<usize>,
-    element: usize,
-) -> Ident {
+/// Names the element-descriptor table of one Node shape or variant.
+pub(super) fn explorer_elements_static(node_index: usize, variant: Option<usize>) -> Ident {
     match variant {
-        Some(variant) => {
-            format_ident!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{variant}_{element}")
-        }
-        None => format_ident!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{element}"),
+        Some(variant) => format_ident!("__RECURSA_EXPLORER_ELEMENTS_{node_index}_{variant}"),
+        None => format_ident!("__RECURSA_EXPLORER_ELEMENTS_{node_index}"),
     }
 }
 
-/// Renders element descriptors and their optional semantic targets.
+/// Renders one shape's element descriptors as a single static table.
 pub(super) fn render_explorer_schema_entries(
     plan: &EmissionPlan,
     node_index: usize,
@@ -2120,8 +2083,9 @@ pub(super) fn render_explorer_schema_entries(
     elements: &[ExplorerElementPlan],
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
-    let definitions = elements.iter().enumerate().map(|(index, element)| {
-        let schema = explorer_element_schema_static(node_index, variant, index);
+    let table = explorer_elements_static(node_index, variant);
+    let count = elements.len();
+    let definitions = elements.iter().map(|element| {
         let name = &element.name;
         let role = match element.role {
             ExplorerElementRolePlan::FixedToken => quote!(#facade::ElementRole::FixedToken),
@@ -2172,18 +2136,24 @@ pub(super) fn render_explorer_schema_entries(
             }
             (None, Some(ExplorerElementTargetPlan::Node(_)) | None) => quote!(None),
         };
+        let attachment_child = element
+            .attachment_semantic_child
+            .map_or_else(|| quote!(None), |child| quote!(Some(#child)));
         quote! {
-            pub(crate) static #schema: #facade::__private::ExplorerElementSchemaData =
-                #facade::__private::explorer_element_schema(
-                    #name,
-                    #role,
-                    #cardinality,
-                    #target,
-                    #token,
-                );
+            #facade::__private::explorer_element_schema(
+                #name,
+                #role,
+                #cardinality,
+                #target,
+                #token,
+                #attachment_child,
+            ),
         }
     });
-    quote!(#(#definitions)*)
+    quote! {
+        pub(crate) static #table: [#facade::__private::ExplorerElementSchemaData; #count] =
+            [#(#definitions)*];
+    }
 }
 
 /// Renders one Node application's struct, enum, or Pratt schema topology.
@@ -2200,15 +2170,14 @@ pub(super) fn render_explorer_schema(
             let definitions =
                 render_explorer_schema_entries(plan, node_index, None, &variant.elements);
             let schema = explorer_schema_static(node_index, None);
-            let element_schemas = (0..variant.elements.len())
-                .map(|index| explorer_element_schema_static(node_index, None, index));
+            let elements = explorer_elements_static(node_index, None);
             quote! {
                 #definitions
                 pub(crate) static #schema: #facade::__private::ExplorerNodeSchemaData =
                     #facade::__private::explorer_node_schema(
                         #node_name,
                         #qualified_name,
-                        &[#(#element_schemas),*],
+                        &#elements,
                         &[],
                     );
             }
@@ -2231,16 +2200,14 @@ pub(super) fn render_explorer_schema(
                     .qualified_name
                     .as_deref()
                     .expect("enum and Pratt variants retain qualified names");
-                let element_schemas = (0..variant.elements.len()).map(|element_index| {
-                    explorer_element_schema_static(node_index, Some(variant_index), element_index)
-                });
+                let elements = explorer_elements_static(node_index, Some(variant_index));
                 quote! {
                     #entries
                     pub(crate) static #schema: #facade::__private::ExplorerVariantSchemaData =
                         #facade::__private::explorer_variant_schema(
                             #variant_name,
                             #variant_qualified_name,
-                            &[#(#element_schemas),*],
+                            &#elements,
                         );
                 }
             });
@@ -2262,134 +2229,47 @@ pub(super) fn render_explorer_schema(
     }
 }
 
-/// Renders occurrence child counts for each source-order element.
-pub(super) fn render_explorer_child_count(
-    element: &ExplorerElementPlan,
-    field_value: Option<proc_macro2::TokenStream>,
-) -> proc_macro2::TokenStream {
-    let ExplorerOccurrencePlan::Children { wrappers, .. } = &element.occurrence else {
-        return quote!(0);
-    };
-    let field_value = field_value.expect("semantic explorer elements have field values");
-    if let Some(repeat_index) = wrappers
-        .iter()
-        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore))
-    {
-        let outer = &wrappers[..repeat_index];
-        if outer
-            .iter()
-            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-        {
-            let optional = render_optional_view_reference(field_value, outer, true);
-            quote!((#optional).map_or(0, |values| values.len()))
-        } else {
-            let collection = render_terminal_reference(field_value, outer, true);
-            quote!((#collection).len())
-        }
-    } else if wrappers
-        .iter()
-        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-    {
-        let optional = render_optional_view_reference(field_value, wrappers, true);
-        quote!(usize::from((#optional).is_some()))
-    } else {
-        quote!(1)
-    }
-}
-
-/// Renders indexed child lookup while preserving parsed provenance.
-pub(super) fn render_explorer_child(
+/// Renders the erased semantic field behind one source-order element.
+///
+/// The runtime derives child counts and child cursors from this field and the
+/// static element schema, so only the wrapper shape is emitted per element.
+pub(super) fn render_explorer_field(
     facade: &Ident,
-    element_index: usize,
     element: &ExplorerElementPlan,
     field_value: Option<proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let ExplorerOccurrencePlan::Children { wrappers, .. } = &element.occurrence else {
-        return quote!(None);
+        return quote!(#facade::__private::ExplorerField::None);
     };
     let field_value = field_value.expect("semantic explorer elements have field values");
-    let child_cursor = element.attachment_semantic_child.map_or_else(
-        || quote!(cursor.child(#element_index).child(child)),
-        |semantic_child| quote!(cursor.child(#element_index).child(child).child(#semantic_child)),
-    );
+    let has_optional = |wrappers: &[FieldWrapper]| {
+        wrappers
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    };
     if let Some(repeat_index) = wrappers
         .iter()
         .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore))
     {
         let outer = &wrappers[..repeat_index];
-        let inner = &wrappers[repeat_index + 1..];
-        let selected = if outer
-            .iter()
-            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-        {
+        if has_optional(outer) {
             let optional = render_optional_view_reference(field_value, outer, true);
-            quote!((#optional).and_then(|values| values.get(child)))
+            quote!(#facade::__private::explorer_field_optional_many(#optional))
         } else {
             let collection = render_terminal_reference(field_value, outer, true);
-            quote!((#collection).get(child))
-        };
-        let value = render_terminal_reference(quote!(value), inner, true);
-        quote! {
-            (#selected).map(|value| {
-                #facade::__private::ExplorerNode::__recursa_explorer_node(
-                    #value,
-                    #child_cursor,
-                )
-            })
+            quote!(#facade::__private::explorer_field_many(#collection))
         }
-    } else if wrappers
-        .iter()
-        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-    {
+    } else if has_optional(wrappers) {
         let optional = render_optional_view_reference(field_value, wrappers, true);
-        quote! {
-            if child == 0 {
-                (#optional).map(|value| {
-                    #facade::__private::ExplorerNode::__recursa_explorer_node(
-                        value,
-                        #child_cursor,
-                    )
-                })
-            } else {
-                None
-            }
-        }
+        quote!(#facade::__private::explorer_field_optional(#optional))
     } else {
         let value = render_terminal_reference(field_value, wrappers, true);
-        quote! {
-            (child == 0).then(|| {
-                #facade::__private::ExplorerNode::__recursa_explorer_node(
-                    #value,
-                    #child_cursor,
-                )
-            })
-        }
+        quote!(#facade::__private::explorer_field_one(#value))
     }
 }
 
-/// Renders child-count dispatch for one active variant shape.
-pub(super) fn render_explorer_variant_child_count(
-    explorer: &ExplorerVariantPlan,
-    parse_elements: &[ElementParsePlan],
-    bindings: &[Option<proc_macro2::TokenStream>],
-) -> proc_macro2::TokenStream {
-    let arms = explorer
-        .elements
-        .iter()
-        .enumerate()
-        .map(|(element_index, element)| {
-            let field = parse_elements
-                .iter()
-                .position(|parse| parse.explorer_source == element.source)
-                .and_then(|index| bindings[index].clone());
-            let count = render_explorer_child_count(element, field);
-            quote!(#element_index => #count,)
-        });
-    quote!(match element { #(#arms)* _ => 0 })
-}
-
-/// Renders child-occurrence lookup for one active variant shape.
-pub(super) fn render_explorer_variant_child(
+/// Renders erased-field dispatch for one active variant shape.
+pub(super) fn render_explorer_variant_field(
     facade: &Ident,
     explorer: &ExplorerVariantPlan,
     parse_elements: &[ElementParsePlan],
@@ -2399,13 +2279,16 @@ pub(super) fn render_explorer_variant_child(
         .elements
         .iter()
         .enumerate()
+        .filter(|(_, element)| {
+            matches!(element.occurrence, ExplorerOccurrencePlan::Children { .. })
+        })
         .map(|(element_index, element)| {
             let field = parse_elements
                 .iter()
                 .position(|parse| parse.explorer_source == element.source)
                 .and_then(|index| bindings[index].clone());
-            let child = render_explorer_child(facade, element_index, element, field);
-            quote!(#element_index => #child,)
+            let field = render_explorer_field(facade, element, field);
+            quote!(#element_index => #field,)
         });
-    quote!(match element { #(#arms)* _ => None })
+    quote!(match element { #(#arms)* _ => #facade::__private::ExplorerField::None })
 }
