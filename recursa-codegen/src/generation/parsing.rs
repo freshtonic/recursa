@@ -598,8 +598,6 @@ pub(super) struct NodeParsePlan {
     pub(super) module: ModuleId,
     /// Authored Rust identifier retained for emitted declarations.
     pub(super) ident: Ident,
-    /// Visibility of the generated node declaration.
-    pub(super) visibility: Visibility,
     /// Whether loader compatibility requires a public materialization.
     pub(super) publicly_materialized: bool,
     /// Stable loader symbol used to discover this node.
@@ -2203,7 +2201,6 @@ pub(super) fn plan_node(
         semantic_key: node.key.segments.join("::"),
         module: node.module,
         ident: emitted_ident(&node.ident)?,
-        visibility: node.visibility.clone(),
         publicly_materialized: publicly_reachable(
             &lowered.source_modeled.resolved().tree,
             node.module,

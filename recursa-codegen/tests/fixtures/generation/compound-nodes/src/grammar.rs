@@ -33,10 +33,10 @@ recursa::tokens! {
 }
 
 #[allow(dead_code, non_snake_case)]
-fn RecordView() {}
+fn View() {}
 
 #[cfg(any())]
-struct RecordView;
+struct View;
 
 /// RECURSA_AUTHORED_RECORD_DOC: source-authored documentation remains authoritative.
 #[derive(recursa::Node)]
@@ -435,7 +435,7 @@ mod left {
         let mut input = lexed.input();
         let parsed = Hidden::parse_spanned(&mut input).expect("left private sibling parses");
         assert!(input.is_eof());
-        let _: HiddenView<'_> = parsed.root();
+        let _: super::View<'_, Hidden> = parsed.root();
         assert_eq!(
             parsed.root().span(),
             Some(recursa::Span::new(0, 4).unwrap())
@@ -493,7 +493,7 @@ mod right {
         let mut input = lexed.input();
         let parsed = Hidden::parse_spanned(&mut input).expect("right private sibling parses");
         assert!(input.is_eof());
-        let _: HiddenView<'_> = parsed.root();
+        let _: super::View<'_, Hidden> = parsed.root();
         assert_eq!(
             parsed.root().span(),
             Some(recursa::Span::new(0, 5).unwrap())

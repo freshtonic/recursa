@@ -1176,13 +1176,13 @@ fn parsed_values_and_views_exclude_owned_or_mutable_semantic_traits() {
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("RecordView<'_, '_>: VisitMut"),
+        stderr.contains("View<'_, ") && stderr.contains("Record<'_>>: VisitMut"),
         "stderr:\n{stderr}"
     );
 }
 
 #[test]
-fn a_concrete_view_name_collision_is_a_deterministic_generation_error() {
+fn a_generic_view_name_collision_is_a_deterministic_generation_error() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
@@ -1190,7 +1190,7 @@ fn a_concrete_view_name_collision_is_a_deterministic_generation_error() {
         &grammar,
         source.replace(
             "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "pub struct RecordView;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            "pub struct View;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
         ),
     )
     .expect("insert an authored view-name collision");
@@ -1204,7 +1204,7 @@ fn a_concrete_view_name_collision_is_a_deterministic_generation_error() {
     assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
     assert!(
         stderr.contains(
-            "generated concrete view `RecordView` collides with an authored item beside Node `Record`"
+            "generated view type `View` collides with an authored item in the grammar module"
         ),
         "stderr:\n{stderr}",
     );

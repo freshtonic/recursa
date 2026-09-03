@@ -22,28 +22,6 @@ mod tests {
     focused_case!(fixed_accessor_names_remain_valid_for_numeric_spellings);
 }
 
-/// Projects declared generic parameters into application arguments in declaration order.
-pub(super) fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenStream> {
-    generics
-        .params
-        .iter()
-        .map(|parameter| match parameter {
-            GenericParam::Lifetime(parameter) => {
-                let lifetime = &parameter.lifetime;
-                quote!(#lifetime)
-            }
-            GenericParam::Type(parameter) => {
-                let ident = &parameter.ident;
-                quote!(#ident)
-            }
-            GenericParam::Const(parameter) => {
-                let ident = &parameter.ident;
-                quote!(#ident)
-            }
-        })
-        .collect()
-}
-
 /// Parses a generated Rust identifier, falling back to raw-identifier syntax for keywords.
 pub(super) fn emitted_ident(name: &str) -> Result<Ident, String> {
     syn::parse_str::<Ident>(name)
@@ -73,14 +51,6 @@ pub(super) fn emitted_semantic_path(semantic_key: &str) -> Result<syn::Path, Str
         ));
     }
     emitted_crate_path(&segments)
-}
-
-/// Appends a generator-owned suffix to an authored identifier without retaining raw syntax.
-pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
-    Ident::new(
-        &format!("{}{suffix}", ident.unraw()),
-        proc_macro2::Span::call_site(),
-    )
 }
 
 /// Converts a semantic name to the stable snake-case spelling used by generated methods.

@@ -188,7 +188,6 @@ pub(super) fn render_token(
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let ident = &token.ident;
-    let view = sibling_ident(ident, "View");
     let kind_variant = &token.kind_variant;
     let stores_kind = token.accepted_kind_variants.len() > 1;
     let accepted_kind_variants = &token.accepted_kind_variants;
@@ -402,14 +401,6 @@ pub(super) fn render_token(
                 }
             }
 
-            impl<'input> #facade::Pretty for #view<'_, 'input> {
-                fn pretty(
-                    &self,
-                    context: &mut #facade::PrettyContext,
-                ) -> ::core::fmt::Result {
-                    #facade::__private::pretty_view(self, context)
-                }
-            }
         }
     });
     let arbitrary_impl = token
@@ -551,27 +542,14 @@ pub(super) fn render_token(
             #kind_method
         }
 
-        #[doc(hidden)]
-        #[derive(Clone, Copy)]
-        pub struct #view<'view, 'input>
-        where 'input: 'view,
-        {
-            value: &'view #ident<'input>,
-            cursor: #facade::__private::ViewCursor<'view>,
-        }
-
-        impl<'input> #facade::NodeView for #view<'_, 'input> {
-            type Value = #ident<'input>;
-            fn value(&self) -> &Self::Value { self.value }
-            fn __recursa_cursor(&self) -> #facade::__private::ViewCursor<'_> { self.cursor }
-        }
+        impl<'input> #facade::__private::NodeElements for #ident<'input> {}
         impl<'input> #facade::__private::NodeViewFactory for #ident<'input> {
-            type View<'view> = #view<'view, 'input> where Self: 'view;
+            type View<'view> = #module_anchor::View<'view, #ident<'input>> where Self: 'view;
             fn view<'view>(
                 &'view self,
                 cursor: #facade::__private::ViewCursor<'view>,
-            ) -> <Self as #facade::__private::NodeViewFactory>::View<'view> {
-                #view { value: self, cursor }
+            ) -> #module_anchor::View<'view, #ident<'input>> {
+                #module_anchor::View { value: self, cursor }
             }
         }
         impl<'input, A> #facade::__private::Parse<'input, A> for #ident<'input> {
@@ -620,9 +598,7 @@ pub(super) fn render_token_binding(
     let module_anchor = &plan.module_anchor;
     let visibility = &binding.visibility;
     let ident = &binding.ident;
-    let view = sibling_ident(ident, "View");
     let canonical = &plan.tokens[binding.token].ident;
-    let canonical_view = sibling_ident(canonical, "View");
     let token_documentation = syn::LitStr::new(
         "A content-bearing token. Parsed values retain their exact matched input text; synthesized values own their text. Fixed tokens are syntax-only grammar elements: they shape parsing but store no value and have no generated token type.",
         proc_macro2::Span::call_site(),
@@ -640,8 +616,5 @@ pub(super) fn render_token_binding(
         #token_diagram_attribute
         #visibility type #ident<'input> =
             #module_anchor::__recursa_content_tokens::#canonical<'input>;
-        #[doc = "A provenance-aware view of this generated content-bearing token."]
-        #visibility type #view<'view, 'input> =
-            #module_anchor::__recursa_content_tokens::#canonical_view<'view, 'input>;
     }
 }

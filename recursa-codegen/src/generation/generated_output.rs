@@ -722,6 +722,17 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let private_protocol = plan.private_abi.protocol;
     let protocol = format_ident!("protocol_{private_protocol}");
     let grammar_name = &plan.grammar_name;
+    let view_trivia_gaps = (!plan.trivia_kinds.is_empty()).then(|| {
+        quote! {
+            /// Iterates immutable source gaps retained by the complete parsed document.
+            pub fn trivia_gaps(self) -> TriviaGaps<'view> {
+                TriviaGaps {
+                    inner: self.cursor.source_gaps()
+                        .expect("this generated grammar retains trivia"),
+                }
+            }
+        }
+    });
     #[cfg(feature = "diagrams")]
     let aggregate_diagram = plan.diagrams.as_ref().map(|_| {
         quote! {
@@ -990,6 +1001,51 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     #(#kind_display_arms)*
                     TokenKind::LexicalError => formatter.write_str("LexicalError"),
                 }
+            }
+        }
+
+        /// A provenance-bearing view of one parsed value of this grammar.
+        ///
+        /// A view pairs a borrowed value with its occurrence cursor. Node-specific
+        /// accessors are inherent methods on `View<'view, ThatNode>`; the shared
+        /// span, element, and Pretty behaviour is implemented once here.
+        pub struct View<'view, T: ?Sized> {
+            pub(crate) value: &'view T,
+            pub(crate) cursor: #facade::__private::ViewCursor<'view>,
+        }
+
+        impl<T: ?Sized> Clone for View<'_, T> {
+            fn clone(&self) -> Self { *self }
+        }
+
+        impl<T: ?Sized> Copy for View<'_, T> {}
+
+        impl<'view, T: ?Sized + #facade::__private::NodeElements> View<'view, T> {
+            /// Active grammar elements in authored source order.
+            pub fn span_elements(self) -> #facade::Elements<'view> {
+                self.value.__recursa_span_elements(self.cursor)
+            }
+
+            #view_trivia_gaps
+        }
+
+        impl<'view, T: ?Sized + #facade::__private::NodeElements> #facade::NodeView
+            for View<'view, T>
+        {
+            type Value = T;
+            fn value(&self) -> &T { self.value }
+            fn span_elements(&self) -> #facade::Elements<'_> {
+                self.value.__recursa_span_elements(self.cursor)
+            }
+            fn __recursa_cursor(&self) -> #facade::__private::ViewCursor<'_> { self.cursor }
+        }
+
+        impl<'view, T> #facade::Pretty for View<'view, T>
+        where
+            T: ?Sized + #facade::__private::NodeElements + #facade::Pretty,
+        {
+            fn pretty(&self, context: &mut #facade::PrettyContext) -> ::core::fmt::Result {
+                #facade::__private::pretty_view(self, context)
             }
         }
 
@@ -1485,16 +1541,12 @@ pub(super) fn render_node(
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
     let node_ident = &node.ident;
-    let visibility = &node.visibility;
-    let view_ident = sibling_ident(node_ident, "View");
     let generics = &node.generics;
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-    let generic_arguments = generic_arguments(generics);
     let mut view_generics = generics.clone();
     view_generics.params.insert(0, syn::parse_quote!('view));
-    let (view_impl_generics, view_type_generics, view_where_clause) =
-        view_generics.split_for_impl();
-    let view_application = quote!(#view_ident<'view #(, #generic_arguments)*>);
+    let (view_impl_generics, _, view_where_clause) = view_generics.split_for_impl();
+    let view_application = quote!(#module_anchor::View<'view, #node_ident #type_generics>);
     let input_lifetime = &node.input_lifetime;
     let inherent_method_generics = if generics
         .params
@@ -1508,17 +1560,6 @@ pub(super) fn render_node(
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
     let span_elements = render_span_elements(node, node_index);
-    let trivia_gaps = (!plan.trivia_kinds.is_empty()).then(|| {
-        quote! {
-            /// Iterates immutable source gaps retained by the complete parsed document.
-            pub fn trivia_gaps(self) -> #module_anchor::TriviaGaps<'view> {
-                #module_anchor::TriviaGaps {
-                    inner: self.cursor.source_gaps()
-                        .expect("this generated grammar retains trivia"),
-                }
-            }
-        }
-    });
     let parse_implementations = node
         .parse_applications
         .iter()
@@ -1545,24 +1586,10 @@ pub(super) fn render_node(
         .map(|_| quote!(#[cfg_attr(doc, #facade::__recursa_diagram_doc(node = #node_index))]));
     #[cfg(not(feature = "diagrams"))]
     let diagram_attribute = proc_macro2::TokenStream::new();
-    let view_pretty = plan.pretty.nodes[node_index].is_some().then(|| {
-        let mut pretty_generics = view_generics.clone();
-        pretty_generics
-            .make_where_clause()
-            .predicates
-            .push(syn::parse_quote!(#node_ident #type_generics: #facade::Pretty));
-        let (pretty_impl_generics, pretty_type_generics, pretty_where_clause) =
-            pretty_generics.split_for_impl();
+    let view_accessors = (!accessors.is_empty()).then(|| {
         quote! {
-            impl #pretty_impl_generics #facade::Pretty
-                for #view_ident #pretty_type_generics #pretty_where_clause
-            {
-                fn pretty(
-                    &self,
-                    context: &mut #facade::PrettyContext,
-                ) -> ::core::fmt::Result {
-                    #facade::__private::pretty_view(self, context)
-                }
+            impl #view_impl_generics #view_application #view_where_clause {
+                #accessors
             }
         }
     });
@@ -1574,36 +1601,18 @@ pub(super) fn render_node(
 
         #metadata
 
-        #[derive(Clone, Copy)]
-        #visibility struct #view_ident #view_generics {
-            value: &'view #node_ident #type_generics,
-            cursor: #facade::__private::ViewCursor<'view>,
-        }
+        #view_accessors
 
-        impl #view_impl_generics #view_ident #view_type_generics #view_where_clause {
-            pub fn span_elements(self) -> #facade::Elements<'view> {
+        impl #impl_generics #facade::__private::NodeElements for #node_ident #type_generics
+            #where_clause
+        {
+            fn __recursa_span_elements<'view>(
+                &'view self,
+                cursor: #facade::__private::ViewCursor<'view>,
+            ) -> #facade::Elements<'view> {
                 #span_elements
             }
-
-            #trivia_gaps
-
-            #accessors
         }
-
-        impl #view_impl_generics #facade::NodeView
-            for #view_ident #view_type_generics #view_where_clause
-        {
-            type Value = #node_ident #type_generics;
-            fn value(&self) -> &Self::Value { self.value }
-            fn span_elements(&self) -> #facade::Elements<'_> {
-                // Generic views are `Copy` only for `Copy` parameters, so rebuild the
-                // borrowing view instead of copying `*self`.
-                Self::span_elements(Self { value: self.value, cursor: self.cursor })
-            }
-            fn __recursa_cursor(&self) -> #facade::__private::ViewCursor<'_> { self.cursor }
-        }
-
-        #view_pretty
 
         impl #impl_generics #facade::__private::NodeViewFactory for #node_ident #type_generics
             #where_clause
@@ -1612,8 +1621,8 @@ pub(super) fn render_node(
             fn view<'view>(
                 &'view self,
                 cursor: #facade::__private::ViewCursor<'view>,
-            ) -> <Self as #facade::__private::NodeViewFactory>::View<'view> {
-                #view_ident { value: self, cursor }
+            ) -> #view_application {
+                #module_anchor::View { value: self, cursor }
             }
         }
 
