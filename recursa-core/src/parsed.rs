@@ -553,6 +553,20 @@ pub trait NodeView: HasSpan {
     fn __recursa_cursor(&self) -> ViewCursor<'_>;
 }
 
+#[doc(hidden)]
+/// Selects the provenance-element table for a value's active shape.
+///
+/// Generated Node bodies implement this once per Node; the grammar-local
+/// generic `View` forwards [`NodeView::span_elements`] to it. Content tokens
+/// keep the empty default.
+pub trait NodeElements {
+    /// Returns the active grammar elements of this value at `cursor`.
+    fn __recursa_span_elements<'view>(&'view self, cursor: ViewCursor<'view>) -> Elements<'view> {
+        let _ = cursor;
+        Elements::empty()
+    }
+}
+
 impl<V: NodeView> crate::output::span_seal::Sealed for V {}
 
 impl<V: NodeView> HasSpan for V {

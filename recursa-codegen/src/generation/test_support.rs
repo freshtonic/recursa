@@ -1682,21 +1682,20 @@ fn compound_fixture_source() -> String {
 pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
     let imported = compound_fixture_source().replace(
         "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        "mod authored { pub struct RecordView; }\nuse authored::RecordView;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+        "mod authored { pub struct View; }\nuse authored::View;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
     );
     let detail = compound_fixture_join_error(imported);
     assert!(
-        detail.contains("generated concrete view `RecordView` collides"),
+        detail.contains("generated view type `View` collides with an authored import"),
         "{detail}"
     );
 
-    let token_binding = compound_fixture_source().replace(
-        "pub text: CountText<'input>",
-        "pub text: RecordView<'input>",
-    );
+    let token_binding =
+        compound_fixture_source().replace("pub text: CountText<'input>", "pub text: View<'input>");
     let detail = compound_fixture_join_error(token_binding);
     assert!(
-        detail.contains("generated concrete view `RecordView` collides"),
+        detail
+            .contains("generated view type `View` collides with a generated content-token binding"),
         "{detail}"
     );
 }

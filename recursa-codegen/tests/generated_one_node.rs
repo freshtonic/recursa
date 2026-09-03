@@ -243,7 +243,7 @@ recursa::tokens! {}
 pub enum Entry<'input> {
     View(
         #[lex(pattern = r"[A-Za-z]+")]
-        View<'input>,
+        Word<'input>,
     ),
 }
 "#,

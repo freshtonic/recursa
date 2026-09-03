@@ -1107,7 +1107,7 @@ pub(super) fn planned_kind_variants(
     Ok(variants)
 }
 
-/// Rejects authored members that collide with generated Node-view names.
+/// Rejects an authored `View` item or import in the grammar module, where the generic view lives.
 pub(super) fn validate_view_collisions(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1147,28 +1147,11 @@ pub(super) fn validate_view_collisions(
         );
     }
 
-    for node in &resolved.nodes {
-        let view_name = format!("{}View", node.ident);
-        if let Some(origin) = occupied.get(&(node.module, view_name.clone())) {
-            return Err(format!(
-                "generated concrete view `{view_name}` collides with {origin} beside Node `{}`",
-                node.ident
-            ));
-        }
-        occupied.insert((node.module, view_name), "another generated concrete view");
-    }
-    for binding in &resolved.token_bindings {
-        let view_name = format!("{}View", binding.ident);
-        if let Some(origin) = occupied.get(&(binding.module, view_name.clone())) {
-            return Err(format!(
-                "generated concrete view `{view_name}` collides with {origin} beside content token `{}`",
-                binding.ident
-            ));
-        }
-        occupied.insert(
-            (binding.module, view_name),
-            "another generated concrete view",
-        );
+    let anchor = resolved.configuration.module;
+    if let Some(origin) = occupied.get(&(anchor, "View".to_owned())) {
+        return Err(format!(
+            "generated view type `View` collides with {origin} in the grammar module"
+        ));
     }
     Ok(())
 }

@@ -309,7 +309,7 @@ fn main() {
     assert_eq!(partial_prefix.render(), "or alpha");
 
     let record = parse_spanned!(grammar::Record<'_>, "ReCoRd:alpha 42");
-    let _: grammar::RecordView<'_, '_> = record.root();
+    let _: grammar::View<'_, grammar::Record<'_>> = record.root();
     assert_eq!(
         record.root().span(),
         Some(recursa::Span::new(0, 15).unwrap())

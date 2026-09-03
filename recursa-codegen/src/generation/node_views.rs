@@ -136,7 +136,7 @@ pub(super) fn render_span_elements(
     match &node.body {
         NodeBodyPlan::Struct { .. } => {
             let metadata = metadata_static(node_index, None);
-            quote!(self.cursor.elements(#metadata))
+            quote!(cursor.elements(#metadata))
         }
         NodeBodyPlan::Enum { variants, .. } => {
             let node_ident = &node.ident;
@@ -144,9 +144,9 @@ pub(super) fn render_span_elements(
                 let variant_ident = &variant.ident;
                 let pattern = variant_pattern(node_ident, variant_ident, variant.style);
                 let metadata = metadata_static(node_index, Some(index));
-                quote!(#pattern => self.cursor.elements(#metadata),)
+                quote!(#pattern => cursor.elements(#metadata),)
             });
-            quote!(match self.value { #(#arms)* })
+            quote!(match self { #(#arms)* })
         }
         NodeBodyPlan::Pratt(pratt) => {
             let node_ident = &node.ident;
@@ -154,16 +154,16 @@ pub(super) fn render_span_elements(
                 let variant = &branch.variant;
                 let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
                 let metadata = metadata_static(node_index, Some(index));
-                quote!(#pattern => self.cursor.elements(#metadata),)
+                quote!(#pattern => cursor.elements(#metadata),)
             });
             let led_offset = pratt.nud.len();
             let led = pratt.led.iter().enumerate().map(|(index, branch)| {
                 let variant = &branch.variant;
                 let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
                 let metadata = metadata_static(node_index, Some(led_offset + index));
-                quote!(#pattern => self.cursor.elements(#metadata),)
+                quote!(#pattern => cursor.elements(#metadata),)
             });
-            quote!(match self.value { #(#nud)* #(#led)* })
+            quote!(match self { #(#nud)* #(#led)* })
         }
     }
 }
