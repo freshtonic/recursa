@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{GrammarDescription, KindId, KindSet, TextEquivalence, TextPredicate, TextPredicateId};
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One canonical spelling partition within a token kind.
 pub(crate) enum TextPartition {
     /// Every spelling in the token kind.

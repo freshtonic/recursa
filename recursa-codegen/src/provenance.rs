@@ -2,7 +2,7 @@
 
 #![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
-use std::collections::BTreeMap;
+use crate::fast_hash::FxHashMap;
 
 use crate::{
     AtomId, DeclId, KindId, KindSet, PrattPosition, ProofId, SiteId, TextPredicateId, TypeId,
@@ -26,7 +26,7 @@ fn proof_comparisons_for_test() -> usize {
     PROOF_COMPARISONS.get()
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One typed derivation step in a canonical semantic proof chain.
 pub enum ProvenanceStep {
     /// A token kind follows directly from an authored atom declaration.
@@ -192,7 +192,7 @@ pub struct ProofArena {
     /// Proof nodes indexed by [`ProofId`].
     nodes: Vec<ProofNode>,
     /// Existing identities keyed by parent and typed derivation step.
-    interned: BTreeMap<(Option<ProofId>, ProvenanceStep), ProofId>,
+    interned: FxHashMap<(Option<ProofId>, ProvenanceStep), ProofId>,
     /// Stable source order indexed by authored declaration identity.
     source_order_by_declaration: Vec<u32>,
 }
@@ -219,7 +219,7 @@ impl ProofArena {
     pub(crate) fn with_source_order(source_order_by_declaration: Vec<u32>) -> Self {
         Self {
             nodes: Vec::new(),
-            interned: BTreeMap::new(),
+            interned: FxHashMap::default(),
             source_order_by_declaration,
         }
     }

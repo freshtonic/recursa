@@ -41,9 +41,11 @@ use crate::resolution::{
     ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType,
     ResolvedTypeKind, ResolvedVariantId, SemanticOwner, SemanticTarget,
 };
+#[cfg(test)]
+use crate::source_analysis::analyze_source_tree;
 use crate::source_analysis::{
     CargoOutput, DiscoveredSourceTree, SourceAnalysisInput, analyze_discovered_tree,
-    analyze_source_tree, discover_source_tree, internal_generate_error, warning_directives,
+    discover_source_tree, internal_generate_error, warning_directives,
 };
 use crate::source_model::{
     ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
