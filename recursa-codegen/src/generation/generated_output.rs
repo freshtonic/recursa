@@ -59,9 +59,15 @@ mod tests {
         assert!(bounded.contains("impl Parse for Node"));
         assert!(bounded.contains("impl Explore for Node"));
         assert!(bounded.contains("const _ : fn () = | | { } ;"));
-        assert!(!bounded.contains(")] impl"), "impls carry no attribute of their own");
+        assert!(
+            !bounded.contains(")] impl"),
+            "impls carry no attribute of their own"
+        );
         assert!(!bounded.contains(")] const _ : fn"));
-        assert!(!bounded.contains(")] fn "), "free functions carry no attribute of their own");
+        assert!(
+            !bounded.contains(")] fn "),
+            "free functions carry no attribute of their own"
+        );
         assert!(!bounded.contains(")] static "));
         let allowed_prefix = bounded
             .split("pub struct NodeView")
@@ -1017,7 +1023,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        fn __recursa_typed_kind(kind: u16) -> TokenKind {
+        pub(crate) fn __recursa_typed_kind(kind: u16) -> TokenKind {
             match kind {
                 #(#kind_match_arms)*
                 _ => TokenKind::LexicalError,

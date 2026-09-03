@@ -221,23 +221,12 @@ pub(super) fn render_token(
             }
         }
     };
-    let parsed_kind = stores_kind.then(|| {
-        let typed_kind_arms = accepted_kind_variants.iter().map(|variant| {
-            let index = plan
-                .kind_variants
-                .iter()
-                .position(|candidate| candidate == variant)
-                .expect("an accepted token kind must have an emitted variant")
-                as u16;
-            quote!(#index => #module_anchor::TokenKind::#variant,)
-        });
-        quote! {
-            kind: match record.kind {
-                #(#typed_kind_arms)*
-                _ => unreachable!("the parser admitted an unexpected token kind"),
-            },
-        }
-    });
+    // The expectation guard in the generated parse method admits only the accepted kinds,
+    // so the grammar-wide `__recursa_typed_kind` table yields exactly the accepted variant.
+    // Sharing that table avoids one kind-to-variant match per content-token type.
+    let parsed_kind = stores_kind.then(
+        || quote!(kind: #module_anchor::__recursa_lexical::__recursa_typed_kind(record.kind),),
+    );
     let expected = render_expected_set(plan, &token.expected);
     let capture = token.capture.render(facade);
     let mut standard_derives = token
