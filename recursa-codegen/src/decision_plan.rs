@@ -191,8 +191,6 @@ impl DispatchPosition {
 pub struct DispatchTrieNode {
     /// Optional decision when the consumed prefix ends here.
     terminal: Option<DispatchTerminal>,
-    /// Declaration committed for recovery after a consumed distinguishing prefix.
-    recovery_commitment: Option<DeclId>,
     /// Already-discriminated outgoing token predicates.
     edges: Arc<[DispatchTrieEdge]>,
 }
@@ -201,11 +199,6 @@ impl DispatchTrieNode {
     /// Returns the terminal decision at this prefix, when any.
     pub const fn terminal(&self) -> Option<DispatchTerminal> {
         self.terminal
-    }
-
-    /// Returns the recovery commitment earned by the consumed prefix, when any.
-    pub const fn recovery_commitment(&self) -> Option<DeclId> {
-        self.recovery_commitment
     }
 
     /// Returns the outgoing discriminated edges.
@@ -2203,7 +2196,6 @@ fn dispatch_plan<'a>(
             .any(|sequence| sequence.positions.is_empty() && sequence.on_caller_follow)
             .then_some(branch.declaration)
     });
-    let (trie, _) = freeze_recovery_commitments(&trie, false);
     DispatchPlan {
         owner,
         kind,
@@ -2279,7 +2271,6 @@ fn compact_enum_dispatch_plan(
         .terminal
         .filter(|terminal| terminal.mode == DispatchTerminalMode::CallerFollow)
         .map(|terminal| terminal.declaration);
-    let (trie, _) = freeze_recovery_commitments(&trie, false);
     DispatchPlan {
         owner,
         kind: DispatchKind::Enum,
@@ -2289,63 +2280,6 @@ fn compact_enum_dispatch_plan(
         trie,
         balanced,
     }
-}
-
-/// Freezes recovery commitments without allowing the empty root prefix to commit.
-///
-/// A node commits one declaration for recovery exactly when a non-empty prefix
-/// has been consumed and every terminal reachable at or below the node selects
-/// that declaration. Frozen tries share suffix nodes through immutable edges,
-/// so commitments are joined by rebuilding each distinct node once; sharing is
-/// preserved through a per-node memo keyed by the shared edge storage.
-fn freeze_recovery_commitments(
-    node: &DispatchTrieNode,
-    prefix_consumed: bool,
-) -> (DispatchTrieNode, Vec<DeclId>) {
-    /// Identity of one shared frozen node under a fixed prefix-consumption role.
-    type CommitmentKey = (Option<DispatchTerminal>, usize, usize, bool);
-
-    fn rebuild(
-        node: &DispatchTrieNode,
-        prefix_consumed: bool,
-        memo: &mut BTreeMap<CommitmentKey, (DispatchTrieNode, Vec<DeclId>)>,
-    ) -> (DispatchTrieNode, Vec<DeclId>) {
-        let key = (
-            node.terminal,
-            node.edges.as_ptr() as usize,
-            node.edges.len(),
-            prefix_consumed,
-        );
-        if let Some(cached) = memo.get(&key) {
-            return cached.clone();
-        }
-        let mut declarations = node
-            .terminal
-            .map(|terminal| vec![terminal.declaration])
-            .unwrap_or_default();
-        let mut edges = Vec::with_capacity(node.edges.len());
-        for edge in node.edges.iter() {
-            let (next, reached) = rebuild(&edge.next, true, memo);
-            declarations.extend(reached);
-            edges.push(DispatchTrieEdge {
-                position: edge.position.clone(),
-                next,
-            });
-        }
-        declarations.sort_unstable();
-        declarations.dedup();
-        let rebuilt = DispatchTrieNode {
-            terminal: node.terminal,
-            recovery_commitment: (prefix_consumed && declarations.len() == 1)
-                .then(|| declarations[0]),
-            edges: edges.into(),
-        };
-        let result = (rebuilt, declarations);
-        memo.insert(key, result.clone());
-        result
-    }
-
-    rebuild(node, prefix_consumed, &mut BTreeMap::new())
 }
 
 /// Converts one compact semantic trie into the published dispatch representation.
@@ -2370,7 +2304,6 @@ fn dispatch_trie_from_compact(node: crate::analysis::CompactDispatchNode) -> Dis
             return converted.clone();
         }
         let converted = DispatchTrieNode {
-            recovery_commitment: None,
             terminal: node.terminal.map(|terminal| DispatchTerminal {
                 declaration: terminal.declaration,
                 mode: match terminal.mode {
@@ -2700,7 +2633,6 @@ fn freeze_dispatch_state(
                     declaration: terminal.declaration,
                     mode: DispatchTerminalMode::Immediate,
                 }),
-                recovery_commitment: None,
                 edges: Arc::default(),
             },
             relative_required_lookahead: 0,
@@ -2734,7 +2666,6 @@ fn freeze_dispatch_state(
                         declaration: first.declaration,
                         mode: DispatchTerminalMode::Immediate,
                     }),
-                    recovery_commitment: None,
                     edges: Arc::default(),
                 },
                 relative_required_lookahead: 0,
@@ -2801,7 +2732,6 @@ fn freeze_dispatch_state(
     let frozen = FrozenDispatchState {
         node: DispatchTrieNode {
             terminal,
-            recovery_commitment: None,
             edges: edges.into(),
         },
         relative_required_lookahead,
@@ -4696,7 +4626,6 @@ mod tests {
         let grammar = pratt_and_repeat_grammar();
         let post_close = DispatchTrieNode {
             terminal: None,
-            recovery_commitment: None,
             edges: vec![DispatchTrieEdge {
                 position: DispatchPosition {
                     kinds: KindSet::singleton(grammar.kind_count, KindId::new(2)).unwrap(),
@@ -4707,7 +4636,6 @@ mod tests {
                         declaration: DeclId::new(0),
                         mode: DispatchTerminalMode::Immediate,
                     }),
-                    recovery_commitment: None,
                     edges: Arc::default(),
                 },
             }]

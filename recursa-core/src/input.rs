@@ -198,12 +198,6 @@ impl<'i, A> Input<'i, A> {
         self.cursor
     }
 
-    /// Returns the finite number of finalized records in this parse session.
-    #[cfg(feature = "explorer")]
-    pub(crate) fn record_count(&self) -> usize {
-        self.records.len()
-    }
-
     /// Restores a previously captured cursor after transactional parsing.
     pub(crate) fn restore(&mut self, cursor: usize) {
         debug_assert!(cursor <= self.records.len());

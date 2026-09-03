@@ -165,21 +165,15 @@ fn analysis_freezes_all_follow_recipes_and_permutation_invariant_dispatch() {
         .iter()
         .find(|dispatch| dispatch.kind() == DispatchKind::Enum)
         .expect("the enum dispatch is frozen");
-    assert_eq!(enum_dispatch.trie().recovery_commitment(), None);
-    assert!(
-        enum_dispatch
-            .trie()
-            .edges()
-            .iter()
-            .all(|edge| edge.next().recovery_commitment().is_some())
-    );
+    assert!(enum_dispatch.trie().terminal().is_none());
     assert!(
         enum_dispatch.trie().edges().iter().all(|edge| {
-            edge.next().edges().iter().all(|leaf| {
-                leaf.next().edges().is_empty() && leaf.next().recovery_commitment().is_some()
-            })
+            edge.next()
+                .edges()
+                .iter()
+                .all(|leaf| leaf.next().edges().is_empty() && leaf.next().terminal().is_some())
         }),
-        "a unique consumed leaf remains a frozen recovery commitment",
+        "every consumed two-token prefix ends in one frozen terminal leaf",
     );
 
     let reversed = grammar_with_decisions(true);
