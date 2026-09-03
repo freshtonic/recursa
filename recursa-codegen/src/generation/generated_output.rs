@@ -58,7 +58,7 @@ mod tests {
         assert!(bounded.contains("impl < 'view > NodeView < 'view >"));
         assert!(bounded.contains("impl Parse for Node"));
         assert!(bounded.contains("impl Explore for Node"));
-        assert!(bounded.contains("const _ : fn () = | | { } ;"));
+        assert!(bounded.contains("const _ : fn () = || { } ;"));
         assert!(
             !bounded.contains(")] impl"),
             "impls carry no attribute of their own"
@@ -412,45 +412,51 @@ fn apply_generated_lint_boundary(
 }
 
 /// Builds the lint scope boundaries for one item list and, recursively, its capability gates.
+///
+/// Items are split at the token level. Only each item's head (attributes, visibility, and the
+/// item keyword) is inspected, so impl and function bodies are never re-parsed: the generated
+/// bodies are already well-formed token trees, and parsing them again with `syn` was the single
+/// most expensive step of rendering.
 fn bound_lint_scope(
     tokens: proc_macro2::TokenStream,
     scope: &str,
     next_scope: &mut usize,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let file = syn::parse2::<syn::File>(tokens)?;
     let policy = generated_lint_policy();
     let mut rendered = proc_macro2::TokenStream::new();
-    let mut scoped_impls = Vec::new();
-    let mut scoped_privates = Vec::new();
+    let mut scoped_impls = proc_macro2::TokenStream::new();
+    let mut scoped_privates = proc_macro2::TokenStream::new();
     let mut reexport_crate_wide = false;
-    for item in file.items {
-        match item {
-            syn::Item::Macro(mut item) => {
-                if item.mac.path.is_ident("__recursa_if_arbitrary")
-                    || item.mac.path.is_ident("__recursa_if_serde")
-                    || item.mac.path.is_ident("__recursa_if_explorer")
-                {
-                    item.mac.tokens = bound_lint_scope(item.mac.tokens, scope, next_scope)?;
-                }
-                rendered.extend(quote!(#item));
+    for item in split_generated_items(tokens)? {
+        match item.kind {
+            RawItemKind::Macro {
+                capability_gate: true,
+                group,
+            } => {
+                let mut tokens = item.tokens;
+                let proc_macro2::TokenTree::Group(gate) = &tokens[group] else {
+                    unreachable!("a macro invocation ends in its delimited body");
+                };
+                let bounded = bound_lint_scope(gate.stream(), scope, next_scope)?;
+                let mut rebuilt = proc_macro2::Group::new(gate.delimiter(), bounded);
+                rebuilt.set_span(gate.span());
+                tokens[group] = proc_macro2::TokenTree::Group(rebuilt);
+                rendered.extend(tokens);
             }
-            syn::Item::Impl(_) => scoped_impls.push(item),
-            syn::Item::Const(constant) if constant.ident == "_" => {
-                scoped_impls.push(syn::Item::Const(constant));
+            RawItemKind::Macro { .. } => rendered.extend(item.tokens),
+            RawItemKind::Impl | RawItemKind::AnonymousConst => {
+                scoped_impls.extend(item.tokens);
             }
-            syn::Item::Fn(mut function) if is_scoped_visibility(&function.vis) => {
-                reexport_crate_wide |= scope_visibility(&mut function.vis);
-                scoped_privates.push(syn::Item::Fn(function));
+            RawItemKind::Fn | RawItemKind::Static | RawItemKind::NamedConst
+                if item.visibility != RawVisibility::Other =>
+            {
+                reexport_crate_wide |= item.visibility == RawVisibility::Crate;
+                scoped_privates.extend(item.into_scoped_tokens());
             }
-            syn::Item::Static(mut statik) if is_scoped_visibility(&statik.vis) => {
-                reexport_crate_wide |= scope_visibility(&mut statik.vis);
-                scoped_privates.push(syn::Item::Static(statik));
+            _ => {
+                rendered.extend(policy.clone());
+                rendered.extend(item.tokens);
             }
-            syn::Item::Const(mut constant) if is_scoped_visibility(&constant.vis) => {
-                reexport_crate_wide |= scope_visibility(&mut constant.vis);
-                scoped_privates.push(syn::Item::Const(constant));
-            }
-            item => rendered.extend(quote!(#policy #item)),
         }
     }
     if !scoped_privates.is_empty() {
@@ -466,7 +472,7 @@ fn bound_lint_scope(
             mod #module {
                 #[allow(unused_imports)]
                 use super::*;
-                #(#scoped_privates)*
+                #scoped_privates
             }
             #[allow(unused_imports)]
             #import
@@ -476,46 +482,269 @@ fn bound_lint_scope(
         rendered.extend(quote! {
             #policy
             const _: () = {
-                #(#scoped_impls)*
+                #scoped_impls
             };
         });
     }
     Ok(rendered)
 }
 
-/// Reports whether an item may move into a lint scope module.
-///
-/// Private and `pub(crate)` items move. Any other visibility stays at its original module level
-/// because a nested module would change the meaning of `pub(super)` and of `pub(in path)`, and
-/// public API must keep its documented path.
-fn is_scoped_visibility(visibility: &Visibility) -> bool {
-    match visibility {
-        Visibility::Inherited => true,
-        Visibility::Restricted(_) => is_crate_visibility(visibility),
-        Visibility::Public(_) => false,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Item visibility as far as lint scoping needs to distinguish it.
+enum RawVisibility {
+    /// No visibility keyword: the item moves into a scope module as `pub(super)`.
+    Inherited,
+    /// Exactly `pub(crate)`: the item moves and the scope module is re-exported crate-wide.
+    Crate,
+    /// Any other visibility: the item stays at its original module level.
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Item classification derived from the head tokens of one generated item.
+enum RawItemKind {
+    /// A macro invocation or `macro_rules!` definition; `group` indexes its delimited body.
+    Macro {
+        /// Whether the invocation is one of the known capability pass-through gates.
+        capability_gate: bool,
+        /// Index of the delimited body within the item's tokens.
+        group: usize,
+    },
+    /// An `impl` block, with or without `unsafe`.
+    Impl,
+    /// An anonymous `const _` item.
+    AnonymousConst,
+    /// A named constant.
+    NamedConst,
+    /// A free function.
+    Fn,
+    /// A static item.
+    Static,
+    /// Any other item; it keeps an individual lint attribute.
+    Other,
+}
+
+/// One top-level generated item split from a token stream without parsing its body.
+struct RawItem {
+    /// Every token of the item, attributes first.
+    tokens: Vec<proc_macro2::TokenTree>,
+    /// Number of leading tokens that form outer attributes.
+    attributes: usize,
+    /// Number of tokens that form the visibility after the attributes.
+    visibility_tokens: usize,
+    /// Visibility classification.
+    visibility: RawVisibility,
+    /// Item classification.
+    kind: RawItemKind,
+}
+
+impl RawItem {
+    /// Rewrites the item for its scope module: private items become `pub(super)`.
+    fn into_scoped_tokens(self) -> Vec<proc_macro2::TokenTree> {
+        if self.visibility != RawVisibility::Inherited {
+            return self.tokens;
+        }
+        let mut tokens = Vec::with_capacity(self.tokens.len() + 2);
+        let attributes_end = self.attributes;
+        let body_start = attributes_end + self.visibility_tokens;
+        tokens.extend_from_slice(&self.tokens[..attributes_end]);
+        tokens.extend(quote!(pub(super)));
+        tokens.extend_from_slice(&self.tokens[body_start..]);
+        tokens
     }
 }
 
-/// Rewrites a scoped item's visibility for its new module and reports crate-wide reach.
-///
-/// Private items become `pub(super)`, which restores their original reach from inside the scope
-/// module. `pub(crate)` items keep their visibility and return `true` so the enclosing scope
-/// re-exports the module crate-wide.
-fn scope_visibility(visibility: &mut Visibility) -> bool {
-    if is_crate_visibility(visibility) {
-        return true;
-    }
-    *visibility = syn::parse_quote!(pub(super));
-    false
+/// Reports whether a token is the given punctuation character.
+fn is_punct(token: &proc_macro2::TokenTree, character: char) -> bool {
+    matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == character)
 }
 
-/// Reports whether a visibility is exactly `pub(crate)`.
-fn is_crate_visibility(visibility: &Visibility) -> bool {
-    matches!(
-        visibility,
-        Visibility::Restricted(restricted)
-            if restricted.in_token.is_none() && restricted.path.is_ident("crate")
-    )
+/// Reports whether a token is the given identifier or keyword.
+fn is_ident(token: &proc_macro2::TokenTree, name: &str) -> bool {
+    matches!(token, proc_macro2::TokenTree::Ident(ident) if ident == name)
+}
+
+/// Reports whether a token is a group with the given delimiter.
+fn is_group(token: &proc_macro2::TokenTree, delimiter: proc_macro2::Delimiter) -> bool {
+    matches!(token, proc_macro2::TokenTree::Group(group) if group.delimiter() == delimiter)
+}
+
+/// Splits a generated item list at the token level.
+///
+/// A top-level item ends at the first `;` outside any delimiter group, or, for brace-bodied
+/// items, at the first `{ ... }` group outside any delimiter group and outside generic
+/// arguments. Constants, statics, type aliases, and imports end only at `;`, because their
+/// types and initializers may carry const-generic brace groups before the terminator.
+fn split_generated_items(tokens: proc_macro2::TokenStream) -> Result<Vec<RawItem>, syn::Error> {
+    use proc_macro2::{Delimiter, TokenTree};
+
+    let trees = tokens.into_iter().collect::<Vec<_>>();
+    let mut items = Vec::new();
+    let mut start = 0;
+    while start < trees.len() {
+        let no_terminator = |at: usize| {
+            syn::Error::new(
+                trees[at.min(trees.len() - 1)].span(),
+                "generated item has no terminator",
+            )
+        };
+        let mut index = start;
+        while index < trees.len() && is_punct(&trees[index], '#') {
+            let mut next = index + 1;
+            if next < trees.len() && is_punct(&trees[next], '!') {
+                next += 1;
+            }
+            if next < trees.len() && is_group(&trees[next], Delimiter::Bracket) {
+                index = next + 1;
+            } else {
+                break;
+            }
+        }
+        let attributes = index - start;
+        if index >= trees.len() {
+            return Err(no_terminator(index));
+        }
+        let mut visibility = RawVisibility::Inherited;
+        let mut visibility_tokens = 0;
+        if is_ident(&trees[index], "pub") {
+            visibility_tokens = 1;
+            visibility = RawVisibility::Other;
+            if let Some(TokenTree::Group(restriction)) = trees.get(index + 1)
+                && restriction.delimiter() == Delimiter::Parenthesis
+            {
+                let restriction = restriction.stream().into_iter().collect::<Vec<_>>();
+                if restriction.len() == 1 && is_ident(&restriction[0], "crate") {
+                    visibility = RawVisibility::Crate;
+                }
+                visibility_tokens = 2;
+            }
+        }
+        let mut keyword = index + visibility_tokens;
+        loop {
+            let Some(token) = trees.get(keyword) else {
+                return Err(no_terminator(keyword));
+            };
+            if is_ident(token, "unsafe") || is_ident(token, "async") || is_ident(token, "default") {
+                keyword += 1;
+            } else if is_ident(token, "extern")
+                && trees
+                    .get(keyword + 1)
+                    .is_some_and(|next| matches!(next, TokenTree::Literal(_)))
+            {
+                keyword += 2;
+            } else if is_ident(token, "extern")
+                && trees
+                    .get(keyword + 1)
+                    .is_some_and(|next| is_ident(next, "fn") || is_ident(next, "crate"))
+            {
+                keyword += 1;
+            } else if is_ident(token, "const")
+                && trees
+                    .get(keyword + 1)
+                    .is_some_and(|next| is_ident(next, "fn"))
+            {
+                keyword += 1;
+            } else {
+                break;
+            }
+        }
+        let head = match &trees[keyword] {
+            TokenTree::Ident(ident) => ident.to_string(),
+            _ => String::new(),
+        };
+        let (kind, brace_terminated) = match head.as_str() {
+            "fn" => (RawItemKind::Fn, true),
+            "impl" => (RawItemKind::Impl, true),
+            "static" => (RawItemKind::Static, false),
+            "const" => {
+                let anonymous = trees
+                    .get(keyword + 1)
+                    .is_some_and(|next| is_ident(next, "_"));
+                (
+                    if anonymous {
+                        RawItemKind::AnonymousConst
+                    } else {
+                        RawItemKind::NamedConst
+                    },
+                    false,
+                )
+            }
+            "struct" | "enum" | "union" | "trait" | "mod" => (RawItemKind::Other, true),
+            "type" | "use" | "crate" => (RawItemKind::Other, false),
+            _ => {
+                // A macro invocation or definition: `path ! [name] <delimited body>`.
+                let bang = (keyword..trees.len())
+                    .find(|at| is_punct(&trees[*at], '!'))
+                    .ok_or_else(|| no_terminator(keyword))?;
+                let group = (bang + 1..trees.len())
+                    .find(|at| matches!(trees[*at], TokenTree::Group(_)))
+                    .ok_or_else(|| no_terminator(bang))?;
+                let capability_gate = visibility_tokens == 0
+                    && bang == keyword + 1
+                    && (head == "__recursa_if_arbitrary"
+                        || head == "__recursa_if_serde"
+                        || head == "__recursa_if_explorer");
+                let end = if is_group(&trees[group], Delimiter::Brace) {
+                    group
+                } else {
+                    (group + 1..trees.len())
+                        .find(|at| is_punct(&trees[*at], ';'))
+                        .ok_or_else(|| no_terminator(group))?
+                };
+                items.push(RawItem {
+                    tokens: trees[start..=end].to_vec(),
+                    attributes,
+                    visibility_tokens,
+                    visibility,
+                    kind: RawItemKind::Macro {
+                        capability_gate,
+                        group: group - start,
+                    },
+                });
+                start = end + 1;
+                continue;
+            }
+        };
+        let mut angle = 0i32;
+        let mut end = None;
+        let mut at = keyword + 1;
+        while at < trees.len() {
+            match &trees[at] {
+                TokenTree::Punct(punct) if punct.as_char() == ';' => {
+                    end = Some(at);
+                    break;
+                }
+                TokenTree::Punct(punct)
+                    if punct.as_char() == '-'
+                        && punct.spacing() == proc_macro2::Spacing::Joint
+                        && trees.get(at + 1).is_some_and(|next| is_punct(next, '>')) =>
+                {
+                    at += 2;
+                    continue;
+                }
+                TokenTree::Punct(punct) if punct.as_char() == '<' => angle += 1,
+                TokenTree::Punct(punct) if punct.as_char() == '>' => angle -= 1,
+                TokenTree::Group(group)
+                    if brace_terminated && angle <= 0 && group.delimiter() == Delimiter::Brace =>
+                {
+                    end = Some(at);
+                    break;
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        let end = end.ok_or_else(|| no_terminator(keyword))?;
+        items.push(RawItem {
+            tokens: trees[start..=end].to_vec(),
+            attributes,
+            visibility_tokens,
+            visibility,
+            kind,
+        });
+        start = end + 1;
+    }
+    Ok(items)
 }
 
 /// Generated root fragments that exist only when a grammar retains classified trivia.
