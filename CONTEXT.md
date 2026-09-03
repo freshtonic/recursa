@@ -94,12 +94,16 @@ An immutable exact source range before, between, or after non-trivia lexical rec
 _Avoid_: Reconstructed whitespace, token attachment
 
 **Document framing**:
-Generated exact-source partitioning of a repeated island Node, its fixed boundary, atomic raw regions, and an optional committed-variant payload transition. It returns either a wholly strict typed partition or a wholly grammar-erased recovered partition.
+Generated exact-source partitioning of a repeated island Node, its fixed boundary, atomic raw regions, and an optional committed-variant payload transition. It returns either a wholly strict typed partition or a rejection at the first failing island.
 _Avoid_: Statement splitter, parser callback, partially typed document
 
 **Framing island**:
-One boundary-terminated occurrence of the Node selected by a document-framing declaration. A complete partition retains its `Parsed<T>`; after any ordinary failure, every framing island is replayed as a construction-free recovery node.
+One boundary-terminated occurrence of the Node selected by a document-framing declaration. A complete partition retains its `Parsed<T>`; the first ordinary failure rejects the whole document and no island value survives.
 _Avoid_: Best-effort AST, recovered statement
+
+**Framing rejection**:
+The ordinary strict failure of one document: the extent of the first failing island candidate, that island's strict parse diagnostics, and the framing cause (missing boundary or missing payload terminator) when the island itself parsed. It is distinct from a fatal framing invariant error.
+_Avoid_: Recovered frame, partial document, syntax error list
 
 **Payload transition**:
 A generated framing transition entered only after strict parsing commits the configured framing-island variant. Its data and standalone physical-line terminator have distinct exact spans; an incomplete island prefix cannot enter payload mode.
@@ -289,34 +293,6 @@ _Avoid_: Explorer adapter, explorer backend
 A read-only explorer representation of one complete parsed or generated root and its occurrence provenance, bounded by the lifetime of the input from which it was produced.
 _Avoid_: Partial Explorer document, owned AST snapshot, parsed root
 
-**Exploration**:
-The mutually exclusive Explorer result of inspecting source: either a complete Explorer document or a recovery document produced after strict parsing fails.
-_Avoid_: Parse result, partial AST
-
-**Recovery document**:
-An owned, source-borrowing Explorer projection of recognized, missing, and skipped grammar structure that cannot contain or become an authored AST value.
-_Avoid_: Partial Explorer document, recovered AST
-
-**Recovery node**:
-A grammar-shaped node in a recovery document whose variant exists only after unique dispatch and whose parts may describe incomplete source.
-_Avoid_: Error Node, invalid AST node
-
-**Recovery part**:
-A source-ordered recognized element or separator, zero-width missing marker, or skipped source span owned by a recovery node.
-_Avoid_: Synthetic AST field, inserted token
-
-**Recovery plan**:
-The generated immutable, construction-free static payload that joins frozen dispatch, FIRST, FOLLOW, container, and Pratt binding products to Explorer schemas for one root's recovery interpreter.
-_Avoid_: Recovery grammar, error-recovery table
-
-**Recovery commitment**:
-The frozen dispatch-trie fact that one consumed distinguishing prefix leaves exactly one declaration reachable, letting recovery retain that variant before its terminal.
-_Avoid_: Speculative variant choice, declaration-order tie-break
-
-**Recovery progress trace**:
-The read-only execution evidence retained by a recovery document proving no zero-consumption progress key repeated and total work stayed within the finite state bound.
-_Avoid_: Debug log, profiler output
-
 **Explorer node**:
 A grammar-erased read-only handle to one Node or content-token occurrence in an explorer document, without exposing its semantic Rust type or occurrence identity.
 _Avoid_: Dynamic Node, Node key, AST address
@@ -330,7 +306,7 @@ The feature-selected static names, roles, and token classifications that describ
 _Avoid_: Public registry, UI model
 
 **Explorer capability**:
-The explorer-adapter declaration that recovery or a configured Pretty or Arbitrary operation is available for one generated root.
+The explorer-adapter declaration that a configured Pretty or Arbitrary operation is available for one generated root.
 _Avoid_: Runtime trait reflection, feature flag
 
 **Railroad diagram**:

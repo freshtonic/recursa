@@ -1,6 +1,6 @@
 # Keep Explorer recovery separate from authored AST values
 
-Status: accepted
+Status: superseded by [ADR 0003](0003-strict-only-explorer-and-framing.md)
 
 ## Context
 

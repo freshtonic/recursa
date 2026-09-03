@@ -1223,7 +1223,7 @@ impl Materializer {
     /// # Long-function contract
     ///
     /// Rationale: resolved Node identity alone is insufficient once generic applications exist; the
-    /// generated framing plan must select the same closed application used by parsing and recovery.
+    /// generated framing plan must select the same closed application used by strict parsing.
     /// Invariants: the island evaluates to one Node application correlated to its resolved Node, the
     /// payload owner evaluates to that exact application, and only the previously resolved variant ID
     /// crosses into the lowering map. Major phases: evaluate and validate the island type, evaluate

@@ -142,8 +142,9 @@ Document-oriented grammars can declare generated exact-source framing under
 the `explorer` capability. Framing recognizes repeated typed islands, atomic
 closed regions, and optional payload data opened only by a complete island
 variant. The result is transactional: either every island remains a strict
-`Parsed<T>`, or every island is replayed as a construction-free recovery node.
-See the [document-framing contract](docs/document-framing.md).
+`Parsed<T>`, or the document is rejected at its first failing island with that
+island's strict diagnostics. See the
+[document-framing contract](docs/document-framing.md).
 
 Run both compiled examples from a checkout:
 
@@ -185,7 +186,7 @@ The `recursa` facade has no default features. Optional features are:
 |---|---|
 | `arbitrary` | Generated `arbitrary::Arbitrary` implementations when configured by the grammar |
 | `diagrams` | Matching facade support for generated Rustdoc railroad diagrams, rendered only under `cargo doc` |
-| `explorer` | Grammar-erased Explorer adapter, recovery, and document-framing contracts |
+| `explorer` | Grammar-erased strict Explorer adapter and document-framing contracts |
 | `serde` | Generated Serde implementations when configured by the grammar |
 
 Build-time `diagrams` and `explorer` generation also require the corresponding

@@ -577,6 +577,22 @@ where
                         || Span::new(island_start, island_start).unwrap(),
                         ParseDiagnostic::span,
                     );
+                    // When the source before the failing token is itself a complete
+                    // island, the failure is a missing boundary rather than a syntax
+                    // error inside the island.
+                    let framing = prefix_is_complete_island::<T>(
+                        source,
+                        island_start,
+                        failure_span.start() as usize,
+                        lex,
+                        plan,
+                    )?
+                    .then(|| FrameDiagnostic {
+                        kind: FrameDiagnosticKind::MissingBoundary,
+                        span: failure_span,
+                        message: "framing island lacks its required boundary before this token"
+                            .into(),
+                    });
                     return Err(FrameFailure::Rejected(FrameRejection {
                         source,
                         island: checked_span(
@@ -585,7 +601,7 @@ where
                             rejection_end(source, &boundaries, failure_span),
                         )?,
                         diagnostics: failure.diagnostics().to_vec().into_boxed_slice(),
-                        framing: None,
+                        framing,
                     }));
                 }
             }
@@ -637,6 +653,35 @@ where
     }
     validate_draft_partition(source, &drafts)?;
     Ok(complete_from_drafts(source, drafts))
+}
+
+/// Reports whether the source before one failing token is a complete strict island.
+///
+/// The prefix must parse strictly and leave no significant token unconsumed; an
+/// empty prefix is never a complete island.
+fn prefix_is_complete_island<'input, T>(
+    source: &'input str,
+    island_start: usize,
+    prefix_end: usize,
+    lex: LexFn,
+    plan: &'static PlanData,
+) -> Result<bool, FrameError<'input>>
+where
+    T: GeneratedParse<'input> + ExplorerRoot + 'input,
+{
+    if prefix_end <= island_start {
+        return Ok(false);
+    }
+    let mut input = island_input(
+        source,
+        checked_span(source, island_start, prefix_end)?,
+        lex,
+        plan,
+    )?;
+    Ok(
+        parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow).is_ok()
+            && input.peek(0).is_none(),
+    )
 }
 
 /// Chooses the extent reported for a rejected island candidate.

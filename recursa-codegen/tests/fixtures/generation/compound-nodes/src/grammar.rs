@@ -169,7 +169,7 @@ pub type MaybeCount<'input> = Box<Option<Box<Count<'input>>>>;
 #[tok(PAIR, this)]
 pub struct Pair<'input>(pub Box<Label<'input>>, pub Option<Box<Count<'input>>>);
 
-/// A nested child must leave its owner suffix unconsumed during recovery.
+/// A nested child must leave its owner's fixed suffix unconsumed.
 #[derive(recursa::Node)]
 #[tok(CREATE, this, VIEW)]
 pub struct NestedRecovery<'input> {
@@ -197,7 +197,7 @@ pub struct RequiredCounts<'input> {
     pub values: recursa::Vec1<Box<Count<'input>>>,
 }
 
-/// A zero-occurrence `Vec` remains absent while a later fixed suffix recovers.
+/// A zero-occurrence `Vec` remains absent before a later fixed suffix.
 #[derive(recursa::Node)]
 #[tok(LEFT, this, MATERIALIZED)]
 pub struct ZeroLabelsThenSuffix<'input> {
@@ -205,7 +205,7 @@ pub struct ZeroLabelsThenSuffix<'input> {
     pub values: Vec<Box<Label<'input>>>,
 }
 
-/// An absent `Option<Vec1<_>>` remains valid while a later fixed suffix recovers.
+/// An absent `Option<Vec1<_>>` remains valid before a later fixed suffix.
 #[derive(recursa::Node)]
 #[tok(RIGHT, this, VIEW, MATERIALIZED)]
 pub struct OptionalCountsThenSuffix<'input> {
@@ -213,7 +213,7 @@ pub struct OptionalCountsThenSuffix<'input> {
     pub values: Option<Box<recursa::Vec1<Box<Count<'input>>>>>,
 }
 
-/// Each required attachment token is recovered by its own guarded transition.
+/// Each required attachment token is parsed by its own fixed transition.
 #[derive(recursa::Node)]
 pub struct MultipleRequiredAttachment<'input> {
     #[tok(CREATE, LEFT, this, RIGHT, VIEW)]
@@ -227,7 +227,7 @@ pub struct DuplicateRequiredAttachment<'input> {
     pub label: Label<'input>,
 }
 
-/// A committed two-token optional group advances one token per recovery transition.
+/// A two-token optional group is consumed atomically before its semantic value.
 #[derive(recursa::Node)]
 #[tok(optional(OR, REPLACE), this)]
 pub struct StandaloneAtomicOptional<'input> {
@@ -246,7 +246,7 @@ pub enum Entry<'input> {
     Empty,
 }
 
-/// Distinct fixed prefixes commit recovery before a branch field fails.
+/// Distinct fixed prefixes select a branch before its field parses.
 #[derive(recursa::Node)]
 pub enum RecoveryChoice<'input> {
     Right {
