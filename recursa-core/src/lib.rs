@@ -46,21 +46,24 @@ pub use visitor::{
 #[doc(hidden)]
 pub mod __private {
     pub use crate::dispatch::{DispatchTable, dispatch_table};
+    #[cfg(all(feature = "explorer", feature = "arbitrary"))]
+    pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
         ElementSchemaData as ExplorerElementSchemaData,
         ElementTargetData as ExplorerElementTargetData, ExplorerNode, ExplorerRoot,
-        GrammarSchemaData as ExplorerGrammarSchemaData, NodeData as ExplorerNodeData,
-        NodeSchemaData as ExplorerNodeSchemaData, TokenSchemaData as ExplorerTokenSchemaData,
+        ExplorerRootFamily, GrammarTablesData as ExplorerGrammarTablesData,
+        NodeData as ExplorerNodeData, NodeSchemaData as ExplorerNodeSchemaData,
+        SampleFn as ExplorerSampleFn, TokenSchemaData as ExplorerTokenSchemaData,
         VariantSchemaData as ExplorerVariantSchemaData, construct_adapter as explorer_adapter,
         content_token_target as explorer_content_token_target,
-        element_schema as explorer_element_schema, grammar_schema as explorer_grammar_schema,
+        element_schema as explorer_element_schema, grammar_tables as explorer_grammar_tables,
         lex_record as explorer_lex_record, lex_result as explorer_lex_result,
         node as explorer_node, node_child as explorer_node_child,
         node_schema as explorer_node_schema, node_target as explorer_node_target,
-        parse_document as explorer_parse_document, pretty_output as explorer_pretty_output,
-        sample_error as explorer_sample_error, token_node as explorer_token_node,
-        token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
+        parse_root as explorer_parse_root, pretty_root as explorer_pretty_root,
+        token_node as explorer_token_node, token_schema as explorer_token_schema,
+        variant_schema as explorer_variant_schema,
     };
     #[cfg(feature = "explorer")]
     pub use crate::framing::{

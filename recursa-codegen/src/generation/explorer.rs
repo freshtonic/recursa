@@ -1232,6 +1232,7 @@ pub(super) fn validate_explorer_collisions(
     };
 
     reserve(root_module, explorer_lex_function().to_string())?;
+    reserve(root_module, explorer_grammar_tables_static().to_string())?;
     reserve(root_module, explorer_node_schemas_static().to_string())?;
     reserve(root_module, explorer_token_schemas_static().to_string())?;
     for token in &explorer.tokens {
@@ -1274,21 +1275,7 @@ pub(super) fn validate_explorer_collisions(
     }
     let mut checked_root_nodes = BTreeSet::new();
     for root in &explorer.roots {
-        let (node, application) = explorer_application_parse_plan(nodes, root.application);
-        reserve(
-            root_module,
-            explorer_grammar_schema_static(application.parse_index).to_string(),
-        )?;
-        if root.capabilities.arbitrary {
-            reserve(
-                node.module,
-                explorer_sample_function(application.parse_index).to_string(),
-            )?;
-        }
-        reserve(
-            node.module,
-            explorer_parse_function(application.parse_index).to_string(),
-        )?;
+        let (node, _) = explorer_application_parse_plan(nodes, root.application);
         if checked_root_nodes.insert(root.node)
             && authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer")
         {
@@ -1817,23 +1804,21 @@ pub(super) fn render_node_application_explorer(
         .iter()
         .find(|root| root.node == node.node && root.application == application.application);
     let entry = root.map(|root| {
-        let grammar_schema = explorer_grammar_schema_static(node_index);
-        let sample = explorer_sample_function(node_index);
-        let parse = explorer_parse_function(node_index);
+        let root_schema = explorer_schema_static(node_index, None);
+        let grammar_tables = explorer_grammar_tables_static();
         let explorer_lex = explorer_lex_function();
+        let raw_lex = explorer_raw_lex_function();
         let pretty = root.capabilities.pretty;
-        let pretty_body = if pretty {
+        let pretty_method = pretty.then(|| {
             quote! {
-                Some(#facade::__private::explorer_pretty_output(
-                    #facade::Pretty::render_mapped_with(parsed, *config),
-                ))
+                fn __recursa_explorer_pretty(
+                    parsed: &#facade::Parsed<'_, Self>,
+                    config: &#facade::PrettyConfig,
+                ) -> Option<#facade::explorer::PrettyOutput> {
+                    #facade::__private::explorer_pretty_root(parsed, config)
+                }
             }
-        } else {
-            quote! {
-                let _ = (parsed, config);
-                None
-            }
-        };
+        });
         let arbitrary = root.capabilities.arbitrary;
         let framing_method = plan
             .framing
@@ -1867,74 +1852,31 @@ pub(super) fn render_node_application_explorer(
                     }
                 }
             });
-        let sample_function = arbitrary.then(|| {
+        // The sample gate expands to `(false, None)` unless the facade enables both
+        // `explorer` and `arbitrary`, so the generic sample path is named only when
+        // the runtime provides it.
+        let sample_binding = if arbitrary {
             quote! {
-                __recursa_if_arbitrary! {
-                    fn #sample(
-                        bytes: &[u8],
-                    ) -> Result<
-                        #facade::explorer::ExplorerDocument<'static>,
-                        #facade::explorer::SampleError,
-                    > {
-                        let mut input = #facade::__private::arbitrary::Unstructured::new(&bytes);
-                        let value = <#static_ty as #facade::Arbitrary>::arbitrary(&mut input)
-                            .map_err(|error| #facade::__private::explorer_sample_error(
-                                error.to_string(),
-                            ))?;
-                        let parsed = #facade::Parsed::synthetic(value);
-                        Ok(#facade::explorer::ExplorerDocument::from_parsed(parsed))
-                    }
-                }
-            }
-        });
-        let arbitrary_binding = if arbitrary {
-            quote! {
-                type __RecursaExplorerSampleCallback = fn(&[u8]) -> Result<
-                    #facade::explorer::ExplorerDocument<'static>,
-                    #facade::explorer::SampleError,
-                >;
-                let (arbitrary, sample): (
-                    bool,
-                    Option<__RecursaExplorerSampleCallback>,
-                ) = __recursa_explorer_sample!(#sample);
+                let (arbitrary, sample): (bool, Option<#facade::__private::ExplorerSampleFn>) =
+                    __recursa_explorer_sample!(
+                        #facade::__private::explorer_sample_root::<#static_ty>
+                    );
             }
         } else {
             quote! {
-                let (arbitrary, sample) = (false, None);
+                let (arbitrary, sample): (bool, Option<#facade::__private::ExplorerSampleFn>) =
+                    (false, None);
             }
         };
         quote! {
-            fn #parse<'__recursa_input>(
-                source: &'__recursa_input str,
-            ) -> Result<
-                #facade::explorer::ExplorerDocument<'__recursa_input>,
-                #facade::explorer::ParseFailure<'__recursa_input>,
-            > {
-                let lexed = #module_anchor::lex(source);
-                let lexical_errors = lexed.errors().map(|error| error.span());
-                let mut input = lexed.input();
-                #facade::__private::explorer_parse_document::<#ty, _>(
-                    &mut input.inner,
-                    lexical_errors,
-                )
-            }
-
-            #sample_function
-
             unsafe impl #entry_impl_generics #facade::__private::ExplorerRoot
                 for #ty #entry_where_clause
             {
-                fn __recursa_explorer_schema(
-                ) -> &'static #facade::__private::ExplorerGrammarSchemaData {
-                    &#module_anchor::#grammar_schema
-                }
+                #pretty_method
+            }
 
-                fn __recursa_explorer_pretty(
-                    parsed: &#facade::Parsed<'_, Self>,
-                    config: &#facade::PrettyConfig,
-                ) -> Option<#facade::explorer::PrettyOutput> {
-                    #pretty_body
-                }
+            unsafe impl #facade::__private::ExplorerRootFamily for #static_ty {
+                type Root<'__recursa_input> = #ty;
             }
 
             impl #entry_impl_generics #ty #entry_where_clause {
@@ -1943,14 +1885,16 @@ pub(super) fn render_node_application_explorer(
                 /// Explorer occurrence projection is independent of the optional `Visit`
                 /// traversal implementation.
                 pub fn explorer() -> #facade::explorer::Adapter {
-                    #arbitrary_binding
+                    #sample_binding
                     unsafe {
                         #facade::__private::explorer_adapter(
-                            &#module_anchor::#grammar_schema,
+                            &#module_anchor::#grammar_tables,
+                            &#module_anchor::#root_schema,
                             #pretty,
                             arbitrary,
                             #module_anchor::#explorer_lex,
-                            #parse,
+                            #module_anchor::__recursa_lexical::#raw_lex,
+                            #facade::__private::explorer_parse_root::<#static_ty>,
                             sample,
                         )
                     }
@@ -2008,14 +1952,9 @@ pub(super) fn explorer_lex_function() -> Ident {
     format_ident!("__recursa_explorer_lex")
 }
 
-/// Returns the private parse callback name for one materialized root.
-pub(super) fn explorer_parse_function(node_index: usize) -> Ident {
-    format_ident!("__recursa_explorer_parse_{node_index}")
-}
-
-/// Names a root application's deterministic sample callback.
-pub(super) fn explorer_sample_function(node_index: usize) -> Ident {
-    format_ident!("__recursa_explorer_sample_{node_index}")
+/// Names the single grammar-local lexer handed to the shared strict root parse.
+pub(super) fn explorer_raw_lex_function() -> Ident {
+    format_ident!("__recursa_explorer_raw_lex")
 }
 
 /// Names the static schema for one token kind.
@@ -2023,9 +1962,9 @@ pub(super) fn explorer_token_schema_static(kind_index: u16) -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{kind_index}")
 }
 
-/// Names the aggregate static grammar schema for a root application.
-pub(super) fn explorer_grammar_schema_static(node_index: usize) -> Ident {
-    format_ident!("__RECURSA_EXPLORER_GRAMMAR_SCHEMA_{node_index}")
+/// Names the single static grammar-wide schema tables shared by every root adapter.
+pub(super) fn explorer_grammar_tables_static() -> Ident {
+    format_ident!("__RECURSA_EXPLORER_GRAMMAR")
 }
 
 /// Names the ordered static Node-schema table.
@@ -2112,22 +2051,7 @@ pub(super) fn render_explorer_static_schema(
     let token_schema_count = all_tokens.len();
     let node_schemas_static = explorer_node_schemas_static();
     let token_schemas_static = explorer_token_schemas_static();
-    let grammars = explorer.roots.iter().map(|root| {
-        let root_schema = explorer_application_schema_static(plan, root.application);
-        let node_index = explorer_application_parse_plan(&plan.nodes, root.application)
-            .1
-            .parse_index;
-        let grammar_schema = explorer_grammar_schema_static(node_index);
-        quote! {
-            pub(crate) static #grammar_schema: #facade::__private::ExplorerGrammarSchemaData =
-                #facade::__private::explorer_grammar_schema(
-                    #grammar_name,
-                    &#root_schema,
-                    &#node_schemas_static,
-                    &#token_schemas_static,
-                );
-        }
-    });
+    let grammar_tables = explorer_grammar_tables_static();
     quote! {
         #tokens
         #(#nodes)*
@@ -2137,7 +2061,12 @@ pub(super) fn render_explorer_static_schema(
         pub(crate) static #token_schemas_static:
             [&#facade::__private::ExplorerTokenSchemaData; #token_schema_count] =
             [#(#all_tokens),*];
-        #(#grammars)*
+        pub(crate) static #grammar_tables: #facade::__private::ExplorerGrammarTablesData =
+            #facade::__private::explorer_grammar_tables(
+                #grammar_name,
+                &#node_schemas_static,
+                &#token_schemas_static,
+            );
     }
 }
 

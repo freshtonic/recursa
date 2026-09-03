@@ -8,24 +8,32 @@ use crate::{
 };
 use std::fmt;
 
-/// Erased source-borrowing parse callback generated for one root application.
-type ParseFn =
-    for<'input> fn(&'input str) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>;
+/// Grammar-local lexer producing the runtime records strict parsing consumes.
+#[doc(hidden)]
+pub type RawLexFn = for<'input> fn(&'input str) -> crate::input::LexResult<'input>;
 
-/// Erased deterministic sample callback generated for one root application.
-type SampleFn = fn(&[u8]) -> Result<ExplorerDocument<'static>, SampleError>;
+/// Erased source-borrowing strict parse shared by every root family.
+#[doc(hidden)]
+pub type RootParseFn =
+    for<'input> fn(RawLexFn, &'input str) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>;
+
+/// Erased deterministic sample callback for one root family.
+#[doc(hidden)]
+pub type SampleFn = fn(&[u8]) -> Result<ExplorerDocument<'static>, SampleError>;
 
 /// Grammar-erased schema, source operations, and optional sampling for one root family.
 #[derive(Clone, Copy)]
 pub struct Adapter {
     /// Static schema from the same Generation as every callback.
-    schema: &'static GrammarSchemaData,
+    schema: GrammarSchemaData,
     /// Feature-selected operations available for this root.
     capabilities: Capabilities,
     /// Grammar-erased lexer callback borrowing its input.
     lex: for<'input> fn(&'input str) -> LexResult<'input>,
-    /// Grammar-erased strict parser callback borrowing its input.
-    parse: ParseFn,
+    /// Grammar-local lexer handed to the shared strict parse.
+    raw_lex: RawLexFn,
+    /// Shared strict parse instantiated for this root family.
+    parse: RootParseFn,
     /// Optional static sample callback when `Arbitrary` is configured.
     sample: Option<SampleFn>,
 }
@@ -51,7 +59,7 @@ impl Adapter {
     /// Lexical errors, syntax errors, and trailing input return structured
     /// diagnostics without a partial explorer document.
     pub fn parse(self, source: &str) -> Result<ExplorerDocument<'_>, ParseFailure<'_>> {
-        (self.parse)(source)
+        (self.parse)(self.raw_lex, source)
     }
 
     /// Produces a deterministic synthetic document from caller-supplied bytes.
@@ -490,13 +498,13 @@ impl<T: ExplorerRoot> ErasedDocument for TypedDocument<'_, T> {
 #[derive(Clone, Copy)]
 pub struct GrammarSchema {
     /// Matching generated static descriptor.
-    data: &'static GrammarSchemaData,
+    data: GrammarSchemaData,
 }
 
 impl GrammarSchema {
     /// Returns the configured grammar name.
     pub const fn name(self) -> &'static str {
-        self.data.name
+        self.data.tables.name
     }
 
     /// Returns the schema of this adapter's root application.
@@ -509,14 +517,14 @@ impl GrammarSchema {
     /// Iterates over every materialized Node schema deterministically.
     pub fn nodes(self) -> NodeSchemas {
         NodeSchemas {
-            remaining: self.data.nodes,
+            remaining: self.data.tables.nodes,
         }
     }
 
     /// Iterates over every content and fixed token descriptor.
     pub fn tokens(self) -> TokenSchemas {
         TokenSchemas {
-            remaining: self.data.tokens,
+            remaining: self.data.tables.tokens,
         }
     }
 }
@@ -945,16 +953,24 @@ impl ExactSizeIterator for ElementSchemas {}
 impl std::iter::FusedIterator for ElementSchemas {}
 
 #[doc(hidden)]
-/// Generated static schema backing one [`GrammarSchema`] handle.
-pub struct GrammarSchemaData {
+/// Generated grammar-wide schema tables shared by every root adapter.
+pub struct GrammarTablesData {
     /// Configured grammar name.
     name: &'static str,
-    /// Root materialized application.
-    root: &'static NodeSchemaData,
     /// Deterministically ordered Node applications.
     nodes: &'static [&'static NodeSchemaData],
     /// Deterministically ordered token descriptors.
     tokens: &'static [&'static TokenSchemaData],
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// Schema backing one [`GrammarSchema`] handle: the shared tables plus one root.
+pub struct GrammarSchemaData {
+    /// Grammar-wide tables emitted once per Generation.
+    tables: &'static GrammarTablesData,
+    /// Root materialized application.
+    root: &'static NodeSchemaData,
 }
 
 #[doc(hidden)]
@@ -1091,17 +1107,31 @@ pub unsafe trait ExplorerNode {
 /// Private root protocol implemented only for generated source-visible roots.
 ///
 /// # Safety
-/// The schema and operation must belong to the same Generation as the Node.
+/// The Pretty rendering must belong to the same Generation as the Node.
 #[doc(hidden)]
 pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
-    /// Returns the static schema belonging to this root's Generation.
-    fn __recursa_explorer_schema() -> &'static GrammarSchemaData;
-
-    /// Renders parsed or synthetic Pretty output when configured.
+    /// Renders parsed or synthetic Pretty output; roots without `Pretty` report none.
     fn __recursa_explorer_pretty(
         parsed: &Parsed<'_, Self>,
         config: &PrettyConfig,
-    ) -> Option<PrettyOutput>;
+    ) -> Option<PrettyOutput> {
+        let _ = (parsed, config);
+        None
+    }
+}
+
+/// Private root family naming one materialized root application for every input lifetime.
+///
+/// Generated code implements this for the `'static` spelling of a root type so the
+/// shared generic root operations can be instantiated once per family instead of
+/// being emitted once per Node.
+///
+/// # Safety
+/// `Root` must be the same generated Node type for every lifetime.
+#[doc(hidden)]
+pub unsafe trait ExplorerRootFamily: 'static {
+    /// The root Node type for one input lifetime.
+    type Root<'input>: GeneratedParse<'input> + ExplorerRoot + 'input;
 }
 
 /// Tests one complete strict root against a generated static variant identity.
@@ -1118,27 +1148,23 @@ pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
 
 /// Reports whether one static variant belongs directly to the selected root.
 pub(crate) fn root_contains_variant(
-    schema: &'static GrammarSchemaData,
+    root: &'static NodeSchemaData,
     variant: &'static VariantSchemaData,
 ) -> bool {
-    schema
-        .root
-        .variants
+    root.variants
         .iter()
         .any(|candidate| std::ptr::eq(*candidate, variant))
 }
 
 #[doc(hidden)]
-/// Constructs generated static grammar schema under the matching protocol.
-pub const fn grammar_schema(
+/// Constructs the generated grammar-wide schema tables under the matching protocol.
+pub const fn grammar_tables(
     name: &'static str,
-    root: &'static NodeSchemaData,
     nodes: &'static [&'static NodeSchemaData],
     tokens: &'static [&'static TokenSchemaData],
-) -> GrammarSchemaData {
-    GrammarSchemaData {
+) -> GrammarTablesData {
+    GrammarTablesData {
         name,
-        root,
         nodes,
         tokens,
     }
@@ -1299,12 +1325,61 @@ pub fn lex_result<'input>(
     }
 }
 
+/// Lexes and strictly parses one root family's document.
+///
+/// One instantiation per family replaces one generated parse callback per Node.
+/// The input lifetime stays late-bound, so the instantiated item coerces to
+/// [`RootParseFn`].
+#[doc(hidden)]
+pub fn parse_root<'input, F: ExplorerRootFamily>(
+    lex: RawLexFn,
+    source: &'input str,
+) -> Result<ExplorerDocument<'input>, ParseFailure<'input>> {
+    let lexed = lex(source);
+    let grammar = <F::Root<'input> as GeneratedParse<'input>>::grammar();
+    let lexical_errors = lexed
+        .records()
+        .iter()
+        .filter(|record| record.kind == grammar.lexical_error_kind)
+        .map(|record| record.span)
+        .collect::<Vec<_>>();
+    let mut input = lexed.input(grammar);
+    parse_document::<F::Root<'input>, ()>(&mut input, lexical_errors)
+}
+
+/// Produces one root family's deterministic synthetic document.
+///
+/// One instantiation per family replaces one generated sample callback per Node.
+#[cfg(feature = "arbitrary")]
+#[doc(hidden)]
+pub fn sample_root<F: ExplorerRootFamily>(
+    bytes: &[u8],
+) -> Result<ExplorerDocument<'static>, SampleError>
+where
+    for<'bytes> F::Root<'static>: arbitrary::Arbitrary<'bytes>,
+{
+    let mut input = arbitrary::Unstructured::new(bytes);
+    let value = <F::Root<'static> as arbitrary::Arbitrary<'_>>::arbitrary(&mut input)
+        .map_err(|error| sample_error(error.to_string()))?;
+    Ok(ExplorerDocument::from_parsed(Parsed::synthetic(value)))
+}
+
+/// Renders structured Pretty output for a root that configures `Pretty`.
+#[doc(hidden)]
+pub fn pretty_root<T: crate::Pretty>(
+    parsed: &Parsed<'_, T>,
+    config: &PrettyConfig,
+) -> Option<PrettyOutput> {
+    Some(pretty_output(crate::Pretty::render_mapped_with(
+        parsed, *config,
+    )))
+}
+
 /// Runs one generated root parser as a strict grammar-erased transaction.
 ///
 /// Lexical errors take precedence and are all retained. A successful root
 /// parse must also consume every token before its typed value is erased.
-#[doc(hidden)]
-pub fn parse_document<'input, T, A>(
+fn parse_document<'input, T, A>(
     input: &mut Input<'input, A>,
     lexical_errors: impl IntoIterator<Item = Span>,
 ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>
@@ -1371,21 +1446,25 @@ pub(crate) fn trailing_input_diagnostic<'input>(
 /// Constructs one generated grammar-erased root adapter.
 ///
 /// # Safety
-/// The schema, lexer, capability flags, and sample function must belong to the
-/// same Generation and materialized root application.
+/// The tables, root schema, lexers, capability flags, parse, and sample function
+/// must belong to the same Generation and materialized root application.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub const unsafe fn construct_adapter(
-    schema: &'static GrammarSchemaData,
+    tables: &'static GrammarTablesData,
+    root: &'static NodeSchemaData,
     pretty: bool,
     arbitrary: bool,
     lex: for<'input> fn(&'input str) -> LexResult<'input>,
-    parse: ParseFn,
+    raw_lex: RawLexFn,
+    parse: RootParseFn,
     sample: Option<SampleFn>,
 ) -> Adapter {
     Adapter {
-        schema,
+        schema: GrammarSchemaData { tables, root },
         capabilities: Capabilities { pretty, arbitrary },
         lex,
+        raw_lex,
         parse,
         sample,
     }
@@ -1451,7 +1530,11 @@ mod tests {
     static ROOT: NodeSchemaData = node_schema("Root", "grammar::Root", &ROOT_ELEMENTS, &[]);
     static NODES: [&NodeSchemaData; 2] = [&ROOT, &CHILD];
     static TOKENS: [&TokenSchemaData; 1] = [&WORD];
-    static GRAMMAR: GrammarSchemaData = grammar_schema("grammar", &ROOT, &NODES, &TOKENS);
+    static TABLES: GrammarTablesData = grammar_tables("grammar", &NODES, &TOKENS);
+    static GRAMMAR: GrammarSchemaData = GrammarSchemaData {
+        tables: &TABLES,
+        root: &ROOT,
+    };
 
     struct Child;
 
@@ -1504,18 +1587,7 @@ mod tests {
         }
     }
 
-    unsafe impl ExplorerRoot for Root {
-        fn __recursa_explorer_schema() -> &'static GrammarSchemaData {
-            &GRAMMAR
-        }
-
-        fn __recursa_explorer_pretty(
-            _: &Parsed<'_, Self>,
-            _: &PrettyConfig,
-        ) -> Option<PrettyOutput> {
-            None
-        }
-    }
+    unsafe impl ExplorerRoot for Root {}
 
     #[test]
     fn synthetic_documents_walk_lazily_through_copy_handles() {
@@ -1554,7 +1626,7 @@ mod tests {
     fn static_schema_iterators_are_exact_size_and_fused() {
         fn exact_fused<I: ExactSizeIterator + std::iter::FusedIterator>(_: &I) {}
 
-        let grammar = GrammarSchema { data: &GRAMMAR };
+        let grammar = GrammarSchema { data: GRAMMAR };
         let nodes = grammar.nodes();
         let tokens = grammar.tokens();
         exact_fused(&nodes);
@@ -1570,7 +1642,10 @@ mod tests {
         fn lex(source: &str) -> LexResult<'_> {
             lex_result(source, [], [])
         }
-        fn parse(source: &str) -> Result<ExplorerDocument<'_>, ParseFailure<'_>> {
+        fn raw_lex(source: &str) -> crate::input::LexResult<'_> {
+            crate::input::LexResult::new(source, Vec::new(), None)
+        }
+        fn parse(_: RawLexFn, source: &str) -> Result<ExplorerDocument<'_>, ParseFailure<'_>> {
             Err(ParseFailure {
                 source,
                 diagnostics: vec![ParseDiagnostic {
@@ -1585,7 +1660,8 @@ mod tests {
             })
         }
 
-        let adapter = unsafe { construct_adapter(&GRAMMAR, false, false, lex, parse, None) };
+        let adapter =
+            unsafe { construct_adapter(&TABLES, &ROOT, false, false, lex, raw_lex, parse, None) };
         assert!(!adapter.capabilities().arbitrary());
         assert!(adapter.sample(&[]).is_none());
     }

@@ -852,7 +852,24 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
     });
+    let explorer_raw_lex = plan.explorer.as_ref().map(|_| {
+        let raw_lex = explorer_raw_lex_function();
+        quote! {
+            __recursa_if_explorer! {
+                pub(super) fn #raw_lex(
+                    source: &str,
+                ) -> #facade::__private::LexResult<'_> {
+                    lex(source).inner
+                }
+            }
+        }
+    });
     let framing_root = plan.framing.as_ref().map(|framing| {
+        let framing_root_schema = explorer_schema_static(
+            plan.nodes[framing.node_index].parse_applications[framing.application_index]
+                .parse_index,
+            None,
+        );
         let boundary_kind = framing.boundary_kind;
         let line_kinds = &framing.line_kinds;
         let delimited_kinds = &framing.delimited_kinds;
@@ -883,6 +900,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             static __RECURSA_FRAMING_PLAN: #facade::__private::FramingPlanData =
                 #facade::__private::framing_plan(
                     &__RECURSA_GRAMMAR,
+                    &#framing_root_schema,
                     #boundary_kind,
                     &[#(#line_kinds),*],
                     &[#(#delimited_kinds),*],
@@ -1405,6 +1423,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         #framing_lex
+        #explorer_raw_lex
 
         }
 
