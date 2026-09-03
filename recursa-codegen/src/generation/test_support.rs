@@ -543,7 +543,7 @@ pub(super) fn predictive_variants_are_typechecked_in_isolated_helpers() {
 recursa::grammar! { module = crate, max_lookahead = 1 }
 
 recursa::tokens! {
-    keywords { ALPHA => "ALPHA", BETA => "BETA" }
+    keywords { ALPHA => "ALPHA", BETA => "BETA", GAMMA => "GAMMA" }
 }
 
 #[derive(recursa::Node)]
@@ -553,25 +553,62 @@ enum Choice {
     #[tok(BETA)]
     Beta,
 }
+
+#[derive(recursa::Node)]
+enum Wrapped {
+    Choice(Choice),
+    #[tok(GAMMA)]
+    Prefixed(Choice),
+}
 "#;
     let (_package, plan) = joined_pratt_fixture_from(source);
     let rendered = render(&plan).expect("the predictive fixture renders");
-    let choice_index = plan
-        .nodes
-        .iter()
-        .position(|node| node.ident == "Choice")
-        .expect("the fixture contains Choice");
-    let choice = &rendered.nodes[choice_index].1;
+    let node = |name: &str| {
+        let index = plan
+            .nodes
+            .iter()
+            .position(|node| node.ident == name)
+            .unwrap_or_else(|| panic!("the fixture contains {name}"));
+        &rendered.nodes[index].1
+    };
+    let choice = node("Choice");
 
     assert_eq!(
         choice.matches("fn __recursa_parse_variant_").count(),
-        2,
-        "each predictive variant has one separately typechecked function item",
+        0,
+        "fixed-only variants parse through the runtime without a helper function",
     );
     assert_eq!(
-        choice.matches("Self :: __recursa_parse_variant_").count(),
+        choice.matches("context . parse_fixed_variant (").count(),
         2,
-        "predictive dispatch delegates to each isolated variant helper",
+        "predictive dispatch calls the fixed-variant runtime helper per fixed-only variant",
+    );
+
+    let wrapped = node("Wrapped");
+    assert_eq!(
+        wrapped
+            .matches("context . parse_wrapping_variant ::")
+            .count(),
+        1,
+        "a single direct-child variant parses through the wrapping runtime helper",
+    );
+    assert!(
+        wrapped.contains("Self :: Choice ,)"),
+        "the tuple constructor is passed as the wrapping function",
+    );
+    assert_eq!(
+        wrapped.matches("fn __recursa_parse_variant_").count(),
+        1,
+        "a variant with fixed tokens around its child keeps its typechecked helper",
+    );
+    assert_eq!(
+        wrapped.matches("context . parse_direct_child ::").count(),
+        1,
+        "the helper parses its direct child through the runtime element transaction",
+    );
+    assert!(
+        !wrapped.contains("follow () . clone ()"),
+        "generated parsers borrow the caller FOLLOW instead of cloning it",
     );
 }
 

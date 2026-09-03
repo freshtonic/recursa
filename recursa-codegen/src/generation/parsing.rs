@@ -5335,6 +5335,10 @@ pub(super) fn render_predictive_dispatch(
     let mut helpers = Vec::with_capacity(variants.len());
     let mut selections = Vec::with_capacity(variants.len());
     for (variant_index, variant) in variants.iter().enumerate() {
+        if let Some(inline) = render_runtime_variant_selection(plan, variant) {
+            selections.push(quote!(#variant_index => #inline));
+            continue;
+        }
         let body = render_sequence_parse(
             plan,
             node_index,
@@ -5364,6 +5368,105 @@ pub(super) fn render_predictive_dispatch(
         selection_items,
         quote!(#(#helpers)*),
     )
+}
+
+/// Emits one runtime-helper call for a variant whose shape the runtime parses whole.
+///
+/// Two shapes qualify: a variant whose only element is one required direct child under
+/// the caller FOLLOW, and a variant made only of fixed tokens under the inherited capture
+/// policy. Every other shape keeps its typechecked helper function. Returns `None` when
+/// the variant does not qualify.
+fn render_runtime_variant_selection(
+    plan: &EmissionPlan,
+    variant: &VariantParsePlan,
+) -> Option<proc_macro2::TokenStream> {
+    let facade = &plan.facade;
+    if variant.capture.is_some() || variant.elements.is_empty() {
+        return None;
+    }
+    let ident = &variant.ident;
+    let fixed_only = variant.elements.iter().all(|element| {
+        matches!(
+            &element.kind,
+            ElementParseKind::Fixed {
+                capture: PlannedCapturePolicy::Inherited,
+                ..
+            }
+        )
+    });
+    if fixed_only && variant.style == ResolvedFieldStyle::Unit {
+        let expected = variant.elements.iter().map(|element| match &element.kind {
+            ElementParseKind::Fixed { expected, .. } => {
+                let expected = render_expected_set(plan, expected);
+                quote!(&#expected)
+            }
+            _ => unreachable!("fixed-only variants contain only fixed elements"),
+        });
+        return Some(quote!(context.parse_fixed_variant([#(#expected),*], Self::#ident)));
+    }
+    let [element] = variant.elements.as_slice() else {
+        return None;
+    };
+    let ElementParseKind::Semantic { field, projection } = &element.kind else {
+        return None;
+    };
+    let SemanticParseProjection::Direct {
+        terminal,
+        wrappers,
+        container,
+        capture,
+        child_capture,
+        pratt_min_bp: None,
+        pratt_excluded_led,
+        attachment: None,
+        ..
+    } = projection.as_ref()
+    else {
+        return None;
+    };
+    if !pratt_excluded_led.is_empty() {
+        return None;
+    }
+    let PlannedContainer::Direct {
+        child_follow: PlannedFollow::Caller,
+        required_failure,
+    } = container.as_ref()
+    else {
+        return None;
+    };
+    let failure = match required_failure {
+        PlannedFollow::Static(expected) => {
+            let expected = render_expected_set(plan, expected);
+            quote!(&#expected)
+        }
+        PlannedFollow::Caller => quote!(context.caller_follow()),
+        PlannedFollow::StaticAndCaller(_) | PlannedFollow::CallerAndPrattStops(_) => return None,
+    };
+    let child_capture = child_capture.render(facade);
+    let capture = capture.render(facade);
+    let wrap = if wrappers.is_empty() && variant.style == ResolvedFieldStyle::Unnamed {
+        quote!(Self::#ident)
+    } else {
+        let value = format_ident!("__recursa_value_0");
+        let wrapped = render_wrapped_value(quote!(__recursa_child), wrappers);
+        let construction = render_construction(
+            Some(ident),
+            variant.style,
+            std::slice::from_ref(&(field.clone(), value.clone())),
+        );
+        quote!(|__recursa_child| {
+            let #value = #wrapped;
+            #construction
+        })
+    };
+    Some(quote! {
+        context.parse_wrapping_variant::<Self, #terminal>(
+            #child_capture,
+            #capture,
+            #failure,
+            #wrap,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6641,6 +6744,24 @@ pub(super) fn render_semantic_parse(
                     )
                 },
             );
+            let plain_child = attachment.is_none()
+                && pratt_excluded_led.is_empty()
+                && !(pratt_owner.is_some() && pratt_min_bp.is_some());
+            if plain_child {
+                // The runtime owns the element transaction: start cursor, the
+                // no-progress failure rewrite, and the element group.
+                return quote! {
+                    #follow_definition
+                    #failure_definition
+                    let (parsed_value, #occurrence) = context.parse_direct_child::<#terminal>(
+                        &#follow_value,
+                        #child_capture,
+                        #capture,
+                        &#failure_value,
+                    )?;
+                    let #value = #wrapped;
+                };
+            }
             quote! {
                 #follow_definition
                 #failure_definition
@@ -7149,20 +7270,23 @@ pub(super) fn render_follow_value(
     follow: &PlannedFollow,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let value = format_ident!("{}_value", name.to_string().to_ascii_lowercase());
+    // Every binding is a `&FollowSet`. Static pool entries and the caller FOLLOW are
+    // borrowed directly; composed sets are temporaries whose lifetime the `let &`
+    // binding extends to the enclosing block, so no parse-time clone remains.
     match follow {
         PlannedFollow::Caller => (
-            quote!(let #value = context.follow().clone();),
+            quote!(let #value = context.caller_follow();),
             quote!(#value),
         ),
         PlannedFollow::Static(expected) => {
             let expected = render_expected_set(plan, expected);
-            (quote!(let #value = #expected.clone();), quote!(#value))
+            (quote!(let #value = &#expected;), quote!(#value))
         }
         PlannedFollow::StaticAndCaller(expected) => {
             let expected = render_expected_set(plan, expected);
             (
                 quote! {
-                    let #value = #expected
+                    let #value = &#expected
                         .with_caller(context.follow())
                         .expect("matching generated FOLLOW widths");
                 },
@@ -7173,7 +7297,7 @@ pub(super) fn render_follow_value(
             let expected = render_expected_set(plan, expected);
             (
                 quote! {
-                    let #value = #expected
+                    let #value = &#expected
                         .union(context.follow())
                         .expect("matching generated Pratt stop/FOLLOW widths");
                 },

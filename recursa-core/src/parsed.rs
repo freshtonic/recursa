@@ -1111,6 +1111,14 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.follow
     }
 
+    /// Returns the caller FOLLOW with the context lifetime.
+    ///
+    /// The returned borrow does not hold `self`, so generated code can pass it to a
+    /// child parse that needs `&mut self` without cloning the set first.
+    pub fn caller_follow(&self) -> &'context FollowSet {
+        self.follow
+    }
+
     /// Returns the grammar-selected provenance capture policy.
     pub const fn capture_policy(&self) -> CapturePolicy {
         self.policy
@@ -1323,6 +1331,78 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         }
         let mut child = ParseContext::new(&mut *self.input, follow, policy, self.request);
         T::parse(&mut child)
+    }
+
+    /// Parses one required direct child element and wraps it in its element group.
+    ///
+    /// When the child fails without consuming input and its error sits on the current
+    /// token (or at end of input), the failure is reported as the element's required
+    /// expectation instead, exactly as the expanded generated form did.
+    pub fn parse_direct_child<T>(
+        &mut self,
+        follow: &FollowSet,
+        child_policy: CapturePolicy,
+        group_policy: CapturePolicy,
+        required_failure: &FollowSet,
+    ) -> Result<(T, Occurrence), ParseError>
+    where
+        T: GeneratedParse<'input, A>,
+    {
+        let element_start = self.cursor();
+        let parsed = match self.parse_node::<T>(follow, child_policy) {
+            Ok(parsed) => parsed,
+            Err(error)
+                if self.cursor() == element_start
+                    && self.peek(0).map_or_else(
+                        || error.span().start() as usize == self.source().len(),
+                        |record| error.span() == record.span,
+                    ) =>
+            {
+                return Err(self.unexpected(required_failure));
+            }
+            Err(error) => return Err(error),
+        };
+        let (value, child_occurrence) = parsed.into_parts();
+        let element_span = self.consumed_span_from(element_start);
+        let occurrence = self.finish_group(group_policy, element_span, [child_occurrence])?;
+        Ok((value, occurrence))
+    }
+
+    /// Parses one variant whose only element is a required direct child under the
+    /// caller FOLLOW, then constructs the variant around the child value.
+    pub fn parse_wrapping_variant<T, C>(
+        &mut self,
+        child_policy: CapturePolicy,
+        group_policy: CapturePolicy,
+        required_failure: &FollowSet,
+        wrap: fn(C) -> T,
+    ) -> Result<ParsedNode<T>, ParseError>
+    where
+        C: GeneratedParse<'input, A>,
+    {
+        let start = self.cursor();
+        let follow = self.follow;
+        let (value, occurrence) =
+            self.parse_direct_child::<C>(follow, child_policy, group_policy, required_failure)?;
+        let span = self.consumed_span_from(start);
+        self.finish_with_children(wrap(value), span, [occurrence])
+    }
+
+    /// Parses one variant made only of fixed tokens under the inherited capture
+    /// policy and constructs its unit value.
+    pub fn parse_fixed_variant<T, const N: usize>(
+        &mut self,
+        expected: [&FollowSet; N],
+        value: T,
+    ) -> Result<ParsedNode<T>, ParseError> {
+        let start = self.cursor();
+        let policy = self.policy;
+        let mut occurrences: [Option<Occurrence>; N] = [const { None }; N];
+        for (slot, expected) in occurrences.iter_mut().zip(expected) {
+            *slot = Some(self.parse_fixed(expected, policy)?);
+        }
+        let span = self.consumed_span_from(start);
+        self.finish_with_children(value, span, occurrences.into_iter().flatten())
     }
 
     /// Runs one generated recursive parser with its planned FOLLOW and capture policy.
