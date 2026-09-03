@@ -543,6 +543,33 @@ pub trait NodeView: HasSpan {
     fn span_elements(&self) -> Elements<'_> {
         Elements::empty()
     }
+
+    #[doc(hidden)]
+    /// Returns the matching occurrence cursor behind this view.
+    ///
+    /// Generated views supply the cursor once; [`HasSpan`] and the view
+    /// `Pretty` forwarding are implemented on top of it for every view.
+    fn __recursa_cursor(&self) -> ViewCursor<'_>;
+}
+
+impl<V: NodeView> crate::output::span_seal::Sealed for V {}
+
+impl<V: NodeView> HasSpan for V {
+    fn span(&self) -> Option<Span> {
+        self.__recursa_cursor().span()
+    }
+}
+
+/// Renders one occurrence view by positioning the context at its cursor.
+#[doc(hidden)]
+pub fn pretty_view<V>(view: &V, context: &mut crate::PrettyContext) -> fmt::Result
+where
+    V: NodeView,
+    V::Value: crate::Pretty,
+{
+    context.with_cursor(view.__recursa_cursor(), |context| {
+        crate::Pretty::pretty(view.value(), context)
+    })
 }
 
 /// Private seal implemented through the generated Node view factory.
@@ -1326,6 +1353,39 @@ pub trait GeneratedParse<'input, A = ()>: Node + Sized {
     fn parse(context: &mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<Self>, ParseError>;
 }
 
+/// Grammar-local input wrapper generated for one grammar.
+///
+/// The generated `Input` type implements this once, which lets one blanket
+/// implementation supply the safe [`Parse`] facade for every generated Node
+/// and content token instead of one forwarding impl per type.
+#[doc(hidden)]
+pub trait GeneratedInput {
+    /// The runtime input wrapped by the generated grammar-local type.
+    type Inner: ?Sized;
+
+    /// Exposes the wrapped runtime input.
+    fn __recursa_inner(&mut self) -> &mut Self::Inner;
+}
+
+impl<'input, A, I, T> parse_seal::Sealed<I> for T
+where
+    I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
+    T: GeneratedParse<'input, A>,
+{
+}
+
+impl<'input, A, I, T> Parse<I> for T
+where
+    I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
+    T: GeneratedParse<'input, A>,
+{
+    type Output = Parsed<'input, T>;
+
+    fn parse(input: &mut I) -> Result<Self::Output, ParseError> {
+        parse::<T, A>(input.__recursa_inner())
+    }
+}
+
 /// Runs the generated root parser with the default capture request.
 #[doc(hidden)]
 pub fn parse<'input, T, A>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
@@ -1439,15 +1499,11 @@ mod tests {
         cursor: ViewCursor<'view>,
     }
 
-    impl<T> crate::output::span_seal::Sealed for TokenView<'_, T> {}
-
-    impl<T> HasSpan for TokenView<'_, T> {
-        fn span(&self) -> Option<Span> {
-            self.cursor.span()
-        }
-    }
-
     impl<T> NodeView for TokenView<'_, T> {
+        fn __recursa_cursor(&self) -> ViewCursor<'_> {
+            self.cursor
+        }
+
         type Value = T;
 
         fn value(&self) -> &Self::Value {

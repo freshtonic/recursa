@@ -980,6 +980,13 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             pub(crate) inner: #facade::__private::Input<'input, A>,
         }
 
+        impl<'input, A> #facade::__private::GeneratedInput for Input<'input, A> {
+            type Inner = #facade::__private::Input<'input, A>;
+            fn __recursa_inner(&mut self) -> &mut Self::Inner {
+                &mut self.inner
+            }
+        }
+
         impl<'input, A> Input<'input, A> {
             pub fn source(&self) -> &'input str {
                 self.inner.source()
@@ -1535,9 +1542,7 @@ pub(super) fn render_node(
                     &self,
                     context: &mut #facade::PrettyContext,
                 ) -> ::core::fmt::Result {
-                    context.with_cursor(self.cursor, |context| {
-                        #facade::Pretty::pretty(self.value, context)
-                    })
+                    #facade::__private::pretty_view(self, context)
                 }
             }
         }
@@ -1566,22 +1571,17 @@ pub(super) fn render_node(
             #accessors
         }
 
-        impl #view_impl_generics #facade::__private::HasSpanSealed
-            for #view_ident #view_type_generics #view_where_clause
-        {}
-
-        impl #view_impl_generics #facade::HasSpan
-            for #view_ident #view_type_generics #view_where_clause
-        {
-            fn span(&self) -> Option<#facade::Span> { self.cursor.span() }
-        }
-
         impl #view_impl_generics #facade::NodeView
             for #view_ident #view_type_generics #view_where_clause
         {
             type Value = #node_ident #type_generics;
             fn value(&self) -> &Self::Value { self.value }
-            fn span_elements(&self) -> #facade::Elements<'_> { #span_elements }
+            fn span_elements(&self) -> #facade::Elements<'_> {
+                // Generic views are `Copy` only for `Copy` parameters, so rebuild the
+                // borrowing view instead of copying `*self`.
+                Self::span_elements(Self { value: self.value, cursor: self.cursor })
+            }
+            fn __recursa_cursor(&self) -> #facade::__private::ViewCursor<'_> { self.cursor }
         }
 
         #view_pretty
@@ -1609,12 +1609,9 @@ pub(super) fn render_node(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,
             ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
             where
-                Self: #facade::Parse<
-                    #module_anchor::Input<#input_lifetime, A>,
-                    Output = #facade::Parsed<#input_lifetime, Self>,
-                >,
+                Self: #facade::__private::Parse<#input_lifetime, A>,
             {
-                <Self as #facade::Parse<#module_anchor::Input<#input_lifetime, A>>>::parse(input)
+                #facade::__private::parse(&mut input.inner)
             }
             pub fn parse_spanned #inherent_method_generics(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,

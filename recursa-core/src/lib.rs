@@ -73,9 +73,9 @@ pub mod __private {
     pub use crate::lex::{LexDiagnostic, LexDiagnosticCode, LexMatcher, LexRule, lex};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
-        CapturePolicy, ContentText, ElementMetadata, GeneratedParse as Parse, NodeViewFactory,
-        Occurrence, Occurrences, ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor,
-        parse, parse_seal::Sealed as ParseSealed, parse_spanned,
+        CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
+        NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode, Repeated, RepeatedIter,
+        ViewCursor, parse, parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]

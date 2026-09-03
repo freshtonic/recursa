@@ -407,9 +407,7 @@ pub(super) fn render_token(
                     &self,
                     context: &mut #facade::PrettyContext,
                 ) -> ::core::fmt::Result {
-                    context.with_cursor(self.cursor, |context| {
-                        #facade::Pretty::pretty(self.value, context)
-                    })
+                    #facade::__private::pretty_view(self, context)
                 }
             }
         }
@@ -562,13 +560,10 @@ pub(super) fn render_token(
             cursor: #facade::__private::ViewCursor<'view>,
         }
 
-        impl<'input> #facade::__private::HasSpanSealed for #view<'_, 'input> {}
-        impl<'input> #facade::HasSpan for #view<'_, 'input> {
-            fn span(&self) -> Option<#facade::Span> { self.cursor.span() }
-        }
         impl<'input> #facade::NodeView for #view<'_, 'input> {
             type Value = #ident<'input>;
             fn value(&self) -> &Self::Value { self.value }
+            fn __recursa_cursor(&self) -> #facade::__private::ViewCursor<'_> { self.cursor }
         }
         impl<'input> #facade::__private::NodeViewFactory for #ident<'input> {
             type View<'view> = #view<'view, 'input> where Self: 'view;
@@ -599,17 +594,6 @@ pub(super) fn render_token(
                 context.advance();
                 let text = context.matched_text(record)?;
                 context.finish(Self { text, #parsed_kind }, record.span)
-            }
-        }
-        impl<'input, A> #facade::__private::ParseSealed<#module_anchor::Input<'input, A>>
-            for #ident<'input>
-        {}
-        impl<'input, A> #facade::Parse<#module_anchor::Input<'input, A>> for #ident<'input> {
-            type Output = #facade::Parsed<'input, Self>;
-            fn parse(
-                input: &mut #module_anchor::Input<'input, A>,
-            ) -> Result<Self::Output, #facade::ParseError> {
-                #facade::__private::parse(&mut input.inner)
             }
         }
 

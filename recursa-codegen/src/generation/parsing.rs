@@ -7432,12 +7432,8 @@ pub(super) fn render_node_parse_application(
     let module_anchor = &plan.module_anchor;
     let input_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
     let ty = &application.ty;
-    let mut parse_generics = Generics::default();
     let mut recursive_generics = Generics::default();
     let mut helper_generics = Generics::default();
-    parse_generics
-        .params
-        .push(syn::parse_quote!(#input_lifetime));
     recursive_generics
         .params
         .push(syn::parse_quote!(#input_lifetime));
@@ -7447,8 +7443,6 @@ pub(super) fn render_node_parse_application(
             .params
             .push(syn::parse_quote!(#input_lifetime));
     }
-    parse_generics.params.push(syn::parse_quote!(A));
-    let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
     let (recursive_impl_generics, _, recursive_where_clause) = recursive_generics.split_for_impl();
     let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
     let node_capture = node.capture.render(facade);
@@ -7514,22 +7508,6 @@ pub(super) fn render_node_parse_application(
                 context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 #parse_body
-            }
-        }
-
-        impl #parse_impl_generics
-            #facade::__private::ParseSealed<#module_anchor::Input<#input_lifetime, A>>
-            for #ty #parse_where_clause
-        {}
-
-        impl #parse_impl_generics #facade::Parse<#module_anchor::Input<#input_lifetime, A>>
-            for #ty #parse_where_clause
-        {
-            type Output = #facade::Parsed<#input_lifetime, Self>;
-            fn parse(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<Self::Output, #facade::ParseError> {
-                #facade::__private::parse(&mut input.inner)
             }
         }
     }
