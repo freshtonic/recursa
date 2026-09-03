@@ -7,11 +7,14 @@
 //! are frozen into decision products; failed prerequisites suppress every
 //! dependent phase so diagnostics never describe invented semantics.
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::hash::{Hash as _, Hasher as _};
+
+use crate::fast_hash::{FxHashMap, FxHasher};
 use std::rc::Rc;
 
 use crate::ir::{ContainerCardinality, ContainerSemantics};
@@ -877,9 +880,13 @@ pub(crate) struct FirstSequenceAnalysis<'a> {
     /// Exact paired residual witnesses shared across conflict sites in this analysis run.
     decision_witnesses: RefCell<DecisionWitnessCache>,
     /// Normalized single-side decision frontiers shared across paired witness searches.
-    decision_frontiers: RefCell<HashMap<DecisionState, Rc<DecisionFrontier>>>,
+    decision_frontiers: RefCell<FxHashMap<DecisionState, Rc<DecisionFrontier>>>,
     /// Hash-consed bounded languages shared across separate decision-planning calls.
     decision_language: RefCell<Option<FirstLanguageArena<'a>>>,
+    /// Compact dispatch memoization shared across separate dispatch resolutions.
+    dispatch_caches: RefCell<CompactDispatchCaches>,
+    /// Grammar-wide Pratt crossing facts shared across balanced dispatch resolutions.
+    pratt_crossings: RefCell<Option<Rc<(Vec<u8>, Vec<u8>)>>>,
 }
 
 impl<'a> FirstSequenceAnalysis<'a> {
@@ -898,7 +905,7 @@ impl<'a> FirstSequenceAnalysis<'a> {
             atom_kinds,
             &decision_summary_facts,
         ));
-        let mut sites_by_semantics = HashMap::new();
+        let mut sites_by_semantics = FxHashMap::default();
         let canonical_sites = grammar
             .sites
             .iter()
@@ -931,8 +938,10 @@ impl<'a> FirstSequenceAnalysis<'a> {
             canonical_sites,
             site_tails: site_tails.into(),
             decision_witnesses: RefCell::new(BTreeMap::new()),
-            decision_frontiers: RefCell::new(HashMap::new()),
+            decision_frontiers: RefCell::new(FxHashMap::default()),
             decision_language: RefCell::new(None),
+            dispatch_caches: RefCell::new(CompactDispatchCaches::default()),
+            pratt_crossings: RefCell::new(None),
         }
     }
 
@@ -1020,6 +1029,20 @@ impl<'a> FirstSequenceAnalysis<'a> {
             .expect("one element root state yields one sequence batch")
     }
 
+    /// Proves that one optional site's committed element language ends within the bound.
+    ///
+    /// The answer matches materializing [`Self::element_sequences_at_depth`] and testing that
+    /// the rows are non-empty and all end, but reads the shared symbolic node graph directly, so
+    /// open element languages are rejected without paying for their bounded sequence rows.
+    pub(crate) fn element_language_ends_within_depth(&self, site: SiteId, depth: usize) -> bool {
+        let state = DecisionState::consuming_site_and_tail(&self.grammar.sites[site.index()], &[]);
+        let mut cached = self.decision_language.borrow_mut();
+        let language = cached.get_or_insert_with(|| FirstLanguageArena::from_analysis(self));
+        let root = language.build(depth, vec![state]);
+        let (nonempty, open) = language.node_population(root);
+        nonempty && !open
+    }
+
     /// Derives decision-site roots through the shared arena at one bounded depth.
     pub(crate) fn sequences_batch_at_depth<'sites>(
         &self,
@@ -1088,6 +1111,29 @@ impl<'a> FirstSequenceAnalysis<'a> {
         canonicalize_decision_state(state, &self.canonical_sites)
     }
 
+    /// Returns the analysis-run Pratt crossing facts, computing them at most once.
+    fn pratt_crossing_facts(&self) -> Rc<(Vec<u8>, Vec<u8>)> {
+        Rc::clone(self.pratt_crossings.borrow_mut().get_or_insert_with(|| {
+            Rc::new(pratt_crossings_for_grammar(
+                self.grammar,
+                &self.decision_summary_facts,
+            ))
+        }))
+    }
+
+    /// Borrows an already-canonical decision state and clones only when rewriting is needed.
+    fn canonical_state_cow<'s>(&self, state: &'s DecisionState) -> Cow<'s, DecisionState> {
+        let canonical = state.0.iter().all(|item| match item {
+            DecisionItem::Site(site) => self.canonical_sites[site.index()] == *site,
+            DecisionItem::Type(_) | DecisionItem::RepeatTail { .. } => true,
+        });
+        if canonical {
+            Cow::Borrowed(state)
+        } else {
+            Cow::Owned(self.canonical_state(state.clone()))
+        }
+    }
+
     /// Derives one exact configured-depth witness through the analysis-run residual cache.
     fn decision_witness_at_depth(
         &self,
@@ -1106,8 +1152,8 @@ impl<'a> FirstSequenceAnalysis<'a> {
 
     /// Derives and caches one canonical single-side decision frontier.
     fn decision_frontier(&self, state: &DecisionState) -> Rc<DecisionFrontier> {
-        let state = self.canonical_state(state.clone());
-        if let Some(frontier) = self.decision_frontiers.borrow().get(&state) {
+        let state = self.canonical_state_cow(state);
+        if let Some(frontier) = self.decision_frontiers.borrow().get(state.as_ref()) {
             return Rc::clone(frontier);
         }
         #[cfg(test)]
@@ -1116,9 +1162,9 @@ impl<'a> FirstSequenceAnalysis<'a> {
                 .get()
                 .saturating_add(1),
         );
-        let mut frontier = decision_frontier(&state, self.grammar, &self.atom_kinds);
+        let mut frontier = decision_frontier(state.as_ref(), self.grammar, &self.atom_kinds);
         for transition in &mut frontier.transitions {
-            transition.next = self.canonical_state(transition.next.clone());
+            canonicalize_decision_state_in_place(&mut transition.next, &self.canonical_sites);
         }
         frontier.transitions.sort_by(|left, right| {
             compare_first_positions(&left.position, &right.position)
@@ -1131,7 +1177,7 @@ impl<'a> FirstSequenceAnalysis<'a> {
         let frontier = Rc::new(frontier);
         self.decision_frontiers
             .borrow_mut()
-            .insert(state, Rc::clone(&frontier));
+            .insert(state.into_owned(), Rc::clone(&frontier));
         frontier
     }
 
@@ -1773,7 +1819,7 @@ pub(crate) fn materialize_type_sequences(grammar: &GrammarDescription) -> Vec<Ve
     )
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Dense identity of one canonical bounded FIRST-language node.
 struct FirstLanguageNodeId(u32);
 
@@ -2060,30 +2106,30 @@ struct FirstLanguageArena<'a> {
     /// Canonical semantic decision states indexed by dense identity.
     decision_states: Vec<DecisionState>,
     /// Dense identities interned by semantic decision-state value.
-    decision_state_ids: HashMap<HashedDecisionState, FirstLanguageDecisionStateId>,
+    decision_state_ids: FxHashMap<HashedDecisionState, FirstLanguageDecisionStateId>,
     /// Canonical consuming token positions indexed by dense identity.
     positions: Vec<FirstPosition>,
     /// Dense position identities interned by grammar-local semantic value.
-    position_ids: HashMap<FirstLanguagePositionKey, FirstLanguagePositionId>,
+    position_ids: FxHashMap<FirstLanguagePositionKey, FirstLanguagePositionId>,
     /// Normalized consuming frontiers indexed by interned decision-state identity.
     decision_frontiers: Vec<Option<FirstLanguageCachedFrontier>>,
     /// Canonical projected cutoff frontiers indexed by dense identity.
     cutoff_frontiers: Vec<FirstLanguageCutoffFrontier>,
     /// Dense identity candidates indexed by compact semantic frontier hash.
-    cutoff_frontier_ids: HashMap<u64, Vec<FirstLanguageCutoffFrontierId>>,
+    cutoff_frontier_ids: FxHashMap<u64, Vec<FirstLanguageCutoffFrontierId>>,
     /// Canonical projected two-position frontiers indexed by dense identity.
     depth_two_frontiers: Vec<FirstLanguageDepthTwoFrontier>,
     /// Dense two-position identities indexed by compact semantic frontier hash.
-    depth_two_frontier_ids: HashMap<u64, Vec<FirstLanguageDepthTwoFrontierId>>,
+    depth_two_frontier_ids: FxHashMap<u64, Vec<FirstLanguageDepthTwoFrontierId>>,
     /// Two-position projection memoized by semantic decision-state identity.
     depth_two_by_decision: Vec<Option<FirstLanguageDepthTwoFrontierId>>,
     /// Canonical recursively projected bounded-language components.
     projected_components: Vec<FirstLanguageProjectedComponent>,
     /// Dense projected component identities indexed by compact semantic hash.
-    projected_component_ids: HashMap<u64, Vec<FirstLanguageProjectedComponentId>>,
+    projected_component_ids: FxHashMap<u64, Vec<FirstLanguageProjectedComponentId>>,
     /// Bounded component projection memoized by depth and decision-state identity.
     projected_by_decision:
-        HashMap<(usize, FirstLanguageDecisionStateId), FirstLanguageProjectedComponentId>,
+        FxHashMap<(usize, FirstLanguageDecisionStateId), FirstLanguageProjectedComponentId>,
     /// Canonical completed nodes indexed by dense identity.
     nodes: Vec<FirstLanguageNode>,
     /// Residual subset memoization keyed by remaining lookahead.
@@ -2117,18 +2163,18 @@ impl<'a> FirstLanguageArena<'a> {
             canonical_sites: Rc::clone(&analysis.canonical_sites),
             build_deterministic_cells: false,
             decision_states: Vec::new(),
-            decision_state_ids: HashMap::new(),
+            decision_state_ids: FxHashMap::default(),
             positions: Vec::new(),
-            position_ids: HashMap::new(),
+            position_ids: FxHashMap::default(),
             decision_frontiers: Vec::new(),
             cutoff_frontiers: Vec::new(),
-            cutoff_frontier_ids: HashMap::new(),
+            cutoff_frontier_ids: FxHashMap::default(),
             depth_two_frontiers: Vec::new(),
-            depth_two_frontier_ids: HashMap::new(),
+            depth_two_frontier_ids: FxHashMap::default(),
             depth_two_by_decision: Vec::new(),
             projected_components: Vec::new(),
-            projected_component_ids: HashMap::new(),
-            projected_by_decision: HashMap::new(),
+            projected_component_ids: FxHashMap::default(),
+            projected_by_decision: FxHashMap::default(),
             nodes: Vec::new(),
             states: BTreeMap::new(),
             cutoff_summaries: Vec::new(),
@@ -2470,7 +2516,7 @@ impl<'a> FirstLanguageArena<'a> {
                 .try_into()
                 .expect("bounded FIRST decision-state identity overflow"),
         );
-        self.decision_states.push(state.state.clone());
+        self.decision_states.push((*state.state).clone());
         self.decision_frontiers.push(None);
         self.depth_two_by_decision.push(None);
         self.cutoff_summaries.push(None);
@@ -2503,7 +2549,7 @@ impl<'a> FirstLanguageArena<'a> {
         &mut self,
         frontier: FirstLanguageCutoffFrontier,
     ) -> FirstLanguageCutoffFrontierId {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         frontier.hash(&mut hasher);
         let hash = hasher.finish();
         if let Some(id) = self.cutoff_frontier_ids.get(&hash).and_then(|candidates| {
@@ -2530,7 +2576,7 @@ impl<'a> FirstLanguageArena<'a> {
         &mut self,
         frontier: FirstLanguageDepthTwoFrontier,
     ) -> FirstLanguageDepthTwoFrontierId {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         frontier.hash(&mut hasher);
         let hash = hasher.finish();
         if let Some(id) = self
@@ -2564,7 +2610,7 @@ impl<'a> FirstLanguageArena<'a> {
         &mut self,
         component: FirstLanguageProjectedComponent,
     ) -> FirstLanguageProjectedComponentId {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         component.hash(&mut hasher);
         let hash = hasher.finish();
         if let Some(id) = self
@@ -3349,6 +3395,45 @@ impl<'a> FirstLanguageArena<'a> {
         self.materialized.push(None);
         self.interned.insert(key, id);
         id
+    }
+
+    /// Reports whether one node's public sequence cover is non-empty and whether any row is open.
+    ///
+    /// The pair equals `(!rows.is_empty(), rows.iter().any(|row| !row.ends))` for the rows
+    /// [`Self::materialize`] would produce, derived from the authored cover graph without
+    /// materializing any sequence row.
+    fn node_population(&self, node: FirstLanguageNodeId) -> (bool, bool) {
+        let mut memo = FxHashMap::default();
+        self.node_population_memoized(node, &mut memo)
+    }
+
+    /// Folds non-emptiness and open-row facts over the authored cover graph with sharing.
+    fn node_population_memoized(
+        &self,
+        node: FirstLanguageNodeId,
+        memo: &mut FxHashMap<FirstLanguageNodeId, (bool, bool)>,
+    ) -> (bool, bool) {
+        if let Some(population) = memo.get(&node) {
+            return *population;
+        }
+        let current = &self.nodes[node.index()];
+        let mut nonempty = current.exact_end || current.cutoff;
+        let mut open = current.cutoff;
+        let covers = current
+            .covers
+            .iter()
+            .map(|cover| cover.next)
+            .collect::<Vec<_>>();
+        for next in covers {
+            let (suffix_nonempty, suffix_open) = self.node_population_memoized(next, memo);
+            nonempty |= suffix_nonempty;
+            open |= suffix_open;
+            if nonempty && open {
+                break;
+            }
+        }
+        memo.insert(node, (nonempty, open));
+        (nonempty, open)
     }
 
     /// Lazily projects one symbolic node into the public rectangular sequence cover.
@@ -5839,8 +5924,8 @@ impl std::hash::Hash for DecisionState {
 #[derive(Clone, Debug)]
 /// Hash-table key for one exact decision state with its full-vector hash computed once.
 struct HashedDecisionState {
-    /// Exact residual stack retained for collision-safe equality.
-    state: DecisionState,
+    /// Exact residual stack shared so key clones never copy the stack itself.
+    state: Rc<DecisionState>,
     /// Cached full-stack hash used by every closure-table operation and rehash.
     hash: u64,
 }
@@ -5848,10 +5933,10 @@ struct HashedDecisionState {
 impl HashedDecisionState {
     /// Computes the full residual-stack hash once before the state enters a hash table.
     fn new(state: DecisionState) -> Self {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         state.hash(&mut hasher);
         Self {
-            state,
+            state: Rc::new(state),
             hash: hasher.finish(),
         }
     }
@@ -5904,12 +5989,17 @@ fn canonicalize_decision_state(
     mut state: DecisionState,
     canonical_sites: &[SiteId],
 ) -> DecisionState {
+    canonicalize_decision_state_in_place(&mut state, canonical_sites);
+    state
+}
+
+/// Canonicalizes one decision state without consuming or reallocating its stack.
+fn canonicalize_decision_state_in_place(state: &mut DecisionState, canonical_sites: &[SiteId]) {
     for item in &mut state.0 {
         if let DecisionItem::Site(site) = item {
             *site = canonical_sites[site.index()];
         }
     }
-    state
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6689,7 +6779,7 @@ struct DecisionFrontier {
     transitions: Vec<DecisionTransition>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Selection policy attached to one compact dispatch terminal.
 pub(crate) enum CompactDispatchTerminalMode {
     /// Select immediately without considering outgoing edges.
@@ -6700,7 +6790,7 @@ pub(crate) enum CompactDispatchTerminalMode {
     FallbackAfterEdges,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One terminal selected by a compact labelled dispatch traversal.
 pub(crate) struct CompactDispatchTerminal {
     /// Outer enum declaration selected at this terminal.
@@ -6751,7 +6841,7 @@ pub(crate) struct CompactBalancedDispatchResolution {
     pub(crate) after_close: CompactDispatchResolution,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Consume-or-skip label retained by compact optional viability traversal.
 pub(crate) enum CompactOptionalAction {
     /// Parse and retain one occurrence of the optional site.
@@ -6760,7 +6850,7 @@ pub(crate) enum CompactOptionalAction {
     Skip,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One terminal selected by compact optional viability traversal.
 pub(crate) struct CompactOptionalTerminal {
     /// Consume-or-skip action selected at this terminal.
@@ -6798,7 +6888,7 @@ pub(crate) struct CompactOptionalViabilityResolution {
     pub(crate) required_lookahead: usize,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One productive semantic residual carrying its optional action label.
 struct CompactOptionalLabelledState {
     /// Consume-or-skip action retained across grammar expansion.
@@ -6825,7 +6915,7 @@ struct FrozenCompactOptionalState {
     relative_required_lookahead: usize,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Structural identity of one already-interned optional viability child.
 struct CompactOptionalNodeIdentity {
     /// Stable address of the child's immutable terminal allocation.
@@ -6838,7 +6928,7 @@ struct CompactOptionalNodeIdentity {
     edge_count: usize,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Structural hash-consing key for one compact optional viability node.
 struct CompactOptionalNodeKey {
     /// Canonical terminals retained by this node.
@@ -6861,12 +6951,12 @@ struct CompactOptionalViabilityArena<'analysis, 'grammar> {
     /// Shared analysis-run semantic frontier cache.
     analysis: &'analysis FirstSequenceAnalysis<'grammar>,
     /// Canonical compact nodes shared by equivalent residual languages.
-    interned_nodes: BTreeMap<CompactOptionalNodeKey, CompactOptionalNode>,
+    interned_nodes: FxHashMap<CompactOptionalNodeKey, CompactOptionalNode>,
     /// Frozen viability states keyed by depth, prefix status, and action-labelled residuals.
-    frozen: BTreeMap<CompactOptionalMemoKey, Option<FrozenCompactOptionalState>>,
+    frozen: FxHashMap<CompactOptionalMemoKey, Option<FrozenCompactOptionalState>>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// One productive enum derivation with its path-local Pratt provenance.
 struct CompactLabelledDecisionState {
     /// Outer enum declaration retained across nested grammar expansion.
@@ -6924,7 +7014,7 @@ struct FrozenCompactDispatchState {
     relative_required_lookahead: usize,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Structural identity of one already-interned compact dispatch child.
 struct CompactDispatchNodeIdentity {
     /// Terminal retained by the child.
@@ -6935,7 +7025,7 @@ struct CompactDispatchNodeIdentity {
     edge_count: usize,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Structural hash-consing key for one compact dispatch node.
 struct CompactDispatchNodeKey {
     /// Terminal retained by this node.
@@ -6952,16 +7042,35 @@ type CompactDispatchMemoKey = (
     Vec<CompactLabelledDecisionState>,
 );
 
+/// Analysis-run memoization shared by every compact labelled dispatch construction.
+///
+/// Every entry is a pure semantic fact of the grammar, so separate dispatch
+/// resolutions in one analysis run reuse each other's closures, interned nodes,
+/// and frozen states instead of recomputing them per enum or per strategy probe.
+#[derive(Default)]
+struct CompactDispatchCaches {
+    /// Non-consuming closure results keyed without the independent outer declaration.
+    semantic_frontiers: FxHashMap<(bool, DecisionState), Rc<CompactSemanticFrontier>>,
+    /// Canonical compact nodes shared by equivalent residual languages.
+    interned_nodes: FxHashMap<CompactDispatchNodeKey, CompactDispatchNode>,
+    /// Frozen dispatch states keyed by depth, matched-prefix status, root exclusion, and full labels.
+    frozen: FxHashMap<CompactDispatchMemoKey, Option<FrozenCompactDispatchState>>,
+}
+
 /// Shared caches for one compact labelled dispatch construction.
 struct CompactDispatchArena<'analysis, 'grammar> {
     /// Semantic support and canonical site identities for this analysis run.
     analysis: &'analysis FirstSequenceAnalysis<'grammar>,
-    /// Non-consuming closure results keyed without the independent outer declaration.
-    semantic_frontiers: BTreeMap<(bool, DecisionState), CompactSemanticFrontier>,
-    /// Canonical compact nodes shared by equivalent residual languages.
-    interned_nodes: BTreeMap<CompactDispatchNodeKey, CompactDispatchNode>,
-    /// Frozen dispatch states keyed by depth, matched-prefix status, root exclusion, and full labels.
-    frozen: BTreeMap<CompactDispatchMemoKey, Option<FrozenCompactDispatchState>>,
+    /// Analysis-run dispatch memoization borrowed for this construction.
+    caches: CompactDispatchCaches,
+}
+
+impl Drop for CompactDispatchArena<'_, '_> {
+    fn drop(&mut self) {
+        self.analysis
+            .dispatch_caches
+            .replace(std::mem::take(&mut self.caches));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -6969,14 +7078,14 @@ struct CompactDispatchArena<'analysis, 'grammar> {
 enum DecisionFrontierEvent<'a> {
     /// The decision state can terminate without consuming another token.
     End,
-    /// The decision state can consume one token and leave `rest` as its residual.
+    /// The decision state can consume one token, leaving `state` minus its head as residual.
     Transition {
         /// Token atom consumed by this edge.
         atom: AtomId,
         /// Optional exact-text restriction on the consumed token.
         text_predicate: Option<TextPredicateId>,
-        /// Semantic residual after the token is consumed.
-        rest: &'a [DecisionItem],
+        /// Shared originating state whose items past the head form the residual.
+        state: &'a Rc<DecisionState>,
         /// Minimum semantic stack depth seen before this token is consumed.
         minimum_stack_depth: usize,
     },
@@ -8562,13 +8671,11 @@ fn decision_items_equivalent(
 }
 
 impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
-    /// Creates one compact traversal over shared grammar-wide semantic facts.
+    /// Creates one compact traversal that borrows the analysis-run dispatch memoization.
     fn new(analysis: &'analysis FirstSequenceAnalysis<'grammar>) -> Self {
         Self {
             analysis,
-            semantic_frontiers: BTreeMap::new(),
-            interned_nodes: BTreeMap::new(),
-            frozen: BTreeMap::new(),
+            caches: analysis.dispatch_caches.take(),
         }
     }
 
@@ -8597,10 +8704,10 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 })
                 .collect(),
         };
-        if let Some(interned) = self.interned_nodes.get(&key) {
+        if let Some(interned) = self.caches.interned_nodes.get(&key) {
             return interned.clone();
         }
-        self.interned_nodes.insert(key, node.clone());
+        self.caches.interned_nodes.insert(key, node.clone());
         node
     }
 
@@ -8657,11 +8764,10 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
         &mut self,
         crossed_pratt: bool,
         state: &DecisionState,
-    ) -> CompactSemanticFrontier {
-        let state = self.analysis.canonical_state(state.clone());
-        let key = (crossed_pratt, state.clone());
-        if let Some(frontier) = self.semantic_frontiers.get(&key) {
-            return frontier.clone();
+    ) -> Rc<CompactSemanticFrontier> {
+        let key = (crossed_pratt, self.analysis.canonical_state(state.clone()));
+        if let Some(frontier) = self.caches.semantic_frontiers.get(&key) {
+            return Rc::clone(frontier);
         }
         #[cfg(test)]
         FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(
@@ -8669,11 +8775,13 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 .get()
                 .saturating_add(1),
         );
-        let start = HashedDecisionState::new(state);
+        let start = HashedDecisionState::new(key.1.clone());
         let start_depth = start.state.0.len();
-        let mut best_minimum_depth = HashMap::from([((start.clone(), crossed_pratt), start_depth)]);
+        let mut best_minimum_depth =
+            FxHashMap::from_iter([((start.clone(), crossed_pratt), start_depth)]);
         let mut queue = VecDeque::from([(start, start_depth, crossed_pratt)]);
         let mut frontier = CompactSemanticFrontier::default();
+        let mut raw: Vec<(AtomId, Option<TextPredicateId>, bool, Rc<DecisionState>)> = Vec::new();
         while let Some((state, minimum_stack_depth, crossed_pratt)) = queue.pop_front() {
             #[cfg(test)]
             FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(
@@ -8694,20 +8802,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                     atom,
                     text_predicate,
                 } => {
-                    #[cfg(test)]
-                    FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
-                        FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
-                            .get()
-                            .saturating_add(1),
-                    );
-                    frontier.transitions.push(CompactSemanticTransition {
-                        position: FirstPosition {
-                            kinds: self.analysis.atom_kinds[atom.index()].clone(),
-                            text_predicate,
-                        },
-                        crossed_pratt,
-                        next: self.analysis.canonical_state(DecisionState(rest.to_vec())),
-                    });
+                    raw.push((atom, text_predicate, crossed_pratt, Rc::clone(&state.state)));
                 }
                 DecisionHeadStep::Expand {
                     prefix,
@@ -8724,17 +8819,70 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
         }
         frontier.ends.sort_unstable();
         frontier.ends.dedup();
-        frontier.transitions.sort_by(|left, right| {
-            compare_first_positions(&left.position, &right.position)
-                .then_with(|| left.crossed_pratt.cmp(&right.crossed_pratt))
-                .then_with(|| left.next.cmp(&right.next))
+        // Sort and deduplicate transitions by reference with on-the-fly canonical item
+        // comparison, so only surviving transitions pay for owned kind-set and
+        // canonicalized residual-state copies.
+        /// Canonicalizes one borrowed decision item without allocating.
+        fn canonical_item(item: &DecisionItem, canonical_sites: &[SiteId]) -> DecisionItem {
+            match item {
+                DecisionItem::Site(site) => DecisionItem::Site(canonical_sites[site.index()]),
+                DecisionItem::Type(_) | DecisionItem::RepeatTail { .. } => item.clone(),
+            }
+        }
+        /// Iterates one residual's canonicalized items past the consumed head.
+        fn canonical_rest<'items>(
+            state: &'items Rc<DecisionState>,
+            canonical_sites: &'items [SiteId],
+        ) -> impl Iterator<Item = DecisionItem> + 'items {
+            state.0[1..]
+                .iter()
+                .map(move |item| canonical_item(item, canonical_sites))
+        }
+        let atom_kinds = &self.analysis.atom_kinds;
+        let canonical_sites = &self.analysis.canonical_sites;
+        raw.sort_by(|left, right| {
+            compare_first_position_parts(
+                &atom_kinds[left.0.index()],
+                left.1,
+                &atom_kinds[right.0.index()],
+                right.1,
+            )
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| {
+                canonical_rest(&left.3, canonical_sites)
+                    .cmp(canonical_rest(&right.3, canonical_sites))
+            })
         });
-        frontier.transitions.dedup_by(|left, right| {
-            left.position == right.position
-                && left.crossed_pratt == right.crossed_pratt
-                && left.next == right.next
+        raw.dedup_by(|left, right| {
+            atom_kinds[left.0.index()] == atom_kinds[right.0.index()]
+                && left.1 == right.1
+                && left.2 == right.2
+                && canonical_rest(&left.3, canonical_sites)
+                    .eq(canonical_rest(&right.3, canonical_sites))
         });
-        self.semantic_frontiers.insert(key, frontier.clone());
+        frontier.transitions = raw
+            .into_iter()
+            .map(|(atom, text_predicate, crossed_pratt, state)| {
+                #[cfg(test)]
+                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
+                    FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
+                        .get()
+                        .saturating_add(1),
+                );
+                CompactSemanticTransition {
+                    position: FirstPosition {
+                        kinds: atom_kinds[atom.index()].clone(),
+                        text_predicate,
+                    },
+                    crossed_pratt,
+                    next: DecisionState(canonical_rest(&state, canonical_sites).collect()),
+                }
+            })
+            .collect();
+        let frontier = Rc::new(frontier);
+        self.caches
+            .semantic_frontiers
+            .insert(key, Rc::clone(&frontier));
         frontier
     }
 
@@ -8744,37 +8892,60 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
         states: &[CompactLabelledDecisionState],
     ) -> (Vec<CompactLabelledEnd>, Vec<CompactLabelledTransition>) {
         let mut ends = Vec::new();
-        let mut transitions = Vec::new();
-        for state in states {
-            let frontier = self.semantic_frontier(state.crossed_pratt, &state.state);
-            ends.extend(
-                frontier
-                    .ends
-                    .into_iter()
-                    .map(|crossed_pratt| CompactLabelledEnd {
-                        declaration: state.declaration,
-                        crossed_pratt,
-                    }),
-            );
-            transitions.extend(frontier.transitions.into_iter().map(|transition| {
-                CompactLabelledTransition {
-                    position: transition.position,
+        let frontiers = states
+            .iter()
+            .map(|state| {
+                let frontier = self.semantic_frontier(state.crossed_pratt, &state.state);
+                ends.extend(
+                    frontier
+                        .ends
+                        .iter()
+                        .map(|crossed_pratt| CompactLabelledEnd {
+                            declaration: state.declaration,
+                            crossed_pratt: *crossed_pratt,
+                        }),
+                );
+                (state.declaration, frontier)
+            })
+            .collect::<Vec<_>>();
+        // Sort and deduplicate labelled transitions by reference first, so only the
+        // surviving transitions pay for owned position and residual-state copies.
+        let mut borrowed = frontiers
+            .iter()
+            .flat_map(|(declaration, frontier)| {
+                frontier.transitions.iter().map(move |transition| {
+                    (
+                        &transition.position,
+                        (*declaration, transition.crossed_pratt, &transition.next),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        borrowed.sort_by(|left, right| {
+            compare_first_positions(left.0, right.0).then_with(|| {
+                left.1
+                    .0
+                    .cmp(&right.1.0)
+                    .then_with(|| left.1.1.cmp(&right.1.1))
+                    .then_with(|| left.1.2.cmp(right.1.2))
+            })
+        });
+        borrowed.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+        let transitions = borrowed
+            .into_iter()
+            .map(
+                |(position, (declaration, crossed_pratt, state))| CompactLabelledTransition {
+                    position: position.clone(),
                     next: CompactLabelledDecisionState {
-                        declaration: state.declaration,
-                        crossed_pratt: transition.crossed_pratt,
-                        state: transition.next,
+                        declaration,
+                        crossed_pratt,
+                        state: state.clone(),
                     },
-                }
-            }));
-        }
+                },
+            )
+            .collect();
         ends.sort_unstable();
         ends.dedup();
-        transitions.sort_by(|left, right| {
-            compare_first_positions(&left.position, &right.position)
-                .then_with(|| left.next.cmp(&right.next))
-        });
-        transitions
-            .dedup_by(|left, right| left.position == right.position && left.next == right.next);
         (ends, transitions)
     }
 
@@ -8795,16 +8966,16 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
         matched_prefix: bool,
         excluded_root_kind: Option<KindId>,
     ) -> Option<FrozenCompactDispatchState> {
-        let states = self.normalize_states(states);
         let memo_key = (
             remaining,
             matched_prefix,
             excluded_root_kind,
-            states.clone(),
+            self.normalize_states(states),
         );
-        if let Some(frozen) = self.frozen.get(&memo_key) {
+        if let Some(frozen) = self.caches.frozen.get(&memo_key) {
             return frozen.clone();
         }
+        let states = &memo_key.3;
 
         let unique_declaration = states
             .first()
@@ -8824,18 +8995,18 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 }),
                 relative_required_lookahead: 0,
             };
-            self.frozen.insert(memo_key, Some(frozen.clone()));
+            self.caches.frozen.insert(memo_key, Some(frozen.clone()));
             return Some(frozen);
         }
 
-        let (ends, mut transitions) = self.labelled_frontier(&states);
+        let (ends, mut transitions) = self.labelled_frontier(states);
         if let Some(excluded) = excluded_root_kind {
             let excluded = KindSet::singleton(self.analysis.grammar.kind_count, excluded).ok()?;
             let mut filtered = Vec::with_capacity(transitions.len());
             for mut transition in transitions {
                 if transition.position.kinds.intersects(&excluded).ok()? {
                     if transition.position.text_predicate.is_some() {
-                        self.frozen.insert(memo_key, None);
+                        self.caches.frozen.insert(memo_key, None);
                         return None;
                     }
                     transition.position.kinds =
@@ -8853,7 +9024,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
             ends.iter()
                 .any(|candidate| candidate.declaration != first.declaration)
         }) {
-            self.frozen.insert(memo_key, None);
+            self.caches.frozen.insert(memo_key, None);
             return None;
         }
 
@@ -8886,7 +9057,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                     edges: Rc::default(),
                 },
                 _ => {
-                    self.frozen.insert(memo_key, None);
+                    self.caches.frozen.insert(memo_key, None);
                     return None;
                 }
             };
@@ -8894,7 +9065,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 node: self.intern_node(node),
                 relative_required_lookahead: 0,
             };
-            self.frozen.insert(memo_key, Some(frozen.clone()));
+            self.caches.frozen.insert(memo_key, Some(frozen.clone()));
             return Some(frozen);
         }
 
@@ -8908,16 +9079,33 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 CompactDispatchTerminalMode::CallerFollow
             },
         });
+        // Rank labelled residuals so the partition machinery compares and clones dense
+        // identities; rank order equals value order, so grouping and cell order are
+        // exactly those of partitioning over the full labelled states.
+        let mut residual_ranks = transitions
+            .iter()
+            .map(|transition| &transition.next)
+            .collect::<Vec<_>>();
+        residual_ranks.sort();
+        residual_ranks.dedup();
         let partitions = partition_by_kind_residual(
             &transitions,
             self.analysis.grammar,
             |transition| transition.position.text_predicate,
             |transition| &transition.position.kinds,
-            |transition| transition.next.clone(),
+            |transition| {
+                residual_ranks
+                    .binary_search(&&transition.next)
+                    .expect("every labelled residual is ranked")
+            },
         );
         let mut edges = Vec::with_capacity(partitions.len());
         let mut maximum_child_lookahead = 0;
         for (text, residuals, kinds) in partitions {
+            let residuals = residuals
+                .into_iter()
+                .map(|rank| residual_ranks[rank].clone())
+                .collect();
             let next = self.freeze(remaining - 1, residuals, true, None)?;
             maximum_child_lookahead = maximum_child_lookahead.max(next.relative_required_lookahead);
             edges.push(CompactDispatchEdge {
@@ -8950,7 +9138,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 0
             },
         };
-        self.frozen.insert(memo_key, Some(frozen.clone()));
+        self.caches.frozen.insert(memo_key, Some(frozen.clone()));
         Some(frozen)
     }
 
@@ -8982,8 +9170,8 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
     fn new(analysis: &'analysis FirstSequenceAnalysis<'grammar>) -> Self {
         Self {
             analysis,
-            interned_nodes: BTreeMap::new(),
-            frozen: BTreeMap::new(),
+            interned_nodes: FxHashMap::default(),
+            frozen: FxHashMap::default(),
         }
     }
 
@@ -9049,30 +9237,48 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
         states: &[CompactOptionalLabelledState],
     ) -> (Vec<CompactOptionalAction>, Vec<CompactOptionalTransition>) {
         let mut ends = Vec::new();
-        let mut transitions = Vec::new();
-        for state in states {
-            let frontier = self.analysis.decision_frontier(&state.state);
-            if frontier.can_end {
-                ends.push(state.action);
-            }
-            transitions.extend(frontier.transitions.iter().map(|transition| {
-                CompactOptionalTransition {
-                    position: transition.position.clone(),
-                    next: CompactOptionalLabelledState {
-                        action: state.action,
-                        state: transition.next.clone(),
-                    },
+        let frontiers = states
+            .iter()
+            .map(|state| {
+                let frontier = self.analysis.decision_frontier(&state.state);
+                if frontier.can_end {
+                    ends.push(state.action);
                 }
-            }));
-        }
+                (state.action, frontier)
+            })
+            .collect::<Vec<_>>();
+        // Sort and deduplicate action-labelled transitions by reference first, so only
+        // the surviving transitions pay for owned position and residual-state copies.
+        let mut borrowed = frontiers
+            .iter()
+            .flat_map(|(action, frontier)| {
+                frontier
+                    .transitions
+                    .iter()
+                    .map(move |transition| (&transition.position, (*action, &transition.next)))
+            })
+            .collect::<Vec<_>>();
+        borrowed.sort_by(|left, right| {
+            compare_first_positions(left.0, right.0).then_with(|| {
+                left.1
+                    .0
+                    .cmp(&right.1.0)
+                    .then_with(|| left.1.1.cmp(right.1.1))
+            })
+        });
+        borrowed.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+        let transitions = borrowed
+            .into_iter()
+            .map(|(position, (action, state))| CompactOptionalTransition {
+                position: position.clone(),
+                next: CompactOptionalLabelledState {
+                    action,
+                    state: state.clone(),
+                },
+            })
+            .collect();
         ends.sort_unstable();
         ends.dedup();
-        transitions.sort_by(|left, right| {
-            compare_first_positions(&left.position, &right.position)
-                .then_with(|| left.next.cmp(&right.next))
-        });
-        transitions
-            .dedup_by(|left, right| left.position == right.position && left.next == right.next);
         (ends, transitions)
     }
 
@@ -9255,17 +9461,17 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
         fallback_consumes: Option<bool>,
         root_selector: Option<&KindSet>,
     ) -> Option<FrozenCompactOptionalState> {
-        let states = self.normalize_states(states);
         let memo_key = (
             remaining,
             matched_prefix,
             fallback_consumes,
             root_selector.map(|selector| selector.words().to_vec()),
-            states.clone(),
+            self.normalize_states(states),
         );
         if let Some(frozen) = self.frozen.get(&memo_key) {
             return frozen.clone();
         }
+        let states = &memo_key.4;
 
         let unique_action = states
             .first()
@@ -9291,7 +9497,7 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
             return Some(frozen);
         }
 
-        let (ends, transitions) = self.labelled_frontier(&states);
+        let (ends, transitions) = self.labelled_frontier(states);
         if remaining == 0 {
             let terminals = ends
                 .into_iter()
@@ -9342,13 +9548,36 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
             fallback_consumes,
             root_selector,
         );
+        // Rank labelled residuals so the partition machinery compares and clones dense
+        // identities; rank order equals value order, so grouping and cell order are
+        // exactly those of partitioning over the full labelled states.
+        let mut residual_ranks = transitions
+            .iter()
+            .map(|transition| &transition.next)
+            .collect::<Vec<_>>();
+        residual_ranks.sort();
+        residual_ranks.dedup();
         let partitions = partition_by_kind_residual(
             &transitions,
             self.analysis.grammar,
             |transition| transition.position.text_predicate,
             |transition| &transition.position.kinds,
-            |transition| transition.next.clone(),
+            |transition| {
+                residual_ranks
+                    .binary_search(&&transition.next)
+                    .expect("every labelled residual is ranked")
+            },
         );
+        let partitions = partitions
+            .into_iter()
+            .map(|(text, residuals, kinds)| {
+                let residuals = residuals
+                    .into_iter()
+                    .map(|rank| residual_ranks[rank].clone())
+                    .collect::<Vec<_>>();
+                (text, residuals, kinds)
+            })
+            .collect::<Vec<_>>();
         let mut edges = Vec::with_capacity(partitions.len());
         let mut maximum_child_lookahead = 0usize;
         let shielding_fallback = (!terminals.is_empty()).then(|| {
@@ -9450,7 +9679,7 @@ fn queue_compact_decision_expansion(
     rest: &[DecisionItem],
     crossed_pratt: bool,
     minimum_stack_depth: usize,
-    best_minimum_depth: &mut HashMap<(HashedDecisionState, bool), usize>,
+    best_minimum_depth: &mut FxHashMap<(HashedDecisionState, bool), usize>,
     queue: &mut VecDeque<(HashedDecisionState, usize, bool)>,
 ) {
     expansion.extend_from_slice(rest);
@@ -9491,8 +9720,9 @@ fn compact_balanced_dispatch_resolution(
         return None;
     }
     let grammar = first_sequences.grammar;
+    let pratt_crossings = first_sequences.pratt_crossing_facts();
     let (pratt_crossings_by_type, pratt_crossings_by_site) =
-        pratt_crossings_for_grammar(grammar, &first_sequences.decision_summary_facts);
+        (&pratt_crossings.0, &pratt_crossings.1);
     let mut resolutions = Vec::new();
     for delimiter in &grammar.balanced_delimiters {
         let candidate = (|| {
@@ -9739,7 +9969,7 @@ fn walk_decision_frontier(
     // Explore the bounded lookahead product while deduplicating frontier states to terminate recursive shared prefixes.
     let start = HashedDecisionState::new(start.clone());
     let start_depth = start.state.0.len();
-    let mut best_minimum_depth = HashMap::from([(start.clone(), start_depth)]);
+    let mut best_minimum_depth = FxHashMap::from_iter([(start.clone(), start_depth)]);
     let mut queue = VecDeque::from([(start, start_depth)]);
     while let Some((state, minimum_stack_depth)) = queue.pop_front() {
         #[cfg(test)]
@@ -9766,7 +9996,7 @@ fn walk_decision_frontier(
                 stopped = !visit(DecisionFrontierEvent::Transition {
                     atom,
                     text_predicate,
-                    rest,
+                    state: &state.state,
                     minimum_stack_depth,
                 });
             }
@@ -9790,43 +10020,61 @@ fn decision_frontier(
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
 ) -> DecisionFrontier {
-    let mut frontier = DecisionFrontier::default();
+    let mut can_end = false;
+    let mut raw: Vec<(AtomId, Option<TextPredicateId>, Rc<DecisionState>, usize)> = Vec::new();
     walk_decision_frontier(start, grammar, |event| {
         match event {
-            DecisionFrontierEvent::End => frontier.can_end = true,
+            DecisionFrontierEvent::End => can_end = true,
             DecisionFrontierEvent::Transition {
                 atom,
                 text_predicate,
-                rest,
+                state,
                 minimum_stack_depth,
             } => {
-                #[cfg(test)]
-                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
-                    FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
-                        .get()
-                        .saturating_add(1),
-                );
-                frontier.transitions.push(DecisionTransition {
-                    position: FirstPosition {
-                        kinds: atom_kinds[atom.index()].clone(),
-                        text_predicate,
-                    },
-                    next: DecisionState(rest.to_vec()),
-                    minimum_stack_depth,
-                });
+                raw.push((atom, text_predicate, Rc::clone(state), minimum_stack_depth));
             }
         }
         true
     });
-    frontier.transitions.sort_by(|left, right| {
-        compare_first_positions(&left.position, &right.position)
-            .then_with(|| left.next.cmp(&right.next))
-            .then_with(|| right.minimum_stack_depth.cmp(&left.minimum_stack_depth))
+    // Sort and deduplicate by reference first, so only surviving transitions pay for
+    // owned kind-set and residual-state copies.
+    let kinds_of = |atom: AtomId| &atom_kinds[atom.index()];
+    fn rest_of(state: &Rc<DecisionState>) -> &[DecisionItem] {
+        &state.0[1..]
+    }
+    raw.sort_by(|left, right| {
+        compare_first_position_parts(kinds_of(left.0), left.1, kinds_of(right.0), right.1)
+            .then_with(|| rest_of(&left.2).cmp(rest_of(&right.2)))
+            .then_with(|| right.3.cmp(&left.3))
     });
-    frontier
-        .transitions
-        .dedup_by(|left, right| left.position == right.position && left.next == right.next);
-    frontier
+    raw.dedup_by(|left, right| {
+        kinds_of(left.0) == kinds_of(right.0)
+            && left.1 == right.1
+            && rest_of(&left.2) == rest_of(&right.2)
+    });
+    let transitions = raw
+        .into_iter()
+        .map(|(atom, text_predicate, state, minimum_stack_depth)| {
+            #[cfg(test)]
+            FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
+                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
+                    .get()
+                    .saturating_add(1),
+            );
+            DecisionTransition {
+                position: FirstPosition {
+                    kinds: atom_kinds[atom.index()].clone(),
+                    text_predicate,
+                },
+                next: DecisionState(state.0[1..].to_vec()),
+                minimum_stack_depth,
+            }
+        })
+        .collect();
+    DecisionFrontier {
+        can_end,
+        transitions,
+    }
 }
 
 /// Derives only the exact-end and continuation facts required at the lookahead cutoff.
@@ -9839,7 +10087,7 @@ fn queue_decision_expansion(
     mut expansion: Vec<DecisionItem>,
     rest: &[DecisionItem],
     minimum_stack_depth: usize,
-    best_minimum_depth: &mut HashMap<HashedDecisionState, usize>,
+    best_minimum_depth: &mut FxHashMap<HashedDecisionState, usize>,
     queue: &mut VecDeque<(HashedDecisionState, usize)>,
 ) {
     expansion.extend_from_slice(rest);
@@ -9856,11 +10104,26 @@ fn queue_decision_expansion(
 
 /// Orders FIRST positions by token kind and exact-text predicate.
 fn compare_first_positions(left: &FirstPosition, right: &FirstPosition) -> std::cmp::Ordering {
-    left.kinds
+    compare_first_position_parts(
+        &left.kinds,
+        left.text_predicate,
+        &right.kinds,
+        right.text_predicate,
+    )
+}
+
+/// Orders borrowed FIRST position parts exactly like [`compare_first_positions`].
+fn compare_first_position_parts(
+    left_kinds: &KindSet,
+    left_text_predicate: Option<TextPredicateId>,
+    right_kinds: &KindSet,
+    right_text_predicate: Option<TextPredicateId>,
+) -> std::cmp::Ordering {
+    left_kinds
         .kind_count()
-        .cmp(&right.kinds.kind_count())
-        .then_with(|| left.kinds.words().cmp(right.kinds.words()))
-        .then_with(|| left.text_predicate.cmp(&right.text_predicate))
+        .cmp(&right_kinds.kind_count())
+        .then_with(|| left_kinds.words().cmp(right_kinds.words()))
+        .then_with(|| left_text_predicate.cmp(&right_text_predicate))
 }
 
 /// Derives the longest decision path from normalized grammar structure and previously established semantic facts.
@@ -17275,7 +17538,7 @@ mod decision_product_tests {
         const STACK_DEPTH: usize = 64;
         FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(0);
         FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(0);
-        let mut table = HashMap::new();
+        let mut table = FxHashMap::default();
         for unique in 0..STATE_COUNT {
             let mut items = (0..STACK_DEPTH)
                 .map(|index| DecisionItem::Site(SiteId::new(index as u32)))

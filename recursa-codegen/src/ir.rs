@@ -670,7 +670,7 @@ pub struct PrattVariant {
     pub sites: Vec<SiteId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Structural role and binding powers of a Pratt variant.
 pub enum PrattPosition {
     /// Identifies the atom normalized grammar form.

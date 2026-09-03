@@ -1350,12 +1350,16 @@ fn plan_nonoverlapping_optional_viability_for_site(
         return;
     }
     if stop.uses_caller() && first_positions_overlap(element_first, caller_first, grammar) {
-        let consuming = first_sequences.element_sequences_at_depth(site_id, grammar.max_lookahead);
         // Divergence-skip is sound only for a closed element language: every bounded
         // prefix must provably end, so a non-matching continuation cannot belong to an
         // expansion the bounded sequences approximate away (Pratt extenders, cut-off
-        // depth). Open element languages keep the greedy legacy selector below.
-        if !consuming.is_empty() && consuming.iter().all(FirstSequence::ends) {
+        // depth). Open element languages keep the greedy legacy selector below; the
+        // reachability pre-gate proves openness on the shared symbolic node graph, so
+        // only provably closed element languages pay for materialized sequence rows.
+        if first_sequences.element_language_ends_within_depth(site_id, grammar.max_lookahead) {
+            let consuming =
+                first_sequences.element_sequences_at_depth(site_id, grammar.max_lookahead);
+            debug_assert!(!consuming.is_empty() && consuming.iter().all(FirstSequence::ends));
             let mut skipping = stop
                 .static_first()
                 .iter()

@@ -15,6 +15,8 @@ mod decision_plan;
 mod diagnostic;
 /// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;
+/// Fast deterministic hashing for analysis-internal interning tables.
+mod fast_hash;
 mod generation;
 /// Compact typed identities used throughout normalized grammar products.
 mod ids;
