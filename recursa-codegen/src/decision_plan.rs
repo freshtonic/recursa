@@ -101,7 +101,7 @@ struct DispatchRectangleMergeKey {
     positions: Vec<(Vec<u64>, TextPartition)>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Closed selection policy for a frozen dispatch terminal.
 pub enum DispatchTerminalMode {
     /// Select immediately without considering outgoing edges.
@@ -427,7 +427,7 @@ impl FollowRecipe {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Cardinality operation implemented by a container state machine.
 pub enum ContainerOperation {
     /// Selects the direct decision for generation.
@@ -442,7 +442,7 @@ pub enum ContainerOperation {
     OptionalOneOrMore,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Action selected by frozen optional consume-vs-skip viability.
 pub enum OptionalAction {
     /// Parse and store one occurrence of the optional site.

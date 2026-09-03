@@ -6,9 +6,9 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 15;
+pub(super) const PRIVATE_PROTOCOL: u32 = 16;
 /// Stable emitter-format identity hashed into every generated family identity.
-pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v36";
+pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v37";
 /// Fingerprint of the production generator sources compiled into this codegen build.
 const GENERATOR_SOURCE_FINGERPRINT: &str = env!("RECURSA_CODEGEN_SOURCE_FINGERPRINT");
 
@@ -46,9 +46,16 @@ pub(super) struct FacadeCapability {
     /// Whether the facade provides generated Serde support.
     pub(super) serde: bool,
 }
-/// Hashes parse-plan semantic Debug fields in canonical source order without allocation-local spans.
+/// Hashes the frozen parse plans structurally in canonical source order.
+///
+/// `syn` values hash their token structure and ignore spans, so this covers exactly the
+/// semantic fields the Debug rendering covered, without formatting 1,400 node plans as text.
 pub(super) fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
-    canonical_debug_identity(nodes)
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = crate::fast_hash::FxHasher::default();
+    nodes.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Hashes one capability plan without erasing semantic Debug fields or variant order.
@@ -57,11 +64,174 @@ pub(super) fn plan_family_identity(value: &impl std::fmt::Debug) -> u64 {
 }
 
 /// Hashes semantic Debug structure after removing allocation-local proc-macro span offsets.
+///
+/// The Debug text is streamed straight into the identity hash: the value is formatted once
+/// and never materialized as a string. The result equals
+/// `stable_hash(debug_without_span_offsets(&format!("{value:?}")))`.
 fn canonical_debug_identity(value: &(impl std::fmt::Debug + ?Sized)) -> u64 {
-    let rendered = format!("{value:?}");
-    stable_hash(debug_without_span_offsets(&rendered).as_bytes())
+    use std::fmt::Write as _;
+
+    let mut hasher = SpanErasingHasher::new();
+    write!(hasher, "{value:?}").expect("hashing Debug output cannot fail");
+    hasher.finish()
 }
 
+/// Streaming identity hasher that erases `bytes(N..M)` span renderings outside quoted strings.
+///
+/// It applies the same rewrite as [`debug_without_span_offsets`] byte by byte, so a value
+/// hashes to the same identity whether its Debug text arrives in one write or many.
+struct SpanErasingHasher {
+    /// Running FNV-1a state, identical to [`stable_hash`].
+    hash: u64,
+    /// Scanner state carried across `write_str` calls.
+    state: SpanScanState,
+    /// Bytes of a possible `bytes(` prefix or span body not yet committed to the hash.
+    pending: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Scanner state of [`SpanErasingHasher`].
+enum SpanScanState {
+    /// Outside quoted strings and outside a candidate span rendering.
+    #[default]
+    Normal,
+    /// Inside a quoted Debug string; `escaped` marks the byte after a backslash.
+    InString {
+        /// Whether the previous byte was an unescaped backslash.
+        escaped: bool,
+    },
+    /// Matched the first `pending.len()` bytes of `bytes(`.
+    Prefix,
+    /// Matched the full `bytes(` prefix; `pending` holds the body so far.
+    Body,
+}
+
+impl SpanErasingHasher {
+    /// Prefix of a span rendering as `syn` prints it.
+    const PREFIX: &[u8] = b"bytes(";
+    /// Text hashed in place of one allocation-local span body.
+    const ERASED: &[u8] = b"bytes(_)";
+
+    /// Creates a hasher in the initial FNV-1a state.
+    fn new() -> Self {
+        Self {
+            hash: 0xcbf_29ce_4842_2325_u64,
+            state: SpanScanState::Normal,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Folds one committed byte into the hash.
+    fn hash_byte(&mut self, byte: u8) {
+        self.hash ^= u64::from(byte);
+        self.hash = self.hash.wrapping_mul(0x0100_0000_01b3);
+    }
+
+    /// Commits the pending prefix or body bytes verbatim and returns to normal scanning.
+    fn flush_pending(&mut self) {
+        let prefix_len = match self.state {
+            SpanScanState::Prefix => 0,
+            SpanScanState::Body => Self::PREFIX.len(),
+            SpanScanState::Normal | SpanScanState::InString { .. } => 0,
+        };
+        for index in 0..prefix_len {
+            self.hash_byte(Self::PREFIX[index]);
+        }
+        let pending = std::mem::take(&mut self.pending);
+        for byte in pending {
+            self.hash_byte(byte);
+        }
+        self.state = SpanScanState::Normal;
+    }
+
+    /// Consumes one byte of Debug text.
+    fn feed(&mut self, byte: u8) {
+        match self.state {
+            SpanScanState::InString { escaped } => {
+                self.hash_byte(byte);
+                self.state = SpanScanState::InString {
+                    escaped: !escaped && byte == b'\\',
+                };
+                if !escaped && byte == b'"' {
+                    self.state = SpanScanState::Normal;
+                }
+            }
+            SpanScanState::Normal => {
+                if byte == b'"' {
+                    self.hash_byte(byte);
+                    self.state = SpanScanState::InString { escaped: false };
+                } else if byte == Self::PREFIX[0] {
+                    self.pending.push(byte);
+                    self.state = SpanScanState::Prefix;
+                } else {
+                    self.hash_byte(byte);
+                }
+            }
+            SpanScanState::Prefix => {
+                if byte == Self::PREFIX[self.pending.len()] {
+                    self.pending.push(byte);
+                    if self.pending.len() == Self::PREFIX.len() {
+                        self.pending.clear();
+                        self.state = SpanScanState::Body;
+                    }
+                } else {
+                    self.flush_pending();
+                    self.feed(byte);
+                }
+            }
+            SpanScanState::Body => {
+                if byte == b')' {
+                    if Self::is_span_body(&self.pending) {
+                        self.pending.clear();
+                        self.state = SpanScanState::Normal;
+                        for erased in Self::ERASED {
+                            self.hash_byte(*erased);
+                        }
+                    } else {
+                        self.flush_pending();
+                        self.hash_byte(byte);
+                    }
+                } else if byte.is_ascii_digit() || byte == b'.' {
+                    self.pending.push(byte);
+                } else {
+                    self.flush_pending();
+                    self.feed(byte);
+                }
+            }
+        }
+    }
+
+    /// Reports whether a body is exactly `N..M` with non-empty decimal halves.
+    fn is_span_body(body: &[u8]) -> bool {
+        body.windows(2)
+            .position(|window| window == b"..")
+            .is_some_and(|separator| {
+                !body[..separator].is_empty()
+                    && body[..separator].iter().all(u8::is_ascii_digit)
+                    && !body[separator + 2..].is_empty()
+                    && body[separator + 2..].iter().all(u8::is_ascii_digit)
+            })
+    }
+
+    /// Commits any trailing pending bytes and returns the identity.
+    fn finish(mut self) -> u64 {
+        if !self.pending.is_empty() || self.state == SpanScanState::Body {
+            self.flush_pending();
+        }
+        self.hash
+    }
+}
+
+impl std::fmt::Write for SpanErasingHasher {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for byte in text.bytes() {
+            self.feed(byte);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 /// Removes `bytes(N..M)` span renderings outside quoted Debug strings.
 ///
 /// `syn` includes proc-macro allocation offsets in the derived Debug output for identifiers and
@@ -376,6 +546,39 @@ pub(super) fn capability_plan_from_recipes(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streaming_identity_matches_the_two_pass_rewrite_for_every_chunking() {
+        use std::fmt::Write as _;
+
+        use super::{SpanErasingHasher, debug_without_span_offsets, stable_hash};
+
+        let samples = [
+            "Ident { sym: value, span: bytes(12..17) }",
+            "text: \"bytes(3..4)\" tail bytes(5..6)",
+            "esc: \"a\\\"bytes(3..4)\" bytes(7..8)",
+            "bytes(..) bytes(1..) bytes(..2) bytes(x..y) bytes(1..2",
+            "bbytes(1..2) bytes(bytes(3..4)) byte bytes( 1..2 )",
+            "unterminated \"bytes(9..10)",
+            "",
+        ];
+        for sample in samples {
+            let expected = stable_hash(debug_without_span_offsets(sample).as_bytes());
+            for chunk in 1..=sample.len().max(1) {
+                let mut hasher = SpanErasingHasher::new();
+                let bytes = sample.as_bytes();
+                let mut start = 0;
+                while start < bytes.len() {
+                    let end = (start + chunk).min(bytes.len());
+                    hasher
+                        .write_str(std::str::from_utf8(&bytes[start..end]).expect("ascii"))
+                        .expect("infallible");
+                    start = end;
+                }
+                assert_eq!(hasher.finish(), expected, "sample {sample:?} chunk {chunk}");
+            }
+        }
+    }
+
     use super::{
         EMITTER_IDENTITY, GENERATOR_SOURCE_FINGERPRINT, PRIVATE_PROTOCOL,
         debug_without_span_offsets, generation_protocol_identity, generation_protocol_identity_for,
@@ -383,15 +586,15 @@ mod tests {
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 15);
-        assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v36");
+        assert_eq!(PRIVATE_PROTOCOL, 16);
+        assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v37");
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(15, GENERATOR_SOURCE_FINGERPRINT)
+            generation_protocol_identity_for(16, GENERATOR_SOURCE_FINGERPRINT)
         );
         assert_ne!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(14, GENERATOR_SOURCE_FINGERPRINT)
+            generation_protocol_identity_for(15, GENERATOR_SOURCE_FINGERPRINT)
         );
     }
 
