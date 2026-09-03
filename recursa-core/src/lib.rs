@@ -183,6 +183,10 @@ pub mod __private {
     pub fn lex_source_gaps<'lexed>(lexed: &'lexed LexResult<'_>) -> Option<SourceGaps<'lexed>> {
         lexed.source_gaps()
     }
+    pub use crate::{
+        __recursa_visit_children as visit_children, __recursa_visit_node as visit_node,
+        __recursa_visit_node_mut as visit_node_mut,
+    };
 }
 
 #[cfg(test)]
