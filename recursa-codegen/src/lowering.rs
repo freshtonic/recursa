@@ -225,6 +225,42 @@ impl DiscoveryInputs {
         }
         paths.into_iter().collect()
     }
+
+    /// Derives the paths to emit as `cargo::rerun-if-changed`, never naming a missing path.
+    ///
+    /// Cargo treats a missing `rerun-if-changed` path as always dirty, which reruns the build
+    /// script and recompiles the crate on every build. A missing module candidate is therefore
+    /// replaced by its nearest existing ancestor directory relative to `manifest_dir`; Cargo
+    /// scans a directory recursively, so creating the candidate later still reruns the script.
+    /// A candidate whose only existing ancestor is the package root is dropped, because
+    /// watching the package root would also watch the build output.
+    pub(crate) fn invalidation_paths(&self, manifest_dir: &Path) -> Vec<PathBuf> {
+        let mut paths = BTreeSet::new();
+        for path in self.watched_paths() {
+            if manifest_dir.join(&path).exists() {
+                paths.insert(path);
+            } else if let Some(ancestor) = nearest_existing_ancestor(manifest_dir, &path) {
+                paths.insert(ancestor);
+            }
+        }
+        paths.into_iter().collect()
+    }
+}
+
+/// Returns the closest existing ancestor directory of a manifest-relative path, excluding the
+/// package root itself.
+fn nearest_existing_ancestor(manifest_dir: &Path, path: &Path) -> Option<PathBuf> {
+    let mut current = path.parent();
+    while let Some(directory) = current {
+        if directory.as_os_str().is_empty() {
+            return None;
+        }
+        if manifest_dir.join(directory).is_dir() {
+            return Some(directory.to_path_buf());
+        }
+        current = directory.parent();
+    }
+    None
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

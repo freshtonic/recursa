@@ -153,7 +153,7 @@ pub(crate) fn discover_source_tree(
         edition: input.edition,
         cfg: &input.cfg,
     });
-    emit_invalidation(&discovery.discovery_inputs, cargo);
+    emit_invalidation(&discovery.discovery_inputs, input.manifest_dir, cargo);
     collector.extend(
         discovery
             .diagnostics
@@ -405,8 +405,11 @@ pub(crate) fn checked_location(
 }
 
 /// Emits Cargo invalidation directives from reproducible discovery inputs.
-fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
-    for path in inputs.watched_paths() {
+///
+/// Missing module candidates are emitted as their nearest existing ancestor directory, so no
+/// directive ever names a missing path (see [`DiscoveryInputs::invalidation_paths`]).
+fn emit_invalidation(inputs: &DiscoveryInputs, manifest_dir: &Path, cargo: &mut impl CargoOutput) {
+    for path in inputs.invalidation_paths(manifest_dir) {
         cargo.emit(format!("cargo::rerun-if-changed={}", path.display()));
     }
     let mut environment = inputs.environment_dependencies.clone();
