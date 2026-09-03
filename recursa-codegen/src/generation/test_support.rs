@@ -2203,6 +2203,48 @@ pub(super) fn recursive_concrete_visit_impls_do_not_publish_cyclic_child_bounds(
     }
 }
 
+pub(super) fn visit_bodies_use_the_runtime_step_and_child_list_macros() {
+    let source =
+        include_str!("../../tests/fixtures/generation/generic-applications/src/grammar.rs")
+            .replacen("    diagrams,\n", "", 1)
+            .replacen(
+                "PartialEq, Pretty, serde::Serialize",
+                "PartialEq, Pretty, Visit, VisitMut, serde::Serialize",
+                1,
+            );
+    let (_package, plan) = joined_pratt_fixture_from(&source);
+    let render_visit = |ident: &str| {
+        let node = plan
+            .nodes
+            .iter()
+            .find(|node| node.ident == ident)
+            .unwrap_or_else(|| panic!("generic fixture contains {ident}"));
+        format!(
+            "{}\n{}",
+            render_node_visit(&plan, node, false),
+            render_node_visit(&plan, node, true),
+        )
+    };
+    let single = render_visit("KeywordName");
+    let pair = render_visit("Pair");
+
+    assert!(single.contains("__private :: visit_node ! (visitor ,"));
+    assert!(single.contains("__private :: visit_node_mut ! (visitor ,"));
+    assert!(
+        !single.contains("total_enter"),
+        "the enter/exit plumbing lives in the runtime macro"
+    );
+    assert!(
+        single.contains("recursa :: Visit :: visit (& self . value , visitor) ? ;"),
+        "a single child stays a direct call: {single}"
+    );
+    assert!(
+        pair.contains("visit_children ! (ref self visitor ; left , right) ;"),
+        "two children render as one compact list: {pair}"
+    );
+    assert!(pair.contains("visit_children ! (mut self visitor ; left , right) ;"));
+}
+
 pub(super) fn visit_bounds_only_cover_node_type_parameters() {
     let source =
         include_str!("../../tests/fixtures/generation/generic-applications/src/grammar.rs")

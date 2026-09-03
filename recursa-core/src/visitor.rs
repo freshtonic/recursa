@@ -243,3 +243,109 @@ impl<T: VisitMut> VisitMut for crate::Vec1<T> {
         ControlFlow::Continue(())
     }
 }
+
+/// Runs one generated read-only traversal step: enter hook, children, exit hook.
+///
+/// Generated `Visit` implementations expand this in place of the enter/exit
+/// plumbing they used to carry, so each Node keeps one event expression.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recursa_visit_node {
+    ($visitor:ident, $event:expr, { $($children:tt)* }) => {{
+        match $visitor.total_enter($event) {
+            ::core::ops::ControlFlow::Continue(()) => { $($children)* }
+            ::core::ops::ControlFlow::Break($crate::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        $visitor.total_exit($event)
+    }};
+}
+
+/// Runs one generated mutable traversal step: enter hook, children, exit hook.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recursa_visit_node_mut {
+    ($visitor:ident, $event:expr, { $($children:tt)* }) => {{
+        match $visitor.total_enter_mut($event) {
+            ::core::ops::ControlFlow::Continue(()) => { $($children)* }
+            ::core::ops::ControlFlow::Break($crate::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        $visitor.total_exit_mut($event)
+    }};
+}
+
+/// Visits a compact list of generated children in authored source order.
+///
+/// `ref`/`mut` items are fields of `$self`; `bind_ref`/`bind_mut` items are
+/// pattern bindings that already borrow the child. A bracketed item
+/// (`[field]`) traverses through the grammar-local helper trait given after
+/// the receiver instead of the public `Visit`/`VisitMut` trait.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recursa_visit_children {
+    (ref $self:ident $visitor:ident ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@ref $self $visitor () ; $($items)*);
+    };
+    (ref $self:ident $visitor:ident $helper:path ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@ref $self $visitor ($helper) ; $($items)*);
+    };
+    (mut $self:ident $visitor:ident ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@mut $self $visitor () ; $($items)*);
+    };
+    (mut $self:ident $visitor:ident $helper:path ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@mut $self $visitor ($helper) ; $($items)*);
+    };
+    (bind_ref $visitor:ident ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@bind_ref $visitor () ; $($items)*);
+    };
+    (bind_ref $visitor:ident $helper:path ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@bind_ref $visitor ($helper) ; $($items)*);
+    };
+    (bind_mut $visitor:ident ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@bind_mut $visitor () ; $($items)*);
+    };
+    (bind_mut $visitor:ident $helper:path ; $($items:tt)*) => {
+        $crate::__recursa_visit_children!(@bind_mut $visitor ($helper) ; $($items)*);
+    };
+
+    (@ref $self:ident $visitor:ident ($($helper:tt)*) ;) => {};
+    (@ref $self:ident $visitor:ident ($($helper:tt)*) ; [$field:tt] $(, $($rest:tt)*)?) => {
+        <_ as $($helper)*>::__recursa_visit_with(&$self.$field, $visitor)?;
+        $crate::__recursa_visit_children!(@ref $self $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+    (@ref $self:ident $visitor:ident ($($helper:tt)*) ; $field:tt $(, $($rest:tt)*)?) => {
+        $crate::Visit::visit(&$self.$field, $visitor)?;
+        $crate::__recursa_visit_children!(@ref $self $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+
+    (@mut $self:ident $visitor:ident ($($helper:tt)*) ;) => {};
+    (@mut $self:ident $visitor:ident ($($helper:tt)*) ; [$field:tt] $(, $($rest:tt)*)?) => {
+        <_ as $($helper)*>::__recursa_visit_mut_with(&mut $self.$field, $visitor)?;
+        $crate::__recursa_visit_children!(@mut $self $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+    (@mut $self:ident $visitor:ident ($($helper:tt)*) ; $field:tt $(, $($rest:tt)*)?) => {
+        $crate::VisitMut::visit_mut(&mut $self.$field, $visitor)?;
+        $crate::__recursa_visit_children!(@mut $self $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+
+    (@bind_ref $visitor:ident ($($helper:tt)*) ;) => {};
+    (@bind_ref $visitor:ident ($($helper:tt)*) ; [$binding:ident] $(, $($rest:tt)*)?) => {
+        <_ as $($helper)*>::__recursa_visit_with($binding, $visitor)?;
+        $crate::__recursa_visit_children!(@bind_ref $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+    (@bind_ref $visitor:ident ($($helper:tt)*) ; $binding:ident $(, $($rest:tt)*)?) => {
+        $crate::Visit::visit($binding, $visitor)?;
+        $crate::__recursa_visit_children!(@bind_ref $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+
+    (@bind_mut $visitor:ident ($($helper:tt)*) ;) => {};
+    (@bind_mut $visitor:ident ($($helper:tt)*) ; [$binding:ident] $(, $($rest:tt)*)?) => {
+        <_ as $($helper)*>::__recursa_visit_mut_with($binding, $visitor)?;
+        $crate::__recursa_visit_children!(@bind_mut $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+    (@bind_mut $visitor:ident ($($helper:tt)*) ; $binding:ident $(, $($rest:tt)*)?) => {
+        $crate::VisitMut::visit_mut($binding, $visitor)?;
+        $crate::__recursa_visit_children!(@bind_mut $visitor ($($helper)*) ; $($($rest)*)?);
+    };
+}

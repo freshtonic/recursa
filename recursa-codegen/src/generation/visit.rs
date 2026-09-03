@@ -26,6 +26,10 @@ mod tests {
     fn visit_bounds_only_cover_node_type_parameters() {
         test_support::visit_bounds_only_cover_node_type_parameters();
     }
+    #[test]
+    fn visit_bodies_use_the_runtime_step_and_child_list_macros() {
+        test_support::visit_bodies_use_the_runtime_step_and_child_list_macros();
+    }
 
     #[test]
     fn large_visit_matches_are_split_into_bounded_helpers() {
@@ -678,7 +682,6 @@ pub(super) fn render_node_visit(
                 || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
                 |variant| quote!(#event::#variant(self)),
             );
-            let exit = enter.clone();
             Some(quote! {
                 #helper_methods_impl
 
@@ -695,12 +698,11 @@ pub(super) fn render_node_visit(
                             #module_anchor::__RecursaVisitEventsMut<#helper_input>
                         >,
                     {
-                        match visitor.total_enter_mut(#enter) {
-                            ::core::ops::ControlFlow::Continue(()) => { #helper_children_body }
-                            ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
-                            other => return other,
-                        }
-                        visitor.total_exit_mut(#exit)
+                        #facade::__private::visit_node_mut!(
+                            visitor,
+                            #enter,
+                            { #helper_children_body }
+                        )
                     }
                 }
             })
@@ -710,7 +712,6 @@ pub(super) fn render_node_visit(
                 || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
                 |variant| quote!(#event::#variant(self)),
             );
-            let exit = enter.clone();
             Some(quote! {
                 #helper_methods_impl
 
@@ -727,12 +728,11 @@ pub(super) fn render_node_visit(
                             #module_anchor::__RecursaVisitEvents<#helper_input>
                         >,
                     {
-                        match visitor.total_enter(#enter) {
-                            ::core::ops::ControlFlow::Continue(()) => { #helper_children_body }
-                            ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
-                            other => return other,
-                        }
-                        visitor.total_exit(#exit)
+                        #facade::__private::visit_node!(
+                            visitor,
+                            #enter,
+                            { #helper_children_body }
+                        )
                     }
                 }
             })
@@ -747,7 +747,6 @@ pub(super) fn render_node_visit(
             || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
             |variant| quote!(#event::#variant(self)),
         );
-        let exit = enter.clone();
         let visit_body = if input_agnostic_impl.is_some() {
             quote! {
                 <Self as #module_anchor::__RecursaVisitMutWith<'static>>
@@ -756,12 +755,7 @@ pub(super) fn render_node_visit(
         } else {
             let children_body = &children.body;
             quote! {
-                match visitor.total_enter_mut(#enter) {
-                    ::core::ops::ControlFlow::Continue(()) => { #children_body }
-                    ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
-                    other => return other,
-                }
-                visitor.total_exit_mut(#exit)
+                #facade::__private::visit_node_mut!(visitor, #enter, { #children_body })
             }
         };
         quote! {
@@ -789,7 +783,6 @@ pub(super) fn render_node_visit(
             || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
             |variant| quote!(#event::#variant(self)),
         );
-        let exit = enter.clone();
         let visit_body = if input_agnostic_impl.is_some() {
             quote! {
                 <Self as #module_anchor::__RecursaVisitWith<'static>>
@@ -798,12 +791,7 @@ pub(super) fn render_node_visit(
         } else {
             let children_body = &children.body;
             quote! {
-                match visitor.total_enter(#enter) {
-                    ::core::ops::ControlFlow::Continue(()) => { #children_body }
-                    ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
-                    other => return other,
-                }
-                visitor.total_exit(#exit)
+                #facade::__private::visit_node!(visitor, #enter, { #children_body })
             }
         };
         quote! {
@@ -1046,6 +1034,75 @@ fn node_reaches(
         .any(|dependency| node_reaches(plan, dependency, target, visited))
 }
 
+/// One generated child traversal: how the child is reached and which trait visits it.
+struct VisitChild {
+    /// Field name, tuple index, or pattern binding that reaches the child.
+    access: proc_macro2::TokenStream,
+    /// Whether traversal goes through the grammar-local helper trait.
+    uses_generated_helper: bool,
+}
+
+/// Renders the traversal of one child list as a compact runtime-macro invocation.
+///
+/// Lists with fewer than two children render as direct calls, because the macro
+/// head is longer than one call. `receiver` is `Some(self)` for field access and
+/// `None` for pattern bindings that already borrow the child.
+fn render_visit_child_list(
+    plan: &EmissionPlan,
+    mutable: bool,
+    event_input: &proc_macro2::TokenStream,
+    receiver: bool,
+    children: &[VisitChild],
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let helper = if mutable {
+        quote!(#module_anchor::__RecursaVisitMutWith<#event_input>)
+    } else {
+        quote!(#module_anchor::__RecursaVisitWith<#event_input>)
+    };
+    if children.len() < 2 {
+        let calls = children.iter().map(|child| {
+            let access = &child.access;
+            let value = match (receiver, mutable) {
+                (true, true) => quote!(&mut self.#access),
+                (true, false) => quote!(&self.#access),
+                (false, _) => quote!(#access),
+            };
+            match (child.uses_generated_helper, mutable) {
+                (true, true) => quote! {
+                    <_ as #helper>::__recursa_visit_mut_with(#value, visitor)?;
+                },
+                (true, false) => quote! {
+                    <_ as #helper>::__recursa_visit_with(#value, visitor)?;
+                },
+                (false, true) => quote!(#facade::VisitMut::visit_mut(#value, visitor)?;),
+                (false, false) => quote!(#facade::Visit::visit(#value, visitor)?;),
+            }
+        });
+        return quote!(#(#calls)*);
+    }
+    let mode = match (receiver, mutable) {
+        (true, true) => quote!(mut self visitor),
+        (true, false) => quote!(ref self visitor),
+        (false, true) => quote!(bind_mut visitor),
+        (false, false) => quote!(bind_ref visitor),
+    };
+    let helper = children
+        .iter()
+        .any(|child| child.uses_generated_helper)
+        .then_some(helper);
+    let items = children.iter().map(|child| {
+        let access = &child.access;
+        if child.uses_generated_helper {
+            quote!([#access])
+        } else {
+            quote!(#access)
+        }
+    });
+    quote!(#facade::__private::visit_children!(#mode #helper ; #(#items),*);)
+}
+
 /// Renders Visit calls for semantic children in authored source order.
 fn render_visit_children(
     plan: &EmissionPlan,
@@ -1055,45 +1112,35 @@ fn render_visit_children(
 ) -> RenderedVisitChildren {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
-    let visit = |value: proc_macro2::TokenStream, uses_generated_helper: bool| {
-        if uses_generated_helper && mutable {
-            quote! {
-                <_ as #module_anchor::__RecursaVisitMutWith<#event_input>>
-                    ::__recursa_visit_mut_with(#value, visitor)?;
-            }
-        } else if uses_generated_helper {
-            quote! {
-                <_ as #module_anchor::__RecursaVisitWith<#event_input>>
-                    ::__recursa_visit_with(#value, visitor)?;
-            }
-        } else if mutable {
-            quote!(#facade::VisitMut::visit_mut(#value, visitor)?;)
-        } else {
-            quote!(#facade::Visit::visit(#value, visitor)?;)
-        }
-    };
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
-            let fields = elements.iter().filter_map(|element| {
-                let ElementParseKind::Semantic { field, projection } = &element.kind else {
-                    return None;
-                };
-                if !matches!(projection.as_ref(), SemanticParseProjection::Direct { .. }) {
-                    return None;
-                }
-                let access = field_access(quote!(self), field.ident.as_ref(), field.index);
-                Some(visit(
-                    if mutable {
-                        quote!(&mut #access)
-                    } else {
-                        quote!(&#access)
-                    },
-                    projection_uses_generated_visit_helper(plan, projection, mutable),
-                ))
-            });
+            let children = elements
+                .iter()
+                .filter_map(|element| {
+                    let ElementParseKind::Semantic { field, projection } = &element.kind else {
+                        return None;
+                    };
+                    if !matches!(projection.as_ref(), SemanticParseProjection::Direct { .. }) {
+                        return None;
+                    }
+                    let access = field.ident.as_ref().map_or_else(
+                        || {
+                            let index = syn::Index::from(field.index);
+                            quote!(#index)
+                        },
+                        |ident| quote!(#ident),
+                    );
+                    Some(VisitChild {
+                        access,
+                        uses_generated_helper: projection_uses_generated_visit_helper(
+                            plan, projection, mutable,
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>();
             RenderedVisitChildren {
                 methods: proc_macro2::TokenStream::new(),
-                body: quote!(#(#fields)*),
+                body: render_visit_child_list(plan, mutable, event_input, true, &children),
             }
         }
         NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
@@ -1154,12 +1201,20 @@ fn render_visit_children(
                             }
                             ResolvedFieldStyle::Unit => quote!(#node_ident::#variant_ident),
                         };
-                    let visits = semantic.iter().zip(bindings).filter_map(
-                        |((_, direct, uses_generated_helper), binding)| {
-                            direct.then(|| visit(quote!(#binding), *uses_generated_helper))
-                        },
-                    );
-                    (pattern, quote!(#(#visits)*))
+                    let children = semantic
+                        .iter()
+                        .zip(bindings)
+                        .filter_map(|((_, direct, uses_generated_helper), binding)| {
+                            direct.then(|| VisitChild {
+                                access: quote!(#binding),
+                                uses_generated_helper: *uses_generated_helper,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        pattern,
+                        render_visit_child_list(plan, mutable, event_input, false, &children),
+                    )
                 })
                 .collect::<Vec<_>>();
             if arms.len() > VISIT_DISPATCH_LEAF_WIDTH {
