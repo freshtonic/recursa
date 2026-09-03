@@ -1,10 +1,11 @@
 //! Grammar-erased runtime support for Recursa-generated parsers.
 
+/// Static grammar metadata and recursive FOLLOW storage.
+mod dispatch;
 #[cfg(feature = "explorer")]
 pub mod explorer;
 #[cfg(feature = "explorer")]
 pub mod framing;
-/// Static grammar metadata and recursive FOLLOW storage.
 mod grammar;
 /// Grammar-bound lexical output and parser cursor state.
 mod input;
@@ -44,6 +45,7 @@ pub use visitor::{
 /// Recursa runtime.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::dispatch::{DispatchTable, dispatch_table};
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
         ElementSchemaData as ExplorerElementSchemaData,

@@ -297,7 +297,7 @@ mod tests {
         EmissionLookupIndex, ExpectedAtomIndex, ExpectedSet,
         OptionalViabilityDecisionTerminalParsePlan, PlannedContainer, PlannedFollow,
         PlannedTextPredicate, TextEquivalence, encode_dispatch_positions, planned_container,
-        pratt_operand_follow, render_position_dispatch,
+        pratt_operand_follow,
     };
     use crate::{
         AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
@@ -398,44 +398,9 @@ mod tests {
             &["exact-1", "one-2", "two-2", "not-3"]
         );
 
-        let facade = quote::format_ident!("recursa");
-        let module_anchor: syn::Path = syn::parse_quote!(crate::__recursa_generated);
-        let dispatcher = quote::format_ident!("__recursa_test_dispatch_position");
-        let decoder = quote::format_ident!("__recursa_test_decode");
-        let table = quote::format_ident!("__RECURSA_TEST_POSITIONS");
-        let spellings = quote::format_ident!("__RECURSA_TEST_SPELLINGS");
-        let (_, literal) = super::packed_table(&encoded.table);
-        let depth = quote::format_ident!("depth");
-        let (items, call) = render_position_dispatch(
-            &facade,
-            &module_anchor,
-            &dispatcher,
-            &decoder,
-            &table,
-            &spellings,
-            &literal,
-            2,
-            &encoded.spellings,
-            &depth,
-            "test dispatch reached an unknown position",
-        );
-        let items = items.to_string();
-        let call = call.to_string();
-
-        assert_eq!(
-            call,
-            "__recursa_test_dispatch_position (context . peek (depth) , context . source () , position)"
-        );
-        assert!(!call.contains("match"));
-        assert_eq!(
-            items.matches("fn __recursa_test_dispatch_position").count(),
-            1
-        );
-        assert!(items.contains("static __RECURSA_TEST_POSITIONS : & [u8]"));
-        assert!(items.contains("static __RECURSA_TEST_SPELLINGS : & [& str]"));
-        assert!(!items.contains("_position_0"));
-        assert!(!items.contains("_leaf_"));
-        assert!(!items.contains("_route_"));
+        let (width, literal) = super::packed_table(&encoded.table);
+        assert_eq!(width, 2, "position cells above 63 pack into two digits");
+        assert!(literal.to_string().starts_with("b\""));
     }
 
     #[test]
@@ -620,93 +585,6 @@ fn encode_dispatch_positions(
         ]);
     }
     EncodedDispatchPositions { table, spellings }
-}
-
-/// Emits one compact data-driven matcher and its immutable position tables.
-#[allow(clippy::too_many_arguments)]
-fn render_position_dispatch(
-    facade: &Ident,
-    module_anchor: &syn::Path,
-    dispatcher: &Ident,
-    decoder: &Ident,
-    table: &Ident,
-    spellings: &Ident,
-    table_literal: &proc_macro2::Literal,
-    packed_width: usize,
-    spelling_values: &[String],
-    depth: &Ident,
-    unknown_position: &str,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let row_end = render_packed_row_end(4, packed_width);
-    (
-        quote! {
-            fn #dispatcher(
-                record: Option<#facade::__private::TokenRecord>,
-                source: &str,
-                position: usize,
-            ) -> bool {
-                let slot = position
-                    .checked_mul(4)
-                    .filter(|slot| #row_end <= #table.len())
-                    .unwrap_or_else(|| unreachable!(#unknown_position));
-                let expected_index = #decoder(#table, slot);
-                let predicate_mode = #decoder(#table, slot + 1);
-                let spelling_start = #decoder(#table, slot + 2);
-                let spelling_count = #decoder(#table, slot + 3);
-                let spelling_end = spelling_start
-                    .checked_add(spelling_count)
-                    .filter(|end| *end <= #spellings.len())
-                    .unwrap_or_else(|| unreachable!(#unknown_position));
-                let expected = &#module_anchor::__RECURSA_EXPECTED_SETS[expected_index];
-                let options = &#spellings[spelling_start..spelling_end];
-                record.is_some_and(|record| {
-                    expected.contains(record.kind)
-                        && match predicate_mode {
-                            0 => true,
-                            1 | 2 => source
-                                .get(record.span.range())
-                                .is_some_and(|text| options.contains(&text)),
-                            3 => source
-                                .get(record.span.range())
-                                .is_some_and(|text| !options.contains(&text)),
-                            4 | 5 => source.get(record.span.range()).is_some_and(|text| {
-                                options
-                                    .iter()
-                                    .any(|option| text.eq_ignore_ascii_case(option))
-                            }),
-                            6 => source.get(record.span.range()).is_some_and(|text| {
-                                !options
-                                    .iter()
-                                    .any(|option| text.eq_ignore_ascii_case(option))
-                            }),
-                            7 => source.get(record.span.range()).is_some(),
-                            _ => unreachable!(#unknown_position),
-                        }
-                })
-            }
-            static #table: &[u8] = #table_literal;
-            static #spellings: &[&str] = &[#(#spelling_values),*];
-        },
-        quote!(#dispatcher(context.peek(#depth), context.source(), position)),
-    )
-}
-
-/// Renders the exclusive byte end for a fixed-cell table row without identity operations.
-fn render_packed_row_end(cells: usize, packed_width: usize) -> proc_macro2::TokenStream {
-    if packed_width == 1 {
-        quote!(slot + #cells)
-    } else {
-        quote!((slot + #cells) * #packed_width)
-    }
-}
-
-/// Renders the byte range for one fixed-width packed cell without identity operations.
-fn render_packed_cell_range(packed_width: usize) -> proc_macro2::TokenStream {
-    if packed_width == 1 {
-        quote!(slot..slot + 1)
-    } else {
-        quote!(slot * #packed_width..(slot + 1) * #packed_width)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -5481,15 +5359,10 @@ pub(super) fn render_predictive_graph_selection(
     expected_index: &mut usize,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let facade = &plan.facade;
-    let state = format_ident!("__recursa_dispatch_state");
-    let depth = format_ident!("__recursa_dispatch_depth");
     let root_index = root.index();
     let table_index = *expected_index;
     *expected_index += 1;
     let module_anchor = &plan.module_anchor;
-    let states_name = format_ident!("__RECURSA_DISPATCH_STATES_{node_index}_{table_index}");
-    let edges_name = format_ident!("__RECURSA_DISPATCH_EDGES_{node_index}_{table_index}");
-    let decoder_name = format_ident!("__recursa_decode_dispatch_{node_index}_{table_index}");
     let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
     let mut positions = Vec::new();
     let mut edge_values = Vec::new();
@@ -5548,118 +5421,20 @@ pub(super) fn render_predictive_graph_selection(
     let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
     let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
     let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
-    let position_dispatcher =
-        format_ident!("__recursa_dispatch_match_position_{node_index}_{table_index}");
-    let positions_name = format_ident!("__RECURSA_DISPATCH_POSITIONS_{node_index}_{table_index}");
-    let spellings_name = format_ident!("__RECURSA_DISPATCH_SPELLINGS_{node_index}_{table_index}");
-    let (position_dispatch_items, position_dispatch_call) = render_position_dispatch(
-        facade,
-        module_anchor,
-        &position_dispatcher,
-        &decoder_name,
-        &positions_name,
-        &spellings_name,
-        &positions_literal,
-        packed_width,
-        &encoded_positions.spellings,
-        &depth,
-        "frozen dispatch reached an unknown position",
-    );
-    let unused_edges = positions
-        .is_empty()
-        .then(|| quote!(let _ = (edge_start, edge_count);));
-    let edge_traversal = (!positions.is_empty()).then(|| {
-        quote! {
-            for edge in edge_start..edge_start + edge_count {
-                let position =
-                    #decoder_name(#edges_name, edge * 2);
-                let next =
-                    #decoder_name(#edges_name, edge * 2 + 1);
-                let matches = #position_dispatch_call;
-                if matches {
-                    #state = next;
-                    #depth += 1;
-                    continue '__recursa_dispatch;
-                }
-            }
-        }
-    });
-    let decoder_range = render_packed_cell_range(packed_width);
-    let state_row_end = render_packed_row_end(4, packed_width);
+    let table_name = format_ident!("__RECURSA_DISPATCH_{node_index}_{table_index}");
+    let spellings = &encoded_positions.spellings;
     let items = quote! {
-            #position_dispatch_items
-            fn #decoder_name(table: &[u8], slot: usize) -> usize {
-                table[#decoder_range]
-                    .iter()
-                    .copied()
-                    .fold(0usize, |value, byte| {
-                        let digit = match byte {
-                            b'A'..=b'Z' => usize::from(byte - b'A'),
-                            b'a'..=b'z' => usize::from(byte - b'a') + 26,
-                            b'0'..=b'9' => usize::from(byte - b'0') + 52,
-                            b'-' => 62,
-                            b'_' => 63,
-                            _ => unreachable!("generated packed dispatch table is invalid"),
-                        };
-                        (value << 6) | digit
-                    })
-            }
-            static #states_name: &[u8] = #states_literal;
-            static #edges_name: &[u8] = #edges_literal;
+        static #table_name: #facade::__private::DispatchTable =
+            #facade::__private::dispatch_table(
+                #states_literal,
+                #edges_literal,
+                #positions_literal,
+                &[#(#spellings),*],
+                #packed_width,
+                &#module_anchor::__RECURSA_EXPECTED_SETS,
+            );
     };
-    let selection = quote! {
-        {
-            let mut #state = #root_index;
-            let mut #depth = #initial_depth;
-            '__recursa_dispatch: loop {
-                let state_slot = #state
-                    .checked_mul(4)
-                    .filter(|slot| #state_row_end <= #states_name.len())
-                    .unwrap_or_else(|| {
-                        unreachable!("frozen dispatch reached an unknown state")
-                    });
-                let encoded_target =
-                    #decoder_name(#states_name, state_slot);
-                let target = (encoded_target != 0).then(|| {
-                    let target = encoded_target - 1;
-                    (target / 3, target % 3)
-                });
-                let edge_start =
-                    #decoder_name(#states_name, state_slot + 1);
-                let edge_count =
-                    #decoder_name(#states_name, state_slot + 2);
-                let expected_index =
-                    #decoder_name(#states_name, state_slot + 3);
-                let expected = &#module_anchor::__RECURSA_EXPECTED_SETS[expected_index];
-                if let Some((variant, mode)) = target {
-                    if mode == 0
-                        || context.peek(#depth).is_none()
-                        || (mode == 1
-                            && context
-                                .peek(#depth)
-                                .is_some_and(|record| context.follow().contains(record.kind)))
-                    {
-                        break variant;
-                    }
-                }
-                #unused_edges
-                #edge_traversal
-                if let Some((variant, 2)) = target {
-                    break variant;
-                }
-                if target.is_some_and(|(_, mode)| mode == 1) {
-                    let __recursa_dispatch_expected = expected
-                        .union(context.follow())
-                        .expect("matching generated dispatch/FOLLOW widths");
-                    return Err(context.unexpected_at(
-                        #depth,
-                        &__recursa_dispatch_expected,
-                    ));
-                }
-                return Err(context.unexpected_at(#depth, expected));
-            }
-        }
-    };
+    let selection = quote!(context.select_predictive(&#table_name, #root_index, #initial_depth)?);
     (selection, items)
 }
 
@@ -5694,14 +5469,9 @@ pub(super) fn render_predictive_selection(
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     instrumentation.frozen_dispatch_nodes_rendered += dispatch.states.len();
     let facade = &plan.facade;
-    let state = format_ident!("__recursa_pratt_dispatch_state");
-    let depth = format_ident!("__recursa_pratt_dispatch_depth");
     let root = dispatch.root.index();
     let table_index = *expected_index;
     *expected_index += 1;
-    let states_name = format_ident!("__RECURSA_PRATT_STATES_{node_index}_{table_index}");
-    let edges_name = format_ident!("__RECURSA_PRATT_EDGES_{node_index}_{table_index}");
-    let decoder_name = format_ident!("__recursa_decode_pratt_{node_index}_{table_index}");
     let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
     let mut positions = Vec::new();
     let mut edge_values = Vec::new();
@@ -5749,93 +5519,21 @@ pub(super) fn render_predictive_selection(
     let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
     let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
     let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
-    let position_dispatcher =
-        format_ident!("__recursa_pratt_match_position_{node_index}_{table_index}");
-    let positions_name = format_ident!("__RECURSA_PRATT_POSITIONS_{node_index}_{table_index}");
-    let spellings_name = format_ident!("__RECURSA_PRATT_SPELLINGS_{node_index}_{table_index}");
-    let (position_dispatch_items, position_dispatch_call) = render_position_dispatch(
-        facade,
-        &plan.module_anchor,
-        &position_dispatcher,
-        &decoder_name,
-        &positions_name,
-        &spellings_name,
-        &positions_literal,
-        packed_width,
-        &encoded_positions.spellings,
-        &depth,
-        "frozen Pratt dispatch reached an unknown position",
-    );
-    let decoder_range = render_packed_cell_range(packed_width);
-    let state_row_end = render_packed_row_end(3, packed_width);
+    let table_name = format_ident!("__RECURSA_PRATT_{node_index}_{table_index}");
+    let spellings = &encoded_positions.spellings;
+    let module_anchor = &plan.module_anchor;
     let items = quote! {
-            #position_dispatch_items
-            fn #decoder_name(table: &[u8], slot: usize) -> usize {
-                table[#decoder_range]
-                    .iter()
-                    .copied()
-                    .fold(0usize, |value, byte| {
-                        let digit = match byte {
-                            b'A'..=b'Z' => usize::from(byte - b'A'),
-                            b'a'..=b'z' => usize::from(byte - b'a') + 26,
-                            b'0'..=b'9' => usize::from(byte - b'0') + 52,
-                            b'-' => 62,
-                            b'_' => 63,
-                            _ => unreachable!("generated packed Pratt table is invalid"),
-                        };
-                        (value << 6) | digit
-                    })
-            }
-            static #states_name: &[u8] = #states_literal;
-            static #edges_name: &[u8] = #edges_literal;
+        static #table_name: #facade::__private::DispatchTable =
+            #facade::__private::dispatch_table(
+                #states_literal,
+                #edges_literal,
+                #positions_literal,
+                &[#(#spellings),*],
+                #packed_width,
+                &#module_anchor::__RECURSA_EXPECTED_SETS,
+            );
     };
-    let selection = quote! {
-        {
-            let mut #state = #root;
-            let mut #depth = 0usize;
-            '__recursa_pratt_dispatch: loop {
-                let state_slot = #state
-                    .checked_mul(3)
-                    .filter(|slot| #state_row_end <= #states_name.len())
-                    .unwrap_or_else(|| {
-                        unreachable!("frozen Pratt dispatch reached an unknown state")
-                    });
-                let encoded_target =
-                    #decoder_name(#states_name, state_slot);
-                let target = (encoded_target != 0).then(|| {
-                    let target = encoded_target - 1;
-                    (target / 3, target % 3)
-                });
-                let edge_start =
-                    #decoder_name(#states_name, state_slot + 1);
-                let edge_count =
-                    #decoder_name(#states_name, state_slot + 2);
-                for edge in edge_start..edge_start + edge_count {
-                    let position =
-                        #decoder_name(#edges_name, edge * 2);
-                    let next =
-                        #decoder_name(#edges_name, edge * 2 + 1);
-                    let matches = #position_dispatch_call;
-                    if matches {
-                        #state = next;
-                        #depth += 1;
-                        continue '__recursa_pratt_dispatch;
-                    }
-                }
-                if let Some((variant, mode)) = target {
-                    if mode != 1
-                        || context.peek(#depth).is_none()
-                        || context
-                            .peek(#depth)
-                            .is_some_and(|record| #caller_follow.contains(record.kind))
-                    {
-                        break (Some(variant), #depth);
-                    }
-                }
-                break (None, #depth);
-            }
-        }
-    };
+    let selection = quote!(context.select_pratt(&#table_name, #root, &#caller_follow));
     (selection, items)
 }
 
@@ -6518,19 +6216,7 @@ fn render_optional_viability_decision_selection(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
-    let state = format_ident!("__recursa_optional_viability_decision_state_{unique_index}");
-    let depth = format_ident!("__recursa_optional_viability_decision_depth_{unique_index}");
-    let states_name =
-        format_ident!("__RECURSA_OPTIONAL_DECISION_STATES_{node_index}_{unique_index}");
-    let edges_name = format_ident!("__RECURSA_OPTIONAL_DECISION_EDGES_{node_index}_{unique_index}");
-    let positions_name =
-        format_ident!("__RECURSA_OPTIONAL_DECISION_POSITIONS_{node_index}_{unique_index}");
-    let spellings_name =
-        format_ident!("__RECURSA_OPTIONAL_DECISION_SPELLINGS_{node_index}_{unique_index}");
-    let decoder_name =
-        format_ident!("__recursa_decode_optional_viability_decision_{node_index}_{unique_index}");
-    let position_dispatcher =
-        format_ident!("__recursa_optional_viability_decision_position_{node_index}_{unique_index}");
+    let table_name = format_ident!("__RECURSA_OPTIONAL_DECISION_{node_index}_{unique_index}");
     let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
     let mut positions = Vec::new();
     let mut edge_values = Vec::new();
@@ -6587,77 +6273,19 @@ fn render_optional_viability_decision_selection(
     let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
     let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
     let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
-    let (position_items, position_call) = render_position_dispatch(
-        facade,
-        module_anchor,
-        &position_dispatcher,
-        &decoder_name,
-        &positions_name,
-        &spellings_name,
-        &positions_literal,
-        packed_width,
-        &encoded_positions.spellings,
-        &depth,
-        "frozen optional viability decision reached an unknown position",
-    );
-    let decoder_range = render_packed_cell_range(packed_width);
-    let state_row_end = render_packed_row_end(4, packed_width);
     let root = decision.root.index();
+    let spellings = &encoded_positions.spellings;
     quote! {{
-        #position_items
-        fn #decoder_name(table: &[u8], slot: usize) -> usize {
-            table[#decoder_range]
-                .iter()
-                .copied()
-                .fold(0usize, |value, byte| {
-                    let digit = match byte {
-                        b'A'..=b'Z' => usize::from(byte - b'A'),
-                        b'a'..=b'z' => usize::from(byte - b'a') + 26,
-                        b'0'..=b'9' => usize::from(byte - b'0') + 52,
-                        b'-' => 62,
-                        b'_' => 63,
-                        _ => unreachable!("generated packed optional viability decision table is invalid"),
-                    };
-                    (value << 6) | digit
-                })
-        }
-        static #states_name: &[u8] = #states_literal;
-        static #edges_name: &[u8] = #edges_literal;
-        let mut #state = #root;
-        let mut #depth = 0usize;
-        '__recursa_optional_viability_decision: loop {
-            let state_slot = #state
-                .checked_mul(4)
-                .filter(|slot| #state_row_end <= #states_name.len())
-                .unwrap_or_else(|| {
-                    unreachable!("frozen optional viability decision reached an unknown state")
-                });
-            let caller_action = #decoder_name(#states_name, state_slot);
-            let unconditional_action = #decoder_name(#states_name, state_slot + 1);
-            let edge_start = #decoder_name(#states_name, state_slot + 2);
-            let edge_count = #decoder_name(#states_name, state_slot + 3);
-            for edge in edge_start..edge_start + edge_count {
-                let position = #decoder_name(#edges_name, edge * 2);
-                let next = #decoder_name(#edges_name, edge * 2 + 1);
-                if #position_call {
-                    #state = next;
-                    #depth += 1;
-                    continue '__recursa_optional_viability_decision;
-                }
-            }
-            if caller_action != 0
-                && (context.peek(#depth).is_none()
-                    || context
-                        .peek(#depth)
-                        .is_some_and(|record| context.follow().contains(record.kind)))
-            {
-                break Some(caller_action == 1);
-            }
-            if unconditional_action != 0 {
-                break Some(unconditional_action == 1);
-            }
-            break None;
-        }
+        static #table_name: #facade::__private::DispatchTable =
+            #facade::__private::dispatch_table(
+                #states_literal,
+                #edges_literal,
+                #positions_literal,
+                &[#(#spellings),*],
+                #packed_width,
+                &#module_anchor::__RECURSA_EXPECTED_SETS,
+            );
+        context.select_optional(&#table_name, #root)
     }}
 }
 
