@@ -1,15 +1,14 @@
 //! Exact-source framing of repeated typed islands and grammar-erased regions.
 //!
 //! A matching generated declaration supplies the only plan constructor. The
-//! interpreter first attempts every island transactionally. If any ordinary
-//! syntax or payload failure occurs, all authored values are dropped and every
-//! island is replayed through the construction-free recovery interpreter.
+//! interpreter parses every island strictly and transactionally. The first
+//! ordinary syntax, ownership, or payload failure rejects the whole document
+//! with the strict diagnostics of the failing island; no authored value and no
+//! partial partition survive a rejection.
 
 use crate::explorer::{
-    ExplorationError, ExplorerRoot, ParseDiagnostic, RecoveryAction, RecoveryNode, RecoveryPart,
-    RecoveryPlanData, RecoveryProgressTrace, RecoveryProjection, RecoveryValue, VariantSchemaData,
-    parse_failure_from_error, recover_document_from_seed_with_root_follow,
-    recovery_plan_matches_root, recovery_root_restart_matches, root_contains_variant,
+    ExplorerRoot, ParseDiagnostic, VariantSchemaData, parse_failure_from_error,
+    root_contains_variant, trailing_input_diagnostic,
 };
 use crate::input::{Input, LexResult, TokenRecord, TriviaRecord};
 use crate::lex::LexDiagnostic;
@@ -22,7 +21,7 @@ type LexFn = for<'input> fn(&'input str) -> LexResult<'input>;
 #[doc(hidden)]
 /// Immutable generated plan for one document-framing declaration.
 pub struct PlanData {
-    /// Matching grammar metadata shared with parsing and recovery.
+    /// Matching grammar metadata shared with strict parsing.
     grammar: &'static GrammarInfo,
     /// Required fixed token separating adjacent typed islands.
     boundary_kind: u16,
@@ -32,8 +31,6 @@ pub struct PlanData {
     delimited_kinds: &'static [u16],
     /// Optional transition entered only after one complete strict variant.
     payload: Option<PayloadPlanData>,
-    /// Matching construction-free root recovery plan.
-    recovery: &'static RecoveryPlanData,
     /// Generated root FOLLOW containing the framing boundary.
     boundary_follow: &'static FollowSet,
 }
@@ -60,15 +57,14 @@ pub const fn payload_plan(
 #[doc(hidden)]
 /// Constructs one immutable generated framing plan.
 ///
-/// The generator validates kind disjointness, closed matcher classes, variant
-/// reachability, and recovery identity before emitting this call.
+/// The generator validates kind disjointness, closed matcher classes, and
+/// variant reachability before emitting this call.
 pub const fn plan(
     grammar: &'static GrammarInfo,
     boundary_kind: u16,
     line_kinds: &'static [u16],
     delimited_kinds: &'static [u16],
     payload: Option<PayloadPlanData>,
-    recovery: &'static RecoveryPlanData,
     boundary_follow: &'static FollowSet,
 ) -> PlanData {
     PlanData {
@@ -77,39 +73,7 @@ pub const fn plan(
         line_kinds,
         delimited_kinds,
         payload,
-        recovery,
         boundary_follow,
-    }
-}
-
-/// Mutually exclusive exact-source framing result.
-pub enum FrameResult<'input, T> {
-    /// Every island parsed strictly and every payload terminated.
-    Complete(CompleteFrame<'input, T>),
-    /// At least one ordinary failure erased every authored island value.
-    Recovered(RecoveredFrame<'input>),
-}
-
-impl<'input, T> FrameResult<'input, T> {
-    /// Returns the complete source owned exactly once by the partition.
-    pub const fn source(&self) -> &'input str {
-        match self {
-            Self::Complete(frame) => frame.source(),
-            Self::Recovered(frame) => frame.source(),
-        }
-    }
-
-    /// Returns exact original source without structured Pretty rendering.
-    pub const fn render_exact(&self) -> &'input str {
-        self.source()
-    }
-
-    /// Iterates all owned spans in source order.
-    pub fn spans(&self) -> Box<dyn Iterator<Item = Span> + '_> {
-        match self {
-            Self::Complete(frame) => Box::new(frame.parts.iter().map(CompletePart::span)),
-            Self::Recovered(frame) => Box::new(frame.parts.iter().map(RecoveredPart::span)),
-        }
     }
 }
 
@@ -135,6 +99,11 @@ impl<'input, T> CompleteFrame<'input, T> {
     /// Iterates exact source parts in ownership order.
     pub fn parts(&self) -> impl ExactSizeIterator<Item = &CompletePart<'input, T>> {
         self.parts.iter()
+    }
+
+    /// Iterates all owned spans in source order.
+    pub fn spans(&self) -> impl ExactSizeIterator<Item = Span> + '_ {
+        self.parts.iter().map(CompletePart::span)
     }
 
     /// Iterates only complete parsed authored islands.
@@ -194,122 +163,6 @@ impl<'input, T> CompleteIsland<'input, T> {
     }
 }
 
-/// A fully grammar-erased exact-source document partition.
-pub struct RecoveredFrame<'input> {
-    /// Complete borrowed source.
-    source: &'input str,
-    /// Ordered, non-overlapping, exhaustive source ownership.
-    parts: Box<[RecoveredPart<'input>]>,
-    /// Framing-level failures independent of grammar recovery diagnostics.
-    diagnostics: Box<[FrameDiagnostic]>,
-}
-
-impl<'input> RecoveredFrame<'input> {
-    /// Returns the complete source.
-    pub const fn source(&self) -> &'input str {
-        self.source
-    }
-
-    /// Returns exact original source without exposing Pretty.
-    pub const fn render_exact(&self) -> &'input str {
-        self.source
-    }
-
-    /// Iterates exact source parts in ownership order.
-    pub fn parts(&self) -> impl ExactSizeIterator<Item = &RecoveredPart<'input>> {
-        self.parts.iter()
-    }
-
-    /// Iterates construction-free recovered islands.
-    pub fn islands(&self) -> impl Iterator<Item = &RecoveredIsland<'input>> {
-        self.parts.iter().filter_map(|part| match part {
-            RecoveredPart::Island(island) => Some(island),
-            RecoveredPart::Gap(_)
-            | RecoveredPart::Line(_)
-            | RecoveredPart::Delimited(_)
-            | RecoveredPart::Payload(_)
-            | RecoveredPart::Unresolved(_) => None,
-        })
-    }
-
-    /// Iterates retained payload regions.
-    pub fn payloads(&self) -> impl Iterator<Item = &PayloadRegion<'input>> {
-        self.parts.iter().filter_map(|part| match part {
-            RecoveredPart::Payload(payload) => Some(payload),
-            RecoveredPart::Gap(_)
-            | RecoveredPart::Island(_)
-            | RecoveredPart::Line(_)
-            | RecoveredPart::Delimited(_)
-            | RecoveredPart::Unresolved(_) => None,
-        })
-    }
-
-    /// Returns framing-level diagnostics; island diagnostics remain on each island.
-    pub fn diagnostics(&self) -> &[FrameDiagnostic] {
-        &self.diagnostics
-    }
-}
-
-/// One source-owned part of a recovered partition.
-pub enum RecoveredPart<'input> {
-    /// Beginning, inter-item, or end source not owned by a significant item.
-    Gap(SourceRegion<'input>),
-    /// One grammar-erased recovery projection.
-    Island(RecoveredIsland<'input>),
-    /// One atomically matched physical-line region.
-    Line(SourceRegion<'input>),
-    /// One atomically matched delimited region.
-    Delimited(SourceRegion<'input>),
-    /// Payload data and its optional standalone terminator.
-    Payload(PayloadRegion<'input>),
-    /// Fail-closed suffix whose ownership could not be assigned uniquely.
-    Unresolved(SourceRegion<'input>),
-}
-
-impl RecoveredPart<'_> {
-    /// Returns this part's exact checked ownership span.
-    pub const fn span(&self) -> Span {
-        match self {
-            Self::Gap(region)
-            | Self::Line(region)
-            | Self::Delimited(region)
-            | Self::Unresolved(region) => region.span,
-            Self::Island(island) => island.span,
-            Self::Payload(payload) => payload.span,
-        }
-    }
-}
-
-/// One recovered island retaining no authored semantic value.
-pub struct RecoveredIsland<'input> {
-    /// Framing extent including the configured boundary.
-    span: Span,
-    /// Construction-free grammar projection and progress evidence.
-    recovery: RecoveryProjection<'input>,
-}
-
-impl RecoveredIsland<'_> {
-    /// Returns the exact island extent including its boundary token.
-    pub const fn span(&self) -> Span {
-        self.span
-    }
-
-    /// Returns the eager construction-free recovery root.
-    pub const fn root(&self) -> &RecoveryNode {
-        self.recovery.root()
-    }
-
-    /// Returns strict and recovery diagnostics for this island.
-    pub fn diagnostics(&self) -> &[ParseDiagnostic<'_>] {
-        self.recovery.diagnostics()
-    }
-
-    /// Returns finite-machine progress evidence for this island replay.
-    pub const fn progress_trace(&self) -> RecoveryProgressTrace {
-        self.recovery.progress_trace()
-    }
-}
-
 /// One exact raw source region with no authored conversion.
 #[derive(Clone, Copy)]
 pub struct SourceRegion<'input> {
@@ -341,8 +194,8 @@ pub struct PayloadRegion<'input> {
     span: Span,
     /// Payload data, including its exact physical line endings.
     data: Span,
-    /// Standalone terminator line, absent after a missing-terminator failure.
-    terminator: Option<Span>,
+    /// Standalone terminator line, including its line ending.
+    terminator: Span,
 }
 
 impl<'input> PayloadRegion<'input> {
@@ -363,13 +216,13 @@ impl<'input> PayloadRegion<'input> {
             .expect("framing stores only checked payload spans")
     }
 
-    /// Returns the distinct standalone terminator-line span when present.
-    pub const fn terminator_span(&self) -> Option<Span> {
+    /// Returns the distinct standalone terminator-line span.
+    pub const fn terminator_span(&self) -> Span {
         self.terminator
     }
 }
 
-/// Framing-level recoverable diagnostic.
+/// Framing-level cause attached to a strict document rejection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameDiagnostic {
     /// Stable issue class.
@@ -381,6 +234,11 @@ pub struct FrameDiagnostic {
 }
 
 impl FrameDiagnostic {
+    /// Returns the stable framing classification.
+    pub const fn kind(&self) -> FrameDiagnosticKind {
+        self.kind
+    }
+
     /// Returns the append-only framing diagnostic code.
     pub const fn code(&self) -> &'static str {
         self.kind.code()
@@ -397,13 +255,13 @@ impl FrameDiagnostic {
     }
 }
 
-/// Stable framing-level recoverable classifications.
+/// Stable framing-level rejection classifications.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrameDiagnosticKind {
     /// A fully completed payload-opening island lacked its control line.
     MissingPayloadTerminator,
-    /// No unique source ownership continuation existed.
-    AmbiguousOwnership,
+    /// A complete island left significant source before its required boundary.
+    MissingBoundary,
 }
 
 impl FrameDiagnosticKind {
@@ -411,10 +269,115 @@ impl FrameDiagnosticKind {
     pub const fn code(self) -> &'static str {
         match self {
             Self::MissingPayloadTerminator => "RCA5001",
-            Self::AmbiguousOwnership => "RCA5002",
+            Self::MissingBoundary => "RCA5002",
         }
     }
 }
+
+/// Strict rejection of one document by its first failing island.
+///
+/// A rejection is ordinary invalid input, not an invariant violation. It
+/// retains the complete source, the extent of the island candidate that failed,
+/// the strict parse diagnostics of that candidate, and the framing-level cause
+/// when the failure is a missing boundary or payload terminator rather than a
+/// syntax error. At least one of the two diagnostic surfaces is present.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameRejection<'input> {
+    /// Complete retained source.
+    source: &'input str,
+    /// Extent of the island candidate, or payload region, that was rejected.
+    island: Span,
+    /// Strict parse diagnostics of the failing island, in source order.
+    diagnostics: Box<[ParseDiagnostic<'input>]>,
+    /// Framing-level cause when the island itself parsed strictly.
+    framing: Option<FrameDiagnostic>,
+}
+
+impl<'input> FrameRejection<'input> {
+    /// Returns the complete source retained after rejection.
+    pub const fn source(&self) -> &'input str {
+        self.source
+    }
+
+    /// Returns the extent of the rejected island candidate or payload region.
+    ///
+    /// For a syntax failure the extent runs from the island start to the end
+    /// of the first candidate boundary at or after the failure, or to the end
+    /// of input when no candidate boundary follows it.
+    pub const fn island(&self) -> Span {
+        self.island
+    }
+
+    /// Returns the strict parse diagnostics of the failing island.
+    ///
+    /// The slice is empty only when [`FrameRejection::framing`] reports a
+    /// missing payload terminator after a complete island.
+    pub fn diagnostics(&self) -> &[ParseDiagnostic<'input>] {
+        &self.diagnostics
+    }
+
+    /// Returns the framing-level cause, when the island itself parsed strictly.
+    pub const fn framing(&self) -> Option<&FrameDiagnostic> {
+        self.framing.as_ref()
+    }
+
+    /// Returns the checked location that best explains the rejection.
+    pub fn span(&self) -> Span {
+        match (&self.framing, self.diagnostics.first()) {
+            (Some(framing), _) => framing.span(),
+            (None, Some(diagnostic)) => diagnostic.span(),
+            (None, None) => self.island,
+        }
+    }
+}
+
+impl std::fmt::Display for FrameRejection<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.framing, self.diagnostics.first()) {
+            (Some(framing), _) => formatter.write_str(framing.message()),
+            (None, Some(diagnostic)) => formatter.write_str(diagnostic.message()),
+            (None, None) => formatter.write_str("framing island was rejected"),
+        }
+    }
+}
+
+impl std::error::Error for FrameRejection<'_> {}
+
+/// Mutually exclusive failure of one strict framing request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FrameFailure<'input> {
+    /// Ordinary invalid input rejected at its first failing island.
+    Rejected(FrameRejection<'input>),
+    /// Violated framing-plan, span, partition, or progress invariants.
+    Fatal(FrameError<'input>),
+}
+
+impl<'input> FrameFailure<'input> {
+    /// Returns the complete source retained by either failure.
+    pub const fn source(&self) -> &'input str {
+        match self {
+            Self::Rejected(rejection) => rejection.source(),
+            Self::Fatal(fatal) => fatal.source(),
+        }
+    }
+}
+
+impl<'input> From<FrameError<'input>> for FrameFailure<'input> {
+    fn from(fatal: FrameError<'input>) -> Self {
+        Self::Fatal(fatal)
+    }
+}
+
+impl std::fmt::Display for FrameFailure<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(rejection) => rejection.fmt(formatter),
+            Self::Fatal(fatal) => fatal.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FrameFailure<'_> {}
 
 /// Fatal framing-plan, span, partition, or progress invariant violation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -457,18 +420,16 @@ impl std::fmt::Display for FrameError<'_> {
 
 impl std::error::Error for FrameError<'_> {}
 
-/// First-pass part retaining typed islands until the transaction outcome is known.
+/// Ordered part retained until the whole partition is validated.
 enum DraftPart<'input, T> {
     /// Exact gap.
     Gap(Span),
-    /// Strict or recovered island replay recipe.
+    /// One strict island and its exact extent.
     Island {
-        /// Exact extent including the boundary.
+        /// Exact extent including the boundary when one is present.
         span: Span,
-        /// Strict value present only when the first pass succeeded.
-        parsed: Option<Parsed<'input, T>>,
-        /// Strict failure seed replayed without construction.
-        diagnostics: Box<[ParseDiagnostic<'input>]>,
+        /// Strict value with its occurrence provenance.
+        parsed: Parsed<'input, T>,
     },
     /// Atomic physical line.
     Line(Span),
@@ -480,22 +441,9 @@ enum DraftPart<'input, T> {
         span: Span,
         /// Payload data extent.
         data: Span,
-        /// Optional control-line extent.
-        terminator: Option<Span>,
+        /// Control-line extent including its line ending.
+        terminator: Span,
     },
-    /// Fail-closed source suffix.
-    Unresolved(Span),
-}
-
-/// Exact ownership assigned to source after a boundary-less island prefix.
-#[derive(Clone, Copy)]
-enum EofTail {
-    /// Recovery owns the whole candidate because no generated restart was proven.
-    None,
-    /// Only insignificant source remains after a complete prefix.
-    Gap,
-    /// Generated root restart evidence proves a distinct unassignable suffix.
-    Unresolved,
 }
 
 /// Parses and partitions exact source through one generated framing plan.
@@ -503,29 +451,25 @@ enum EofTail {
 /// # Long-function contract
 ///
 /// Rationale: one transaction must own source partitioning, strict island lifetime, payload mode,
-/// and the decision to erase every typed value after any ordinary failure. Invariants: every draft
-/// span is checked in whole-source coordinates, each strict/recovery input is bounded to its island,
-/// a boundary advances the hard progress key even for a missing island, and no typed value survives
-/// a recovered outcome. A final island whose strict parse consumes every significant token to end
-/// of input completes without a trailing boundary and keeps its authored value; any other
-/// boundary-less candidate fails closed. Phases: scan exact framing regions and candidate
-/// boundaries, parse each island in a bounded window, freeze payload or fail-closed suffix
-/// ownership, validate the complete partition, then either publish strict parts or replay all
-/// islands through construction-free recovery.
+/// and the decision to reject the document at its first ordinary failure. Invariants: every draft
+/// span is checked in whole-source coordinates, each strict attempt is bounded to its candidate
+/// window, a boundary advances the hard progress key, and no typed value survives a rejection. A
+/// final island whose strict parse consumes every significant token to end of input completes
+/// without a trailing boundary; any other boundary-less candidate is rejected. Phases: scan exact
+/// framing regions and candidate boundaries, parse each island in a bounded window, freeze payload
+/// ownership, validate the complete partition, then publish the strict parts.
 #[doc(hidden)]
 pub fn frame_document<'input, T>(
     source: &'input str,
     lex: LexFn,
     plan: &'static PlanData,
-) -> Result<FrameResult<'input, T>, FrameError<'input>>
+) -> Result<CompleteFrame<'input, T>, FrameFailure<'input>>
 where
     T: GeneratedParse<'input> + ExplorerRoot + 'input,
 {
     validate_plan::<T>(source, plan)?;
     let mut byte = 0_usize;
     let mut drafts = Vec::new();
-    let mut framing_diagnostics = Vec::new();
-    let mut recovered = false;
 
     while byte < source.len() {
         let lexed = lex_rebased(source, byte, lex)?;
@@ -543,11 +487,9 @@ where
         if plan.line_kinds.contains(&first.kind) || plan.delimited_kinds.contains(&first.kind) {
             let span = first.span;
             if span.start() as usize != byte || span.end() <= span.start() {
-                return Err(fatal(
-                    source,
-                    span,
-                    "atomic framing region made no exact progress",
-                ));
+                return Err(
+                    fatal(source, span, "atomic framing region made no exact progress").into(),
+                );
             }
             if plan.line_kinds.contains(&first.kind) {
                 drafts.push(DraftPart::Line(span));
@@ -565,7 +507,6 @@ where
             .filter(|record| record.kind == plan.boundary_kind)
             .collect::<Vec<_>>();
         let mut strict_match = None;
-        let mut recovery_boundary = None;
         for boundary in &boundaries {
             let mut input = island_input(
                 source,
@@ -573,72 +514,18 @@ where
                 lex,
                 plan,
             )?;
-            match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
-                Ok(parsed) if input.peek(0).is_some_and(|record| record == *boundary) => {
-                    strict_match = Some((parsed, *boundary, consumed_end(&input, island_start)));
-                    break;
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    if recovery_stops_at_boundary(
-                        source,
-                        checked_span(source, island_start, boundary.span.end() as usize)?,
-                        *boundary,
-                        lex,
-                        plan,
-                    )? {
-                        recovery_boundary = Some(*boundary);
-                        break;
-                    }
-                }
+            if let Ok(parsed) =
+                parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow)
+                && input.peek(0).is_some_and(|record| record == *boundary)
+            {
+                strict_match = Some((parsed, *boundary));
+                break;
             }
         }
-        let (parsed, seed, boundary, root_end, eof_tail, eof_diagnostic) = if let Some((
-            parsed,
-            boundary,
-            root_end,
-        )) = strict_match
-        {
-            (
-                Some(parsed),
-                Vec::<ParseDiagnostic<'input>>::new().into_boxed_slice(),
-                Some(boundary),
-                root_end,
-                EofTail::None,
-                None,
-            )
-        } else if let Some(boundary) = recovery_boundary {
-            recovered = true;
-            let mut input = island_input(
-                source,
-                checked_span(source, island_start, boundary.span.end() as usize)?,
-                lex,
-                plan,
-            )?;
-            let error =
-                match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
-                    Ok(_) => {
-                        return Err(fatal(
-                            source,
-                            boundary.span,
-                            "strict framing candidate selection was inconsistent",
-                        ));
-                    }
-                    Err(error) => error,
-                };
-            let seed = parse_failure_from_error(source, error)
-                .diagnostics()
-                .to_vec()
-                .into_boxed_slice();
-            (
-                None,
-                seed,
-                Some(boundary),
-                island_start,
-                EofTail::None,
-                None,
-            )
-        } else {
+        let Some((parsed, boundary)) = strict_match else {
+            // No candidate boundary completes a strict island. The strict attempt
+            // over the whole remaining source names the exact failure, or proves a
+            // complete final island without a trailing boundary.
             let mut input = island_input(
                 source,
                 checked_span(source, island_start, source.len())?,
@@ -648,139 +535,83 @@ where
             match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
                 Ok(parsed) => {
                     let root_end = consumed_end(&input, island_start);
-                    // A strict parse that consumes every significant token to end of
-                    // input is a complete final island; only leftover significant
-                    // source keeps fail-closed ownership.
-                    let (root_end, tail, diagnostic_span) = match input.peek(0) {
-                        Some(next) if recovery_root_restart_matches(plan.recovery, next) => {
-                            (root_end, EofTail::Unresolved, Some(next.span))
-                        }
-                        Some(next) => (source.len(), EofTail::None, Some(next.span)),
-                        None if root_end < source.len() => (root_end, EofTail::Gap, None),
-                        None => (root_end, EofTail::None, None),
-                    };
-                    (
-                        Some(parsed),
-                        Vec::<ParseDiagnostic<'input>>::new().into_boxed_slice(),
-                        None,
-                        root_end,
-                        tail,
-                        diagnostic_span.map(|span| FrameDiagnostic {
-                            kind: FrameDiagnosticKind::AmbiguousOwnership,
-                            span,
-                            message: "framing island lacks its required boundary; source ownership failed closed"
-                                .into(),
-                        }),
-                    )
+                    if let Some(next) = input.peek(0) {
+                        return Err(FrameFailure::Rejected(FrameRejection {
+                            source,
+                            island: checked_span(
+                                source,
+                                island_start,
+                                rejection_end(source, &boundaries, next.span),
+                            )?,
+                            diagnostics: vec![trailing_input_diagnostic(
+                                source,
+                                plan.grammar,
+                                next,
+                            )]
+                            .into_boxed_slice(),
+                            framing: Some(FrameDiagnostic {
+                                kind: FrameDiagnosticKind::MissingBoundary,
+                                span: next.span,
+                                message:
+                                    "framing island lacks its required boundary before this token"
+                                        .into(),
+                            }),
+                        }));
+                    }
+                    drafts.push(DraftPart::Island {
+                        span: checked_span(source, island_start, root_end)?,
+                        parsed,
+                    });
+                    if root_end < source.len() {
+                        drafts.push(DraftPart::Gap(checked_span(
+                            source,
+                            root_end,
+                            source.len(),
+                        )?));
+                    }
+                    break;
                 }
                 Err(error) => {
-                    recovered = true;
                     let failure = parse_failure_from_error(source, error);
-                    let split = failed_prefix_end(
-                        &lexed,
-                        failure.diagnostics()[0].span(),
-                        island_start,
-                        plan,
+                    let failure_span = failure.diagnostics().first().map_or_else(
+                        || Span::new(island_start, island_start).unwrap(),
+                        ParseDiagnostic::span,
                     );
-                    let root_end = split.unwrap_or(source.len());
-                    let seed = if split.is_some() {
-                        Vec::new().into_boxed_slice()
-                    } else {
-                        failure.diagnostics().to_vec().into_boxed_slice()
-                    };
-                    let diagnostic = &failure.diagnostics()[0];
-                    (
-                        None,
-                        seed,
-                        None,
-                        root_end,
-                        if split.is_some() {
-                            EofTail::Unresolved
-                        } else {
-                            EofTail::None
-                        },
-                        Some(FrameDiagnostic {
-                            kind: FrameDiagnosticKind::AmbiguousOwnership,
-                            span: diagnostic.span(),
-                            message: format!(
-                                "{}; framing island lacks its required boundary and source ownership failed closed",
-                                diagnostic.message(),
-                            )
-                            .into_boxed_str(),
-                        }),
-                    )
+                    return Err(FrameFailure::Rejected(FrameRejection {
+                        source,
+                        island: checked_span(
+                            source,
+                            island_start,
+                            rejection_end(source, &boundaries, failure_span),
+                        )?,
+                        diagnostics: failure.diagnostics().to_vec().into_boxed_slice(),
+                        framing: None,
+                    }));
                 }
             }
-        };
-        let Some(boundary) = boundary else {
-            let root_span = checked_span(source, island_start, root_end)?;
-            let strict_to_eof = eof_diagnostic.is_none();
-            if strict_to_eof && parsed.is_none() {
-                return Err(fatal(
-                    source,
-                    root_span,
-                    "boundary-less framing candidate omitted its ownership diagnostic",
-                ));
-            }
-            drafts.push(DraftPart::Island {
-                span: root_span,
-                parsed,
-                diagnostics: seed,
-            });
-            let suffix = checked_span(source, root_end, source.len())?;
-            if suffix.start() < suffix.end() {
-                match eof_tail {
-                    EofTail::None => {}
-                    EofTail::Gap => drafts.push(DraftPart::Gap(suffix)),
-                    EofTail::Unresolved => drafts.push(DraftPart::Unresolved(suffix)),
-                }
-            }
-            // A strict final island that parsed exactly to end of input keeps its
-            // authored value and completes without a trailing boundary; any other
-            // boundary-less candidate fails closed into recovery.
-            if let Some(diagnostic) = eof_diagnostic {
-                recovered = true;
-                framing_diagnostics.push(diagnostic);
-            }
-            break;
         };
         let island_end = boundary.span.end() as usize;
         // The framing boundary itself is the hard-progress transition for an
-        // otherwise empty or wholly missing island.
+        // otherwise empty island.
         validate_hard_progress(source, island_start, island_end)?;
-        let enters_payload = parsed.as_ref().is_some_and(|parsed| {
-            plan.payload.is_some_and(|payload| {
-                crate::explorer::parsed_active_variant_is(parsed, payload.after)
-            })
+        let enters_payload = plan.payload.is_some_and(|payload| {
+            crate::explorer::parsed_active_variant_is(&parsed, payload.after)
         });
         drafts.push(DraftPart::Island {
             span: checked_span(source, island_start, island_end)?,
             parsed,
-            diagnostics: seed,
         });
         byte = island_end;
 
         if enters_payload {
             let payload = plan.payload.expect("payload transition was selected");
-            match standalone_terminator(source, byte, payload.terminator) {
-                Some(terminator) => {
-                    let end = terminator.end() as usize;
-                    drafts.push(DraftPart::Payload {
-                        span: checked_span(source, byte, end)?,
-                        data: checked_span(source, byte, terminator.start() as usize)?,
-                        terminator: Some(terminator),
-                    });
-                    byte = end;
-                }
-                None => {
-                    recovered = true;
-                    let end = source.len();
-                    drafts.push(DraftPart::Payload {
-                        span: checked_span(source, byte, end)?,
-                        data: checked_span(source, byte, end)?,
-                        terminator: None,
-                    });
-                    framing_diagnostics.push(FrameDiagnostic {
+            let Some(terminator) = standalone_terminator(source, byte, payload.terminator) else {
+                let end = source.len();
+                return Err(FrameFailure::Rejected(FrameRejection {
+                    source,
+                    island: checked_span(source, byte, end)?,
+                    diagnostics: Box::new([]),
+                    framing: Some(FrameDiagnostic {
                         kind: FrameDiagnosticKind::MissingPayloadTerminator,
                         span: checked_span(source, end, end)?,
                         message: format!(
@@ -788,10 +619,16 @@ where
                             payload.terminator
                         )
                         .into_boxed_str(),
-                    });
-                    byte = end;
-                }
-            }
+                    }),
+                }));
+            };
+            let end = terminator.end() as usize;
+            drafts.push(DraftPart::Payload {
+                span: checked_span(source, byte, end)?,
+                data: checked_span(source, byte, terminator.start() as usize)?,
+                terminator,
+            });
+            byte = end;
         }
     }
 
@@ -799,240 +636,50 @@ where
         drafts.push(DraftPart::Gap(checked_span(source, 0, 0)?));
     }
     validate_draft_partition(source, &drafts)?;
-    if recovered {
-        rebuild_recovered(source, lex, plan, drafts, framing_diagnostics)
-            .map(FrameResult::Recovered)
-    } else {
-        complete_from_drafts(source, drafts).map(FrameResult::Complete)
-    }
+    Ok(complete_from_drafts(source, drafts))
 }
 
-/// Tests a delimiter candidate against the generated construction-free recovery state.
+/// Chooses the extent reported for a rejected island candidate.
 ///
-/// A framing delimiter is eligible only when recovery completes the root while leaving that
-/// exact token unconsumed as caller FOLLOW. Delimiters consumed by nested elements, repetitions,
-/// or other grammar structure therefore cannot become document boundaries merely because a
-/// strict attempt failed farther into the candidate window.
-fn recovery_stops_at_boundary<'input>(
-    source: &'input str,
-    bounds: Span,
-    boundary: TokenRecord,
-    lex: LexFn,
-    plan: &'static PlanData,
-) -> Result<bool, FrameError<'input>> {
-    let mut input = island_input(source, bounds, lex, plan)?;
-    let projection = recover_document_from_seed_with_root_follow(
-        &mut input,
-        Vec::<ParseDiagnostic<'input>>::new().into_boxed_slice(),
-        plan.recovery,
-        plan.boundary_follow,
-    )
-    .map_err(|error| fatal_recovery(source, error))?;
-    let matches = input.peek(0).is_some_and(|record| record == boundary);
-    drop(projection);
-    Ok(matches)
+/// The extent ends at the first candidate boundary at or after the failure so
+/// a rejection names one statement-sized window rather than the whole suffix.
+fn rejection_end(source: &str, boundaries: &[TokenRecord], failure: Span) -> usize {
+    boundaries
+        .iter()
+        .find(|boundary| boundary.span.end() >= failure.end())
+        .map_or(source.len(), |boundary| boundary.span.end() as usize)
 }
 
-/// Converts a successful first pass without touching its strict values.
+/// Converts a validated draft partition into the published strict frame.
 fn complete_from_drafts<'input, T>(
     source: &'input str,
     drafts: Vec<DraftPart<'input, T>>,
-) -> Result<CompleteFrame<'input, T>, FrameError<'input>> {
+) -> CompleteFrame<'input, T> {
     let parts = drafts
         .into_iter()
         .map(|part| match part {
-            DraftPart::Gap(span) => Ok(CompletePart::Gap(region(source, span))),
-            DraftPart::Island {
-                span,
-                parsed: Some(parsed),
-                diagnostics,
-            } if diagnostics.is_empty() => {
-                Ok(CompletePart::Island(CompleteIsland { span, parsed }))
+            DraftPart::Gap(span) => CompletePart::Gap(region(source, span)),
+            DraftPart::Island { span, parsed } => {
+                CompletePart::Island(CompleteIsland { span, parsed })
             }
-            DraftPart::Line(span) => Ok(CompletePart::Line(region(source, span))),
-            DraftPart::Delimited(span) => Ok(CompletePart::Delimited(region(source, span))),
+            DraftPart::Line(span) => CompletePart::Line(region(source, span)),
+            DraftPart::Delimited(span) => CompletePart::Delimited(region(source, span)),
             DraftPart::Payload {
                 span,
                 data,
-                terminator: Some(terminator),
-            } => Ok(CompletePart::Payload(PayloadRegion {
+                terminator,
+            } => CompletePart::Payload(PayloadRegion {
                 source,
                 span,
                 data,
-                terminator: Some(terminator),
-            })),
-            DraftPart::Island { span, .. }
-            | DraftPart::Payload { span, .. }
-            | DraftPart::Unresolved(span) => Err(fatal(
-                source,
-                span,
-                "a failed framing part reached the complete transaction",
-            )),
+                terminator,
+            }),
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(CompleteFrame {
+        .collect::<Vec<_>>();
+    CompleteFrame {
         source,
         parts: parts.into_boxed_slice(),
-    })
-}
-
-/// Replays every island through recovery after dropping all strict values.
-fn rebuild_recovered<'input, T>(
-    source: &'input str,
-    lex: LexFn,
-    plan: &'static PlanData,
-    drafts: Vec<DraftPart<'input, T>>,
-    diagnostics: Vec<FrameDiagnostic>,
-) -> Result<RecoveredFrame<'input>, FrameError<'input>>
-where
-    T: GeneratedParse<'input> + ExplorerRoot + 'input,
-{
-    let mut parts = Vec::with_capacity(drafts.len());
-    for draft in drafts {
-        match draft {
-            DraftPart::Gap(span) => parts.push(RecoveredPart::Gap(region(source, span))),
-            DraftPart::Line(span) => parts.push(RecoveredPart::Line(region(source, span))),
-            DraftPart::Delimited(span) => {
-                parts.push(RecoveredPart::Delimited(region(source, span)));
-            }
-            DraftPart::Payload {
-                span,
-                data,
-                terminator,
-            } => parts.push(RecoveredPart::Payload(PayloadRegion {
-                source,
-                span,
-                data,
-                terminator,
-            })),
-            DraftPart::Unresolved(span) => {
-                parts.push(RecoveredPart::Unresolved(region(source, span)));
-            }
-            DraftPart::Island {
-                span,
-                parsed,
-                diagnostics,
-            } => {
-                drop(parsed);
-                let start = span.start() as usize;
-                let lexed = lex_island(source, start, span, lex, plan)?;
-                let mut input = lexed.input_bounded(plan.grammar, span).ok_or_else(|| {
-                    fatal(
-                        source,
-                        span,
-                        "recovery island input escaped its checked boundary",
-                    )
-                })?;
-                let recovery = recover_document_from_seed_with_root_follow(
-                    &mut input,
-                    diagnostics,
-                    plan.recovery,
-                    plan.boundary_follow,
-                )
-                .map_err(|error| fatal_recovery(source, error))?;
-                validate_island_diagnostics(source, span, &recovery)?;
-                let root_end = consumed_end(&input, start);
-                if root_end > span.end() as usize {
-                    return Err(fatal(
-                        source,
-                        span,
-                        format!(
-                            "construction-free framing replay crossed its island ownership ({root_end} > {}, cursor {})",
-                            span.end(),
-                            input.cursor(),
-                        ),
-                    ));
-                }
-                parts.push(RecoveredPart::Island(RecoveredIsland { span, recovery }));
-            }
-        }
     }
-    Ok(RecoveredFrame {
-        source,
-        parts: parts.into_boxed_slice(),
-        diagnostics: diagnostics.into_boxed_slice(),
-    })
-}
-
-/// Validates that every island-local diagnostic and edit remains locally owned.
-fn validate_island_diagnostics<'input>(
-    source: &'input str,
-    island: Span,
-    recovery: &RecoveryProjection<'input>,
-) -> Result<(), FrameError<'input>> {
-    for diagnostic in recovery.diagnostics() {
-        let action_span = match diagnostic.action() {
-            Some(RecoveryAction::Missing { at }) => Some(at),
-            Some(RecoveryAction::Skipped { span }) => Some(span),
-            None => None,
-        };
-        if !span_contains(island, diagnostic.span())
-            || action_span.is_some_and(|span| !span_contains(island, span))
-        {
-            return Err(fatal(
-                source,
-                island,
-                "recovery diagnostic or action escaped its framing island",
-            ));
-        }
-        if let Some(owner) = diagnostic.owner()
-            && !recovery_owner_contains(
-                recovery.root(),
-                owner.qualified_name(),
-                action_span.unwrap_or_else(|| diagnostic.span()),
-            )
-        {
-            return Err(fatal(
-                source,
-                island,
-                "recovery diagnostic owner does not contain its local span",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Finds the exact recovered owner whose extent contains one diagnostic span.
-fn recovery_owner_contains(root: &RecoveryNode, owner: &str, span: Span) -> bool {
-    if root.schema().qualified_name() == owner && span_contains(root.extent(), span) {
-        return true;
-    }
-    root.parts().any(|part| {
-        matches!(
-            part,
-            RecoveryPart::Element(element)
-                if matches!(element.value(), RecoveryValue::Node(child) if recovery_owner_contains(child, owner, span))
-        )
-    })
-}
-
-/// Reports whether one checked span is wholly contained by another.
-const fn span_contains(outer: Span, inner: Span) -> bool {
-    inner.start() >= outer.start() && inner.end() <= outer.end()
-}
-
-/// Re-lexes exactly one already-frozen island extent, including its boundary.
-///
-/// The first pass established this extent through strict parsing or the grammar-aware recovery
-/// machine. The configured boundary remains in the bounded input so recovery can leave it
-/// unconsumed as the caller FOLLOW; the framing part still owns that boundary byte range.
-/// Restricting construction-free replay to this frozen extent prevents later islands from being
-/// reconsidered and constructs no authored value.
-fn lex_island<'input>(
-    source: &'input str,
-    start: usize,
-    island: Span,
-    lex: LexFn,
-    _plan: &PlanData,
-) -> Result<LexResult<'input>, FrameError<'input>> {
-    if start != island.start() as usize {
-        return Err(fatal(
-            source,
-            island,
-            "recovery island start diverges from its checked window",
-        ));
-    }
-    lex_window(source, island, lex)
 }
 
 /// Projects one already-lexed suffix into an exact absolute island window.
@@ -1045,30 +692,6 @@ fn island_input<'input>(
     lex_window(source, bounds, lex)?
         .input_bounded(plan.grammar, bounds)
         .ok_or_else(|| fatal(source, bounds, "framing input window is invalid"))
-}
-
-/// Returns the last complete token before one strict failure location.
-fn failed_prefix_end(
-    lexed: &LexResult<'_>,
-    failure: Span,
-    fallback: usize,
-    plan: &PlanData,
-) -> Option<usize> {
-    let failing = lexed
-        .records()
-        .iter()
-        .find(|record| record.span.start() == failure.start())?;
-    if !recovery_root_restart_matches(plan.recovery, *failing) {
-        return None;
-    }
-    Some(
-        lexed
-            .records()
-            .iter()
-            .take_while(|record| record.span.end() <= failure.start())
-            .last()
-            .map_or(fallback, |record| record.span.end() as usize),
-    )
 }
 
 /// Returns the end of the last consumed record without absorbing the following gap.
@@ -1086,10 +709,9 @@ fn validate_plan<'input, T: ExplorerRoot>(
     plan: &PlanData,
 ) -> Result<(), FrameError<'input>> {
     let schema = T::__recursa_explorer_schema();
-    if !recovery_plan_matches_root(plan.recovery, plan.grammar, schema)
-        || plan
-            .payload
-            .is_some_and(|payload| !root_contains_variant(schema, payload.after))
+    if plan
+        .payload
+        .is_some_and(|payload| !root_contains_variant(schema, payload.after))
         || !plan
             .boundary_follow
             .is_exact_kind(plan.grammar.kind_count(), plan.boundary_kind)
@@ -1102,7 +724,7 @@ fn validate_plan<'input, T: ExplorerRoot>(
         return Err(fatal(
             source,
             Span::new(0, 0).expect("zero span is valid"),
-            "generated framing plan violates recovery or payload identity",
+            "generated framing plan violates boundary or payload identity",
         ));
     }
     validate_plan_components(
@@ -1152,7 +774,7 @@ fn validate_hard_progress<'input>(
         return Err(fatal(
             source,
             checked_span(source, start, start)?,
-            "framing island recovery violated the hard progress key",
+            "framing island violated the hard progress key",
         ));
     }
     Ok(())
@@ -1277,7 +899,6 @@ fn validate_draft_partition<'input, T>(
             DraftPart::Gap(span)
             | DraftPart::Line(span)
             | DraftPart::Delimited(span)
-            | DraftPart::Unresolved(span)
             | DraftPart::Island { span, .. }
             | DraftPart::Payload { span, .. } => *span,
         };
@@ -1351,24 +972,6 @@ fn checked_span<'input>(
     Ok(span)
 }
 
-/// Converts a recovery invariant failure without reclassifying it as syntax.
-fn fatal_recovery<'input>(
-    source: &'input str,
-    error: ExplorationError<'input>,
-) -> FrameError<'input> {
-    let diagnostic = error.diagnostics().first();
-    FrameError {
-        source,
-        span: diagnostic.map_or_else(|| Span::new(0, 0).unwrap(), ParseDiagnostic::span),
-        message: diagnostic
-            .map_or(
-                "construction-free recovery failed",
-                ParseDiagnostic::message,
-            )
-            .into(),
-    }
-}
-
 /// Constructs one fatal framing invariant result.
 fn fatal<'input>(
     source: &'input str,
@@ -1422,5 +1025,54 @@ mod tests {
             "x",
         );
         assert_fatal(validate_hard_progress("x", 0, 0).unwrap_err(), "x");
+    }
+
+    #[test]
+    fn a_rejection_names_its_framing_cause_before_its_strict_diagnostics() {
+        let source = "copy 'x';\r\ndata";
+        let rejection = FrameRejection {
+            source,
+            island: Span::new(9, source.len()).unwrap(),
+            diagnostics: Box::new([]),
+            framing: Some(FrameDiagnostic {
+                kind: FrameDiagnosticKind::MissingPayloadTerminator,
+                span: Span::new(source.len(), source.len()).unwrap(),
+                message: "payload is missing standalone terminator".into(),
+            }),
+        };
+        assert_eq!(
+            rejection.span(),
+            Span::new(source.len(), source.len()).unwrap()
+        );
+        assert_eq!(rejection.framing().unwrap().code(), "RCA5001");
+        assert_eq!(
+            rejection.to_string(),
+            "payload is missing standalone terminator"
+        );
+        let failure = FrameFailure::Rejected(rejection);
+        assert_eq!(failure.source(), source);
+    }
+
+    #[test]
+    fn a_rejected_island_ends_at_the_first_candidate_boundary_after_its_failure() {
+        let source = "put 1 1; put 2;";
+        let boundary = |start: usize| TokenRecord {
+            kind: 0,
+            span: Span::new(start, start + 1).unwrap(),
+            diagnostic: None,
+        };
+        let boundaries = [boundary(7), boundary(14)];
+        assert_eq!(
+            rejection_end(source, &boundaries, Span::new(6, 7).unwrap()),
+            8
+        );
+        assert_eq!(
+            rejection_end(source, &boundaries, Span::new(9, 12).unwrap()),
+            15
+        );
+        assert_eq!(
+            rejection_end(source, &[], Span::new(9, 12).unwrap()),
+            source.len()
+        );
     }
 }

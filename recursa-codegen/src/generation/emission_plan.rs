@@ -110,7 +110,7 @@ impl std::ops::Deref for ValidatedEmissionPlan {
 #[derive(Clone, Debug)]
 /// Resolved compile-time document framing identities consumed by generated code.
 pub(super) struct FramingEmissionPlan {
-    /// Index of the Node family used for typed islands and recovery.
+    /// Index of the Node family used for typed islands.
     pub(super) node_index: usize,
     /// Index of the exact materialized application selected by typed lowering.
     pub(super) application_index: usize,
@@ -588,23 +588,6 @@ impl EmissionPlan {
                     &emission_lookups,
                     &mut instrumentation,
                 )?;
-                let application_type = lowered
-                    .lowering_map
-                    .applications
-                    .iter()
-                    .find(|correlation| correlation.application == application.id)
-                    .ok_or_else(|| {
-                        format!("Node `{}` lacks a normalized type correlation", node.ident)
-                    })?
-                    .lowered;
-                let recovery_restart = ExpectedSet::from_positions(
-                    &output
-                        .first(application_type)
-                        .ok_or_else(|| format!("Node `{}` lacks frozen FIRST facts", node.ident))?
-                        .positions,
-                    &expected_atom_index,
-                    kind_count,
-                )?;
                 application_plans.push(NodeApplicationParsePlan {
                     application: application.id,
                     node: application.node,
@@ -622,7 +605,6 @@ impl EmissionPlan {
                         &syn::parse_quote!('static),
                     )?,
                     body: planned.body.clone(),
-                    recovery_restart,
                 });
                 if source_plan.is_none() {
                     source_plan = Some(planned);

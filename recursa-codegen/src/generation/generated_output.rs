@@ -861,7 +861,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             1_u64 << (usize::from(boundary_kind) % 64);
         let node = &plan.nodes[framing.node_index];
         let application = &node.parse_applications[framing.application_index];
-        let recovery_plan = explorer_recovery_plan_static(application.parse_index);
         let payload = framing.payload.as_ref().map_or_else(
             || quote!(None),
             |payload| {
@@ -888,14 +887,13 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     &[#(#line_kinds),*],
                     &[#(#delimited_kinds),*],
                     #payload,
-                    &#recovery_plan,
                     &__RECURSA_FRAMING_BOUNDARY_FOLLOW,
                 );
 
             pub use #facade::framing::{
                 CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
-                FrameDiagnosticKind, FrameError, FrameResult, PayloadRegion,
-                RecoveredFrame, RecoveredIsland, RecoveredPart, SourceRegion,
+                FrameDiagnosticKind, FrameError, FrameFailure, FrameRejection,
+                PayloadRegion, SourceRegion,
             };
         }
     });
