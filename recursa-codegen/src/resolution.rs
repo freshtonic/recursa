@@ -202,7 +202,7 @@ pub(crate) enum ResolvedNodeBody {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the resolved field style alternatives handled by semantic resolution.
 pub(crate) enum ResolvedFieldStyle {
     /// Identifies the named resolution alternative.

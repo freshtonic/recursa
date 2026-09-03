@@ -234,7 +234,7 @@ pub(super) enum ExplorerElementTargetPlan {
     ContentToken(ContentTokenId),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Parse-plan identity from which an Explorer element originates.
 pub(super) enum ExplorerElementSource {
     /// Originates from an authored fixed-token use.
@@ -306,7 +306,7 @@ pub(super) enum ExplorerOccurrencePlan {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Traversable terminal reached after storage wrappers are removed.
 pub(super) enum ExplorerTerminalPlan {
     /// Terminal is a materialized generated-node application.

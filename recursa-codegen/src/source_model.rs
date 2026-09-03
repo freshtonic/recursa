@@ -292,7 +292,7 @@ pub(crate) struct Variant {
     pub(crate) pretty: PrettyHints,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 /// Carries the pretty hints retained from authored source structure.
 pub(crate) struct PrettyHints {
     /// Supplies the group used to correlate authored source with normalized grammar.
@@ -309,7 +309,7 @@ pub(crate) struct PrettyHints {
     pub(crate) trailing_separator: Option<PrettyTrailingSeparator>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the pretty group forms retained in the source model.
 pub(crate) enum PrettyGroup {
     /// Identifies the consistent authored-source form.
@@ -317,7 +317,7 @@ pub(crate) enum PrettyGroup {
     /// Identifies the inconsistent authored-source form.
     Inconsistent,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the pretty break forms retained in the source model.
 pub(crate) enum PrettyBreak {
     /// Identifies the soft authored-source form.
@@ -325,7 +325,7 @@ pub(crate) enum PrettyBreak {
     /// Identifies the hard authored-source form.
     Hard,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the pretty separator position forms retained in the source model.
 pub(crate) enum PrettySeparatorPosition {
     /// Identifies the leading authored-source form.
@@ -333,7 +333,7 @@ pub(crate) enum PrettySeparatorPosition {
     /// Identifies the trailing authored-source form.
     Trailing,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the pretty trailing separator forms retained in the source model.
 pub(crate) enum PrettyTrailingSeparator {
     /// Identifies the always authored-source form.
@@ -411,7 +411,7 @@ pub(crate) struct ConfiguredTraitOmission {
     pub(crate) ownership: ConfiguredTraitOwnership,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Classifies the configured trait recipe forms retained in the source model.
 pub(crate) enum ConfiguredTraitRecipe {
     /// Identifies the debug authored-source form.
@@ -752,7 +752,7 @@ struct AdmissionReference {
     site: SourceSite,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 /// Classifies the pretty spacing forms retained in the source model.
 pub(crate) enum PrettySpacing {
     #[default]

@@ -587,7 +587,7 @@ fn encode_dispatch_positions(
     EncodedDispatchPositions { table, spellings }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Complete frozen contract for emitting one authored node parser.
 pub(super) struct NodeParsePlan {
     /// Stable node identity used to join semantic and generation plans.
@@ -620,7 +620,7 @@ pub(super) struct NodeParsePlan {
     pub(super) pretty: PrettyHints,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Parser specialization for one materialized node application.
 pub(super) struct NodeApplicationParsePlan {
     /// Stable identity of the materialized application.
@@ -637,7 +637,7 @@ pub(super) struct NodeApplicationParsePlan {
     pub(super) body: NodeBodyPlan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Frozen choice of structural, variant-dispatch, or Pratt parsing.
 pub(super) enum NodeBodyPlan {
     /// Parses a single field sequence into a struct.
@@ -658,7 +658,7 @@ pub(super) enum NodeBodyPlan {
     Pratt(Box<PrattParsePlan>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Validated prefix/infix dispatch contract for a Pratt node.
 pub(super) struct PrattParsePlan {
     /// Frozen prefix-variant count checked before emission.
@@ -681,7 +681,7 @@ pub(super) struct PrattParsePlan {
     pub(super) caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Prefix branch paired with its authored identity and binding position.
 pub(super) struct PrattNudParsePlan {
     /// Authored variant index retained for diagnostics and identity.
@@ -694,7 +694,7 @@ pub(super) struct PrattNudParsePlan {
     pub(super) operands: Vec<PrattOperandParsePlan>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Extender branch paired with its left operand and binding position.
 pub(super) struct PrattLedParsePlan {
     /// Authored variant index retained for diagnostics and identity.
@@ -709,7 +709,7 @@ pub(super) struct PrattLedParsePlan {
     pub(super) operands: Vec<PrattOperandParsePlan>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// One generated recursive Pratt operand and its exact threshold.
 pub(super) struct PrattOperandParsePlan {
     /// Index of the associated element in the branch tail.
@@ -718,7 +718,7 @@ pub(super) struct PrattOperandParsePlan {
     pub(super) minimum_binding_power: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Caller-FOLLOW guard for one Pratt binding position.
 pub(super) struct PrattGuardBranchPlan {
     /// Pratt position at which the guard applies.
@@ -727,7 +727,7 @@ pub(super) struct PrattGuardBranchPlan {
     pub(super) expected: ExpectedSet,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Construction and element contract for one resolved enum variant.
 pub(super) struct VariantParsePlan {
     /// Stable resolved identity used across semantic products.
@@ -744,7 +744,7 @@ pub(super) struct VariantParsePlan {
     pub(super) pretty: PrettyHints,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Predictive graph plus the semantic identity used to validate it.
 pub(super) struct PredictiveDispatchPlan {
     /// Root state of the frozen predictive graph.
@@ -761,7 +761,7 @@ pub(super) struct PredictiveDispatchPlan {
     pub(super) balanced: Option<BalancedDispatchPlan>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Generated form of one frozen balanced-delimiter dispatch cut.
 pub(super) struct BalancedDispatchPlan {
     /// Opening token kind expected at the current cursor.
@@ -778,7 +778,7 @@ pub(super) struct BalancedDispatchPlan {
     pub(super) frozen_identity: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Dense identity of one state in a frozen predictive graph.
 pub(super) struct DispatchStateId(usize);
 
@@ -795,7 +795,7 @@ impl DispatchStateId {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 /// One selectable state in the frozen predictive graph.
 pub(super) struct DispatchTrieNodePlan {
     /// Selection made when the consumed prefix ends here.
@@ -804,7 +804,7 @@ pub(super) struct DispatchTrieNodePlan {
     pub(super) edges: Vec<DispatchTrieEdgePlan>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Variant selection reached at a predictive trie state.
 pub(super) struct DispatchTargetPlan {
     /// Zero-based branch selected by the trie.
@@ -822,7 +822,7 @@ const fn dispatch_terminal_mode_code(mode: crate::DispatchTerminalMode) -> usize
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Ordered transition from one predictive trie state to another.
 pub(super) struct DispatchTrieEdgePlan {
     /// Token/text condition labeling this trie edge.
@@ -831,7 +831,7 @@ pub(super) struct DispatchTrieEdgePlan {
     pub(super) next: DispatchStateId,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Token expectation and spelling refinement labeling a dispatch edge.
 pub(super) struct DispatchPositionPlan {
     /// Token-kind expectation tested at this position.
@@ -840,7 +840,7 @@ pub(super) struct DispatchPositionPlan {
     pub(super) text_predicate: Option<PlannedTextPredicate>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Frozen spelling constraint refining a token-kind match.
 pub(super) enum PlannedTextPredicate {
     /// Accepts every spelling admitted by the token kind.
@@ -853,7 +853,7 @@ pub(super) enum PlannedTextPredicate {
     NotIn(Vec<String>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Schema provenance and parser recipe for one authored element.
 pub(super) struct ElementParsePlan {
     /// Schema provenance exposed for Explorer occurrences.
@@ -864,7 +864,7 @@ pub(super) struct ElementParsePlan {
     pub(super) kind: ElementParseKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Fixed-token envelope around a semantic container.
 pub(super) struct FixedAttachmentParsePlan {
     /// Fixed syntax consumed before the semantic child.
@@ -875,7 +875,7 @@ pub(super) struct FixedAttachmentParsePlan {
     pub(super) after: Vec<AttachedFixedSyntaxParsePlan>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Classifies required and erased-optional syntax in a generated attachment.
 pub(super) enum AttachedFixedSyntaxParsePlan {
     /// Consumes one required fixed token.
@@ -884,7 +884,7 @@ pub(super) enum AttachedFixedSyntaxParsePlan {
     Optional(Vec<AttachedFixedParsePlan>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Matching, capture, and formatting contract for an attached token.
 pub(super) struct AttachedFixedParsePlan {
     /// Token expectation used for matching and diagnostics.
@@ -897,7 +897,7 @@ pub(super) struct AttachedFixedParsePlan {
     pub(super) spacing: PrettySpacing,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Parser recipe for a fixed token or semantic field.
 pub(super) enum ElementParseKind {
     /// Matches an authored fixed token and records its accessor.
@@ -932,7 +932,7 @@ pub(super) enum ElementParseKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Classifies how generated parsing constructs one authored semantic field value.
 pub(super) enum SemanticParseProjection {
     /// Parses the authored field type through its container policy.
@@ -984,7 +984,7 @@ pub(super) enum SemanticParseProjection {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Pretty break behavior retained for a repeated parse field.
 pub(super) enum PlannedRepetitionBreak {
     /// Allows the formatter to choose a repetition break.
@@ -995,7 +995,7 @@ pub(super) enum PlannedRepetitionBreak {
     TopLevelStatementFamily(NodeId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Construction position and optional named binding for a parsed field.
 pub(super) struct FieldPlan {
     /// Named-field binding, absent for tuple and unit positions.
@@ -1006,7 +1006,7 @@ pub(super) struct FieldPlan {
     pub(super) accessor: Option<Ident>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Storage constructor applied around an authored terminal type.
 pub(super) enum FieldWrapper {
     /// Allocates the child behind `Box`.
@@ -1019,7 +1019,7 @@ pub(super) enum FieldWrapper {
     OneOrMore,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Control-flow and failure contract for direct, optional, or repeated parsing.
 pub(super) enum PlannedContainer {
     /// Requires exactly one child.
@@ -1064,7 +1064,7 @@ pub(super) enum PlannedContainer {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// Generated representation of one sparse frozen optional consume-vs-skip decision.
 ///
 /// Missing graph actions deliberately delegate to the optional container's root kind selector.
@@ -1079,7 +1079,7 @@ pub(super) struct OptionalViabilityDecisionParsePlan {
     frozen_identity: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 /// One generated state in an optional consume-vs-skip decision graph.
 pub(super) struct OptionalViabilityDecisionNodeParsePlan {
     /// Ordered caller-dependent and unconditional actions at this prefix.
@@ -1088,7 +1088,7 @@ pub(super) struct OptionalViabilityDecisionNodeParsePlan {
     edges: Vec<DispatchTrieEdgePlan>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// One generated optional action with its caller-FOLLOW condition.
 pub(super) struct OptionalViabilityDecisionTerminalParsePlan {
     /// Consume or skip action selected at this terminal.
@@ -1097,7 +1097,7 @@ pub(super) struct OptionalViabilityDecisionTerminalParsePlan {
     on_caller_follow: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 /// Static and caller-dependent FOLLOW policy used by emitted parsers.
 pub(super) enum PlannedFollow {
     /// Uses only the caller-supplied FOLLOW set.
@@ -1110,7 +1110,7 @@ pub(super) enum PlannedFollow {
     CallerAndPrattStops(ExpectedSet),
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 /// Runtime-width token expectations with optional atom refinements.
 pub(super) struct ExpectedSet {
     /// Dense token-kind bitset in runtime word order.
@@ -1615,7 +1615,7 @@ fn collect_body_expected_sets(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Source-capture policy after inheritance has been resolved or retained.
 pub(super) enum PlannedCapturePolicy {
     /// Defers capture choice to the caller context.
