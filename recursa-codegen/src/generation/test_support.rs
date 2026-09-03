@@ -1521,12 +1521,12 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
         );
     }
     assert!(
-        generated.contains("type __RecursaExplorerSampleCallback = fn"),
-        "capable roots must name the erased sample callback instead of emitting a lint-prone nested function type"
+        generated.contains("Option < recursa :: __private :: ExplorerSampleFn >"),
+        "capable roots must name the runtime sample callback alias instead of emitting a lint-prone nested function type"
     );
     assert!(
-        generated.contains("Option < __RecursaExplorerSampleCallback >"),
-        "the matching-version sample macro must retain its optional callback ABI through the named alias"
+        generated.contains("explorer_sample_root :: <"),
+        "capable roots must instantiate the shared generic sample path"
     );
     assert!(
         !generated.contains("Option < fn (& [u8]) -> Result"),
@@ -1705,8 +1705,8 @@ pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
 pub(super) fn explorer_value_collisions_are_rejected_at_the_emission_plan_seam() {
     for (source, name) in [
         (
-            format!("{}\nfn __recursa_explorer_parse_0() {{}}\n", compound_fixture_source()),
-            "__recursa_explorer_parse_0",
+            format!("{}\nstatic __RECURSA_EXPLORER_GRAMMAR: () = ();\n", compound_fixture_source()),
+            "__RECURSA_EXPLORER_GRAMMAR",
         ),
         (
             compound_fixture_source().replace(

@@ -7,7 +7,7 @@
 //! partial partition survive a rejection.
 
 use crate::explorer::{
-    ExplorerRoot, ParseDiagnostic, VariantSchemaData, parse_failure_from_error,
+    ExplorerRoot, NodeSchemaData, ParseDiagnostic, VariantSchemaData, parse_failure_from_error,
     root_contains_variant, trailing_input_diagnostic,
 };
 use crate::input::{Input, LexResult, TokenRecord, TriviaRecord};
@@ -23,6 +23,8 @@ type LexFn = for<'input> fn(&'input str) -> LexResult<'input>;
 pub struct PlanData {
     /// Matching grammar metadata shared with strict parsing.
     grammar: &'static GrammarInfo,
+    /// Static Explorer schema of the framing root application.
+    root: &'static NodeSchemaData,
     /// Required fixed token separating adjacent typed islands.
     boundary_kind: u16,
     /// Closed physical-line token kinds owned atomically.
@@ -61,6 +63,7 @@ pub const fn payload_plan(
 /// variant reachability before emitting this call.
 pub const fn plan(
     grammar: &'static GrammarInfo,
+    root: &'static NodeSchemaData,
     boundary_kind: u16,
     line_kinds: &'static [u16],
     delimited_kinds: &'static [u16],
@@ -69,6 +72,7 @@ pub const fn plan(
 ) -> PlanData {
     PlanData {
         grammar,
+        root,
         boundary_kind,
         line_kinds,
         delimited_kinds,
@@ -467,7 +471,7 @@ pub fn frame_document<'input, T>(
 where
     T: GeneratedParse<'input> + ExplorerRoot + 'input,
 {
-    validate_plan::<T>(source, plan)?;
+    validate_plan(source, plan)?;
     let mut byte = 0_usize;
     let mut drafts = Vec::new();
 
@@ -749,14 +753,10 @@ fn consumed_end(input: &Input<'_>, fallback: usize) -> usize {
 }
 
 /// Validates immutable generated identities defensively at the runtime seam.
-fn validate_plan<'input, T: ExplorerRoot>(
-    source: &'input str,
-    plan: &PlanData,
-) -> Result<(), FrameError<'input>> {
-    let schema = T::__recursa_explorer_schema();
+fn validate_plan<'input>(source: &'input str, plan: &PlanData) -> Result<(), FrameError<'input>> {
     if plan
         .payload
-        .is_some_and(|payload| !root_contains_variant(schema, payload.after))
+        .is_some_and(|payload| !root_contains_variant(plan.root, payload.after))
         || !plan
             .boundary_follow
             .is_exact_kind(plan.grammar.kind_count(), plan.boundary_kind)
