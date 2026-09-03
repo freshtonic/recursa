@@ -163,7 +163,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_12", "protocol_999");
+        .replace("protocol_13", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -982,16 +982,26 @@ fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
 }
 
 fn read_generation_files(generation: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut files = fs::read_dir(generation)
-        .expect("read authoritative Generation")
-        .map(|entry| {
+    fn collect(root: &Path, directory: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+        for entry in fs::read_dir(directory).expect("read authoritative Generation") {
             let path = entry.expect("read authoritative entry").path();
-            (
-                path.file_name().unwrap().to_string_lossy().into_owned(),
+            if path.is_dir() {
+                collect(root, &path, files);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .expect("authoritative payload lives below the Generation")
+                .to_string_lossy()
+                .into_owned();
+            files.push((
+                relative,
                 fs::read(path).expect("read authoritative payload"),
-            )
-        })
-        .collect::<Vec<_>>();
+            ));
+        }
+    }
+    let mut files = Vec::new();
+    collect(generation, generation, &mut files);
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files
 }
