@@ -1493,6 +1493,16 @@ mod nested_inline { mod leaf; }
             report.discovery_inputs.source_files,
             [PathBuf::from("grammar/root.rs")],
         );
+        assert_eq!(
+            report.discovery_inputs.invalidation_paths(package.path()),
+            [
+                PathBuf::from("grammar"),
+                PathBuf::from("grammar/ambiguous/mod.rs"),
+                PathBuf::from("grammar/ambiguous.rs"),
+                PathBuf::from("grammar/root.rs"),
+            ],
+            "missing candidates must invalidate through their existing parent directory"
+        );
         let root = fs::read_to_string(package.path().join("grammar/root.rs")).unwrap();
         for (diagnostic, expected) in
             report
@@ -1505,6 +1515,53 @@ mod nested_inline { mod leaf; }
         }
     }
 
+    #[test]
+    fn missing_candidates_invalidate_through_their_nearest_existing_directory() {
+        let package = TempDir::new().unwrap();
+        write(
+            package.path(),
+            "grammar/root.rs",
+            "mod flat; #[path = \"deep/er/leaf.rs\"] mod deep;",
+        );
+        write(package.path(), "grammar/flat.rs", "");
+        write(package.path(), "grammar/deep/er/leaf.rs", "");
+
+        let report = discover(&package, "grammar/root.rs", &CargoCfgSnapshot::default());
+        assert!(report.tree.is_some(), "{:?}", report.diagnostics);
+        let candidates = &report.discovery_inputs.watched_module_candidates;
+        assert!(candidates.contains(&PathBuf::from("grammar/flat/mod.rs")));
+        assert!(!package.path().join("grammar/flat/mod.rs").exists());
+
+        let emitted = report.discovery_inputs.invalidation_paths(package.path());
+        for path in &emitted {
+            assert!(
+                package.path().join(path).exists(),
+                "{} must exist on disk",
+                path.display()
+            );
+        }
+        assert_eq!(
+            emitted,
+            [
+                PathBuf::from("grammar"),
+                PathBuf::from("grammar/deep/er/leaf.rs"),
+                PathBuf::from("grammar/flat.rs"),
+                PathBuf::from("grammar/root.rs"),
+            ],
+        );
+
+        // A candidate whose only existing ancestor is the package root is not emitted, because
+        // watching the package root would watch the build output too.
+        write(package.path(), "root.rs", "mod orphan;");
+        let root_report = discover(&package, "root.rs", &CargoCfgSnapshot::default());
+        assert!(root_report.tree.is_none());
+        assert_eq!(
+            root_report
+                .discovery_inputs
+                .invalidation_paths(package.path()),
+            [PathBuf::from("root.rs")],
+        );
+    }
     #[test]
     fn configures_modules_and_recursive_cfg_attr_paths_before_selection() {
         let package = TempDir::new().unwrap();
