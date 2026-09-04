@@ -358,6 +358,21 @@ fn main() {
     assert_eq!(error.kind(), ParseErrorKind::PrattAmbiguity);
     assert_eq!(error.span(), recursa::Span::new(2, 3).unwrap());
     assert_eq!(error.found(), Some("fixed:+"));
+    assert_eq!(
+        error.expected().collect::<Vec<_>>(),
+        [
+            "fixed:IS",
+            "fixed:HAS",
+            "fixed:LIKE",
+            "fixed:+",
+            "fixed:*",
+            "fixed:^",
+            "fixed:!",
+            "fixed:::",
+            "content:\"[~@]+\":priority=None",
+        ],
+        "the ambiguity guard at min_bp 0 keeps every extender expectation"
+    );
 
     let nested_ambiguous = grammar::lex("1 + 2 * 3");
     let mut input = nested_ambiguous.input();
