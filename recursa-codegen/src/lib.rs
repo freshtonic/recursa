@@ -78,10 +78,10 @@ pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };
 pub use ir::{
-    Alternative, AtomDescription, AtomExpression, BalancedDelimiter, ContainerShape, Declaration,
-    GrammarDescription, GreedyAcceptance, KindDescription, Location, ParseSite, PrattPosition,
-    PrattVariant, RepeatSeparator, RepetitionCardinality, TextEquivalence, TextPredicate,
-    TypeDescription, TypeShape,
+    Alternative, AtomDescription, AtomExpression, AuthoredRole, AuthoredSite, BalancedDelimiter,
+    ContainerShape, Declaration, GrammarDescription, GreedyAcceptance, GreedyKinds,
+    KindDescription, Location, ParseSite, PrattPosition, PrattVariant, RepeatSeparator,
+    RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
 pub use provenance::{

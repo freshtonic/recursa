@@ -37,10 +37,11 @@ pub struct Item {
     pub maybe: Option<Select>,
 }
 
-/// The repetition itself may consume a `SELECT` that a caller could have continued with.
+/// The repetition itself may consume a `SELECT` that a caller could have continued with;
+/// `all` accepts whatever the overlap is.
 #[derive(recursa::Node, Debug, Clone)]
 pub struct Query {
-    #[greedy(SELECT)]
+    #[greedy(all)]
     #[sep(SELECT)]
     pub items: Vec<Item>,
 }

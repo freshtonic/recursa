@@ -816,8 +816,8 @@ fn analyze_with_publication_policy(
 /// Derives the publish decisions from normalized grammar structure and previously established semantic facts.
 /// One `#[greedy(...)]` acceptance and the sites it covers.
 struct GreedyGroup {
-    /// Kinds the author declared, in kind order without duplicates.
-    declared: Vec<KindId>,
+    /// What the author declared: exact kinds in kind order, or every overlap kind.
+    declared: crate::GreedyKinds,
     /// Declaration that introduced the acceptance, used for labels.
     declaration: crate::DeclId,
     /// Sites whose declarations carry the acceptance.
@@ -834,13 +834,26 @@ struct GreedyFindings {
     witness: crate::ConflictWitness,
 }
 
+/// Renders the declared kinds of an acceptance as the attribute spells them.
+fn greedy_declared_spelling(declared: &crate::GreedyKinds, grammar: &GrammarDescription) -> String {
+    match declared {
+        crate::GreedyKinds::All => "all".to_owned(),
+        crate::GreedyKinds::Exact(kinds) => kinds
+            .iter()
+            .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
 /// Retires advisory FOLLOW overlaps that `#[greedy(...)]` acceptances declare exactly.
 ///
-/// Every acceptance must match the union of the overlaps found at its sites kind for kind.
-/// Declared kinds that no overlap produces are a stale acceptance (`RCA0302`); overlap kinds
-/// the acceptance omits are undeclared (`RCA0303`). Both are blocking errors, so an acceptance
-/// never hides a new or changed ambiguity. A matching acceptance removes the advisory
-/// diagnostics and records what it retired.
+/// Every acceptance must match the union of the overlaps found at its sites kind for kind,
+/// or be `#[greedy(all)]`, which accepts any non-empty overlap. Declared kinds that no overlap
+/// produces are a stale acceptance (`RCA0302`); overlap kinds the acceptance omits are
+/// undeclared (`RCA0303`). Both are blocking errors, so an acceptance never hides a new or
+/// changed ambiguity. A matching acceptance removes the advisory diagnostics and records what
+/// it retired.
 fn apply_greedy_acceptances(
     diagnostics: &mut Vec<Diagnostic>,
     grammar: &GrammarDescription,
@@ -853,9 +866,15 @@ fn apply_greedy_acceptances(
         };
         let site_id = SiteId::new(index as u32);
         let group = groups.entry(acceptance.id).or_insert_with(|| {
-            let mut declared = acceptance.kinds.clone();
-            declared.sort_unstable();
-            declared.dedup();
+            let declared = match &acceptance.kinds {
+                crate::GreedyKinds::All => crate::GreedyKinds::All,
+                crate::GreedyKinds::Exact(kinds) => {
+                    let mut kinds = kinds.clone();
+                    kinds.sort_unstable();
+                    kinds.dedup();
+                    crate::GreedyKinds::Exact(kinds)
+                }
+            };
             GreedyGroup {
                 declared,
                 declaration: site.declaration,
@@ -901,14 +920,12 @@ fn apply_greedy_acceptances(
     let mut errors = Vec::new();
     for (id, group) in &groups {
         let owner = &grammar.declarations[group.declaration.index()].name;
-        let declared = KindSet::from_kinds(grammar.kind_count, group.declared.iter().copied())
-            .expect("declared greedy kinds belong to the grammar");
+        let declared_spelling = greedy_declared_spelling(&group.declared, grammar);
         let Some(found) = findings.get(id) else {
             errors.push(Diagnostic::greedy_error(
                 DiagnosticCode::GreedyStale,
                 format!(
-                    "`#[greedy({})]` at `{owner}` accepts an overlap that analysis does not find: no caller FOLLOW kind overlaps this site",
-                    spell(&group.declared),
+                    "`#[greedy({declared_spelling})]` at `{owner}` accepts an overlap that analysis does not find: no caller FOLLOW kind overlaps this site",
                 ),
                 declaration_label(
                     group.declaration,
@@ -919,27 +936,42 @@ fn apply_greedy_acceptances(
                 None,
                 ConflictRemedy::RemoveGreedy {
                     site: group.sites[0],
-                    kinds: group.declared.clone(),
+                    kinds: match &group.declared {
+                        crate::GreedyKinds::All => Vec::new(),
+                        crate::GreedyKinds::Exact(kinds) => kinds.clone(),
+                    },
                 },
             ));
             continue;
         };
-        let missing = declared
-            .difference(&found.overlap)
-            .expect("greedy kind sets share one grammar width");
-        let extra = found
-            .overlap
-            .difference(&declared)
-            .expect("greedy kind sets share one grammar width");
-        let missing_kinds = missing.iter().collect::<Vec<_>>();
-        let extra_kinds = extra.iter().collect::<Vec<_>>();
+        let (missing_kinds, extra_kinds, missing, extra) = match &group.declared {
+            crate::GreedyKinds::All => (Vec::new(), Vec::new(), None, None),
+            crate::GreedyKinds::Exact(kinds) => {
+                let declared = KindSet::from_kinds(grammar.kind_count, kinds.iter().copied())
+                    .expect("declared greedy kinds belong to the grammar");
+                let missing = declared
+                    .difference(&found.overlap)
+                    .expect("greedy kind sets share one grammar width");
+                let extra = found
+                    .overlap
+                    .difference(&declared)
+                    .expect("greedy kind sets share one grammar width");
+                (
+                    missing.iter().collect::<Vec<_>>(),
+                    extra.iter().collect::<Vec<_>>(),
+                    Some(missing),
+                    Some(extra),
+                )
+            }
+        };
         let matched = missing_kinds.is_empty() && extra_kinds.is_empty();
-        if !missing_kinds.is_empty() {
+        if let Some(missing) = missing
+            && !missing_kinds.is_empty()
+        {
             errors.push(Diagnostic::greedy_error(
                 DiagnosticCode::GreedyStale,
                 format!(
-                    "`#[greedy({})]` at `{owner}` accepts {} that no caller FOLLOW overlap at this site contains",
-                    spell(&group.declared),
+                    "`#[greedy({declared_spelling})]` at `{owner}` accepts {} that no caller FOLLOW overlap at this site contains",
                     spell(&missing_kinds),
                 ),
                 declaration_label(
@@ -958,12 +990,13 @@ fn apply_greedy_acceptances(
                 },
             ));
         }
-        if !extra_kinds.is_empty() {
+        if let Some(extra) = extra
+            && !extra_kinds.is_empty()
+        {
             errors.push(Diagnostic::greedy_error(
                 DiagnosticCode::GreedyUndeclared,
                 format!(
-                    "`#[greedy({})]` at `{owner}` does not declare {}, which the caller FOLLOW overlap at this site also contains",
-                    spell(&group.declared),
+                    "`#[greedy({declared_spelling})]` at `{owner}` does not declare {}, which the caller FOLLOW overlap at this site also contains",
                     spell(&extra_kinds),
                 ),
                 declaration_label(
@@ -11057,16 +11090,59 @@ fn greedy_spelling(overlap: &KindSet, grammar: &GrammarDescription) -> String {
         .join(", ")
 }
 
-/// Renders the exact acceptance that would retire an overlap at a site.
-fn greedy_suggestion(field: &str, overlap: &KindSet, grammar: &GrammarDescription) -> String {
+/// Overlaps wider than this many kinds are summarized in prose and accepted with `all`.
+const GREEDY_SPELLING_LIMIT: usize = 12;
+
+/// Describes the overlap kinds in prose: the full list, or a count for wide overlaps.
+fn greedy_kinds_phrase(overlap: &KindSet, grammar: &GrammarDescription) -> String {
     let count = overlap.iter().count();
-    if count <= 12 {
+    if count <= GREEDY_SPELLING_LIMIT {
+        greedy_spelling(overlap, grammar)
+    } else {
+        format!("any of {count} kinds (listed in the evidence)")
+    }
+}
+
+/// Names the site in prose and names the item an attribute for it goes on.
+fn greedy_site_names(site_id: SiteId, grammar: &GrammarDescription) -> (String, String, String) {
+    let site = &grammar.sites[site_id.index()];
+    let declaration = &grammar.declarations[site.declaration.index()];
+    let owner = &grammar.types[site.owner.index()].name;
+    declaration.authored.as_ref().map_or_else(
+        || {
+            let element = declaration
+                .name
+                .rsplit("::")
+                .next()
+                .unwrap_or(&declaration.name);
+            (
+                format!("`{element}` in `{owner}`"),
+                format!("`{element}`"),
+                owner.clone(),
+            )
+        },
+        |authored| {
+            (
+                authored.phrase(),
+                authored.attribute_target(),
+                authored.node.clone(),
+            )
+        },
+    )
+}
+
+/// Renders the exact acceptance that would retire an overlap at a site.
+fn greedy_suggestion(target: &str, overlap: &KindSet, grammar: &GrammarDescription) -> String {
+    let count = overlap.iter().count();
+    if count <= GREEDY_SPELLING_LIMIT {
         format!(
-            "`#[greedy({})]` on `{field}`",
+            "`#[greedy({})]` on {target}",
             greedy_spelling(overlap, grammar)
         )
     } else {
-        format!("`#[greedy(...)]` on `{field}` naming all {count} overlap kinds in the evidence")
+        format!(
+            "`#[greedy(all)]` on {target}, which accepts every overlap kind at this site, or `#[greedy(...)]` naming all {count} kinds in the evidence"
+        )
     }
 }
 
@@ -11080,15 +11156,13 @@ fn nullable_follow_message(
     overlap: &KindSet,
     grammar: &GrammarDescription,
 ) -> String {
-    let site = &grammar.sites[site_id.index()];
-    let owner = &grammar.types[site.owner.index()].name;
-    let field = grammar.declarations[site.declaration.index()].display_name();
-    let kinds = greedy_spelling(overlap, grammar);
+    let (phrase, target, owner) = greedy_site_names(site_id, grammar);
+    let kinds = greedy_kinds_phrase(overlap, grammar);
     format!(
-        "`{field}` in `{owner}` may be absent and may begin with {kinds}, which may also follow `{owner}`; \
-         when the parser sees {kinds} here it commits to `{field}` and never treats it as the caller's continuation; \
-         accept that with {}, or make `{field}` required, narrow the caller's type so {kinds} cannot follow `{owner}`, or add a separator",
-        greedy_suggestion(field, overlap, grammar),
+        "{phrase} may be absent and may begin with {kinds}, which may also follow `{owner}`; \
+         when the parser sees {kinds} here it commits to this element and never treats it as the caller's continuation; \
+         accept that with {}, or make the element required, narrow the caller's type so {kinds} cannot follow `{owner}`, or add a separator",
+        greedy_suggestion(&target, overlap, grammar),
     )
 }
 
@@ -11098,15 +11172,13 @@ fn pratt_follow_message(
     overlap: &KindSet,
     grammar: &GrammarDescription,
 ) -> String {
-    let site = &grammar.sites[site_id.index()];
-    let owner = &grammar.types[site.owner.index()].name;
-    let field = grammar.declarations[site.declaration.index()].display_name();
-    let kinds = greedy_spelling(overlap, grammar);
+    let (phrase, target, owner) = greedy_site_names(site_id, grammar);
+    let kinds = greedy_kinds_phrase(overlap, grammar);
     format!(
-        "`{field}` in `{owner}` is an expression whose extender {kinds} may also follow `{owner}`; \
-         when the parser sees {kinds} here it keeps extending `{field}` and never treats it as the caller's continuation; \
+        "{phrase} is an expression whose extender {kinds} may also follow `{owner}`; \
+         when the parser sees {kinds} here it keeps extending the expression and never treats it as the caller's continuation; \
          accept that with {}, or raise the site's minimum binding power above the extender, or narrow the caller's type so {kinds} cannot follow `{owner}`",
-        greedy_suggestion(field, overlap, grammar),
+        greedy_suggestion(&target, overlap, grammar),
     )
 }
 

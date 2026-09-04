@@ -453,7 +453,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
     assert_eq!(
         report.canonical_diagnostics(),
         concat!(
-            "warning[RCA0300]: `maybe` in `Inner` may be absent and may begin with Word, which may also follow `Inner`; when the parser sees Word here it commits to `maybe` and never treats it as the caller's continuation; accept that with `#[greedy(Word)]` on `maybe`, or make `maybe` required, narrow the caller's type so Word cannot follow `Inner`, or add a separator\n",
+            "warning[RCA0300]: `maybe` in `Inner` may be absent and may begin with Word, which may also follow `Inner`; when the parser sees Word here it commits to this element and never treats it as the caller's continuation; accept that with `#[greedy(Word)]` on `maybe`, or make the element required, narrow the caller's type so Word cannot follow `Inner`, or add a separator\n",
             "  primary source[0] 8..9: this nullable use site can consume the witness kind\n",
             "  secondary source[0] 12..13: the same kind can follow this use site\n",
             "  overlap: {Word}\n",
@@ -470,7 +470,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
             "    - kind `Word` is declared by atom `Word`\n",
             "  lookahead: no finite depth separates this shared prefix\n",
             "  remedy: accept the greedy commitment with #[greedy(...)] on the use site, or make it required, narrow its caller's type, or add a separator\n",
-            "warning[RCA0300]: `inner` in `Root` may be absent and may begin with Word, which may also follow `Root`; when the parser sees Word here it commits to `inner` and never treats it as the caller's continuation; accept that with `#[greedy(Word)]` on `inner`, or make `inner` required, narrow the caller's type so Word cannot follow `Root`, or add a separator\n",
+            "warning[RCA0300]: `inner` in `Root` may be absent and may begin with Word, which may also follow `Root`; when the parser sees Word here it commits to this element and never treats it as the caller's continuation; accept that with `#[greedy(Word)]` on `inner`, or make the element required, narrow the caller's type so Word cannot follow `Root`, or add a separator\n",
             "  primary source[0] 12..13: this nullable use site can consume the witness kind\n",
             "  secondary source[0] 4..5: the same kind can follow this use site\n",
             "  overlap: {Word}\n",
