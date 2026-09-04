@@ -1,5 +1,11 @@
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{LazyLock, Mutex};
+
+/// Proves at compile time that interned sets may be shared between threads.
+const fn assert_shared_across_threads<T: Send + Sync>() {}
+const _: () = assert_shared_across_threads::<FollowSet>();
 
 /// Erased identity of a token kind in one grammar.
 pub type TokenKind = u16;
@@ -133,6 +139,11 @@ impl FollowSet {
         self.compose(caller, BoundaryMode::KeepSelf)
     }
 
+    /// Composes two sets and returns only the interned result.
+    fn compose(&self, other: &Self, mode: BoundaryMode) -> Result<&'static Self, FollowSetError> {
+        Ok(self.compose_entry(other, mode)?.composed)
+    }
+
     /// Composes two sets, memoized first by operand identity, then by content.
     ///
     /// The fast path hashes only the two operand addresses and the mode. Every
@@ -141,7 +152,17 @@ impl FollowSet {
     /// needs no word-level work. A pair miss builds the content in reusable
     /// scratch buffers and canonicalizes it through the content table, so the
     /// number of leaked sets is bounded by the number of distinct contents.
-    fn compose(&self, other: &Self, mode: BoundaryMode) -> Result<&'static Self, FollowSetError> {
+    ///
+    /// The returned record is leaked once per distinct `(left, right, mode)`
+    /// triple, so a per-site inline cache can publish one pointer to it and later
+    /// recognize the same caller by address without touching this table again.
+    /// Callers must keep both operands alive for the whole process; generated
+    /// parsers only ever compose generated statics and earlier interned results.
+    fn compose_entry(
+        &self,
+        other: &Self,
+        mode: BoundaryMode,
+    ) -> Result<&'static ComposedFollow, FollowSetError> {
         if self.kind_count != other.kind_count {
             return Err(FollowSetError::WidthMismatch {
                 left: self.kind_count,
@@ -149,79 +170,90 @@ impl FollowSet {
             });
         }
         let pair = (
-            self as *const Self as usize,
-            other as *const Self as usize,
+            std::ptr::from_ref(self) as usize,
+            std::ptr::from_ref(other) as usize,
             mode as u8,
         );
-        INTERNER.with(|interner| {
-            let mut interner = interner.borrow_mut();
-            if let Some(found) = interner.pairs.get(&pair) {
-                return Ok(*found);
-            }
-            let Interner {
-                scratch,
-                contents,
-                pairs,
-            } = &mut *interner;
-            scratch.kinds.clear();
-            scratch.kinds.extend(
-                self.kinds
+        let mut interner = INTERNER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(found) = interner.pairs.get(&pair) {
+            return Ok(*found);
+        }
+        let Interner {
+            scratch,
+            contents,
+            pairs,
+        } = &mut *interner;
+        scratch.kinds.clear();
+        scratch.kinds.extend(
+            self.kinds
+                .iter()
+                .zip(other.kinds.iter())
+                .map(|(l, r)| l | r),
+        );
+        scratch.boundary.clear();
+        match mode {
+            BoundaryMode::Union => scratch.boundary.extend(
+                self.pratt_boundary_kinds
                     .iter()
-                    .zip(other.kinds.iter())
+                    .zip(other.pratt_boundary_kinds.iter())
                     .map(|(l, r)| l | r),
-            );
-            scratch.boundary.clear();
-            match mode {
-                BoundaryMode::Union => scratch.boundary.extend(
-                    self.pratt_boundary_kinds
-                        .iter()
-                        .zip(other.pratt_boundary_kinds.iter())
-                        .map(|(l, r)| l | r),
-                ),
-                BoundaryMode::KeepSelf => scratch.boundary.extend_from_slice(&self.kinds),
+            ),
+            BoundaryMode::KeepSelf => scratch.boundary.extend_from_slice(&self.kinds),
+        }
+        scratch.expected.clear();
+        merge_sorted(&self.expected, &other.expected, &mut scratch.expected);
+        let hash = content_hash(
+            self.kind_count,
+            &scratch.kinds,
+            &scratch.boundary,
+            &scratch.expected,
+        );
+        let bucket = contents.entry(hash).or_default();
+        let canonical = match bucket.iter().copied().find(|set| {
+            set.kind_count == self.kind_count
+                && *set.kinds == *scratch.kinds
+                && *set.pratt_boundary_kinds == *scratch.boundary
+                && *set.expected == *scratch.expected
+        }) {
+            Some(found) => found,
+            None => {
+                let leaked: &'static Self = Box::leak(Box::new(Self {
+                    kind_count: self.kind_count,
+                    kinds: Cow::Owned(scratch.kinds.clone()),
+                    expected: Cow::Owned(scratch.expected.clone()),
+                    pratt_boundary_kinds: Cow::Owned(scratch.boundary.clone()),
+                }));
+                bucket.push(leaked);
+                leaked
             }
-            scratch.expected.clear();
-            merge_sorted(&self.expected, &other.expected, &mut scratch.expected);
-            let hash = content_hash(
-                self.kind_count,
-                &scratch.kinds,
-                &scratch.boundary,
-                &scratch.expected,
-            );
-            let bucket = contents.entry(hash).or_default();
-            let canonical = match bucket.iter().copied().find(|set| {
-                set.kind_count == self.kind_count
-                    && *set.kinds == *scratch.kinds
-                    && *set.pratt_boundary_kinds == *scratch.boundary
-                    && *set.expected == *scratch.expected
-            }) {
-                Some(found) => found,
-                None => {
-                    let leaked: &'static Self = Box::leak(Box::new(Self {
-                        kind_count: self.kind_count,
-                        kinds: Cow::Owned(scratch.kinds.clone()),
-                        expected: Cow::Owned(scratch.expected.clone()),
-                        pratt_boundary_kinds: Cow::Owned(scratch.boundary.clone()),
-                    }));
-                    bucket.push(leaked);
-                    leaked
-                }
-            };
-            pairs.insert(pair, canonical);
-            Ok(canonical)
-        })
+        };
+        let entry: &'static ComposedFollow = Box::leak(Box::new(ComposedFollow {
+            nearer: std::ptr::from_ref(self),
+            caller: std::ptr::from_ref(other),
+            composed: canonical,
+        }));
+        pairs.insert(pair, entry);
+        Ok(entry)
     }
 
-    /// Returns how many distinct composed sets this thread has interned.
+    /// Returns how many distinct composed sets this process has interned.
     #[doc(hidden)]
     pub fn interned_composition_count() -> usize {
-        INTERNER.with(|interner| interner.borrow().contents.values().map(Vec::len).sum())
+        let interner = INTERNER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        interner.contents.values().map(Vec::len).sum()
     }
 
-    /// Returns how many operand pairs this thread has memoized.
+    /// Returns how many operand pairs this process has memoized.
     #[doc(hidden)]
     pub fn memoized_pair_count() -> usize {
-        INTERNER.with(|interner| interner.borrow().pairs.len())
+        let interner = INTERNER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        interner.pairs.len()
     }
 
     pub(crate) fn pratt_boundary_contains(&self, kind: TokenKind) -> bool {
@@ -233,6 +265,138 @@ impl FollowSet {
         self.pratt_boundary_kinds
             .get(word)
             .is_some_and(|value| value & (1_u64 << bit) != 0)
+    }
+}
+
+/// One interned composition together with the operand identities that produced it.
+///
+/// The record is allocated once per distinct `(nearer, caller, mode)` triple and never
+/// freed, so an inline cache can publish a single pointer to it and a concurrent reader
+/// can never observe a half-written operand/result pair. The operand fields are compared
+/// by address and are never dereferenced.
+struct ComposedFollow {
+    /// Address of the nearer operand, used only to check an inline-cache entry.
+    nearer: *const FollowSet,
+    /// Address of the caller operand, used only to check an inline-cache entry.
+    caller: *const FollowSet,
+    /// Canonical interned result of the composition.
+    composed: &'static FollowSet,
+}
+
+// SAFETY: the two pointer fields are opaque identities that are compared but never
+// dereferenced, and the composed set is `Send + Sync`. Records are leaked, so no
+// thread can observe a dangling record.
+unsafe impl Send for ComposedFollow {}
+// SAFETY: see the `Send` justification; the record is immutable once published.
+unsafe impl Sync for ComposedFollow {}
+
+/// One-entry inline cache for a single generated FOLLOW composition site.
+///
+/// A generated parser composes the same static nearer FOLLOW with whatever caller
+/// FOLLOW its context carries. At one site the caller is usually the same reference
+/// as on the previous visit, so a single acquire load and one pointer comparison
+/// answer the composition without reaching the process-wide memo. A miss composes
+/// through that memo and republishes the record; because records are interned per
+/// operand pair, repeated misses reuse records instead of leaking new ones.
+///
+/// Generated code declares one cache per site as a `static`, so entries live for the
+/// whole process. Both operands must likewise outlive the process: generated parsers
+/// only pass grammar statics and sets the memo returned earlier.
+#[doc(hidden)]
+pub struct FollowSiteCache {
+    /// Last record published at this site, or null before the first composition.
+    entry: AtomicPtr<ComposedFollow>,
+}
+
+impl FollowSiteCache {
+    /// Constructs an empty site cache usable in a `static` item.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entry: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    /// Caches [`FollowSet::with_caller`] for one generated descent site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    #[inline]
+    pub fn with_caller(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        self.composed(nearer, caller, BoundaryMode::KeepSelf)
+    }
+
+    /// Caches [`FollowSet::union`] for one generated descent site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    #[inline]
+    pub fn union(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        self.composed(nearer, caller, BoundaryMode::Union)
+    }
+
+    /// Answers one composition from the published record, or refills the site.
+    #[inline]
+    fn composed(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+        mode: BoundaryMode,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        let published = self.entry.load(Ordering::Acquire);
+        if !published.is_null() {
+            // SAFETY: a non-null entry was published by `refill` from a leaked record,
+            // and records are never freed or mutated after publication.
+            let published: &'static ComposedFollow = unsafe { &*published };
+            if std::ptr::eq(published.caller, caller) {
+                debug_assert!(
+                    std::ptr::eq(published.nearer, nearer),
+                    "one generated site composes one fixed nearer FOLLOW"
+                );
+                return Ok(published.composed);
+            }
+        }
+        self.refill(nearer, caller, mode)
+    }
+
+    /// Composes through the process-wide memo and republishes this site's record.
+    #[cold]
+    fn refill(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+        mode: BoundaryMode,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        let entry = nearer.compose_entry(caller, mode)?;
+        self.entry
+            .store(std::ptr::from_ref(entry).cast_mut(), Ordering::Release);
+        Ok(entry.composed)
+    }
+}
+
+impl Default for FollowSiteCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for FollowSiteCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FollowSiteCache")
+            .finish_non_exhaustive()
     }
 }
 
@@ -254,8 +418,8 @@ struct Interner {
     scratch: Scratch,
     /// Canonical interned sets grouped by content hash.
     contents: std::collections::HashMap<u64, Vec<&'static FollowSet>, IdentityHashBuilder>,
-    /// Operand-identity memo: (left address, right address, mode) to the canonical set.
-    pairs: std::collections::HashMap<(usize, usize, u8), &'static FollowSet, PairHashBuilder>,
+    /// Operand-identity memo: (left address, right address, mode) to the shared record.
+    pairs: std::collections::HashMap<(usize, usize, u8), &'static ComposedFollow, PairHashBuilder>,
 }
 
 /// Composition buffers reused across calls so a table hit allocates nothing.
@@ -269,9 +433,13 @@ struct Scratch {
     expected: Vec<ExpectedAtomId>,
 }
 
-thread_local! {
-    static INTERNER: std::cell::RefCell<Interner> = std::cell::RefCell::new(Interner::default());
-}
+/// Process-wide composition memo shared by every parsing thread.
+///
+/// Interned sets are leaked and immutable, and [`FollowSet`] is `Send + Sync`, so
+/// one table can serve every thread. After the per-site inline caches in
+/// [`FollowSiteCache`] absorb the repeated compositions, this lock is only reached
+/// the first time a site meets a given caller.
+static INTERNER: LazyLock<Mutex<Interner>> = LazyLock::new(|| Mutex::new(Interner::default()));
 
 /// Merges two sorted, deduplicated atom lists into `out`.
 fn merge_sorted(left: &[ExpectedAtomId], right: &[ExpectedAtomId], out: &mut Vec<ExpectedAtomId>) {
@@ -460,6 +628,68 @@ mod tests {
         assert_eq!(&*composed.kinds, &[0b101]);
         assert!(composed.pratt_boundary_contains(0));
         assert!(!composed.pratt_boundary_contains(2));
+    }
+
+    #[test]
+    fn site_caches_answer_repeat_callers_without_reaching_the_memo() {
+        static NEARER: FollowSet = FollowSet::from_static(3, &[0b001], &[ExpectedAtomId(0)]);
+        static FIRST_CALLER: FollowSet = FollowSet::from_static(3, &[0b010], &[ExpectedAtomId(1)]);
+        static SECOND_CALLER: FollowSet = FollowSet::from_static(3, &[0b100], &[ExpectedAtomId(2)]);
+        static SITE: FollowSiteCache = FollowSiteCache::new();
+
+        let direct = NEARER.with_caller(&FIRST_CALLER).unwrap();
+        let cached = SITE.with_caller(&NEARER, &FIRST_CALLER).unwrap();
+        assert!(std::ptr::eq(direct, cached));
+
+        let pairs_before = FollowSet::memoized_pair_count();
+        let repeat = SITE.with_caller(&NEARER, &FIRST_CALLER).unwrap();
+        assert!(std::ptr::eq(direct, repeat));
+        assert_eq!(FollowSet::memoized_pair_count(), pairs_before);
+
+        let switched = SITE.with_caller(&NEARER, &SECOND_CALLER).unwrap();
+        assert!(std::ptr::eq(
+            switched,
+            NEARER.with_caller(&SECOND_CALLER).unwrap()
+        ));
+        assert_eq!(&*switched.kinds, &[0b101]);
+        assert!(switched.pratt_boundary_contains(0));
+        assert!(!switched.pratt_boundary_contains(2));
+
+        let back = SITE.with_caller(&NEARER, &FIRST_CALLER).unwrap();
+        assert!(std::ptr::eq(direct, back));
+    }
+
+    #[test]
+    fn site_caches_union_matches_direct_composition_and_reports_width_mismatch() {
+        static NEARER: FollowSet = FollowSet::from_static(3, &[0b001], &[]);
+        static CALLER: FollowSet = FollowSet::from_static(3, &[0b100], &[]);
+        static WIDE: FollowSet = FollowSet::from_static(127, &[0, 0], &[]);
+        static SITE: FollowSiteCache = FollowSiteCache::new();
+        static MISMATCHED: FollowSiteCache = FollowSiteCache::new();
+
+        let composed = SITE.union(&NEARER, &CALLER).unwrap();
+        assert!(std::ptr::eq(composed, NEARER.union(&CALLER).unwrap()));
+        assert!(composed.pratt_boundary_contains(2));
+
+        assert_eq!(
+            MISMATCHED.with_caller(&NEARER, &WIDE),
+            Err(FollowSetError::WidthMismatch {
+                left: 3,
+                right: 127,
+            })
+        );
+    }
+
+    #[test]
+    fn interned_sets_cross_thread_boundaries() {
+        static NEARER: FollowSet = FollowSet::from_static(3, &[0b001], &[]);
+        static CALLER: FollowSet = FollowSet::from_static(3, &[0b010], &[]);
+
+        let composed = NEARER.with_caller(&CALLER).unwrap();
+        let observed = std::thread::spawn(|| NEARER.with_caller(&CALLER).unwrap())
+            .join()
+            .expect("the composing thread completes");
+        assert!(std::ptr::eq(composed, observed));
     }
 
     #[test]

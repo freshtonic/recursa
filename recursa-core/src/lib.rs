@@ -77,7 +77,9 @@ pub mod __private {
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData, frame_document,
         payload_plan as framing_payload_plan, plan as framing_plan,
     };
-    pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
+    pub use crate::grammar::{
+        ExpectedAtomId, FollowSet, FollowSetError, FollowSiteCache, GrammarInfo, TokenKind,
+    };
     pub use crate::input::{
         Input, LexResult, SourceGap, SourceGaps, TokenRecord, TriviaRecord, TriviaRecordView,
         TriviaRecords,
