@@ -448,11 +448,12 @@ fn diagram_pratt_role(position: PrattPosition) -> String {
     }
 }
 
-/// Labels a semantic element with the `#[greedy(...)]` acceptance that covers its field.
+/// Annotates a semantic element with the `#[greedy(...)]` acceptance that covers its field.
 ///
-/// The label names the accepted kinds as the attribute spells them, so a reader of the
-/// diagram sees where the parser commits greedily on a shared token and why no advisory
-/// warning is reported for that site.
+/// The note names the accepted kinds as the attribute spells them, so a reader who points
+/// at the element sees where the parser commits greedily on a shared token and why no
+/// advisory warning is reported for that site. The annotation is hover text, so it adds
+/// nothing to the drawn syntax.
 fn annotate_greedy(
     element: DiagramNode,
     field: crate::resolution::ResolvedFieldId,
@@ -482,10 +483,10 @@ fn annotate_greedy(
             .collect::<Vec<_>>()
             .join(", "),
     };
-    DiagramNode::Sequence(vec![
-        element,
-        DiagramNode::Comment(format!("greedy({kinds})")),
-    ])
+    DiagramNode::Annotated {
+        note: format!("greedy({kinds})"),
+        body: Box::new(element),
+    }
 }
 
 /// Projects fixed and semantic elements in their frozen parse order.
@@ -685,7 +686,9 @@ fn diagram_leaf_count(node: &DiagramNode) -> usize {
         | DiagramNode::NonTerminal { .. }
         | DiagramNode::Comment(_)
         | DiagramNode::LinkedComment { .. } => 1,
-        DiagramNode::Inline { body, .. } => diagram_leaf_count(body),
+        DiagramNode::Inline { body, .. } | DiagramNode::Annotated { body, .. } => {
+            diagram_leaf_count(body)
+        }
         DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
             nodes.iter().map(diagram_leaf_count).sum()
         }
@@ -772,7 +775,9 @@ fn collect_body_references(node: &DiagramNode, references: &mut Vec<String>) {
         | DiagramNode::NonTerminal { .. }
         | DiagramNode::Comment(_)
         | DiagramNode::LinkedComment { .. } => {}
-        DiagramNode::Inline { body, .. } => collect_body_references(body, references),
+        DiagramNode::Inline { body, .. } | DiagramNode::Annotated { body, .. } => {
+            collect_body_references(body, references);
+        }
         DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
             for node in nodes {
                 collect_body_references(node, references);
@@ -830,6 +835,12 @@ fn rewrite_planned_references(
                 planned,
                 expanded,
                 depth + 1,
+            )),
+        },
+        DiagramNode::Annotated { note, body } => DiagramNode::Annotated {
+            note: note.clone(),
+            body: Box::new(rewrite_planned_references(
+                body, bodies, planned, expanded, depth,
             )),
         },
         DiagramNode::Sequence(nodes) => DiagramNode::Sequence(
