@@ -1464,7 +1464,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                 let expected = expected
                     .union(self.follow)
                     .expect("matching generated dispatch/FOLLOW widths");
-                return Err(self.unexpected_at(depth, &expected));
+                return Err(self.unexpected_at(depth, expected));
             }
             return Err(self.unexpected_at(depth, expected));
         }
