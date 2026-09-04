@@ -22,6 +22,6 @@ serde = ["dep:serde"]
 
 [dependencies]
 arbitrary = { version = "1", optional = true }
+logos = { version = "0.16", default-features = false, features = ["std", "export_derive"] }
 phf = "0.11.3"
-regex-automata = "0.4"
 serde = { version = "1", features = ["derive"], optional = true }

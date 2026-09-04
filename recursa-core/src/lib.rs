@@ -11,6 +11,8 @@ mod grammar;
 mod input;
 /// Generated lexer execution protocol.
 mod lex;
+#[cfg(test)]
+mod lex_tests;
 /// Span-bearing output traits and non-empty semantic sequences.
 mod output;
 /// Structured low-level parse failures.
@@ -84,7 +86,11 @@ pub mod __private {
         Input, LexResult, SourceGap, SourceGaps, TokenRecord, TriviaRecord, TriviaRecordView,
         TriviaRecords,
     };
-    pub use crate::lex::{LexDiagnostic, LexDiagnosticCode, LexMatcher, LexRule, lex};
+    pub use crate::lex::{
+        ByteSet, FixedLexLiteral, LexClosedMatch, LexDiagnostic, LexDiagnosticCode, LexExtras,
+        LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
+        lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
+    };
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
@@ -93,6 +99,7 @@ pub mod __private {
         pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
+    pub use logos;
     #[cfg(feature = "arbitrary")]
     pub use arbitrary;
     #[cfg(feature = "serde")]
@@ -147,7 +154,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        20,
+        21,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -222,7 +229,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            20,
+            21,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
