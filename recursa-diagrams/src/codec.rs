@@ -249,6 +249,12 @@ impl Writer {
                 self.string(text);
                 self.word(")");
             }
+            DiagramNode::Annotated { note, body } => {
+                self.word("(note");
+                self.string(note);
+                self.production(body);
+                self.word(")");
+            }
             DiagramNode::LinkedComment { label, link } => {
                 self.word("(lcomment");
                 self.string(label);
@@ -445,6 +451,10 @@ impl Reader {
                 body: Box::new(self.production()?),
             },
             "(comment" => DiagramNode::Comment(self.string()?),
+            "(note" => DiagramNode::Annotated {
+                note: self.string()?,
+                body: Box::new(self.production()?),
+            },
             "(lcomment" => DiagramNode::LinkedComment {
                 label: self.string()?,
                 link: self.optional_string()?,
@@ -503,6 +513,10 @@ mod tests {
                         DiagramNode::LinkedComment {
                             label: "prefix Neg".to_owned(),
                             link: Some("enum.Expr.html#variant.Neg".to_owned()),
+                        },
+                        DiagramNode::Annotated {
+                            note: "greedy(SELECT, \"WITH\")".to_owned(),
+                            body: Box::new(DiagramNode::Terminal("SELECT".to_owned())),
                         },
                     ]),
                 },
