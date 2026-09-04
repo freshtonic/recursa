@@ -5428,6 +5428,8 @@ pub(super) fn render_predictive_graph_selection(
                 #positions_literal,
                 &[#(#spellings),*],
                 #packed_width,
+                4usize,
+                1usize,
                 &#module_anchor::__RECURSA_EXPECTED_SETS,
             );
     };
@@ -5527,6 +5529,8 @@ pub(super) fn render_predictive_selection(
                 #positions_literal,
                 &[#(#spellings),*],
                 #packed_width,
+                3usize,
+                1usize,
                 &#module_anchor::__RECURSA_EXPECTED_SETS,
             );
     };
@@ -6323,6 +6327,8 @@ fn render_optional_viability_decision_selection(
                 #positions_literal,
                 &[#(#spellings),*],
                 #packed_width,
+                4usize,
+                2usize,
                 &#module_anchor::__RECURSA_EXPECTED_SETS,
             );
         context.select_optional(&#table_name, #root)
