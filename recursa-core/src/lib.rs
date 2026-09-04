@@ -46,6 +46,11 @@ pub use visitor::{
 #[doc(hidden)]
 pub mod __private {
     pub use crate::dispatch::{DispatchTable, dispatch_table};
+    /// Perfect-hash runtime backing generated word-keyword classification.
+    ///
+    /// Re-exported so generated code never depends on `phf` directly: it stays an
+    /// internal implementation detail of the facade/runtime pair.
+    pub use phf;
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
@@ -140,7 +145,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        19,
+        20,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -215,7 +220,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            19,
+            20,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
