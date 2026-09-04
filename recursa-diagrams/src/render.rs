@@ -164,6 +164,40 @@ impl railroad::Node for CachedMeasure {
     }
 }
 
+/// Attaches hover text to one railroad node without changing its geometry.
+///
+/// The note becomes an SVG `<title>` inside a wrapping `<g>`, which every
+/// browser renders as a tooltip while the pointer rests on the drawn
+/// production. Nothing is drawn for the note itself, so an annotation never
+/// widens the diagram.
+struct Annotated {
+    /// Wrapped railroad node supplying geometry and drawing.
+    inner: RailroadNode,
+    /// Hover text placed in the group's `<title>`.
+    note: String,
+}
+
+impl railroad::Node for Annotated {
+    fn entry_height(&self) -> i64 {
+        self.inner.entry_height()
+    }
+
+    fn height(&self) -> i64 {
+        self.inner.height()
+    }
+
+    fn width(&self) -> i64 {
+        self.inner.width()
+    }
+
+    fn draw(&self, x: i64, y: i64, h_dir: railroad::svg::HDir) -> railroad::svg::Element {
+        railroad::svg::Element::new("g")
+            .set("class", "annotated")
+            .add(railroad::svg::Element::new("title").text(&self.note))
+            .add(self.inner.draw(x, y, h_dir))
+    }
+}
+
 /// Projects semantic topology into railroad layout primitives.
 fn to_railroad(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
     let node = to_railroad_uncached(node, link_prefix);
@@ -194,6 +228,10 @@ fn to_railroad_uncached(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
             ))
         }
         DiagramNode::Comment(label) => Box::new(railroad::Comment::new(label.clone())),
+        DiagramNode::Annotated { note, body } => Box::new(Annotated {
+            inner: to_railroad(body, link_prefix),
+            note: note.clone(),
+        }),
         DiagramNode::LinkedComment { label, link } => {
             let comment: RailroadNode = Box::new(railroad::Comment::new(label.clone()));
             match link {
@@ -246,7 +284,8 @@ pub fn render_svg(production: &DiagramNode, label: &str, link_prefix: &str) -> S
     let mut diagram = railroad::Diagram::with_default_css(root);
     diagram.add_css(
         "svg.railroad a.link text { text-decoration: underline; } \
-         svg.railroad a.link:hover text { text-decoration-thickness: 2px; }",
+         svg.railroad a.link:hover text { text-decoration-thickness: 2px; } \
+         svg.railroad g.annotated { cursor: help; }",
     );
     // Rustdoc still recognizes Markdown links inside raw HTML text. Entity-encode
     // brackets after railroad's XML escaping so regex labels remain literal.
@@ -460,6 +499,54 @@ mod tests {
             !svg.contains("href="),
             "a private owner stays unlinked:\n{svg}"
         );
+    }
+
+    #[test]
+    fn annotations_render_as_hover_titles_without_inline_text() {
+        let annotated = DiagramNode::Annotated {
+            note: "greedy(SELECT, WITH)".into(),
+            body: Box::new(DiagramNode::NonTerminal {
+                label: "Query".into(),
+                link: Some("struct.Query.html".into()),
+                reference: None,
+            }),
+        };
+        let plain = DiagramNode::NonTerminal {
+            label: "Query".into(),
+            link: Some("struct.Query.html".into()),
+            reference: None,
+        };
+        let svg = diagram_svg(&annotated, "Root");
+        assert!(
+            svg.contains("<g class=\"annotated\"><title>greedy(SELECT, WITH)</title>"),
+            "the note becomes the group's hover title:\n{svg}"
+        );
+        assert!(
+            !svg.contains(">greedy(SELECT, WITH)</text>"),
+            "the note never becomes drawn diagram text:\n{svg}"
+        );
+        assert!(svg.contains("cursor: help"), "svg:\n{svg}");
+        roxmltree::Document::parse(&svg).expect("annotated groups render valid XML");
+
+        let bare = diagram_svg(&plain, "Root");
+        assert_eq!(
+            svg.matches("<text").count(),
+            bare.matches("<text").count(),
+            "an annotation adds no text elements",
+        );
+        assert_eq!(
+            (svg_attribute(&svg, "width"), svg_attribute(&svg, "height")),
+            (svg_attribute(&bare, "width"), svg_attribute(&bare, "height")),
+            "an annotation leaves the diagram geometry unchanged",
+        );
+    }
+
+    /// Reads one attribute of the root SVG element.
+    fn svg_attribute(svg: &str, name: &str) -> String {
+        let needle = format!(" {name}=\"");
+        let start = svg.find(&needle).expect("attribute is present") + needle.len();
+        let rest = &svg[start..];
+        rest[..rest.find('"').expect("attribute is quoted")].to_owned()
     }
 
     #[test]
