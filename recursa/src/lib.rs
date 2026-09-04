@@ -39,7 +39,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            16,
+            17,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
