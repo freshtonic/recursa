@@ -75,33 +75,29 @@ impl<'src> LexResult<'src> {
         }
     }
 
-    /// Creates a parser input restricted to one absolute source-coordinate window.
-    pub(crate) fn input_bounded(
+    /// Creates a parser input over one window of records already lexed by this result.
+    ///
+    /// Document framing calls this once per island. It copies only the records the window
+    /// contains, so partitioning a document copies each record once in total. Copying the
+    /// whole result per island instead would copy every record once per island, which is
+    /// quadratic in island count.
+    ///
+    /// The caller supplies a window whose ends fall on record boundaries of this result.
+    /// Records are ordered and non-overlapping, so the window's records are the contiguous
+    /// run that `bounds` contains.
+    pub(crate) fn input_window(
         &self,
         grammar: &'static GrammarInfo,
         bounds: Span,
     ) -> Option<Input<'src>> {
         self.source.get(bounds.range())?;
-        if self
-            .records
-            .iter()
-            .any(|record| record.span.start() < bounds.start() || record.span.end() > bounds.end())
-            || self.trivia.as_ref().is_some_and(|trivia| {
-                trivia.iter().any(|record| {
-                    record.span.start() < bounds.start() || record.span.end() > bounds.end()
-                })
-            })
-        {
-            return None;
-        }
         Some(Input {
             source: self.source,
             bounds,
-            records: Cow::Owned(self.records.clone()),
-            trivia: self
-                .trivia
-                .as_ref()
-                .map(|records| Cow::Owned(records.clone())),
+            records: Cow::Owned(contained(&self.records, bounds, |record| record.span).to_vec()),
+            trivia: self.trivia.as_ref().map(|trivia| {
+                Cow::Owned(contained(trivia, bounds, |record| record.span).to_vec())
+            }),
             cursor: 0,
             grammar,
             builder: (),
@@ -132,6 +128,16 @@ impl<'src> LexResult<'src> {
             Span::new(0, self.source.len()).ok()?,
         )
     }
+}
+
+/// Returns the contiguous run of ordered records that one absolute window contains.
+///
+/// Lexical records are ordered by start and never overlap, so both edges of the window
+/// are found by binary search rather than a scan of every record.
+fn contained<T>(records: &[T], bounds: Span, span: impl Fn(&T) -> Span) -> &[T] {
+    let start = records.partition_point(|record| span(record).start() < bounds.start());
+    let end = records.partition_point(|record| span(record).end() <= bounds.end());
+    records.get(start..end).unwrap_or(&[])
 }
 
 /// A source-borrowing cursor with owned token records and parse-session state.
