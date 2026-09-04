@@ -23,10 +23,15 @@ const PRIVATE_PROTOCOL: u32 = 16;
 /// occurred. Its ordinary `#[tok(...)]` attachment remains independent and may place required or
 /// erased-optional syntax around `this`.
 ///
+/// `#[greedy(KIND, ...)]` on a field or variant accepts an advisory caller-FOLLOW overlap
+/// (`RCA0300`, `RCA0301`) at that site: the parser already commits to the element when it sees
+/// one of the named kinds, and the analysis requires the declared kinds to match the overlap
+/// exactly, so a stale or incomplete acceptance is a build error.
+///
 /// The derive deliberately interprets no fields or grammar helper attributes.
 #[proc_macro_derive(
     Node,
-    attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty)
+    attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy)
 )]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

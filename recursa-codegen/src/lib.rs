@@ -53,8 +53,8 @@ mod source_analysis_contract_tests;
 mod source_analysis_tests;
 
 pub use analysis::{
-    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FirstSequence,
-    FollowFacts, analyze, disambiguation_depth,
+    AcceptedOverlap, AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition,
+    FirstSequence, FollowFacts, analyze, disambiguation_depth,
 };
 pub use build_diagnostic::{
     BuildReport, DiagnosticEvidence, DiagnosticFact, DiagnosticLocation, DiagnosticRemedy,
@@ -79,9 +79,9 @@ pub use ids::{
 };
 pub use ir::{
     Alternative, AtomDescription, AtomExpression, BalancedDelimiter, ContainerShape, Declaration,
-    GrammarDescription, KindDescription, Location, ParseSite, PrattPosition, PrattVariant,
-    RepeatSeparator, RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription,
-    TypeShape,
+    GrammarDescription, GreedyAcceptance, KindDescription, Location, ParseSite, PrattPosition,
+    PrattVariant, RepeatSeparator, RepetitionCardinality, TextEquivalence, TextPredicate,
+    TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
 pub use provenance::{

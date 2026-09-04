@@ -38,6 +38,10 @@ pub enum DiagnosticCode {
     NullableFollowOverlap,
     /// Pratt continuation overlaps the caller FOLLOW context.
     PrattFollowOverlap,
+    /// A `#[greedy(...)]` acceptance names kinds that no caller-FOLLOW overlap produces.
+    GreedyStale,
+    /// A caller-FOLLOW overlap contains kinds that its `#[greedy(...)]` acceptance omits.
+    GreedyUndeclared,
     /// Frozen analysis products contradict an internal invariant.
     InternalAnalysisInvariant,
 }
@@ -55,6 +59,8 @@ impl DiagnosticCode {
             Self::PrattLedOverlap => "RCA0203",
             Self::NullableFollowOverlap => "RCA0300",
             Self::PrattFollowOverlap => "RCA0301",
+            Self::GreedyStale => "RCA0302",
+            Self::GreedyUndeclared => "RCA0303",
             Self::InternalAnalysisInvariant => "RCA9104",
         }
     }
@@ -162,6 +168,20 @@ pub enum ConflictRemedy {
         /// Minimum binding power currently admitted at the use site.
         min_bp: u8,
     },
+    /// Requests removing declared kinds that no caller-FOLLOW overlap produces.
+    RemoveGreedy {
+        /// One accepted site the stale `#[greedy(...)]` covers.
+        site: SiteId,
+        /// Declared kinds that no overlap at the accepted sites contains.
+        kinds: Vec<KindId>,
+    },
+    /// Requests declaring the overlap kinds that a `#[greedy(...)]` acceptance omits.
+    DeclareGreedy {
+        /// One accepted site whose overlap exceeds the declaration.
+        site: SiteId,
+        /// Overlap kinds that the acceptance does not declare.
+        kinds: Vec<KindId>,
+    },
 }
 
 impl ConflictRemedy {
@@ -193,6 +213,14 @@ impl ConflictRemedy {
             }
             Self::ReviewPrattFollow { .. } => {
                 "raise the site's minimum binding power or separate its caller FOLLOW from active extenders"
+                    .to_owned()
+            }
+            Self::RemoveGreedy { .. } => {
+                "remove the kinds that no caller FOLLOW overlap produces from #[greedy(...)], or the whole attribute"
+                    .to_owned()
+            }
+            Self::DeclareGreedy { .. } => {
+                "add the undeclared overlap kinds to #[greedy(...)] or separate them from caller FOLLOW"
                     .to_owned()
             }
         }
@@ -381,6 +409,28 @@ impl Diagnostic {
             message: message.into(),
             primary,
             secondary: vec![secondary],
+            remedy: None,
+            conflict: evidence,
+            lookahead: None,
+            conflict_remedy: Some(remedy),
+        }
+    }
+
+    /// Creates a blocking `#[greedy(...)]` acceptance error with optional overlap evidence.
+    pub(crate) fn greedy_error(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        primary: DiagnosticLabel,
+        secondary: Vec<DiagnosticLabel>,
+        evidence: Option<ConflictEvidence>,
+        remedy: ConflictRemedy,
+    ) -> Self {
+        Self {
+            code,
+            severity: Severity::Error,
+            message: message.into(),
+            primary,
+            secondary,
             remedy: None,
             conflict: evidence,
             lookahead: None,

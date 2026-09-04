@@ -561,6 +561,157 @@ struct Root { #[presence(this)] value: bool }
         );
     }
 
+    const GREEDY_GRAMMAR_PREFIX: &str = r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT", FROM => "FROM" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+#[tok(FROM)]
+struct From;
+"#;
+
+    /// `Inner = Select?` repeated with a `SELECT` separator: the separator is caller FOLLOW
+    /// of `Inner::maybe`, so `Inner::maybe` and `Root::items` each report RCA0300 with overlap
+    /// `SELECT`. The root site is always accepted, so only the inner attribute varies.
+    fn greedy_grammar(inner_attribute: &str) -> String {
+        format!(
+            r#"{GREEDY_GRAMMAR_PREFIX}
+#[derive(recursa::Node)]
+struct Inner {{
+    {inner_attribute}
+    maybe: Option<Select>,
+}}
+
+#[derive(recursa::Node)]
+struct Root {{
+    #[greedy(SELECT)]
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}}
+"#
+        )
+    }
+
+    fn greedy_analysis(source: &str) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
+        let package = fixture(source);
+        let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
+        let mut cargo = CargoFile(directives.reopen().expect("open Cargo output capture"));
+        let outcome = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut cargo,
+        );
+        drop(cargo);
+        let lines = std::fs::read_to_string(directives.path())
+            .expect("read Cargo output capture")
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect();
+        let outcome = match outcome {
+            Ok(success) => Ok(success
+                .build_report
+                .warnings()
+                .map(|warning| warning.code().as_str().to_owned())
+                .collect()),
+            Err(error) => Err(error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str().to_owned())
+                .collect()),
+        };
+        (lines, outcome)
+    }
+
+    #[test]
+    fn greedy_acceptance_suppresses_the_rca0300_warning_across_the_cargo_boundary() {
+        let (baseline_lines, baseline) = greedy_analysis(&greedy_grammar(""));
+        assert_eq!(baseline, Ok(vec!["RCA0300".to_owned()]));
+        assert!(baseline_lines.iter().any(|line| line.contains("[RCA0300]")));
+
+        let (lines, accepted) = greedy_analysis(&greedy_grammar("#[greedy(SELECT)]"));
+        assert_eq!(
+            accepted,
+            Ok(Vec::new()),
+            "the matching acceptance retires the warning"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("cargo::warning=")),
+            "no warning crosses the Cargo boundary:\n{}",
+            lines.join("\n"),
+        );
+    }
+
+    #[test]
+    fn stale_and_undeclared_greedy_acceptances_fail_source_analysis() {
+        let (_, stale) = greedy_analysis(&greedy_grammar("#[greedy(SELECT, FROM)]"));
+        let stale = stale.expect_err("a declared kind outside the overlap is a stale acceptance");
+        assert!(stale.contains(&"RCA0302".to_owned()), "{stale:?}");
+        assert!(
+            stale.contains(&"RCA0300".to_owned()),
+            "the mismatched site keeps its advisory warning: {stale:?}"
+        );
+
+        let (_, undeclared) = greedy_analysis(&format!(
+            r#"{GREEDY_GRAMMAR_PREFIX}
+#[derive(recursa::Node)]
+enum Either {{
+    Select(Select),
+    From(From),
+}}
+
+#[derive(recursa::Node)]
+struct Inner {{
+    #[greedy(SELECT)]
+    maybe: Option<Either>,
+}}
+
+#[derive(recursa::Node)]
+struct SelectList {{
+    #[greedy(SELECT)]
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}}
+
+#[derive(recursa::Node)]
+struct FromList {{
+    #[greedy(FROM)]
+    #[sep(FROM)]
+    items: Vec<Inner>,
+}}
+"#
+        ));
+        let undeclared =
+            undeclared.expect_err("an overlap kind outside the declaration is undeclared");
+        assert!(undeclared.contains(&"RCA0303".to_owned()), "{undeclared:?}");
+        assert!(
+            !undeclared.contains(&"RCA0302".to_owned()),
+            "{undeclared:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_greedy_acceptances_report_source_analysis_diagnostics() {
+        for attribute in [
+            "#[greedy]",
+            "#[greedy()]",
+            "#[greedy(NOPE)]",
+            "#[greedy(SELECT, SELECT)]",
+        ] {
+            let (_, outcome) = greedy_analysis(&greedy_grammar(attribute));
+            assert_eq!(
+                outcome,
+                Err(vec!["RCA3131".to_owned()]),
+                "{attribute} must be rejected with RCA3131",
+            );
+        }
+        let (_, repeated) =
+            greedy_analysis(&greedy_grammar("#[greedy(SELECT)]\n    #[greedy(SELECT)]"));
+        assert_eq!(repeated, Err(vec!["RCA3131".to_owned()]));
+    }
+
     #[test]
     fn invalid_pratt_extension_filter_reports_source_analysis_diagnostic() {
         let package = fixture(

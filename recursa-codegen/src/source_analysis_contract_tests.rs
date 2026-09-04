@@ -216,6 +216,20 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_name: "pratt_follow_warnings_filter_extenders_by_site_min_bp",
         command: "cargo test -p recursa-codegen --test analysis_follow pratt_follow_warnings_filter_extenders_by_site_min_bp --locked",
     },
+    ProducerEvidence {
+        codes: &["RCA0302"],
+        producer_source: "src/diagnostic.rs",
+        test_source: "tests/analysis_greedy.rs",
+        test_name: "stale_greedy_acceptance_is_a_blocking_rca0302_error",
+        command: "cargo test -p recursa-codegen --test analysis_greedy stale_greedy_acceptance_is_a_blocking_rca0302_error --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA0303"],
+        producer_source: "src/diagnostic.rs",
+        test_source: "tests/analysis_greedy.rs",
+        test_name: "stale_kinds_and_undeclared_kinds_are_reported_separately",
+        command: "cargo test -p recursa-codegen --test analysis_greedy stale_kinds_and_undeclared_kinds_are_reported_separately --locked",
+    },
     phase_producer_evidence!(
         "RCA1001",
         "discovery",
@@ -454,6 +468,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/source_analysis_tests.rs",
         test_name: "invalid_pratt_extension_filter_reports_source_analysis_diagnostic",
         command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_pratt_extension_filter_reports_source_analysis_diagnostic --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA3131"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_analysis_tests.rs",
+        test_name: "malformed_greedy_acceptances_report_source_analysis_diagnostics",
+        command: "cargo test -p recursa-codegen source_analysis_tests::tests::malformed_greedy_acceptances_report_source_analysis_diagnostics --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],

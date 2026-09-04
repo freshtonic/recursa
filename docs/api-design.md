@@ -327,6 +327,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one recursive `Box<Self>` rhs. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix; recursive tail operands inherit `N` as their minimum binding power. |
 | `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named LED variants from this field and its recursive operands; each name must identify an infix or postfix variant. |
+| `#[greedy(KIND, ...)]` | field or variant | Accepts the advisory caller-FOLLOW overlap (`RCA0300`, `RCA0301`) at that site. The parser already commits to the element on a shared kind; the declared kinds must equal the overlap exactly, else `RCA0302` (stale) or `RCA0303` (undeclared) fail the build. Diagrams label the element `greedy(KIND, ...)`. |
 | `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |
 | `#[parse(lookahead = k)]` | enum | Raises dispatch lookahead for this type (grammar-wide max in the root configuration). |
@@ -1065,9 +1066,12 @@ The default is a hard error with a prescriptive fix. When the grammar
 genuinely cannot be restructured, two explicitly-opt-in valves exist,
 each loud and local:
 
-1. `#[parse(prefer)]` — declaration-order tiebreak for a specific
+1. `#[greedy(KIND, ...)]` — accept a reviewed caller-FOLLOW overlap at the
+   field or variant that carries it. The parser keeps its greedy commitment;
+   the analysis checks the declared kinds against the overlap on every build.
+2. `#[parse(prefer)]` — declaration-order tiebreak for a specific
    overlap the author has judged safe.
-2. `#[parse(backtrack)]` — **bounded committed-try** over one dispatch
+3. `#[parse(backtrack)]` — **bounded committed-try** over one dispatch
    site: attempt the marked variants in order with input rollback. The
    analysis still verifies termination (no left recursion through the
    site) and bounds the re-scanned token window; the site is flagged in

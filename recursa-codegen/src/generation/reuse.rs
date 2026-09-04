@@ -19,8 +19,6 @@ const WARNINGS_FILE: &str = "warnings";
 
 /// A published Generation re-selected from the reuse index.
 pub(super) struct ReusedGeneration {
-    /// Identity of the re-selected Generation.
-    pub(super) identity: String,
     /// Cargo warning directives recorded when the Generation was produced.
     pub(super) warnings: Vec<String>,
 }
@@ -106,7 +104,7 @@ pub(super) fn reuse_published(
         .map(str::to_owned)
         .collect();
     select_generation(out_dir, &selector, || Ok(()))?;
-    Ok(Some(ReusedGeneration { identity, warnings }))
+    Ok(Some(ReusedGeneration { warnings }))
 }
 
 /// Records which Generation the discovered source produced, after that Generation is selected.

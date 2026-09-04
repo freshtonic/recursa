@@ -185,6 +185,8 @@ pub struct Declaration {
     pub name: String,
     /// Authored location that introduced the declaration.
     pub location: LocationId,
+    /// Accepted greedy FOLLOW overlap declared by `#[greedy(...)]` at this declaration.
+    pub greedy: Option<GreedyAcceptance>,
 }
 
 impl Declaration {
@@ -193,7 +195,35 @@ impl Declaration {
         Self {
             name: name.into(),
             location,
+            greedy: None,
         }
+    }
+
+    /// Attaches one `#[greedy(...)]` acceptance to this declaration.
+    #[must_use]
+    pub fn with_greedy(mut self, acceptance: GreedyAcceptance) -> Self {
+        self.greedy = Some(acceptance);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored `#[greedy(KIND, ...)]` acceptance of a caller-FOLLOW overlap.
+///
+/// Every parse site whose declaration carries the same `id` belongs to one acceptance: an
+/// attribute on a variant covers every semantic site of that variant. Analysis requires the
+/// union of the overlaps found at those sites to equal `kinds` exactly.
+pub struct GreedyAcceptance {
+    /// Identity shared by every declaration that one authored attribute covers.
+    pub id: u32,
+    /// Kinds the author accepts as consumed greedily at this site.
+    pub kinds: Vec<KindId>,
+}
+
+impl GreedyAcceptance {
+    /// Declares one acceptance identity over the given kinds.
+    pub fn new(id: u32, kinds: Vec<KindId>) -> Self {
+        Self { id, kinds }
     }
 }
 
@@ -204,6 +234,8 @@ pub struct KindDescription {
     pub name: String,
     /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
+    /// Authored token identifier, as `#[tok(...)]` and `#[greedy(...)]` spell this kind.
+    pub authored: Option<String>,
 }
 
 impl KindDescription {
@@ -212,7 +244,20 @@ impl KindDescription {
         Self {
             name: name.into(),
             declaration,
+            authored: None,
         }
+    }
+
+    /// Records the authored token identifier that names this kind in attributes.
+    #[must_use]
+    pub fn with_authored(mut self, authored: impl Into<String>) -> Self {
+        self.authored = Some(authored.into());
+        self
+    }
+
+    /// Returns the spelling that `#[greedy(...)]` uses for this kind.
+    pub fn attribute_spelling(&self) -> &str {
+        self.authored.as_deref().unwrap_or(&self.name)
     }
 }
 

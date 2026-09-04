@@ -1140,6 +1140,34 @@ impl Materializer {
     }
 
     /// Derives the kind for definition while materializing grammar applications and container shapes.
+    /// Attaches the authored `#[greedy(...)]` acceptance that covers a field, if any.
+    ///
+    /// The acceptance identity is the attribute's index in the source model, so every site
+    /// materialized from the same authored attribute (across generic applications and across
+    /// the fields of one variant) shares one identity and is matched as one group.
+    fn with_greedy(&self, field: ResolvedFieldId, declaration: Declaration) -> Declaration {
+        let Some((index, greedy)) = self
+            .source_model()
+            .greedy
+            .iter()
+            .enumerate()
+            .find(|(_, greedy)| greedy.owner.covers(field))
+        else {
+            return declaration;
+        };
+        let mut kinds = greedy
+            .definitions
+            .iter()
+            .map(|definition| self.kind_for_definition(*definition))
+            .collect::<Vec<_>>();
+        kinds.sort_unstable();
+        kinds.dedup();
+        declaration.with_greedy(crate::GreedyAcceptance::new(
+            u32::try_from(index).expect("greedy acceptance count fits u32"),
+            kinds,
+        ))
+    }
+
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
         self.lexical_plan()
             .lowering_map
@@ -2951,7 +2979,10 @@ impl Materializer {
             let location = grammar.push_location(Location::new(site.source, site.range.clone()));
             let name = kind_label(&kind_plan.identity);
             let declaration = grammar.push_declaration(Declaration::new(&name, location));
-            let kind = grammar.push_kind(KindDescription::new(&name, declaration));
+            let kind = grammar.push_kind(
+                KindDescription::new(&name, declaration)
+                    .with_authored(source_definition.name.clone()),
+            );
             assert_eq!(
                 kind, kind_plan.id,
                 "semantic analysis KindId must equal the lexical KindId"
@@ -3739,13 +3770,16 @@ impl Materializer {
         }
         let field = self.resolved_field(unit.field);
         let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
-        let declaration = grammar.push_declaration(Declaration::new(
-            format!(
-                "{}::__recursa_attachment_element{}",
-                application.display_name,
-                sites.len()
+        let declaration = grammar.push_declaration(self.with_greedy(
+            unit.field,
+            Declaration::new(
+                format!(
+                    "{}::__recursa_attachment_element{}",
+                    application.display_name,
+                    sites.len()
+                ),
+                location,
             ),
-            location,
         ));
         let (terminal, _) = terminal_and_container(&unit.ty, None);
         let target = match terminal {
@@ -4038,9 +4072,12 @@ impl Materializer {
                         resolved_field.ty.source,
                         resolved_field.range.clone(),
                     ));
-                    let declaration = grammar.push_declaration(Declaration::new(
-                        format!("{}::element{index}", application.display_name),
-                        location,
+                    let declaration = grammar.push_declaration(self.with_greedy(
+                        *field,
+                        Declaration::new(
+                            format!("{}::element{index}", application.display_name),
+                            location,
+                        ),
                     ));
                     let separator_type = separator.as_ref().map(|separator| {
                         let token_use =
