@@ -24,4 +24,12 @@ fn main() {
             outcome(grammar::Stmt::parse(&mut input).map(|parsed| parsed.into_ast()))
         );
     }
+    for source in ["1 !", "1 ! !", "1"] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        println!(
+            "tail {source:?}: {}",
+            outcome(grammar::Tail::parse(&mut input).map(|parsed| parsed.into_ast()))
+        );
+    }
 }

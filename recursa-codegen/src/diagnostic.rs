@@ -212,7 +212,7 @@ impl ConflictRemedy {
                     .to_owned()
             }
             Self::ReviewPrattFollow { .. } => {
-                "accept the greedy commitment with #[greedy(...)] on the use site, or raise its minimum binding power, or narrow its caller's type"
+                "make the expression keep extending with #[greedy(...)] on the use site, or raise its minimum binding power, or narrow its caller's type"
                     .to_owned()
             }
             Self::RemoveGreedy { .. } => {

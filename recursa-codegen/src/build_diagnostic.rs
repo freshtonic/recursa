@@ -760,7 +760,7 @@ impl DiagnosticRemedy {
                 "accept the greedy commitment with #[greedy(...)] at {site}, or make the site required, narrow its caller's type, or add a separator"
             ),
             Self::ReviewPrattFollow { site, min_bp } => format!(
-                "accept the greedy commitment with #[greedy(...)] at {site}, or raise its minimum binding power above {min_bp}, or narrow its caller's type"
+                "make the expression keep extending with #[greedy(...)] at {site}, or raise its minimum binding power above {min_bp}, or narrow its caller's type"
             ),
             Self::RemoveGreedyAcceptance { site, kinds } => format!(
                 "remove {} from #[greedy(...)] at {site}, or the whole attribute; no caller FOLLOW overlap produces them",

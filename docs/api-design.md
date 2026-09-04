@@ -327,7 +327,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one recursive `Box<Self>` rhs. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix; recursive tail operands inherit `N` as their minimum binding power. |
 | `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named LED variants from this field and its recursive operands; each name must identify an infix or postfix variant. |
-| `#[greedy(KIND, ...)]` or `#[greedy(all)]` | field, variant, or Node | Accepts the advisory caller-FOLLOW overlap (`RCA0300`, `RCA0301`) at the covered sites. The parser already commits to the element on a shared kind; the declared kinds must equal the union of the covered sites' overlaps exactly, else `RCA0302` (stale) or `RCA0303` (undeclared) fail the build. `all` accepts any non-empty overlap. A field attribute wins over its variant's, a variant's over its Node's. Diagrams annotate the element with the hover text `greedy(KIND, ...)`; nothing is drawn inline. |
+| `#[greedy(KIND, ...)]` or `#[greedy(all)]` | field, variant, or Node | Accepts the advisory caller-FOLLOW overlap (`RCA0300`, `RCA0301`) at the covered sites. For a nullable overlap (`RCA0300`) the parser already commits to the element on a shared kind and the acceptance only retires the warning. For a Pratt overlap (`RCA0301`) the acceptance makes the expression keep extending on the declared kinds at the covered sites instead of failing with `RCA4102` at run time; the kinds stay in FOLLOW and stay a Pratt boundary, an extension that bounded lookahead already rules out still ends the loop, and every site the acceptance does not cover keeps reporting `RCA4102`. The declared kinds must equal the union of the covered sites' overlaps exactly, else `RCA0302` (stale) or `RCA0303` (undeclared) fail the build. `all` accepts any non-empty overlap, and at a Pratt site it therefore covers every extender of the site's type: the generated loop consults the acceptance only at a kind it has already selected as an extension and already found in the Pratt boundary, which is exactly an overlap. A field attribute wins over its variant's, a variant's over its Node's. Diagrams annotate the element with the hover text `greedy(KIND, ...)`; nothing is drawn inline. |
 | `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |
 | `#[parse(lookahead = k)]` | enum | Raises dispatch lookahead for this type (grammar-wide max in the root configuration). |
@@ -1067,8 +1067,11 @@ genuinely cannot be restructured, two explicitly-opt-in valves exist,
 each loud and local:
 
 1. `#[greedy(KIND, ...)]` — accept a reviewed caller-FOLLOW overlap at the
-   field or variant that carries it. The parser keeps its greedy commitment;
-   the analysis checks the declared kinds against the overlap on every build.
+   field or variant that carries it. A nullable element keeps the greedy
+   commitment it already made; a Pratt operand keeps extending on the accepted
+   kinds instead of reporting `RCA4102`, as long as bounded lookahead still
+   admits the extension. The analysis checks the declared kinds against the
+   overlap on every build.
 2. `#[parse(prefer)]` — declaration-order tiebreak for a specific
    overlap the author has judged safe.
 3. `#[parse(backtrack)]` — **bounded committed-try** over one dispatch

@@ -755,7 +755,16 @@ fn analyze_with_publication_policy(
             &caller_first_by_site,
         );
         match publish_decisions(grammar, planned) {
-            Ok(decisions) => Some(decisions),
+            Ok(mut decisions) => {
+                decisions
+                    .0
+                    .set_greedy_pratt_boundary_by_site(greedy_pratt_boundary_by_site(
+                        &diagnostics,
+                        &extenders_by_type,
+                        grammar,
+                    ));
+                Some(decisions)
+            }
             Err(diagnostic) => {
                 diagnostics.push(*diagnostic);
                 None
@@ -844,6 +853,60 @@ fn greedy_declared_spelling(declared: &crate::GreedyKinds, grammar: &GrammarDesc
             .collect::<Vec<_>>()
             .join(", "),
     }
+}
+
+/// Collects the kinds every `#[greedy(...)]` acceptance lets a Pratt loop extend on, per site.
+///
+/// The map is derived from the advisory `RCA0301` overlaps, which are complete before any
+/// decision is planned, so emission can mark exactly the accepted kinds at the accepting site.
+/// Nullable acceptances (`RCA0300`) never reach this map: committing to a nullable element is
+/// already the generated behaviour and involves no Pratt boundary.
+///
+/// `#[greedy(all)]` names no kind, and its promise is that every overlap at the site is
+/// accepted, so it contributes the whole extender set of the site's Pratt type. That is not
+/// wider than the promise: the generated loop consults the mark only at a kind it has already
+/// selected as an extension and already found in the Pratt boundary, which is exactly an
+/// overlap. An exact acceptance contributes only the kinds it names, so a kind the analysis
+/// never reported stays a run-time ambiguity there.
+///
+/// An acceptance that does not match its overlaps kind for kind is reported as `RCA0302` or
+/// `RCA0303` once decisions exist, and those errors fail the build before the plan this map
+/// feeds is used, so an acceptance can never drift away from what this map marks.
+fn greedy_pratt_boundary_by_site(
+    diagnostics: &[Diagnostic],
+    extenders_by_type: &[Option<ExtenderFacts>],
+    grammar: &GrammarDescription,
+) -> Vec<KindSet> {
+    let mut accepted = vec![KindSet::empty(grammar.kind_count); grammar.sites.len()];
+    for diagnostic in diagnostics {
+        let Some(ConflictRemedy::ReviewPrattFollow { site, .. }) = diagnostic.conflict_remedy
+        else {
+            continue;
+        };
+        let target = grammar.sites[site.index()].target;
+        let declaration = grammar.sites[site.index()].declaration;
+        let (Some(acceptance), Some(conflict)) = (
+            grammar.declarations[declaration.index()].greedy.as_ref(),
+            diagnostic.conflict.as_ref(),
+        ) else {
+            continue;
+        };
+        let overlap = match &acceptance.kinds {
+            crate::GreedyKinds::All => extenders_by_type[target.index()]
+                .as_ref()
+                .map_or_else(|| conflict.overlap.clone(), |facts| facts.kinds.clone()),
+            crate::GreedyKinds::Exact(kinds) => {
+                let declared = KindSet::from_kinds(grammar.kind_count, kinds.iter().copied())
+                    .expect("declared greedy kinds belong to the grammar");
+                conflict
+                    .overlap
+                    .intersection(&declared)
+                    .expect("greedy kind sets share one grammar width")
+            }
+        };
+        accepted[site.index()].union_assign(&overlap);
+    }
+    accepted
 }
 
 /// Retires advisory FOLLOW overlaps that `#[greedy(...)]` acceptances declare exactly.
@@ -11166,7 +11229,11 @@ fn nullable_follow_message(
     )
 }
 
-/// States the greedy default at a Pratt use site and how to accept or remove it.
+/// States what a Pratt use site does with a shared extender and how to accept or remove it.
+///
+/// Without an acceptance the generated parser refuses to choose and reports `RCA4102` at
+/// run time. The acceptance is what makes the expression keep extending, so the message
+/// names the runtime failure first and then the acceptance that replaces it.
 fn pratt_follow_message(
     site_id: SiteId,
     overlap: &KindSet,
@@ -11176,8 +11243,8 @@ fn pratt_follow_message(
     let kinds = greedy_kinds_phrase(overlap, grammar);
     format!(
         "{phrase} is an expression whose extender {kinds} may also follow `{owner}`; \
-         when the parser sees {kinds} here it keeps extending the expression and never treats it as the caller's continuation; \
-         accept that with {}, or raise the site's minimum binding power above the extender, or narrow the caller's type so {kinds} cannot follow `{owner}`",
+         when the parser sees {kinds} here it cannot tell the extension from the caller's continuation and fails with `RCA4102`; \
+         make the expression keep extending instead with {}, or raise the site's minimum binding power above the extender, or narrow the caller's type so {kinds} cannot follow `{owner}`",
         greedy_suggestion(&target, overlap, grammar),
     )
 }

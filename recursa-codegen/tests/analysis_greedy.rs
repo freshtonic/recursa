@@ -333,6 +333,36 @@ fn greedy_acceptance_retires_a_matching_pratt_follow_overlap() {
     assert_eq!(report.accepted.len(), 1);
     assert_eq!(report.accepted[0].site, expr_site);
     assert_eq!(report.accepted[0].code, DiagnosticCode::PrattFollowOverlap);
+
+    let baseline_accepted = baseline
+        .output
+        .expect("the fixture publishes decisions without an acceptance")
+        .decisions()
+        .greedy_pratt_boundary_by_site()
+        .to_vec();
+    assert!(
+        baseline_accepted.is_empty(),
+        "without an acceptance no site accepts a boundary kind"
+    );
+    let output = report
+        .output
+        .expect("the accepted fixture publishes decisions");
+    let accepted_by_site = output.decisions().greedy_pratt_boundary_by_site();
+    assert_eq!(accepted_by_site.len(), builder.grammar.sites.len());
+    assert_eq!(
+        accepted_by_site[expr_site.index()]
+            .iter()
+            .collect::<Vec<_>>(),
+        [KindId::new(1)],
+        "the accepted extender is marked greedy at the accepting site"
+    );
+    assert!(
+        accepted_by_site
+            .iter()
+            .enumerate()
+            .all(|(index, kinds)| index == expr_site.index() || kinds.is_empty()),
+        "no other site accepts a boundary kind"
+    );
 }
 
 #[test]

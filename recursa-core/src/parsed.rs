@@ -1166,6 +1166,16 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
             .is_some_and(|record| self.follow.pratt_boundary_contains(record.kind))
     }
 
+    /// Reports whether a `#[greedy(...)]` acceptance covers the next token at this site.
+    ///
+    /// A Pratt loop consults this only after [`Self::next_is_pratt_boundary`] and the
+    /// bounded-lookahead viability of the selected extension, so an accepted kind
+    /// extends the expression exactly where the loop would otherwise report `RCA4102`.
+    pub fn next_is_greedy_extension(&self) -> bool {
+        self.peek(0)
+            .is_some_and(|record| self.follow.greedy_contains(record.kind))
+    }
+
     /// Reports whether no token remains.
     pub fn is_eof(&self) -> bool {
         self.peek(0).is_none()
