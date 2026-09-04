@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use syn::ext::IdentExt as _;
 
 use syn::GenericParam;
 
@@ -1146,6 +1147,13 @@ impl Materializer {
     /// materialized from the same authored attribute (across generic applications and across
     /// the fields of one variant) shares one identity and is matched as one group.
     fn with_greedy(&self, field: ResolvedFieldId, declaration: Declaration) -> Declaration {
+        let declaration = declaration.with_authored(
+            self.resolved_field(field)
+                .syntax
+                .ident
+                .as_ref()
+                .map(|ident| ident.unraw().to_string()),
+        );
         let Some((index, greedy)) = self
             .source_model()
             .greedy

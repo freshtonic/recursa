@@ -11048,6 +11048,68 @@ fn declaration_label(
     crate::DiagnosticLabel::located(grammar.declarations[declaration.index()].location, message)
 }
 
+/// Spells overlap kinds as `#[greedy(...)]` needs them, in kind order.
+fn greedy_spelling(overlap: &KindSet, grammar: &GrammarDescription) -> String {
+    overlap
+        .iter()
+        .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Renders the exact acceptance that would retire an overlap at a site.
+fn greedy_suggestion(field: &str, overlap: &KindSet, grammar: &GrammarDescription) -> String {
+    let count = overlap.iter().count();
+    if count <= 12 {
+        format!(
+            "`#[greedy({})]` on `{field}`",
+            greedy_spelling(overlap, grammar)
+        )
+    } else {
+        format!("`#[greedy(...)]` on `{field}` naming all {count} overlap kinds in the evidence")
+    }
+}
+
+/// States the greedy default at a nullable use site and how to accept or remove it.
+///
+/// The message names the parser's behaviour without any attribute first, then the exact
+/// `#[greedy(...)]` line that accepts it, then the structural changes that remove the
+/// overlap instead.
+fn nullable_follow_message(
+    site_id: SiteId,
+    overlap: &KindSet,
+    grammar: &GrammarDescription,
+) -> String {
+    let site = &grammar.sites[site_id.index()];
+    let owner = &grammar.types[site.owner.index()].name;
+    let field = grammar.declarations[site.declaration.index()].display_name();
+    let kinds = greedy_spelling(overlap, grammar);
+    format!(
+        "`{field}` in `{owner}` may be absent and may begin with {kinds}, which may also follow `{owner}`; \
+         when the parser sees {kinds} here it commits to `{field}` and never treats it as the caller's continuation; \
+         accept that with {}, or make `{field}` required, narrow the caller's type so {kinds} cannot follow `{owner}`, or add a separator",
+        greedy_suggestion(field, overlap, grammar),
+    )
+}
+
+/// States the greedy default at a Pratt use site and how to accept or remove it.
+fn pratt_follow_message(
+    site_id: SiteId,
+    overlap: &KindSet,
+    grammar: &GrammarDescription,
+) -> String {
+    let site = &grammar.sites[site_id.index()];
+    let owner = &grammar.types[site.owner.index()].name;
+    let field = grammar.declarations[site.declaration.index()].display_name();
+    let kinds = greedy_spelling(overlap, grammar);
+    format!(
+        "`{field}` in `{owner}` is an expression whose extender {kinds} may also follow `{owner}`; \
+         when the parser sees {kinds} here it keeps extending `{field}` and never treats it as the caller's continuation; \
+         accept that with {}, or raise the site's minimum binding power above the extender, or narrow the caller's type so {kinds} cannot follow `{owner}`",
+        greedy_suggestion(field, overlap, grammar),
+    )
+}
+
 /// Diagnoses nullable alternatives whose FIRST sets overlap caller FOLLOW.
 fn detect_follow_conflicts(
     grammar: &GrammarDescription,
@@ -11098,10 +11160,7 @@ fn detect_follow_conflicts(
                         follow_source_declaration(evidence.witness.right, site.declaration, proofs);
                     diagnostics.push(Diagnostic::conflict_warning(
                         DiagnosticCode::NullableFollowOverlap,
-                        format!(
-                            "nullable use site in `{}` may consume a caller FOLLOW kind",
-                            grammar.types[site.owner.index()].name,
-                        ),
+                        nullable_follow_message(site_id, &evidence.overlap, grammar),
                         declaration_label(
                             site.declaration,
                             grammar,
@@ -11140,10 +11199,7 @@ fn detect_follow_conflicts(
                 follow_source_declaration(evidence.witness.right, site.declaration, proofs);
             diagnostics.push(Diagnostic::conflict_warning(
                 DiagnosticCode::PrattFollowOverlap,
-                format!(
-                    "Pratt use site in `{}` may consume an active extender from caller FOLLOW",
-                    grammar.types[site.owner.index()].name,
-                ),
+                pratt_follow_message(site_id, &evidence.overlap, grammar),
                 declaration_label(
                     site.declaration,
                     grammar,

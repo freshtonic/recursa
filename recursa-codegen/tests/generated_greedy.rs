@@ -49,6 +49,11 @@ fn greedy_acceptances_silence_follow_warnings_without_changing_the_parser() {
         plain_stderr.contains("[RCA0300]") && plain_stderr.contains("[RCA0301]"),
         "the same grammar warns without the acceptances:\n{plain_stderr}"
     );
+    assert!(
+        plain_stderr.contains("`#[greedy(SELECT)]` on `maybe`")
+            && plain_stderr.contains("`#[greedy(BANG)]` on `expr`"),
+        "each warning suggests the exact acceptance:\n{plain_stderr}"
+    );
     let plain_run = run_fixture(&package);
     assert_success(&plain_run);
     assert_eq!(

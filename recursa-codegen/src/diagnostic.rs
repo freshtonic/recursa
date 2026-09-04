@@ -208,11 +208,11 @@ impl ConflictRemedy {
                 "restructure the Pratt variants into a shared-prefix type".to_owned()
             }
             Self::ReviewNullableFollow { .. } => {
-                "make the use site required or separate it from its possible caller FOLLOW"
+                "accept the greedy commitment with #[greedy(...)] on the use site, or make it required, narrow its caller's type, or add a separator"
                     .to_owned()
             }
             Self::ReviewPrattFollow { .. } => {
-                "raise the site's minimum binding power or separate its caller FOLLOW from active extenders"
+                "accept the greedy commitment with #[greedy(...)] on the use site, or raise its minimum binding power, or narrow its caller's type"
                     .to_owned()
             }
             Self::RemoveGreedy { .. } => {
