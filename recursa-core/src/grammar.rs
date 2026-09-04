@@ -641,10 +641,16 @@ mod tests {
         let cached = SITE.with_caller(&NEARER, &FIRST_CALLER).unwrap();
         assert!(std::ptr::eq(direct, cached));
 
-        let pairs_before = FollowSet::memoized_pair_count();
+        // The memo is process-global and other tests compose concurrently, so
+        // prove the hit through the site's own published record instead of a
+        // global pair count: a hit returns without republishing the entry.
+        let entry_before = SITE.entry.load(std::sync::atomic::Ordering::Acquire);
         let repeat = SITE.with_caller(&NEARER, &FIRST_CALLER).unwrap();
         assert!(std::ptr::eq(direct, repeat));
-        assert_eq!(FollowSet::memoized_pair_count(), pairs_before);
+        assert!(std::ptr::eq(
+            SITE.entry.load(std::sync::atomic::Ordering::Acquire),
+            entry_before
+        ));
 
         let switched = SITE.with_caller(&NEARER, &SECOND_CALLER).unwrap();
         assert!(std::ptr::eq(
