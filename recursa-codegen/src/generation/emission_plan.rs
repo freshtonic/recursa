@@ -647,14 +647,19 @@ impl EmissionPlan {
         // that decision here instead of reconstructing fixed rules from source.
         let mut lexical_rules: Vec<LexRulePlan> = Vec::new();
         for rule in &lowered.lexical_plan.rules {
-            let pattern = match &rule.matcher {
-                LexicalMatcher::Regex(pattern) => pattern.clone(),
-                LexicalMatcher::Fixed(text) => {
-                    fixed_lexical_pattern(text, resolved.build_inputs.text_equivalence)
-                }
+            let (pattern, spelling, ascii_insensitive) = match &rule.matcher {
+                LexicalMatcher::Regex(pattern) => (pattern.clone(), None, false),
+                LexicalMatcher::Fixed(text) => (
+                    fixed_lexical_pattern(text, resolved.build_inputs.text_equivalence),
+                    Some(text.clone()),
+                    resolved.build_inputs.text_equivalence == TextEquivalence::AsciiInsensitive
+                        && is_word_shaped(text),
+                ),
             };
             let planned = LexRulePlan {
                 pattern,
+                spelling,
+                ascii_insensitive,
                 closed_matcher: rule.closed_matcher.clone(),
                 kind: rule
                     .kind
@@ -703,11 +708,14 @@ impl EmissionPlan {
             .map(|name| emitted_ident(name))
             .collect::<Result<Vec<_>, _>>()?;
         for rule in &lowered.lexical_plan.non_token_rules {
-            let pattern = match &rule.matcher {
-                LexicalMatcher::Regex(pattern) => pattern.clone(),
-                LexicalMatcher::Fixed(text) => {
-                    fixed_lexical_pattern(text, resolved.build_inputs.text_equivalence)
-                }
+            let (pattern, spelling, ascii_insensitive) = match &rule.matcher {
+                LexicalMatcher::Regex(pattern) => (pattern.clone(), None, false),
+                LexicalMatcher::Fixed(text) => (
+                    fixed_lexical_pattern(text, resolved.build_inputs.text_equivalence),
+                    Some(text.clone()),
+                    resolved.build_inputs.text_equivalence == TextEquivalence::AsciiInsensitive
+                        && is_word_shaped(text),
+                ),
             };
             let trivia_kind = match &rule.outcome {
                 NonTokenLexicalOutcome::NonEmitting => None,
@@ -719,6 +727,8 @@ impl EmissionPlan {
             };
             lexical_rules.push(LexRulePlan {
                 pattern,
+                spelling,
+                ascii_insensitive,
                 closed_matcher: rule.closed_matcher.clone(),
                 kind: 0,
                 skip: true,

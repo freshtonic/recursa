@@ -1,76 +1,33 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+//! Generated lexing driven by one `logos` state machine per grammar.
+//!
+//! Generation emits a private `#[derive(Logos)]` enum with one variant per
+//! lexical rule and a matching `LexPlan`. `lex` drives that machine and
+//! converts every decision into the records, trivia, and diagnostics the
+//! grammar's public lexing API exposes. The `logos` dependency is an internal
+//! implementation detail: grammar authors never name it.
+//!
+//! Two lexical mechanisms cannot be expressed by a single longest-match state
+//! machine and stay in this driver:
+//!
+//! * **Operator runs.** A run's extent depends on the first interior fence and
+//!   on a trailing-character rule that inspects the characters already
+//!   consumed. Both shorten the match after the fact, which a `logos` callback
+//!   cannot do, so runs are scanned here and arbitrated against the state
+//!   machine's winner.
+//! * **Operator-fence suppression.** PostgreSQL rejects a fixed operator
+//!   candidate that would swallow a comment introducer when the comment is
+//!   valid. Deciding that requires lexing at the fence, which is a second
+//!   decision at a later offset.
+//! * **Closed regions.** A same-delimiter, nested, or physical-line region
+//!   arbitrates on the extent its callback reaches, not on the extent of its
+//!   opener. A single machine can only arbitrate on the opener, so closed
+//!   regions get their own machine, consulted at every offset whose first byte
+//!   can open one.
 
-use regex_automata::meta::Regex;
-use regex_automata::{Anchored, Input as RegexInput};
+use logos::Logos;
 
 use crate::input::{LexResult, TokenRecord, TriviaRecord};
 use crate::{Span, TokenKind};
-
-/// One matching-version generated lexical rule.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug)]
-pub struct LexRule {
-    /// Validated matcher executed at the current source offset.
-    pub matcher: LexMatcher,
-    /// Grammar-local kind emitted by the default action.
-    pub kind: TokenKind,
-    /// Whether the match is excluded from the significant-token stream.
-    pub skip: bool,
-    /// Classified trivia kind retained outside the significant-token stream.
-    pub trivia_kind: Option<u16>,
-    /// Whether this rule originated from exact fixed syntax.
-    pub fixed: bool,
-    /// Deterministic tie-break priority after match length and fixed status.
-    pub priority: u32,
-}
-
-/// One matching-version generated lexical matcher.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug)]
-pub enum LexMatcher {
-    /// Anchored regular expression.
-    Regex(
-        /// Validated regular-expression source.
-        &'static str,
-    ),
-    /// Region closed by a byte-identical copy of its matched opener.
-    SameDelimiter {
-        /// Validated regular expression matching the complete opening delimiter.
-        opener: &'static str,
-    },
-    /// Region whose fixed opening and closing delimiters may nest.
-    Nested {
-        /// Nonempty fixed opening delimiter.
-        opener: &'static str,
-        /// Nonempty fixed closing delimiter distinct from `opener`.
-        closer: &'static str,
-    },
-    /// Regular expression whose match is rejected when the following scalar matches another expression.
-    NextExclusion {
-        /// Validated regular expression matching the candidate token.
-        pattern: &'static str,
-        /// Validated regular expression matching one excluded following scalar.
-        excluded: &'static str,
-    },
-    /// Maximal run over a configured ASCII alphabet with generic fence and trailing rules.
-    OperatorRun {
-        /// ASCII characters admitted to the run.
-        characters: &'static str,
-        /// Nonempty byte strings that stop the run before their first occurrence.
-        fences: &'static [&'static str],
-        /// Run characters stripped from the end when no qualifying character occurs earlier.
-        trailing: &'static str,
-        /// Characters whose presence preserves configured trailing characters.
-        qualifying: &'static str,
-    },
-    /// Source region extending from a matched prefix through one physical line.
-    PhysicalLine {
-        /// Validated regular expression matching the region's nonempty prefix.
-        prefix: &'static str,
-    },
-}
 
 /// Stable classification attached to one generated lexical failure.
 #[doc(hidden)]
@@ -111,479 +68,615 @@ pub struct LexDiagnostic {
     pub anchor: Span,
 }
 
-/// Relative diagnostic metadata produced before an absolute checked span exists.
-#[derive(Clone, Copy)]
-struct RelativeLexDiagnostic {
+/// Failure metadata a generated callback attaches to the token it just matched.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexFailure {
     /// Stable mechanism-specific failure code.
-    code: LexDiagnosticCode,
-    /// Inclusive anchor start relative to the current source offset.
-    anchor_start: usize,
-    /// Exclusive anchor end relative to the current source offset.
-    anchor_end: usize,
+    pub code: LexDiagnosticCode,
+    /// Inclusive anchor start relative to the matched token's start.
+    pub anchor_start: usize,
+    /// Exclusive anchor end relative to the matched token's start.
+    pub anchor_end: usize,
 }
 
-/// One matcher decision with its final byte extent already known.
-#[derive(Clone, Copy)]
-struct LexMatch {
-    /// Exclusive byte extent relative to the current source offset.
-    end: usize,
+/// Per-lexer scratch shared between generated callbacks and this driver.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LexExtras {
+    /// Failure recorded while scanning the token currently being matched.
+    pub failure: Option<LexFailure>,
+}
+
+/// Maps one generated token variant to its rule index.
+///
+/// Generation implements this on the private `#[derive(Logos)]` enum; the
+/// implementation is a dense match over unit variants.
+#[doc(hidden)]
+pub trait LexTokenIndex {
+    /// Returns this variant's index into [`LexPlan::rules`].
+    fn rule_index(&self) -> usize;
+}
+
+/// A 256-bit ASCII-and-byte membership set emitted by generation.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ByteSet(
+    /// Little-endian membership words covering bytes `0..=255`.
+    pub [u64; 4],
+);
+
+impl ByteSet {
+    /// Reports whether `byte` belongs to this set.
+    #[inline]
+    pub const fn contains(self, byte: u8) -> bool {
+        self.0[(byte >> 6) as usize] & (1_u64 << (byte & 63)) != 0
+    }
+
+    /// Reports whether every byte of `candidate` belongs to this set.
+    fn admits(self, candidate: &[u8]) -> bool {
+        let mut index = 0;
+        while index < candidate.len() {
+            if !self.contains(candidate[index]) {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+}
+
+/// The outcome one generated lexical rule assigns to its matched extent.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexRule {
+    /// Grammar-local kind emitted by the default action.
+    pub kind: TokenKind,
+    /// Whether the match is excluded from the significant-token stream.
+    pub skip: bool,
+    /// Classified trivia kind retained outside the significant-token stream.
+    pub trivia_kind: Option<u16>,
+    /// Whether this rule originated from exact fixed syntax.
+    pub fixed: bool,
+    /// Total arbitration order after match length; higher wins and is unique.
+    pub rank: u32,
+}
+
+/// One fixed spelling recoverable after operator-fence suppression.
+///
+/// Suppression can only reject fixed candidates, so recovering the next-best
+/// candidate needs the complete fixed alphabet rather than the single winner
+/// the state machine reports. Generation emits this table only for grammars
+/// that declare an operator run.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct FixedLexLiteral {
+    /// Exact authored spelling.
+    pub spelling: &'static str,
+    /// Whether the spelling matches under ASCII-case equivalence.
+    pub ascii_insensitive: bool,
+    /// Outcome assigned when this spelling wins arbitration.
+    pub rule: LexRule,
+}
+
+/// A maximal run over a configured ASCII alphabet with fence and trailing rules.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct OperatorRunRule {
+    /// Bytes admitted to the run.
+    pub characters: ByteSet,
+    /// First bytes of every configured fence.
+    pub fence_starts: ByteSet,
+    /// Nonempty byte strings that stop the run before their first occurrence.
+    pub fences: &'static [&'static str],
+    /// Run characters stripped from the end when no qualifying character occurs earlier.
+    pub trailing: ByteSet,
+    /// Characters whose presence preserves configured trailing characters.
+    pub qualifying: ByteSet,
+    /// Outcome assigned when this run wins arbitration.
+    pub rule: LexRule,
+}
+
+/// The complete static lexical description of one generated grammar.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct LexPlan {
+    /// Rule outcomes indexed by generated token variant.
+    pub rules: &'static [LexRule],
+    /// Fixed spellings consulted only by operator-fence recovery.
+    pub fixed_literals: &'static [FixedLexLiteral],
+    /// Operator-run families arbitrated outside the state machine.
+    pub operator_runs: &'static [OperatorRunRule],
+    /// First bytes that can open a closed region.
+    pub closed_first_bytes: ByteSet,
+    /// Closed-region machine, absent when the grammar declares no closed region.
+    pub closed_scan: Option<for<'source> fn(&'source str) -> Option<LexClosedMatch>>,
+    /// Kind emitted for every rejected source range.
+    pub lexical_error_kind: TokenKind,
+    /// Whether any rule classifies retained trivia.
+    pub retains_trivia: bool,
+}
+
+/// One closed region's decision at the current source offset.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct LexClosedMatch {
+    /// Exclusive byte extent relative to the region's start.
+    pub end: usize,
+    /// Outcome the winning region assigns.
+    pub rule: LexRule,
     /// Failure metadata when the matched extent must become an error record.
-    diagnostic: Option<RelativeLexDiagnostic>,
-    /// First interior operator fence encountered while computing this match.
-    interior_operator_fence: Option<(usize, usize)>,
+    pub failure: Option<LexFailure>,
+}
+
+/// Scans the best closed region opening at the start of `source`.
+#[doc(hidden)]
+pub fn scan_closed<'source, Token>(
+    source: &'source str,
+    rules: &'static [LexRule],
+) -> Option<LexClosedMatch>
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let mut lexer = Token::lexer(source);
+    match lexer.next() {
+        Some(Ok(token)) => Some(LexClosedMatch {
+            end: lexer.span().end,
+            rule: rules[token.rule_index()],
+            failure: lexer.extras.failure,
+        }),
+        Some(Err(_)) | None => None,
+    }
+}
+
+/// Extends a same-delimiter region through a byte-identical copy of its opener.
+#[doc(hidden)]
+pub fn lex_same_delimiter<'source, Token>(lexer: &mut logos::Lexer<'source, Token>)
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras>,
+{
+    let delimiter = lexer.slice();
+    let body = lexer.remainder();
+    match body.find(delimiter) {
+        Some(close) => lexer.bump(close + delimiter.len()),
+        None => {
+            lexer.extras.failure = Some(LexFailure {
+                code: LexDiagnosticCode::UnterminatedSameDelimiter,
+                anchor_start: 0,
+                anchor_end: delimiter.len(),
+            });
+            lexer.bump(body.len());
+        }
+    }
+}
+
+/// Extends a region whose fixed opening and closing delimiters may nest.
+#[doc(hidden)]
+pub fn lex_nested<'source, Token>(
+    lexer: &mut logos::Lexer<'source, Token>,
+    opener: &str,
+    closer: &str,
+) where
+    Token: Logos<'source, Source = str, Extras = LexExtras>,
+{
+    let body = lexer.remainder();
+    let mut depth = 1_u32;
+    let mut cursor = 0_usize;
+    while cursor < body.len() {
+        let suffix = &body[cursor..];
+        if suffix.starts_with(closer) {
+            cursor += closer.len();
+            depth -= 1;
+            if depth == 0 {
+                lexer.bump(cursor);
+                return;
+            }
+        } else if suffix.starts_with(opener) {
+            cursor += opener.len();
+            let Some(incremented) = depth.checked_add(1) else {
+                lexer.extras.failure = Some(LexFailure {
+                    code: LexDiagnosticCode::MatcherInvariant,
+                    anchor_start: 0,
+                    anchor_end: opener.len(),
+                });
+                lexer.bump(body.len());
+                return;
+            };
+            depth = incremented;
+        } else {
+            cursor += suffix
+                .chars()
+                .next()
+                .expect("a nonempty source suffix has one scalar")
+                .len_utf8();
+        }
+    }
+    lexer.extras.failure = Some(LexFailure {
+        code: LexDiagnosticCode::UnterminatedNested,
+        anchor_start: 0,
+        anchor_end: opener.len(),
+    });
+    lexer.bump(body.len());
+}
+
+/// Extends a matched prefix through the end of its physical line.
+#[doc(hidden)]
+pub fn lex_physical_line<'source, Token>(lexer: &mut logos::Lexer<'source, Token>)
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras>,
+{
+    let suffix = lexer.remainder().as_bytes();
+    let length = suffix
+        .iter()
+        .position(|byte| matches!(byte, b'\r' | b'\n'))
+        .map_or(suffix.len(), |line_end| {
+            if suffix[line_end] == b'\r' && suffix.get(line_end + 1) == Some(&b'\n') {
+                line_end + 2
+            } else {
+                line_end + 1
+            }
+        });
+    lexer.bump(length);
+}
+
+/// Rejects a matched candidate whose following scalar falls in `excluded`.
+#[doc(hidden)]
+pub fn lex_next_exclusion<'source, Token>(
+    lexer: &mut logos::Lexer<'source, Token>,
+    excluded: &[(char, char)],
+) where
+    Token: Logos<'source, Source = str, Extras = LexExtras>,
+{
+    let Some(following) = lexer.remainder().chars().next() else {
+        return;
+    };
+    if excluded
+        .iter()
+        .any(|&(low, high)| following >= low && following <= high)
+    {
+        let span = lexer.span();
+        lexer.extras.failure = Some(LexFailure {
+            code: LexDiagnosticCode::ExcludedFollowingCharacter,
+            anchor_start: 0,
+            anchor_end: span.end - span.start,
+        });
+    }
 }
 
 /// One operator-run family's decision at the current source offset.
+#[derive(Clone, Copy)]
 struct OperatorRunDecision {
-    /// ASCII alphabet that relates fixed candidates to this operator family.
-    characters: &'static str,
+    /// Index of the decided family in [`LexPlan::operator_runs`].
+    index: usize,
     /// Final matcher extent after the family's fence and trailing rules.
     final_extent: usize,
     /// Interior fence offset and byte length before which this operator run stops.
     interior_fence: Option<(usize, usize)>,
     /// Whether ordinary local arbitration selects valid trivia over this fence.
-    fence_consumed: bool,
+    fence_consumed: Option<bool>,
 }
 
-impl OperatorRunDecision {
-    /// Reports whether this family admits every byte of a fixed candidate.
-    fn admits(&self, candidate: &[u8]) -> bool {
-        candidate
-            .iter()
-            .all(|byte| self.characters.as_bytes().contains(byte))
-    }
-}
-
-/// Cached raw lexical arbitration at one interior operator-fence boundary.
+/// One arbitrated candidate with its final byte extent already known.
 #[derive(Clone, Copy)]
-struct LocalLexDecision {
-    /// Boundary offset relative to the current root lexical position.
-    boundary: usize,
-    /// Winner under the ordinary final-extent, fixed-status, and priority ordering.
-    selected: Option<(LexMatch, LexRule)>,
+struct LexChoice {
+    /// Exclusive byte extent relative to the current source offset.
+    end: usize,
+    /// Outcome the winning rule assigns.
+    rule: LexRule,
+    /// Failure metadata when the matched extent must become an error record.
+    failure: Option<LexFailure>,
 }
 
-impl LocalLexDecision {
-    /// Reports whether the local winner is valid trivia covering the complete fence.
-    fn consumes_trivia(&self, fence_length: usize) -> bool {
-        self.selected.is_some_and(|(found, rule)| {
-            rule.skip && found.diagnostic.is_none() && found.end >= fence_length
-        })
+/// Replaces `best` when `challenger` wins the final-extent and rank ordering.
+#[inline]
+fn consider(best: &mut Option<LexChoice>, challenger: LexChoice) {
+    if best.is_none_or(|held| (challenger.end, challenger.rule.rank) > (held.end, held.rule.rank)) {
+        *best = Some(challenger);
     }
 }
 
-/// Compiled state reused while scanning one source.
-enum CompiledLexMatcher {
-    /// Compiled anchored regular expression.
-    Regex(Regex),
-    /// Compiled opening-delimiter expression.
-    SameDelimiter {
-        /// Anchored expression that returns the exact delimiter bytes to repeat.
-        opener: Regex,
-    },
-    /// Validated fixed delimiters for nested scanning.
-    Nested {
-        /// Nonempty opening delimiter.
-        opener: &'static str,
-        /// Nonempty closing delimiter.
-        closer: &'static str,
-    },
-    /// Compiled candidate and following-scalar exclusion expressions.
-    NextExclusion {
-        /// Candidate token expression.
-        pattern: Regex,
-        /// Excluded following-scalar expression.
-        excluded: Regex,
-    },
-    /// Validated ASCII operator-run configuration.
-    OperatorRun {
-        /// ASCII characters admitted to the run.
-        characters: &'static str,
-        /// Nonempty byte strings that stop the run.
-        fences: &'static [&'static str],
-        /// Conditionally stripped trailing characters.
-        trailing: &'static str,
-        /// Characters that preserve configured trailing characters.
-        qualifying: &'static str,
-    },
-    /// Compiled physical-line prefix expression.
-    PhysicalLine {
-        /// Prefix expression anchored at the current source offset.
-        prefix: Regex,
-    },
-}
-
-impl CompiledLexMatcher {
-    /// Compiles one generated matcher whose authored inputs were already validated.
-    fn new(matcher: LexMatcher) -> Self {
-        match matcher {
-            LexMatcher::Regex(pattern) => {
-                Self::Regex(Regex::new(pattern).expect("generated lexical patterns were validated"))
-            }
-            LexMatcher::SameDelimiter { opener } => Self::SameDelimiter {
-                opener: Regex::new(opener)
-                    .expect("generated same-delimiter openers were validated"),
-            },
-            LexMatcher::Nested { opener, closer } => Self::Nested { opener, closer },
-            LexMatcher::NextExclusion { pattern, excluded } => Self::NextExclusion {
-                pattern: Regex::new(pattern)
-                    .expect("generated next-exclusion patterns were validated"),
-                excluded: Regex::new(excluded)
-                    .expect("generated next-exclusion predicates were validated"),
-            },
-            LexMatcher::OperatorRun {
-                characters,
-                fences,
-                trailing,
-                qualifying,
-            } => Self::OperatorRun {
-                characters,
-                fences,
-                trailing,
-                qualifying,
-            },
-            LexMatcher::PhysicalLine { prefix } => Self::PhysicalLine {
-                prefix: Regex::new(prefix)
-                    .expect("generated physical-line prefixes were validated"),
-            },
-        }
-    }
-
-    /// Returns a decision carrying the final byte extent from `remaining`'s start.
-    fn matched(&self, remaining: &str) -> Option<LexMatch> {
-        let anchored = |matcher: &Regex| {
-            matcher
-                .find(RegexInput::new(remaining).anchored(Anchored::Yes))
-                .filter(|found| found.start() == 0 && found.end() > 0)
-        };
-        match self {
-            Self::Regex(matcher) => anchored(matcher).map(|found| LexMatch {
-                end: found.end(),
-                diagnostic: None,
-                interior_operator_fence: None,
-            }),
-            Self::SameDelimiter { opener } => {
-                let opened = anchored(opener)?;
-                let delimiter = &remaining[..opened.end()];
-                let body = &remaining[opened.end()..];
-                let Some(close) = body.find(delimiter) else {
-                    return Some(LexMatch {
-                        end: remaining.len(),
-                        diagnostic: Some(RelativeLexDiagnostic {
-                            code: LexDiagnosticCode::UnterminatedSameDelimiter,
-                            anchor_start: 0,
-                            anchor_end: opened.end(),
-                        }),
-                        interior_operator_fence: None,
-                    });
-                };
-                Some(LexMatch {
-                    end: opened.end() + close + delimiter.len(),
-                    diagnostic: None,
-                    interior_operator_fence: None,
-                })
-            }
-            Self::Nested { opener, closer } => {
-                remaining.strip_prefix(opener)?;
-                let mut depth = 1_u32;
-                let mut cursor = opener.len();
-                while cursor < remaining.len() {
-                    let suffix = &remaining[cursor..];
-                    if suffix.starts_with(closer) {
-                        cursor += closer.len();
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some(LexMatch {
-                                end: cursor,
-                                diagnostic: None,
-                                interior_operator_fence: None,
-                            });
-                        }
-                    } else if suffix.starts_with(opener) {
-                        cursor += opener.len();
-                        let Some(incremented) = increment_nested_depth(depth) else {
-                            return Some(LexMatch {
-                                end: remaining.len(),
-                                diagnostic: Some(RelativeLexDiagnostic {
-                                    code: LexDiagnosticCode::MatcherInvariant,
-                                    anchor_start: 0,
-                                    anchor_end: opener.len(),
-                                }),
-                                interior_operator_fence: None,
-                            });
-                        };
-                        depth = incremented;
-                    } else {
-                        cursor += suffix
-                            .chars()
-                            .next()
-                            .expect("a nonempty source suffix has one scalar")
-                            .len_utf8();
-                    }
-                }
-                Some(LexMatch {
-                    end: remaining.len(),
-                    diagnostic: Some(RelativeLexDiagnostic {
-                        code: LexDiagnosticCode::UnterminatedNested,
-                        anchor_start: 0,
-                        anchor_end: opener.len(),
-                    }),
-                    interior_operator_fence: None,
-                })
-            }
-            Self::NextExclusion { pattern, excluded } => {
-                let found = anchored(pattern)?;
-                let following = remaining[found.end()..]
-                    .chars()
-                    .next()
-                    .map(|character| &remaining[found.end()..found.end() + character.len_utf8()]);
-                let rejected = following.is_some_and(|scalar| {
-                    excluded
-                        .find(RegexInput::new(scalar).anchored(Anchored::Yes))
-                        .is_some_and(|next| next.start() == 0 && next.end() == scalar.len())
-                });
-                Some(LexMatch {
-                    end: found.end(),
-                    diagnostic: rejected.then_some(RelativeLexDiagnostic {
-                        code: LexDiagnosticCode::ExcludedFollowingCharacter,
-                        anchor_start: 0,
-                        anchor_end: found.end(),
-                    }),
-                    interior_operator_fence: None,
-                })
-            }
-            Self::OperatorRun {
-                characters,
-                fences,
-                trailing,
-                qualifying,
-            } => {
-                let admitted = characters.as_bytes();
-                let mut interior_fence = None;
-                let mut end = 0;
-                while let Some(&byte) = remaining.as_bytes().get(end) {
-                    let fence_length = fences
-                        .iter()
-                        .filter(|fence| remaining.as_bytes()[end..].starts_with(fence.as_bytes()))
-                        .map(|fence| fence.len())
-                        .min();
-                    if let Some(fence_length) = fence_length {
-                        interior_fence = (end > 0).then_some((end, fence_length));
-                        break;
-                    }
-                    if !admitted.contains(&byte) {
-                        break;
-                    }
-                    end += 1;
-                }
-                if end == 0 {
-                    return None;
-                }
-                let trailing = trailing.as_bytes();
-                let qualifying = qualifying.as_bytes();
-                if end > 1
-                    && trailing.contains(&remaining.as_bytes()[end - 1])
-                    && !remaining.as_bytes()[..end - 1]
-                        .iter()
-                        .any(|byte| qualifying.contains(byte))
-                {
-                    while end > 1 && trailing.contains(&remaining.as_bytes()[end - 1]) {
-                        end -= 1;
-                    }
-                }
-                Some(LexMatch {
-                    end,
-                    diagnostic: None,
-                    interior_operator_fence: interior_fence,
-                })
-            }
-            Self::PhysicalLine { prefix } => {
-                let opened = anchored(prefix)?;
-                let suffix = &remaining.as_bytes()[opened.end()..];
-                let end = suffix
-                    .iter()
-                    .position(|byte| matches!(byte, b'\r' | b'\n'))
-                    .map_or(remaining.len(), |line_end| {
-                        let line_end = opened.end() + line_end;
-                        if remaining.as_bytes()[line_end] == b'\r'
-                            && remaining.as_bytes().get(line_end + 1) == Some(&b'\n')
-                        {
-                            line_end + 2
-                        } else {
-                            line_end + 1
-                        }
-                    });
-                Some(LexMatch {
-                    end,
-                    diagnostic: None,
-                    interior_operator_fence: None,
-                })
-            }
-        }
-    }
-}
-
-/// Reference-counted compiled table shared across `lex` calls on one thread.
-type CompiledLexTable = Rc<[(CompiledLexMatcher, LexRule)]>;
-
-/// Identity key for one grammar's static lexical rule table.
+/// Scans one operator-run family at the start of `remaining`.
 ///
-/// A `&'static [LexRule]` is uniquely and permanently identified by its data
-/// pointer and length: distinct grammars own distinct statics at distinct
-/// addresses that live for the whole program, so the pair never aliases and
-/// never dangles.
-type CompiledLexTableKey = (usize, usize);
-
-thread_local! {
-    /// Per-thread cache of compiled lexical rule tables keyed by static-slice identity.
-    ///
-    /// Compiling one `Regex` per generated rule dominates realistic
-    /// multi-statement workloads, where `lex` is called once per short
-    /// statement. The compiled matchers are a pure function of the rules, so
-    /// reusing them across calls is a construction optimization that leaves the
-    /// emitted tokens, spans, trivia, and diagnostics byte-identical. The cache
-    /// is thread-local: each thread owns its own compiled `Regex` values and
-    /// their internal lazy-DFA caches, so no matcher state is ever shared across
-    /// threads and the result stays deterministic. Entries are keyed on
-    /// `&'static` identity, so the cache holds at most one entry per grammar for
-    /// the life of the thread.
-    static COMPILED_LEX_TABLES: RefCell<HashMap<CompiledLexTableKey, CompiledLexTable>> =
-        RefCell::new(HashMap::new());
-}
-
-/// Returns this thread's compiled matcher table for `rules`, compiling it once.
-fn compiled_lex_table(rules: &'static [LexRule]) -> CompiledLexTable {
-    let key = (rules.as_ptr() as usize, rules.len());
-    COMPILED_LEX_TABLES.with(|cache| {
-        if let Some(table) = cache.borrow().get(&key) {
-            return Rc::clone(table);
+/// Returns the final extent after the fence and trailing rules together with
+/// the first interior fence encountered, or `None` when the family does not
+/// admit the first byte.
+fn scan_operator_run(remaining: &str, run: &OperatorRunRule) -> Option<(usize, Option<(usize, usize)>)> {
+    let bytes = remaining.as_bytes();
+    let mut interior_fence = None;
+    let mut end = 0;
+    while let Some(&byte) = bytes.get(end) {
+        if run.fence_starts.contains(byte) {
+            let fence_length = run
+                .fences
+                .iter()
+                .filter(|fence| bytes[end..].starts_with(fence.as_bytes()))
+                .map(|fence| fence.len())
+                .min();
+            if let Some(fence_length) = fence_length {
+                interior_fence = (end > 0).then_some((end, fence_length));
+                break;
+            }
         }
-        let table: CompiledLexTable = rules
+        if !run.characters.contains(byte) {
+            break;
+        }
+        end += 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    if end > 1
+        && run.trailing.contains(bytes[end - 1])
+        && !bytes[..end - 1]
             .iter()
-            .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
-            .collect();
-        cache.borrow_mut().insert(key, Rc::clone(&table));
-        table
-    })
+            .any(|&byte| run.qualifying.contains(byte))
+    {
+        while end > 1 && run.trailing.contains(bytes[end - 1]) {
+            end -= 1;
+        }
+    }
+    Some((end, interior_fence))
 }
 
-/// Selects one raw lexical winner without applying root operator-fence suppression.
-fn select_raw_lex_match(
+/// Collects every operator-run decision applicable at the start of `remaining`.
+fn operator_run_decisions(
     remaining: &str,
-    compiled: &[(CompiledLexMatcher, LexRule)],
-) -> Option<(LexMatch, LexRule)> {
-    compiled
-        .iter()
-        .filter_map(|(matcher, rule)| matcher.matched(remaining).map(|found| (found, *rule)))
-        .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority))
+    plan: &LexPlan,
+    decisions: &mut Vec<OperatorRunDecision>,
+) {
+    decisions.clear();
+    for (index, run) in plan.operator_runs.iter().enumerate() {
+        let Some((final_extent, interior_fence)) = scan_operator_run(remaining, run) else {
+            continue;
+        };
+        decisions.push(OperatorRunDecision {
+            index,
+            final_extent,
+            interior_fence,
+            fence_consumed: None,
+        });
+    }
 }
 
-/// Reports whether valid trailing trivia makes an operator-shaped fixed candidate ineligible.
-fn fixed_candidate_crosses_consumed_fence(
-    candidate: &[u8],
-    operator_runs: &[OperatorRunDecision],
-) -> bool {
-    let mut related = operator_runs
-        .iter()
-        .filter(|operator_run| operator_run.admits(candidate));
-    let reaches_candidate = related
-        .clone()
-        .any(|operator_run| operator_run.final_extent >= candidate.len());
-    !reaches_candidate
-        && related.any(|operator_run| {
-            operator_run.fence_consumed
-                && operator_run
-                    .interior_fence
-                    .is_some_and(|(start, _)| start < candidate.len())
-        })
+/// Folds the closed-region machine's decision into `best`.
+fn consider_closed_region(best: &mut Option<LexChoice>, remaining: &str, plan: &LexPlan) {
+    let Some(scan) = plan.closed_scan else {
+        return;
+    };
+    let Some(&first) = remaining.as_bytes().first() else {
+        return;
+    };
+    if !plan.closed_first_bytes.contains(first) {
+        return;
+    }
+    let Some(found) = scan(remaining) else {
+        return;
+    };
+    consider(
+        best,
+        LexChoice {
+            end: found.end,
+            rule: found.rule,
+            failure: found.failure,
+        },
+    );
 }
 
-/// Advances the source-domain nesting counter without allowing an impossible wraparound.
-fn increment_nested_depth(depth: u32) -> Option<u32> {
-    depth.checked_add(1)
+/// Selects one raw lexical winner without applying operator-fence suppression.
+fn select_raw<'source, Token>(source: &'source str, plan: &LexPlan) -> Option<LexChoice>
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let mut lexer = Token::lexer(source);
+    let mut best = match lexer.next() {
+        Some(Ok(token)) => Some(LexChoice {
+            end: lexer.span().end,
+            rule: plan.rules[token.rule_index()],
+            failure: lexer.extras.failure,
+        }),
+        Some(Err(_)) | None => None,
+    };
+    consider_closed_region(&mut best, source, plan);
+    for run in plan.operator_runs {
+        let Some((end, _)) = scan_operator_run(source, run) else {
+            continue;
+        };
+        consider(
+            &mut best,
+            LexChoice {
+                end,
+                rule: run.rule,
+                failure: None,
+            },
+        );
+    }
+    best
 }
 
-/// Executes a small generated lexical rule table.
+/// Reports whether valid trailing trivia consumes this family's interior fence.
+fn fence_is_consumed<'source, Token>(
+    source: &'source str,
+    offset: usize,
+    decision: &mut OperatorRunDecision,
+    plan: &LexPlan,
+) -> bool
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let Some((boundary, fence_length)) = decision.interior_fence else {
+        return false;
+    };
+    if let Some(consumed) = decision.fence_consumed {
+        return consumed;
+    }
+    let local = select_raw::<Token>(&source[offset + boundary..], plan);
+    let consumed = local.is_some_and(|found| {
+        found.rule.skip && found.failure.is_none() && found.end >= fence_length
+    });
+    decision.fence_consumed = Some(consumed);
+    consumed
+}
+
+/// Reports whether valid trailing trivia makes a fixed candidate ineligible.
 ///
-/// Generation's complete lexer emitter may replace this private implementation without
-/// changing grammar APIs.
-#[doc(hidden)]
-pub fn lex<'input>(
-    source: &'input str,
-    rules: &'static [LexRule],
-    lexical_error_kind: TokenKind,
-) -> LexResult<'input> {
-    let table = compiled_lex_table(rules);
-    let compiled: &[(CompiledLexMatcher, LexRule)] = &table;
-    let mut root_matches = Vec::new();
-    let mut operator_decisions = Vec::new();
-    let mut relevant_boundaries = Vec::new();
-    let mut local_decisions = Vec::new();
-    let mut records = Vec::new();
-    let mut trivia = rules
+/// This reproduces PostgreSQL's operator-versus-comment rule: a fixed operator
+/// spelling may not swallow a comment introducer that ordinary arbitration
+/// would recognize as valid trivia.
+fn crosses_consumed_fence<'source, Token>(
+    source: &'source str,
+    offset: usize,
+    candidate: &[u8],
+    decisions: &mut [OperatorRunDecision],
+    plan: &LexPlan,
+) -> bool
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let related = |decision: &OperatorRunDecision| {
+        plan.operator_runs[decision.index]
+            .characters
+            .admits(candidate)
+    };
+    if decisions
         .iter()
-        .any(|rule| rule.trivia_kind.is_some())
-        .then(Vec::new);
-    let mut offset = 0;
+        .any(|decision| related(decision) && decision.final_extent >= candidate.len())
+    {
+        return false;
+    }
+    for index in 0..decisions.len() {
+        if !related(&decisions[index]) {
+            continue;
+        }
+        if !decisions[index]
+            .interior_fence
+            .is_some_and(|(start, _)| start < candidate.len())
+        {
+            continue;
+        }
+        if fence_is_consumed::<Token>(source, offset, &mut decisions[index], plan) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Reports the matched length of one fixed spelling at the start of `remaining`.
+fn fixed_literal_length(remaining: &str, literal: &FixedLexLiteral) -> Option<usize> {
+    let length = literal.spelling.len();
+    let candidate = remaining.as_bytes().get(..length)?;
+    let matched = if literal.ascii_insensitive {
+        candidate.eq_ignore_ascii_case(literal.spelling.as_bytes())
+    } else {
+        candidate == literal.spelling.as_bytes()
+    };
+    matched.then_some(length)
+}
+
+/// Selects the best candidate that survives operator-fence suppression.
+///
+/// Suppression only ever rejects fixed candidates, so the eligible set is the
+/// complete fixed alphabet filtered by the suppression rule, together with the
+/// operator runs themselves.
+fn recover_after_suppression<'source, Token>(
+    source: &'source str,
+    offset: usize,
+    decisions: &mut [OperatorRunDecision],
+    plan: &LexPlan,
+) -> Option<LexChoice>
+where
+    Token: Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let remaining = &source[offset..];
+    let mut best = None;
+    for literal in plan.fixed_literals {
+        let Some(length) = fixed_literal_length(remaining, literal) else {
+            continue;
+        };
+        if crosses_consumed_fence::<Token>(
+            source,
+            offset,
+            &remaining.as_bytes()[..length],
+            decisions,
+            plan,
+        ) {
+            continue;
+        }
+        consider(
+            &mut best,
+            LexChoice {
+                end: length,
+                rule: literal.rule,
+                failure: None,
+            },
+        );
+    }
+    for decision in decisions.iter() {
+        consider(
+            &mut best,
+            LexChoice {
+                end: decision.final_extent,
+                rule: plan.operator_runs[decision.index].rule,
+                failure: None,
+            },
+        );
+    }
+    consider_closed_region(&mut best, remaining, plan);
+    best
+}
+
+/// Executes one grammar's generated lexical state machine over `source`.
+///
+/// Generation's complete lexer emitter may replace this private implementation
+/// without changing grammar APIs.
+#[doc(hidden)]
+pub fn lex<'input, Token>(source: &'input str, plan: &LexPlan) -> LexResult<'input>
+where
+    Token: Logos<'input, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    let mut records = Vec::new();
+    let mut trivia = plan.retains_trivia.then(Vec::new);
+    let mut decisions: Vec<OperatorRunDecision> = Vec::new();
+    let mut base = 0_usize;
+    let mut lexer = Token::lexer(source);
+    let mut offset = 0_usize;
     while offset < source.len() {
         let remaining = &source[offset..];
-        root_matches.clear();
-        operator_decisions.clear();
-        for (matcher, rule) in compiled {
-            let Some(found) = matcher.matched(remaining) else {
-                continue;
-            };
-            root_matches.push((found, *rule));
-            if let CompiledLexMatcher::OperatorRun { characters, .. } = matcher {
-                operator_decisions.push(OperatorRunDecision {
-                    characters,
-                    final_extent: found.end,
-                    interior_fence: found.interior_operator_fence,
-                    fence_consumed: false,
-                });
+        lexer.extras.failure = None;
+        let mut selected = match lexer.next() {
+            Some(Ok(token)) => Some(LexChoice {
+                end: lexer.span().end + base - offset,
+                rule: plan.rules[token.rule_index()],
+                failure: lexer.extras.failure,
+            }),
+            Some(Err(_)) | None => None,
+        };
+        let machine_end = base + lexer.span().end;
+        consider_closed_region(&mut selected, remaining, plan);
+        if !plan.operator_runs.is_empty() {
+            operator_run_decisions(remaining, plan, &mut decisions);
+            for decision in &decisions {
+                consider(
+                    &mut selected,
+                    LexChoice {
+                        end: decision.final_extent,
+                        rule: plan.operator_runs[decision.index].rule,
+                        failure: None,
+                    },
+                );
+            }
+            if let Some(found) = selected
+                && found.rule.fixed
+                && crosses_consumed_fence::<Token>(
+                    source,
+                    offset,
+                    &remaining.as_bytes()[..found.end],
+                    &mut decisions,
+                    plan,
+                )
+            {
+                selected = recover_after_suppression::<Token>(source, offset, &mut decisions, plan);
             }
         }
-        relevant_boundaries.clear();
-        for (found, _) in root_matches.iter().filter(|(_, rule)| rule.fixed) {
-            let candidate = &remaining.as_bytes()[..found.end];
-            for operator_run in &operator_decisions {
-                let Some((boundary, _)) = operator_run.interior_fence else {
-                    continue;
-                };
-                if boundary < found.end && operator_run.admits(candidate) {
-                    relevant_boundaries.push(boundary);
-                }
-            }
-        }
-        relevant_boundaries.sort_unstable();
-        relevant_boundaries.dedup();
-        local_decisions.clear();
-        for &boundary in &relevant_boundaries {
-            local_decisions.push(LocalLexDecision {
-                boundary,
-                selected: select_raw_lex_match(&remaining[boundary..], compiled),
-            });
-        }
-        for operator_run in &mut operator_decisions {
-            let Some((boundary, fence_length)) = operator_run.interior_fence else {
-                continue;
-            };
-            operator_run.fence_consumed = local_decisions
-                .binary_search_by_key(&boundary, |decision| decision.boundary)
-                .ok()
-                .is_some_and(|index| local_decisions[index].consumes_trivia(fence_length));
-        }
-        let selected = root_matches
-            .iter()
-            .copied()
-            .filter(|(found, rule)| {
-                !rule.fixed
-                    || !fixed_candidate_crosses_consumed_fence(
-                        &remaining.as_bytes()[..found.end],
-                        &operator_decisions,
-                    )
-            })
-            .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
 
         let (end, emitted_kind, retained_kind, diagnostic) = selected.map_or_else(
             || {
@@ -595,7 +688,7 @@ pub fn lex<'input>(
                 let end = offset + length;
                 (
                     end,
-                    Some(lexical_error_kind),
+                    Some(plan.lexical_error_kind),
                     None,
                     Some(LexDiagnostic {
                         code: LexDiagnosticCode::Unrecognized,
@@ -604,12 +697,12 @@ pub fn lex<'input>(
                     }),
                 )
             },
-            |(found, rule)| {
-                if let Some(rejected) = found.diagnostic {
+            |found| {
+                if let Some(rejected) = found.failure {
                     let end = offset + found.end;
                     return (
                         end,
-                        Some(lexical_error_kind),
+                        Some(plan.lexical_error_kind),
                         None,
                         Some(LexDiagnostic {
                             code: rejected.code,
@@ -623,8 +716,8 @@ pub fn lex<'input>(
                 }
                 (
                     offset + found.end,
-                    (!rule.skip).then_some(rule.kind),
-                    rule.trivia_kind,
+                    (!found.rule.skip).then_some(found.rule.kind),
+                    found.rule.trivia_kind,
                     None,
                 )
             },
@@ -643,30 +736,11 @@ pub fn lex<'input>(
                 .expect("a retained rule enables the trivia sidecar")
                 .push(TriviaRecord { kind, span });
         }
+        if machine_end != end {
+            base = end;
+            lexer = Token::lexer(&source[base..]);
+        }
         offset = end;
     }
     LexResult::new(source, records, trivia)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn non_retaining_grammar_keeps_no_trivia_sidecar_or_gap_projection() {
-        static RULES: [LexRule; 1] = [LexRule {
-            matcher: LexMatcher::Regex(r"\s+"),
-            kind: 0,
-            skip: true,
-            trivia_kind: None,
-            fixed: false,
-            priority: 0,
-        }];
-
-        let result = lex(" \n", &RULES, 1);
-
-        assert!(result.trivia().is_none());
-        assert!(result.source_gaps().is_none());
-        assert!(result.records().is_empty());
-    }
 }
