@@ -11,7 +11,7 @@
 //! adapted once into stable build diagnostics and Cargo invalidation output is
 //! emitted independently of analysis success.
 
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 use crate::analysis::analyze_for_generation;
 use crate::build_diagnostic::diagnostic_code_spec;
