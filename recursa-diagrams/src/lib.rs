@@ -71,6 +71,16 @@ pub enum DiagramNode {
     },
     /// A non-consuming branch or cardinality annotation.
     Comment(String),
+    /// A production carrying explanatory hover text instead of inline syntax.
+    ///
+    /// The note never occupies diagram space: renderers attach it to the drawn
+    /// group so a reader sees it only while pointing at the production.
+    Annotated {
+        /// Hover text describing why the production is annotated.
+        note: String,
+        /// The annotated production, drawn unchanged.
+        body: Box<Self>,
+    },
     /// A branch annotation linking to a Rustdoc anchor when its owner is public.
     LinkedComment {
         /// Annotation text.
