@@ -1608,8 +1608,8 @@ fn collect_body_expected_sets(
                 pratt
                     .caller_follow_guard
                     .iter()
-                    .flatten()
-                    .map(|branch| branch.expected.clone()),
+                    .flat_map(|guard| pratt_guard_thresholds(guard, kind_count))
+                    .map(|(_, expected)| expected),
             );
         }
     }
@@ -5614,9 +5614,13 @@ pub(super) fn render_pratt_parse(
             quote! {
                 #nud_failure_definition
                 let _ = min_bp;
-                let #nud_follow_value = #nud_follow
-                    .with_caller(context.follow())
-                    .expect("matching generated Pratt FOLLOW widths");
+                let #nud_follow_value = {
+                    static __RECURSA_FOLLOW_SITE: #facade::__private::FollowSiteCache =
+                        #facade::__private::FollowSiteCache::new();
+                    __RECURSA_FOLLOW_SITE
+                        .with_caller(&#nud_follow, context.follow())
+                        .expect("matching generated Pratt FOLLOW widths")
+                };
                 let #expression_start = context.cursor();
                 let parsed = match { #nud_selection } {
                     #(#nud_branches,)*
@@ -5650,20 +5654,27 @@ pub(super) fn render_pratt_parse(
         .caller_follow_guard
         .as_ref()
         .expect("validated led plan has a caller-FOLLOW guard");
-    let guard_additions = guard.iter().map(|branch| {
-        let expected_ref = render_expected_set(plan, &branch.expected);
-        let bp = pratt_led_lbp(branch.position);
-        quote! {
-            if #bp >= min_bp {
-                __recursa_pratt_guard = Some(match __recursa_pratt_guard {
-                    Some(expected) => expected
-                        .union(&#expected_ref)
-                        .expect("matching generated Pratt expectation widths"),
-                    None => &#expected_ref,
-                });
+    // The reported guard is the union of every extender still active at `min_bp`, and
+    // that union is fixed per distinct threshold, so it is composed during generation
+    // and selected here by one comparison chain on the error path only. The Pratt entry
+    // path composes nothing.
+    let guard_arms = pratt_guard_thresholds(guard, plan.kind_count)
+        .into_iter()
+        .map(|(threshold, expected)| {
+            let expected = render_expected_set(plan, &expected);
+            quote! {
+                if min_bp <= #threshold {
+                    return &#expected;
+                }
             }
+        })
+        .collect::<Vec<_>>();
+    let guard_definition = quote! {
+        fn __recursa_pratt_guard(min_bp: u8) -> &'static #facade::__private::FollowSet {
+            #(#guard_arms)*
+            unreachable!("an active extender contributes an expectation")
         }
-    });
+    };
     let led_offset = pratt.nud.len();
     let mut led_branches = Vec::new();
     for (index, branch) in pratt.led.iter().enumerate() {
@@ -5706,10 +5717,7 @@ pub(super) fn render_pratt_parse(
                 if __recursa_pratt_excluded.contains(&#index) { break; }
                 if context.next_is_pratt_boundary() {
                     if !(#continuation_viable) { break; }
-                    return Err(context.pratt_ambiguity(
-                        __recursa_pratt_guard
-                            .expect("an active extender contributes an expectation"),
-                    ));
+                    return Err(context.pratt_ambiguity(__recursa_pratt_guard(min_bp)));
                 }
                 lhs = Self::#helper(
                     context,
@@ -5725,9 +5733,13 @@ pub(super) fn render_pratt_parse(
     (
         quote! {
             #nud_failure_definition
-            let #nud_follow_value = #nud_follow
-                .with_caller(context.follow())
-                .expect("matching generated Pratt FOLLOW widths");
+            let #nud_follow_value = {
+                static __RECURSA_FOLLOW_SITE: #facade::__private::FollowSiteCache =
+                    #facade::__private::FollowSiteCache::new();
+                __RECURSA_FOLLOW_SITE
+                    .with_caller(&#nud_follow, context.follow())
+                    .expect("matching generated Pratt FOLLOW widths")
+            };
             let #expression_start = context.cursor();
             let mut lhs = match { #nud_selection } {
                 #(#nud_branches,)*
@@ -5738,8 +5750,7 @@ pub(super) fn render_pratt_parse(
                     unreachable!("frozen Pratt dispatch selected an unknown branch")
                 }
             };
-            let mut __recursa_pratt_guard: Option<&'static #facade::__private::FollowSet> = None;
-            #(#guard_additions)*
+            #guard_definition
             loop {
                 match { #led_selection } {
                     #(#led_branches)*
@@ -5784,7 +5795,40 @@ fn pratt_led_required_prefix(branch: &PrattLedParsePlan) -> Vec<&ExpectedSet> {
     required
 }
 
-/// Returns the left binding power encoded by an extender position.
+/// Returns the cumulative caller-FOLLOW guard for every distinct extender threshold.
+///
+/// The Pratt ambiguity diagnostic reports the union of the expectations of every
+/// extender still active at the entry `min_bp`, so its content depends only on which
+/// distinct left binding powers are at or above that threshold. Composing the
+/// cumulative unions during generation keeps the diagnostic identical while removing
+/// every runtime union from the Pratt entry path. Thresholds are returned ascending,
+/// so the first threshold at or above `min_bp` names the guard to report.
+pub(super) fn pratt_guard_thresholds(
+    guard: &[PrattGuardBranchPlan],
+    kind_count: usize,
+) -> Vec<(u8, ExpectedSet)> {
+    let mut thresholds = guard
+        .iter()
+        .map(|branch| pratt_led_lbp(branch.position))
+        .collect::<Vec<_>>();
+    thresholds.sort_unstable();
+    thresholds.dedup();
+    thresholds
+        .into_iter()
+        .map(|threshold| {
+            let mut expected = ExpectedSet::empty(kind_count);
+            for branch in guard
+                .iter()
+                .filter(|branch| pratt_led_lbp(branch.position) >= threshold)
+            {
+                expected.union_assign(&branch.expected);
+            }
+            (threshold, expected)
+        })
+        .collect()
+}
+
+/// Returns the left binding power at which one Pratt extender competes.
 pub(super) fn pratt_led_lbp(position: PrattPosition) -> u8 {
     match position {
         PrattPosition::Infix { lbp, .. } => lbp,
@@ -6894,9 +6938,9 @@ pub(super) fn render_follow_value(
     follow: &PlannedFollow,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let value = format_ident!("{}_value", name.to_string().to_ascii_lowercase());
-    // Every binding is a `&FollowSet`. Static pool entries and the caller FOLLOW are
-    // borrowed directly; composed sets are temporaries whose lifetime the `let &`
-    // binding extends to the enclosing block, so no parse-time clone remains.
+    // Every binding is a `&'static FollowSet`. Static pool entries and the caller FOLLOW
+    // are borrowed directly; composed sets come from the site cache emitted next to the
+    // use, so a repeated caller costs one atomic load and one pointer comparison.
     match follow {
         PlannedFollow::Caller => (
             quote!(let #value = context.caller_follow();),
@@ -6906,28 +6950,67 @@ pub(super) fn render_follow_value(
             let expected = render_expected_set(plan, expected);
             (quote!(let #value = &#expected;), quote!(#value))
         }
-        PlannedFollow::StaticAndCaller(expected) => {
-            let expected = render_expected_set(plan, expected);
-            (
-                quote! {
-                    let #value = #expected
-                        .with_caller(context.follow())
-                        .expect("matching generated FOLLOW widths");
-                },
-                quote!(#value),
-            )
-        }
-        PlannedFollow::CallerAndPrattStops(expected) => {
-            let expected = render_expected_set(plan, expected);
-            (
-                quote! {
-                    let #value = #expected
-                        .union(context.follow())
-                        .expect("matching generated Pratt stop/FOLLOW widths");
-                },
-                quote!(#value),
-            )
-        }
+        PlannedFollow::StaticAndCaller(expected) => (
+            render_site_composition(
+                plan,
+                &quote!(let #value =),
+                expected,
+                SiteComposition::WithCaller,
+            ),
+            quote!(#value),
+        ),
+        PlannedFollow::CallerAndPrattStops(expected) => (
+            render_site_composition(
+                plan,
+                &quote!(let #value =),
+                expected,
+                SiteComposition::Union,
+            ),
+            quote!(#value),
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+/// Which cached composition one generated FOLLOW site performs.
+pub(super) enum SiteComposition {
+    /// Keeps the nearer Pratt boundary (`FollowSet::with_caller`).
+    WithCaller,
+    /// Unions both Pratt boundaries (`FollowSet::union`).
+    Union,
+}
+
+/// Emits one composition site with its own inline cache.
+///
+/// The cache is a block-scoped `static`, so every use site owns an independent
+/// one-entry cache without a grammar-wide naming scheme, and the entry outlives the
+/// parse exactly as the interned result does.
+pub(super) fn render_site_composition(
+    plan: &EmissionPlan,
+    binding: &proc_macro2::TokenStream,
+    expected: &ExpectedSet,
+    composition: SiteComposition,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let expected = render_expected_set(plan, expected);
+    let (method, message) = match composition {
+        SiteComposition::WithCaller => (
+            format_ident!("with_caller"),
+            "matching generated FOLLOW widths",
+        ),
+        SiteComposition::Union => (
+            format_ident!("union"),
+            "matching generated Pratt stop/FOLLOW widths",
+        ),
+    };
+    quote! {
+        #binding {
+            static __RECURSA_FOLLOW_SITE: #facade::__private::FollowSiteCache =
+                #facade::__private::FollowSiteCache::new();
+            __RECURSA_FOLLOW_SITE
+                .#method(&#expected, context.follow())
+                .expect(#message)
+        };
     }
 }
 
