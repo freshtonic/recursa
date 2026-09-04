@@ -785,6 +785,9 @@ pub struct DecisionProducts {
     container_machines: Vec<ContainerMachine>,
     /// Supplies the failure edges consumed when generation replays this decision.
     failure_edges: Vec<FailureEdge>,
+    /// Boundary kinds a matching `#[greedy(...)]` acceptance lets a Pratt loop extend on
+    /// at each dense parse-site ID, empty at every site without an acceptance.
+    greedy_pratt_boundary_by_site: Vec<KindSet>,
 }
 
 impl DecisionProducts {
@@ -806,6 +809,23 @@ impl DecisionProducts {
     /// Returns all parser failure edges and expectation recipes.
     pub fn failure_edges(&self) -> &[FailureEdge] {
         &self.failure_edges
+    }
+
+    /// Returns the accepted Pratt extender kinds indexed by dense parse-site ID.
+    ///
+    /// A site whose declaration carries no matching `#[greedy(...)]` acceptance has an
+    /// empty set, and the whole table is empty for a grammar that declares no acceptance.
+    pub fn greedy_pratt_boundary_by_site(&self) -> &[KindSet] {
+        &self.greedy_pratt_boundary_by_site
+    }
+
+    /// Records the accepted Pratt extender kinds derived from the advisory FOLLOW overlaps.
+    pub(crate) fn set_greedy_pratt_boundary_by_site(&mut self, accepted: Vec<KindSet>) {
+        self.greedy_pratt_boundary_by_site = if accepted.iter().all(KindSet::is_empty) {
+            Vec::new()
+        } else {
+            accepted
+        };
     }
 
     #[cfg(test)]
@@ -873,6 +893,11 @@ impl DecisionProducts {
         // Validate every cross-table identity before generation can trust this frozen product as executable authority.
         if self.follow_recipes_by_site.len() != grammar.sites.len()
             || self.container_machines.len() != grammar.sites.len()
+        {
+            return Err(DecisionInvariant::MissingSiteProduct);
+        }
+        if !self.greedy_pratt_boundary_by_site.is_empty()
+            && self.greedy_pratt_boundary_by_site.len() != grammar.sites.len()
         {
             return Err(DecisionInvariant::MissingSiteProduct);
         }
@@ -1310,6 +1335,7 @@ pub(crate) fn plan_decisions(
         follow_recipes_by_site,
         container_machines,
         failure_edges,
+        greedy_pratt_boundary_by_site: Vec::new(),
     })
 }
 
@@ -4662,6 +4688,7 @@ mod tests {
             follow_recipes_by_site: Vec::new(),
             container_machines: Vec::new(),
             failure_edges: Vec::new(),
+            greedy_pratt_boundary_by_site: Vec::new(),
         };
 
         let original = products.canonical_facts(&grammar);

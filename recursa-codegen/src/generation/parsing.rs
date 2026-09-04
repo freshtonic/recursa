@@ -100,6 +100,8 @@ pub(super) struct EmissionLookupIndex<'a> {
     pratt_thresholds: std::cell::RefCell<BTreeMap<(crate::TypeId, u8), (ExpectedSet, ExpectedSet)>>,
     /// Complete extender sets memoized by semantic owner.
     pratt_all: std::cell::RefCell<BTreeMap<crate::TypeId, ExpectedSet>>,
+    /// Accepted Pratt extender kinds per dense parse-site ID, empty without any acceptance.
+    greedy_by_site: Vec<ExpectedSet>,
 }
 
 impl<'a> EmissionLookupIndex<'a> {
@@ -133,6 +135,11 @@ impl<'a> EmissionLookupIndex<'a> {
                 *slot = Some(edge);
             }
         }
+        let greedy_by_site = decisions
+            .greedy_pratt_boundary_by_site()
+            .iter()
+            .map(|kinds| ExpectedSet::from_kinds(kinds, kind_count))
+            .collect();
         Self {
             decisions,
             containers_by_site,
@@ -142,7 +149,15 @@ impl<'a> EmissionLookupIndex<'a> {
             kind_count,
             pratt_thresholds: std::cell::RefCell::new(BTreeMap::new()),
             pratt_all: std::cell::RefCell::new(BTreeMap::new()),
+            greedy_by_site,
         }
+    }
+
+    /// Returns the boundary kinds a `#[greedy(...)]` acceptance lets a Pratt loop extend on.
+    pub(super) fn greedy_acceptance(&self, site: crate::SiteId) -> Option<&ExpectedSet> {
+        self.greedy_by_site
+            .get(site.index())
+            .filter(|accepted| !accepted.is_empty())
     }
 
     /// Selects one dispatch through the unchanged canonical linear route.
@@ -1108,6 +1123,14 @@ pub(super) enum PlannedFollow {
     StaticAndCaller(ExpectedSet),
     /// Adds generated Pratt stops without replacing the inherited static boundary.
     CallerAndPrattStops(ExpectedSet),
+    /// Composes the wrapped policy, then marks the `#[greedy(...)]`-accepted kinds so a
+    /// Pratt child keeps extending on them instead of reporting an ambiguity.
+    Accepting {
+        #[doc = "FOLLOW policy the accepting site would use without the acceptance."]
+        inner: Box<PlannedFollow>,
+        #[doc = "Boundary kinds the acceptance lets the Pratt child extend on."]
+        accepted: ExpectedSet,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
@@ -1380,6 +1403,10 @@ impl ExpectedSetPool {
 fn collect_follow_expected_set(follow: &PlannedFollow, values: &mut BTreeSet<ExpectedSet>) {
     match follow {
         PlannedFollow::Caller => {}
+        PlannedFollow::Accepting { inner, accepted } => {
+            collect_follow_expected_set(inner, values);
+            values.insert(accepted.clone());
+        }
         PlannedFollow::Static(expected)
         | PlannedFollow::StaticAndCaller(expected)
         | PlannedFollow::CallerAndPrattStops(expected) => {
@@ -3480,6 +3507,9 @@ pub(super) fn plan_pratt_node(
         PlannedFollow::StaticAndCaller(expected) | PlannedFollow::CallerAndPrattStops(expected) => {
             (expected.clone(), true)
         }
+        PlannedFollow::Accepting { .. } => {
+            return Err("a Pratt nud failure edge never carries a greedy acceptance".to_owned());
+        }
     };
     if nud_dispatch_expected != nud_failure_expected
         || nud_dispatch.states[nud_dispatch.root.index()]
@@ -4629,9 +4659,19 @@ pub(super) fn planned_container(
     let stop = planned_follow(machine.stop(), atom_index, kind_count)?;
     let element_selector =
         ExpectedSet::from_positions(machine.element_first(), atom_index, kind_count)?;
+    // A matching `#[greedy(...)]` acceptance applies to the child parsed at this site, so it
+    // wraps the child FOLLOW only: the repetition stop and every failure edge are unmarked,
+    // and a site without an acceptance is untouched.
+    let accept = |follow: PlannedFollow| match lookups.greedy_acceptance(machine.site()) {
+        Some(accepted) => PlannedFollow::Accepting {
+            inner: Box::new(follow),
+            accepted: accepted.clone(),
+        },
+        None => follow,
+    };
     Ok(match machine.operation() {
         ContainerOperation::Direct => PlannedContainer::Direct {
-            child_follow: stop,
+            child_follow: accept(stop),
             required_failure: planned_failure_edge(
                 lookups,
                 machine.site(),
@@ -4646,7 +4686,7 @@ pub(super) fn planned_container(
                     plan_optional_viability_decision(decision, atom_index, kind_count).map(Box::new)
                 })
                 .transpose()?,
-            child_follow: stop,
+            child_follow: accept(stop),
         },
         operation @ (ContainerOperation::ZeroOrMore
         | ContainerOperation::OneOrMore
@@ -4664,7 +4704,7 @@ pub(super) fn planned_container(
                 .as_ref()
                 .unwrap_or(&element_selector)
                 .clone();
-            let child_follow = follow_with_static(&stop, &continuation);
+            let child_follow = accept(follow_with_static(&stop, &continuation));
             PlannedContainer::Repeated {
                 operation,
                 element_selector,
@@ -4985,6 +5025,10 @@ pub(super) fn follow_with_static(
             expected.union_assign(additional);
             PlannedFollow::CallerAndPrattStops(expected)
         }
+        PlannedFollow::Accepting { inner, accepted } => PlannedFollow::Accepting {
+            inner: Box::new(follow_with_static(inner, additional)),
+            accepted: accepted.clone(),
+        },
     }
 }
 
@@ -4997,6 +5041,10 @@ fn follow_with_pratt_stops(follow: &PlannedFollow, additional: &ExpectedSet) -> 
             expected.union_assign(additional);
             PlannedFollow::CallerAndPrattStops(expected)
         }
+        PlannedFollow::Accepting { inner, accepted } => PlannedFollow::Accepting {
+            inner: Box::new(follow_with_pratt_stops(inner, additional)),
+            accepted: accepted.clone(),
+        },
         PlannedFollow::Static(_) | PlannedFollow::StaticAndCaller(_) => {
             follow_with_static(follow, additional)
         }
@@ -5029,6 +5077,12 @@ pub(super) fn pratt_operand_follow(
             let mut expected = expected.clone();
             expected.difference_assign(active);
             PlannedFollow::CallerAndPrattStops(expected)
+        }
+        PlannedFollow::Accepting { inner, accepted } => {
+            return PlannedFollow::Accepting {
+                inner: Box::new(pratt_operand_follow(inner, active, inactive)),
+                accepted: accepted.clone(),
+            };
         }
     };
     let mut inactive_only = inactive.clone();
@@ -5315,7 +5369,9 @@ fn render_runtime_variant_selection(
             quote!(&#expected)
         }
         PlannedFollow::Caller => quote!(context.caller_follow()),
-        PlannedFollow::StaticAndCaller(_) | PlannedFollow::CallerAndPrattStops(_) => return None,
+        PlannedFollow::StaticAndCaller(_)
+        | PlannedFollow::CallerAndPrattStops(_)
+        | PlannedFollow::Accepting { .. } => return None,
     };
     let child_capture = child_capture.render(facade);
     let capture = capture.render(facade);
@@ -5721,7 +5777,9 @@ pub(super) fn render_pratt_parse(
                 if __recursa_pratt_excluded.contains(&#index) { break; }
                 if context.next_is_pratt_boundary() {
                     if !(#continuation_viable) { break; }
-                    return Err(context.pratt_ambiguity(__recursa_pratt_guard(min_bp)));
+                    if !context.next_is_greedy_extension() {
+                        return Err(context.pratt_ambiguity(__recursa_pratt_guard(min_bp)));
+                    }
                 }
                 lhs = Self::#helper(
                     context,
@@ -6943,6 +7001,7 @@ pub(super) fn render_follow_value(
     name: &Ident,
     follow: &PlannedFollow,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let facade = &plan.facade;
     let value = format_ident!("{}_value", name.to_string().to_ascii_lowercase());
     // Every binding is a `&'static FollowSet`. Static pool entries and the caller FOLLOW
     // are borrowed directly; composed sets come from the site cache emitted next to the
@@ -6974,7 +7033,69 @@ pub(super) fn render_follow_value(
             ),
             quote!(#value),
         ),
+        // The acceptance rides the composition the site already performs: the composed
+        // FOLLOW, its expectations, and its Pratt boundary are unchanged, and only the
+        // accepted kinds are marked, so a Pratt child reached here extends on them
+        // instead of reporting `RCA4102`. One site cache still answers one visit.
+        PlannedFollow::Accepting { .. } => {
+            let (inner, accepted) = flatten_acceptance(follow, plan.kind_count);
+            let accepted = render_expected_set(plan, &accepted);
+            let composition = match inner {
+                // A caller-only FOLLOW is marked by unioning it with nothing.
+                PlannedFollow::Caller => {
+                    let empty = render_expected_set(plan, &ExpectedSet::empty(plan.kind_count));
+                    quote!(.union_accepting(&#empty, context.follow(), &#accepted))
+                }
+                // A caller-independent FOLLOW composes with itself, which changes no field.
+                PlannedFollow::Static(expected) => {
+                    let expected = render_expected_set(plan, expected);
+                    quote!(.with_caller_accepting(&#expected, &#expected, &#accepted))
+                }
+                PlannedFollow::StaticAndCaller(expected) => {
+                    let expected = render_expected_set(plan, expected);
+                    quote!(.with_caller_accepting(&#expected, context.follow(), &#accepted))
+                }
+                PlannedFollow::CallerAndPrattStops(expected) => {
+                    let expected = render_expected_set(plan, expected);
+                    quote!(.union_accepting(&#expected, context.follow(), &#accepted))
+                }
+                PlannedFollow::Accepting { .. } => {
+                    unreachable!("flattening removes every nested acceptance")
+                }
+            };
+            (
+                quote! {
+                    let #value = {
+                        static __RECURSA_FOLLOW_SITE: #facade::__private::FollowSiteCache =
+                            #facade::__private::FollowSiteCache::new();
+                        __RECURSA_FOLLOW_SITE
+                            #composition
+                            .expect("matching generated greedy acceptance widths")
+                    };
+                },
+                quote!(#value),
+            )
+        }
     }
+}
+
+/// Collapses nested acceptances into the composition they wrap and one union of their kinds.
+///
+/// Acceptances are attached once per site and the FOLLOW combinators rebuild the wrapped
+/// policy in place, so nesting does not arise; unioning the marks keeps the meaning if it
+/// ever did, because the mark is a set of kinds the Pratt loop may extend on.
+fn flatten_acceptance(follow: &PlannedFollow, kind_count: usize) -> (&PlannedFollow, ExpectedSet) {
+    let mut current = follow;
+    let mut accepted = ExpectedSet::empty(kind_count);
+    while let PlannedFollow::Accepting {
+        inner,
+        accepted: kinds,
+    } = current
+    {
+        accepted.union_assign(kinds);
+        current = inner;
+    }
+    (current, accepted)
 }
 
 #[derive(Clone, Copy)]

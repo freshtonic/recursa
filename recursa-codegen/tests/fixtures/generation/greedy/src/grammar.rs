@@ -57,10 +57,21 @@ pub enum Expr<'input> {
 }
 
 /// `!` is both a postfix extender of `Expr` and the statement terminator.
-/// The parser keeps extending the expression while it sees `!`.
+/// The acceptance makes the expression keep extending, so the required terminator
+/// never gets its `!` and the statement runs out of input instead of reporting `RCA4102`.
 #[derive(recursa::Node, Debug, Clone)]
 pub struct Stmt<'input> {
     #[greedy(BANG)]
     pub expr: Expr<'input>,
     pub terminator: Bang,
+}
+
+/// The same shared `!`, but with a terminator the statement can do without. The acceptance
+/// makes the expression keep extending at `expr`, so `1 !` parses as a factorial with no
+/// terminator. Without it the extender is a runtime `RCA4102` ambiguity instead.
+#[derive(recursa::Node, Debug, Clone)]
+pub struct Tail<'input> {
+    #[greedy(BANG)]
+    pub expr: Expr<'input>,
+    pub terminator: Option<Bang>,
 }

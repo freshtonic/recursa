@@ -63,6 +63,11 @@ pub struct FollowSet {
     pub(crate) expected: Cow<'static, [ExpectedAtomId]>,
     /// Nearest static suffix boundary used by Pratt ambiguity checks.
     pub(crate) pratt_boundary_kinds: Cow<'static, [u64]>,
+    /// Boundary kinds a `#[greedy(...)]` acceptance lets a Pratt loop extend on.
+    ///
+    /// Empty for every set that no acceptance produced, including every generated
+    /// static, so the slice may be shorter than the boundary it refines.
+    pub(crate) greedy_kinds: Cow<'static, [u64]>,
 }
 
 impl FollowSet {
@@ -93,6 +98,7 @@ impl FollowSet {
             kinds: Cow::Borrowed(kinds),
             expected: Cow::Borrowed(expected),
             pratt_boundary_kinds: Cow::Borrowed(kinds),
+            greedy_kinds: Cow::Borrowed(&[]),
         }
     }
 
@@ -141,17 +147,56 @@ impl FollowSet {
     /// without allocating. Parsers compose FOLLOW sets at every use site, so the
     /// steady state of a parse allocates no FOLLOW storage at all.
     pub fn union(&self, other: &Self) -> Result<&'static Self, FollowSetError> {
-        self.compose(other, BoundaryMode::Union)
+        self.compose(other, None, BoundaryMode::Union)
     }
 
     /// Unions with the caller FOLLOW while keeping only this set as the Pratt boundary.
     pub fn with_caller(&self, caller: &Self) -> Result<&'static Self, FollowSetError> {
-        self.compose(caller, BoundaryMode::KeepSelf)
+        self.compose(caller, None, BoundaryMode::KeepSelf)
+    }
+
+    /// Unions two sets and marks the `#[greedy(...)]`-accepted kinds of the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    pub fn union_accepting(
+        &self,
+        other: &Self,
+        accepted: &Self,
+    ) -> Result<&'static Self, FollowSetError> {
+        self.compose(other, Some(accepted), BoundaryMode::Union)
+    }
+
+    /// Composes with the caller and marks the `#[greedy(...)]`-accepted kinds of the result.
+    ///
+    /// FOLLOW membership, expectations, and the Pratt boundary are what the unmarked
+    /// composition would produce: the accepted kinds really can follow the site and really
+    /// are a boundary. What the mark changes is what a Pratt loop does when it reaches one
+    /// of them with a viable extension — it extends instead of reporting `RCA4102`. An
+    /// extension that bounded lookahead already rules out still ends the loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    pub fn with_caller_accepting(
+        &self,
+        caller: &Self,
+        accepted: &Self,
+    ) -> Result<&'static Self, FollowSetError> {
+        self.compose(caller, Some(accepted), BoundaryMode::KeepSelf)
     }
 
     /// Composes two sets and returns only the interned result.
-    fn compose(&self, other: &Self, mode: BoundaryMode) -> Result<&'static Self, FollowSetError> {
-        Ok(self.compose_entry(other, mode)?.composed)
+    fn compose(
+        &self,
+        other: &Self,
+        accepted: Option<&Self>,
+        mode: BoundaryMode,
+    ) -> Result<&'static Self, FollowSetError> {
+        Ok(self.compose_entry(other, accepted, mode)?.composed)
     }
 
     /// Composes two sets, memoized first by operand identity, then by content.
@@ -163,14 +208,15 @@ impl FollowSet {
     /// scratch buffers and canonicalizes it through the content table, so the
     /// number of leaked sets is bounded by the number of distinct contents.
     ///
-    /// The returned record is leaked once per distinct `(left, right, mode)`
-    /// triple, so a per-site inline cache can publish one pointer to it and later
+    /// The returned record is leaked once per distinct `(left, right, acceptance, mode)`
+    /// key, so a per-site inline cache can publish one pointer to it and later
     /// recognize the same caller by address without touching this table again.
-    /// Callers must keep both operands alive for the whole process; generated
+    /// Callers must keep every operand alive for the whole process; generated
     /// parsers only ever compose generated statics and earlier interned results.
     fn compose_entry(
         &self,
         other: &Self,
+        accepted: Option<&Self>,
         mode: BoundaryMode,
     ) -> Result<&'static ComposedFollow, FollowSetError> {
         if self.kind_count != other.kind_count {
@@ -179,9 +225,18 @@ impl FollowSet {
                 right: other.kind_count,
             });
         }
+        if let Some(accepted) = accepted
+            && self.kind_count != accepted.kind_count
+        {
+            return Err(FollowSetError::WidthMismatch {
+                left: self.kind_count,
+                right: accepted.kind_count,
+            });
+        }
         let pair = (
             std::ptr::from_ref(self) as usize,
             std::ptr::from_ref(other) as usize,
+            accepted.map_or(0, |accepted| std::ptr::from_ref(accepted) as usize),
             mode as u8,
         );
         let mut interner = INTERNER
@@ -196,13 +251,15 @@ impl FollowSet {
             pairs,
         } = &mut *interner;
         scratch.kinds.clear();
+        scratch.boundary.clear();
+        scratch.expected.clear();
+        scratch.greedy.clear();
         scratch.kinds.extend(
             self.kinds
                 .iter()
                 .zip(other.kinds.iter())
                 .map(|(l, r)| l | r),
         );
-        scratch.boundary.clear();
         match mode {
             BoundaryMode::Union => scratch.boundary.extend(
                 self.pratt_boundary_kinds
@@ -212,12 +269,17 @@ impl FollowSet {
             ),
             BoundaryMode::KeepSelf => scratch.boundary.extend_from_slice(&self.kinds),
         }
-        scratch.expected.clear();
         merge_sorted(&self.expected, &other.expected, &mut scratch.expected);
+        // An acceptance covers exactly the site that declared it, so a composition without
+        // one leaves the mark empty instead of inheriting an operand's.
+        if let Some(accepted) = accepted {
+            scratch.greedy.extend_from_slice(&accepted.kinds);
+        }
         let hash = content_hash(
             self.kind_count,
             &scratch.kinds,
             &scratch.boundary,
+            &scratch.greedy,
             &scratch.expected,
         );
         let bucket = contents.entry(hash).or_default();
@@ -225,6 +287,7 @@ impl FollowSet {
             set.kind_count == self.kind_count
                 && *set.kinds == *scratch.kinds
                 && *set.pratt_boundary_kinds == *scratch.boundary
+                && *set.greedy_kinds == *scratch.greedy
                 && *set.expected == *scratch.expected
         }) {
             Some(found) => found,
@@ -234,6 +297,7 @@ impl FollowSet {
                     kinds: Cow::Owned(scratch.kinds.clone()),
                     expected: Cow::Owned(scratch.expected.clone()),
                     pratt_boundary_kinds: Cow::Owned(scratch.boundary.clone()),
+                    greedy_kinds: Cow::Owned(scratch.greedy.clone()),
                 }));
                 bucket.push(leaked);
                 leaked
@@ -273,6 +337,18 @@ impl FollowSet {
         let word = usize::from(kind) / 64;
         let bit = usize::from(kind) % 64;
         self.pratt_boundary_kinds
+            .get(word)
+            .is_some_and(|value| value & (1_u64 << bit) != 0)
+    }
+
+    /// Whether a `#[greedy(...)]` acceptance lets a Pratt loop extend past `kind` here.
+    pub(crate) fn greedy_contains(&self, kind: TokenKind) -> bool {
+        if u32::from(kind) >= self.kind_count {
+            return false;
+        }
+        let word = usize::from(kind) / 64;
+        let bit = usize::from(kind) % 64;
+        self.greedy_kinds
             .get(word)
             .is_some_and(|value| value & (1_u64 << bit) != 0)
     }
@@ -339,7 +415,7 @@ impl FollowSiteCache {
         nearer: &'static FollowSet,
         caller: &FollowSet,
     ) -> Result<&'static FollowSet, FollowSetError> {
-        self.composed(nearer, caller, BoundaryMode::KeepSelf)
+        self.composed(nearer, caller, None, BoundaryMode::KeepSelf)
     }
 
     /// Caches [`FollowSet::union`] for one generated descent site.
@@ -354,7 +430,39 @@ impl FollowSiteCache {
         nearer: &'static FollowSet,
         caller: &FollowSet,
     ) -> Result<&'static FollowSet, FollowSetError> {
-        self.composed(nearer, caller, BoundaryMode::Union)
+        self.composed(nearer, caller, None, BoundaryMode::Union)
+    }
+
+    /// Caches [`FollowSet::with_caller_accepting`] for one generated `#[greedy(...)]` site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    #[inline]
+    pub fn with_caller_accepting(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+        accepted: &'static FollowSet,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        self.composed(nearer, caller, Some(accepted), BoundaryMode::KeepSelf)
+    }
+
+    /// Caches [`FollowSet::union_accepting`] for one generated `#[greedy(...)]` site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FollowSetError::WidthMismatch`] when the operands describe
+    /// different grammar widths.
+    #[inline]
+    pub fn union_accepting(
+        &self,
+        nearer: &'static FollowSet,
+        caller: &FollowSet,
+        accepted: &'static FollowSet,
+    ) -> Result<&'static FollowSet, FollowSetError> {
+        self.composed(nearer, caller, Some(accepted), BoundaryMode::Union)
     }
 
     /// Answers one composition from the published record, or refills the site.
@@ -363,6 +471,7 @@ impl FollowSiteCache {
         &self,
         nearer: &'static FollowSet,
         caller: &FollowSet,
+        accepted: Option<&'static FollowSet>,
         mode: BoundaryMode,
     ) -> Result<&'static FollowSet, FollowSetError> {
         let published = self.entry.load(Ordering::Acquire);
@@ -378,7 +487,7 @@ impl FollowSiteCache {
                 return Ok(published.composed);
             }
         }
-        self.refill(nearer, caller, mode)
+        self.refill(nearer, caller, accepted, mode)
     }
 
     /// Composes through the process-wide memo and republishes this site's record.
@@ -387,9 +496,10 @@ impl FollowSiteCache {
         &self,
         nearer: &'static FollowSet,
         caller: &FollowSet,
+        accepted: Option<&'static FollowSet>,
         mode: BoundaryMode,
     ) -> Result<&'static FollowSet, FollowSetError> {
-        let entry = nearer.compose_entry(caller, mode)?;
+        let entry = nearer.compose_entry(caller, accepted, mode)?;
         self.entry
             .store(std::ptr::from_ref(entry).cast_mut(), Ordering::Release);
         Ok(entry.composed)
@@ -428,8 +538,15 @@ struct Interner {
     scratch: Scratch,
     /// Canonical interned sets grouped by content hash.
     contents: std::collections::HashMap<u64, Vec<&'static FollowSet>, IdentityHashBuilder>,
-    /// Operand-identity memo: (left address, right address, mode) to the shared record.
-    pairs: std::collections::HashMap<(usize, usize, u8), &'static ComposedFollow, PairHashBuilder>,
+    /// Operand-identity memo: (left, right, acceptance, mode) to the shared record.
+    ///
+    /// A composition with no acceptance stores `0` in the acceptance slot, which no
+    /// operand address can collide with.
+    pairs: std::collections::HashMap<
+        (usize, usize, usize, u8),
+        &'static ComposedFollow,
+        PairHashBuilder,
+    >,
 }
 
 /// Composition buffers reused across calls so a table hit allocates nothing.
@@ -439,6 +556,8 @@ struct Scratch {
     kinds: Vec<u64>,
     /// Pratt boundary words for the chosen mode.
     boundary: Vec<u64>,
+    /// Accepted boundary words contributed by a `#[greedy(...)]` composition.
+    greedy: Vec<u64>,
     /// Merged sorted atom refinements.
     expected: Vec<ExpectedAtomId>,
 }
@@ -480,11 +599,12 @@ fn content_hash(
     kind_count: u32,
     kinds: &[u64],
     boundary: &[u64],
+    greedy: &[u64],
     expected: &[ExpectedAtomId],
 ) -> u64 {
     const K: u64 = 0x517c_c1b7_2722_0a95;
     let mut hash = u64::from(kind_count).wrapping_mul(K);
-    for word in kinds.iter().chain(boundary.iter()) {
+    for word in kinds.iter().chain(boundary.iter()).chain(greedy.iter()) {
         hash = (hash.rotate_left(5) ^ word).wrapping_mul(K);
     }
     for atom in expected {
@@ -504,7 +624,7 @@ impl std::hash::BuildHasher for PairHashBuilder {
     }
 }
 
-/// Hasher for `(usize, usize, u8)` keys: rotate, xor, multiply per written word.
+/// Hasher for `(usize, usize, usize, u8)` keys: rotate, xor, multiply per written word.
 #[derive(Default)]
 struct PairHasher(u64);
 
@@ -626,6 +746,108 @@ mod tests {
             &[ExpectedAtomId(0), ExpectedAtomId(1), ExpectedAtomId(2)]
         );
         assert_eq!(right.union(&left).unwrap(), union);
+    }
+
+    #[test]
+    fn a_greedy_acceptance_marks_kinds_without_changing_what_the_composition_means() {
+        let nearer = FollowSet::from_static(3, &[0b001], &[ExpectedAtomId(0)]);
+        let caller = FollowSet::from_static(3, &[0b110], &[ExpectedAtomId(2)]);
+        let composed = nearer.union(&caller).unwrap();
+        assert!(composed.pratt_boundary_contains(1));
+        assert!(!composed.greedy_contains(1));
+
+        let accepted = FollowSet::from_static(3, &[0b010], &[]);
+        let greedy = nearer.union_accepting(&caller, &accepted).unwrap();
+
+        assert_eq!(
+            &*greedy.kinds, &*composed.kinds,
+            "FOLLOW membership is what the unmarked union produces"
+        );
+        assert_eq!(
+            &*greedy.expected, &*composed.expected,
+            "the mask contributes no expectation"
+        );
+        assert_eq!(
+            &*greedy.pratt_boundary_kinds, &*composed.pratt_boundary_kinds,
+            "the accepted kind is still a boundary"
+        );
+        assert!(greedy.greedy_contains(1), "the accepted kind may extend");
+        assert!(
+            !greedy.greedy_contains(0) && !greedy.greedy_contains(2),
+            "no other kind is accepted"
+        );
+        assert!(
+            std::ptr::eq(greedy, nearer.union_accepting(&caller, &accepted).unwrap()),
+            "the acceptance interns by content like every other composition"
+        );
+        assert!(
+            !std::ptr::eq(greedy, composed),
+            "the marked and unmarked compositions stay separate sets"
+        );
+    }
+
+    #[test]
+    fn a_descent_composition_drops_the_acceptance_of_its_operands() {
+        let base = FollowSet::from_static(3, &[0b011], &[]);
+        let accepted = FollowSet::from_static(3, &[0b001], &[]);
+        let empty = FollowSet::from_static(3, &[0], &[]);
+        let greedy = empty.union_accepting(&base, &accepted).unwrap();
+        assert!(greedy.greedy_contains(0));
+
+        let nearer = FollowSet::from_static(3, &[0b100], &[]);
+        assert!(!nearer.union(greedy).unwrap().greedy_contains(0));
+        assert!(!nearer.with_caller(greedy).unwrap().greedy_contains(0));
+    }
+
+    #[test]
+    fn a_greedy_acceptance_keeps_the_boundary_its_composition_would_have() {
+        let nearer = FollowSet::from_static(3, &[0b001], &[]);
+        let caller = FollowSet::from_static(3, &[0b110], &[]);
+        let accepted = FollowSet::from_static(3, &[0b010], &[]);
+
+        let kept = nearer.with_caller_accepting(&caller, &accepted).unwrap();
+
+        assert!(kept.contains(1) && kept.contains(2));
+        assert!(kept.pratt_boundary_contains(0));
+        assert!(
+            !kept.pratt_boundary_contains(1) && !kept.pratt_boundary_contains(2),
+            "with_caller still keeps only the nearer boundary"
+        );
+        assert!(kept.greedy_contains(1));
+    }
+
+    #[test]
+    fn a_greedy_acceptance_site_cache_answers_a_repeated_caller_by_address() {
+        static NEARER: FollowSet = FollowSet::from_static(3, &[0b011], &[]);
+        static FIRST: FollowSet = FollowSet::from_static(3, &[0b100], &[]);
+        static SECOND: FollowSet = FollowSet::from_static(3, &[0b010], &[]);
+        static ACCEPTED: FollowSet = FollowSet::from_static(3, &[0b001], &[]);
+        static SITE: FollowSiteCache = FollowSiteCache::new();
+
+        let first = SITE
+            .with_caller_accepting(&NEARER, &FIRST, &ACCEPTED)
+            .unwrap();
+        assert!(std::ptr::eq(
+            first,
+            SITE.with_caller_accepting(&NEARER, &FIRST, &ACCEPTED)
+                .unwrap()
+        ));
+        assert!(first.greedy_contains(0));
+        assert!(!first.greedy_contains(1));
+
+        let switched = SITE
+            .with_caller_accepting(&NEARER, &SECOND, &ACCEPTED)
+            .unwrap();
+        assert!(!std::ptr::eq(switched, first));
+        assert_eq!(
+            switched,
+            NEARER.with_caller_accepting(&SECOND, &ACCEPTED).unwrap()
+        );
+        assert!(std::ptr::eq(
+            first,
+            SITE.with_caller_accepting(&NEARER, &FIRST, &ACCEPTED)
+                .unwrap()
+        ));
     }
 
     #[test]

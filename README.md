@@ -95,10 +95,13 @@ optional sequence consumes nothing; synthetic Pretty output emits a presence
 sequence only when its boolean is true and omits erased optional groups.
 
 When an optional or repeated element can start with a token that may also
-follow the whole node, analysis reports the overlap as an advisory `RCA0300`
-(or `RCA0301` for a Pratt extender). The generated parser resolves it greedily:
-it commits to the element when it sees the shared token. Accept a reviewed
-overlap where it lives with `#[greedy(KIND, ...)]` on the field or variant:
+follow the whole node, analysis reports the overlap as an advisory `RCA0300`.
+The generated parser resolves it greedily: it commits to the element when it
+sees the shared token. A Pratt extender that may also follow its use site is
+the advisory `RCA0301`, and there the parser refuses to choose and fails with
+`RCA4102` at run time. Accept a reviewed overlap where it lives with
+`#[greedy(KIND, ...)]` on the field or variant, which keeps the nullable
+commitment and makes the expression keep extending on the accepted kinds:
 
 ```rust,ignore
 #[derive(recursa::Node)]
@@ -119,8 +122,9 @@ The attribute also goes on a variant, or on a Node such as a Pratt enum, and
 then covers every site of the variant or Node; the declared kinds must equal
 the union of those sites' overlaps. `#[greedy(all)]` accepts whatever overlap
 exists at the site, the deliberate opt-out of exactness for sites whose overlap
-is every identifier-capable keyword; it still fails with `RCA0302` when there
-is no overlap at all.
+is every identifier-capable keyword; at a Pratt site it therefore covers every
+extender of that site's type. It still fails with `RCA0302` when there is no
+overlap at all.
 
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a

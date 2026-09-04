@@ -1,5 +1,6 @@
 //! `#[greedy(...)]` in a generated downstream crate: the acceptance silences the advisory
-//! FOLLOW-overlap warnings and changes no parser behaviour.
+//! FOLLOW-overlap warnings, keeps the nullable commitment the parser already made, and
+//! makes a Pratt extender keep extending instead of reporting a runtime ambiguity.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,11 +11,11 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/generation/greedy";
 
 #[test]
-fn greedy_acceptances_silence_follow_warnings_without_changing_the_parser() {
+fn greedy_acceptances_silence_follow_warnings_and_extend_pratt_expressions() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
     let accepted_source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(accepted_source.matches("#[greedy(").count(), 3);
+    assert_eq!(accepted_source.matches("#[greedy(").count(), 4);
 
     let accepted_build = build_fixture(&package);
     assert_success(&accepted_build);
@@ -32,8 +33,14 @@ fn greedy_acceptances_silence_follow_warnings_without_changing_the_parser() {
         "the optional element takes the SELECT that a separator could have taken:\n{accepted_output}"
     );
     assert!(
-        accepted_output.contains("stmt \"1 !\": err"),
-        "the postfix extender takes the `!` that the terminator needed:\n{accepted_output}"
+        accepted_output.contains("stmt \"1 !\": err RCA4101"),
+        "the postfix extender takes the `!` that the terminator needed, so the required \
+         terminator runs out of input instead of reporting an ambiguity:\n{accepted_output}"
+    );
+    assert!(
+        accepted_output.contains("tail \"1 !\": ok Tail { expr: Factorial(")
+            && accepted_output.contains("terminator: None }"),
+        "the accepted extender keeps extending where the caller can do without the token:\n{accepted_output}"
     );
 
     let plain_source = accepted_source
@@ -56,11 +63,21 @@ fn greedy_acceptances_silence_follow_warnings_without_changing_the_parser() {
     );
     let plain_run = run_fixture(&package);
     assert_success(&plain_run);
-    assert_eq!(
-        String::from_utf8_lossy(&plain_run.stdout),
-        accepted_output,
-        "the acceptance does not change what the generated parser accepts"
+    let plain_output = String::from_utf8_lossy(&plain_run.stdout).into_owned();
+    assert!(
+        plain_output.contains("stmt \"1 !\": err RCA4102")
+            && plain_output.contains("tail \"1 !\": err RCA4102"),
+        "without the acceptance the shared extender is a runtime Pratt ambiguity:\n{plain_output}"
     );
+    for line in accepted_output
+        .lines()
+        .filter(|line| line.starts_with("query "))
+    {
+        assert!(
+            plain_output.contains(line),
+            "a nullable acceptance changes nothing the parser does:\n{plain_output}"
+        );
+    }
 
     fs::write(
         &grammar,
