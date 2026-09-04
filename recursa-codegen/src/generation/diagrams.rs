@@ -462,20 +462,26 @@ fn annotate_greedy(
     let Some(greedy) = source_model
         .greedy
         .iter()
-        .find(|greedy| greedy.owner.covers(field))
+        .find(|greedy| match &greedy.owner {
+            crate::source_model::GreedyOwner::Field(owner) => *owner == field,
+            crate::source_model::GreedyOwner::Variant { fields, .. } => fields.contains(&field),
+            crate::source_model::GreedyOwner::Type(_) => false,
+        })
     else {
         return element;
     };
-    let kinds = greedy
-        .definitions
-        .iter()
-        .map(|definition| {
-            source_model.token_definitions[definition.index()]
-                .name
-                .clone()
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let kinds = match &greedy.kinds {
+        crate::source_model::GreedyKindNames::All => "all".to_owned(),
+        crate::source_model::GreedyKindNames::Exact(definitions) => definitions
+            .iter()
+            .map(|definition| {
+                source_model.token_definitions[definition.index()]
+                    .name
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
     DiagramNode::Sequence(vec![
         element,
         DiagramNode::Comment(format!("greedy({kinds})")),

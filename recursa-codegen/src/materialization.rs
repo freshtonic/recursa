@@ -1141,39 +1141,93 @@ impl Materializer {
     }
 
     /// Derives the kind for definition while materializing grammar applications and container shapes.
-    /// Attaches the authored `#[greedy(...)]` acceptance that covers a field, if any.
+    /// Describes the authored item a site came from and attaches the `#[greedy(...)]`
+    /// acceptance that covers it, if any.
     ///
-    /// The acceptance identity is the attribute's index in the source model, so every site
-    /// materialized from the same authored attribute (across generic applications and across
-    /// the fields of one variant) shares one identity and is matched as one group.
-    fn with_greedy(&self, field: ResolvedFieldId, declaration: Declaration) -> Declaration {
-        let declaration = declaration.with_authored(
-            self.resolved_field(field)
+    /// A field attribute wins over its variant's, and a variant's over its Node's. The
+    /// acceptance identity is the attribute's index in the source model, so every site
+    /// materialized from the same authored attribute (across generic applications, across the
+    /// fields of one variant, or across every variant of a Node) shares one identity and is
+    /// matched as one group.
+    fn with_greedy(
+        &self,
+        application: &MaterializedNodeApplication,
+        variant: Option<ResolvedVariantId>,
+        field: Option<ResolvedFieldId>,
+        role: crate::AuthoredRole,
+        declaration: Declaration,
+    ) -> Declaration {
+        let node = &self.resolved().nodes[application.node.index()];
+        let mut variant_ident = None;
+        let mut field_name = None;
+        let mut index = 0;
+        let mut variant_id = variant;
+        if let Some(field) = field {
+            match &node.body {
+                crate::resolution::ResolvedNodeBody::Struct { .. } => {
+                    index = node
+                        .fields
+                        .iter()
+                        .position(|candidate| candidate.id == field)
+                        .unwrap_or(0);
+                }
+                crate::resolution::ResolvedNodeBody::Enum { variants } => {
+                    for candidate in variants {
+                        if let Some(position) = candidate.fields.iter().position(|id| *id == field)
+                        {
+                            variant_id = Some(candidate.id);
+                            index = position;
+                        }
+                    }
+                }
+            }
+            field_name = self
+                .resolved_field(field)
                 .syntax
                 .ident
                 .as_ref()
-                .map(|ident| ident.unraw().to_string()),
-        );
-        let Some((index, greedy)) = self
+                .map(|ident| ident.unraw().to_string());
+        }
+        if let (Some(variant), crate::resolution::ResolvedNodeBody::Enum { variants }) =
+            (variant_id, &node.body)
+        {
+            variant_ident = variants
+                .iter()
+                .find(|candidate| candidate.id == variant)
+                .map(|candidate| candidate.ident.clone());
+        }
+        let declaration = declaration.with_authored(crate::AuthoredSite {
+            node: node.ident.clone(),
+            variant: variant_ident,
+            field: field_name,
+            index,
+            role,
+        });
+        let Some((position, greedy)) = self
             .source_model()
             .greedy
             .iter()
             .enumerate()
-            .find(|(_, greedy)| greedy.owner.covers(field))
+            .filter(|(_, greedy)| greedy.owner.covers(application.node, variant_id, field))
+            .min_by_key(|(_, greedy)| greedy.owner.specificity())
         else {
             return declaration;
         };
-        let mut kinds = greedy
-            .definitions
-            .iter()
-            .map(|definition| self.kind_for_definition(*definition))
-            .collect::<Vec<_>>();
-        kinds.sort_unstable();
-        kinds.dedup();
-        declaration.with_greedy(crate::GreedyAcceptance::new(
-            u32::try_from(index).expect("greedy acceptance count fits u32"),
-            kinds,
-        ))
+        let id = u32::try_from(position).expect("greedy acceptance count fits u32");
+        match &greedy.kinds {
+            crate::source_model::GreedyKindNames::All => {
+                declaration.with_greedy(crate::GreedyAcceptance::all(id))
+            }
+            crate::source_model::GreedyKindNames::Exact(definitions) => {
+                let mut kinds = definitions
+                    .iter()
+                    .map(|definition| self.kind_for_definition(*definition))
+                    .collect::<Vec<_>>();
+                kinds.sort_unstable();
+                kinds.dedup();
+                declaration.with_greedy(crate::GreedyAcceptance::new(id, kinds))
+            }
+        }
     }
 
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
@@ -3171,6 +3225,7 @@ impl Materializer {
                         application,
                         owner,
                         elements,
+                        None,
                         terminal_type_count,
                         fixed_types,
                         content_types,
@@ -3217,6 +3272,7 @@ impl Materializer {
                                     application,
                                     owner,
                                     &variant.elements,
+                                    Some(variant.resolved_variant),
                                     terminal_type_count,
                                     fixed_types,
                                     content_types,
@@ -3279,6 +3335,7 @@ impl Materializer {
                                             application,
                                             owner,
                                             &nud.body,
+                                            Some(common.resolved_variant),
                                             terminal_type_count,
                                             fixed_types,
                                             content_types,
@@ -3315,6 +3372,7 @@ impl Materializer {
                                             application,
                                             owner,
                                             &led.tail,
+                                            Some(common.resolved_variant),
                                             terminal_type_count,
                                             fixed_types,
                                             content_types,
@@ -3770,6 +3828,7 @@ impl Materializer {
                 unit.id,
                 application,
                 syntax,
+                Some(unit.field),
                 fixed_types,
                 optional_fixed_types,
                 "attachment",
@@ -3779,7 +3838,10 @@ impl Materializer {
         let field = self.resolved_field(unit.field);
         let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
         let declaration = grammar.push_declaration(self.with_greedy(
-            unit.field,
+            application,
+            None,
+            Some(unit.field),
+            crate::AuthoredRole::Field,
             Declaration::new(
                 format!(
                     "{}::__recursa_attachment_element{}",
@@ -3810,6 +3872,7 @@ impl Materializer {
                 unit.id,
                 application,
                 syntax,
+                Some(unit.field),
                 fixed_types,
                 optional_fixed_types,
                 "attachment",
@@ -3827,6 +3890,7 @@ impl Materializer {
         owner: TypeId,
         application: &MaterializedNodeApplication,
         syntax: &MaterializedAttachedFixedSyntax,
+        field: Option<ResolvedFieldId>,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
         role: &str,
@@ -3848,12 +3912,18 @@ impl Materializer {
             ),
         };
         let location = grammar.push_location(Location::new(site.source, site.range.clone()));
-        let declaration = grammar.push_declaration(Declaration::new(
-            format!(
-                "{}::__recursa_{role}_element{index}",
-                application.display_name
+        let declaration = grammar.push_declaration(self.with_greedy(
+            application,
+            None,
+            field,
+            crate::AuthoredRole::Attachment,
+            Declaration::new(
+                format!(
+                    "{}::__recursa_{role}_element{index}",
+                    application.display_name
+                ),
+                location,
             ),
-            location,
         ));
         grammar.push_site(ParseSite::new(owner, target, declaration, container))
     }
@@ -3913,6 +3983,7 @@ impl Materializer {
                     unit.envelope,
                     application,
                     syntax,
+                    Some(unit.field),
                     fixed_types,
                     optional_fixed_types,
                     "presence_envelope",
@@ -3923,9 +3994,15 @@ impl Materializer {
         let presence_index = envelope_sites.len();
         let field = self.resolved_field(unit.field);
         let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
-        let declaration = grammar.push_declaration(Declaration::new(
-            format!("{}::__recursa_presence_optional", application.display_name),
-            location,
+        let declaration = grammar.push_declaration(self.with_greedy(
+            application,
+            None,
+            Some(unit.field),
+            crate::AuthoredRole::Presence,
+            Declaration::new(
+                format!("{}::__recursa_presence_optional", application.display_name),
+                location,
+            ),
         ));
         envelope_sites.push(grammar.push_site(ParseSite::new(
             unit.envelope,
@@ -3941,6 +4018,7 @@ impl Materializer {
                     unit.envelope,
                     application,
                     syntax,
+                    Some(unit.field),
                     fixed_types,
                     optional_fixed_types,
                     "presence_envelope",
@@ -3993,6 +4071,7 @@ impl Materializer {
         application: &MaterializedNodeApplication,
         owner: TypeId,
         elements: &[MaterializedElement],
+        variant: Option<ResolvedVariantId>,
         terminal_type_count: usize,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
@@ -4026,9 +4105,15 @@ impl Materializer {
                 MaterializedElement::OptionalFixedTokenGroup { tokens, site, .. } => {
                     let location =
                         grammar.push_location(Location::new(site.source, site.range.clone()));
-                    let declaration = grammar.push_declaration(Declaration::new(
-                        format!("{}::element{index}", application.display_name),
-                        location,
+                    let declaration = grammar.push_declaration(self.with_greedy(
+                        application,
+                        variant,
+                        None,
+                        crate::AuthoredRole::Attachment,
+                        Declaration::new(
+                            format!("{}::element{index}", application.display_name),
+                            location,
+                        ),
                     ));
                     grammar.push_site(ParseSite::new(
                         owner,
@@ -4047,9 +4132,15 @@ impl Materializer {
                         resolved_field.ty.source,
                         resolved_field.range.clone(),
                     ));
-                    let declaration = grammar.push_declaration(Declaration::new(
-                        format!("{}::element{index}", application.display_name),
-                        location,
+                    let declaration = grammar.push_declaration(self.with_greedy(
+                        application,
+                        variant,
+                        Some(*field),
+                        crate::AuthoredRole::Presence,
+                        Declaration::new(
+                            format!("{}::element{index}", application.display_name),
+                            location,
+                        ),
                     ));
                     let (target, optional) = presence_types[&(application.id, *field)];
                     let site = grammar.push_site(ParseSite::new(
@@ -4081,7 +4172,10 @@ impl Materializer {
                         resolved_field.range.clone(),
                     ));
                     let declaration = grammar.push_declaration(self.with_greedy(
-                        *field,
+                        application,
+                        variant,
+                        Some(*field),
+                        crate::AuthoredRole::Field,
                         Declaration::new(
                             format!("{}::element{index}", application.display_name),
                             location,

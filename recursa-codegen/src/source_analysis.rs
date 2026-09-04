@@ -437,7 +437,7 @@ pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) 
 /// Publication persists these lines beside the reuse index so a later build that reuses the
 /// published Generation without analyzing again can replay exactly the same warnings.
 pub(crate) fn warning_directives(report: &BuildReport) -> Vec<String> {
-    let mut emitted = BTreeSet::new();
+    let mut emitted = std::collections::BTreeMap::<String, usize>::new();
     let mut directives = Vec::new();
     for warning in report.warnings() {
         let location = cargo_one_line(&warning.primary().location().map_or_else(
@@ -456,8 +456,24 @@ pub(crate) fn warning_directives(report: &BuildReport) -> Vec<String> {
             evidence,
             remedy,
         );
-        if emitted.insert(directive.clone()) {
-            directives.push(directive);
+        match emitted.entry(directive.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(directives.len());
+                directives.push(directive);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let index = *entry.get();
+                directives[index] = format!("{directive} (and {} more sites)", {
+                    let base = directive.len();
+                    let current = &directives[index];
+                    current[base..]
+                        .strip_prefix(" (and ")
+                        .and_then(|rest| rest.strip_suffix(" more sites)"))
+                        .and_then(|count| count.parse::<usize>().ok())
+                        .unwrap_or(0)
+                        + 1
+                });
+            }
         }
     }
     directives

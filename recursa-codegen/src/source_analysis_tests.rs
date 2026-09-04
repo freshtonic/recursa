@@ -712,6 +712,248 @@ struct FromList {{
         assert_eq!(repeated, Err(vec!["RCA3131".to_owned()]));
     }
 
+    fn fixture_files(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let package = tempfile::tempdir().expect("temporary source-analysis fixture");
+        for (name, source) in files {
+            std::fs::write(package.path().join(name), source)
+                .expect("write source-analysis fixture file");
+        }
+        package
+    }
+
+    fn greedy_analysis_in(
+        package: &tempfile::TempDir,
+    ) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
+        let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
+        let mut cargo = CargoFile(directives.reopen().expect("open Cargo output capture"));
+        let outcome = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut cargo,
+        );
+        drop(cargo);
+        let lines = std::fs::read_to_string(directives.path())
+            .expect("read Cargo output capture")
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect();
+        let outcome = match outcome {
+            Ok(success) => Ok(success
+                .build_report
+                .warnings()
+                .map(|warning| format!("{}: {}", warning.code().as_str(), warning.summary()))
+                .collect()),
+            Err(error) => Err(error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| {
+                    format!("{}: {}", diagnostic.code().as_str(), diagnostic.summary())
+                })
+                .collect()),
+        };
+        (lines, outcome)
+    }
+
+    /// Two modules: `ast` uses tokens that `tokens`, lowered afterwards, defines, and the
+    /// content token appears before the keywords, so source-model definition ids are
+    /// renumbered before lowering. `Ident` is a content token named by its type. `Stmt`
+    /// takes its acceptance at Node level, covering its `expr` site.
+    fn greedy_two_module_grammar(
+        inner_attribute: &str,
+        expr_attribute: &str,
+    ) -> Vec<(String, String)> {
+        vec![
+            (
+                "grammar.rs".to_owned(),
+                "recursa::grammar! { module = crate, max_lookahead = 1 }\nmod ast;\nmod tokens;\n"
+                    .to_owned(),
+            ),
+            (
+                "ast.rs".to_owned(),
+                format!(
+                    r#"
+use crate::tokens::{{From, Ident, Select}};
+
+#[derive(recursa::Node)]
+pub enum Head {{
+    Select(Select),
+    Ident(Ident),
+}}
+
+#[derive(recursa::Node)]
+pub struct Inner {{
+    {inner_attribute}
+    pub maybe: Option<Head>,
+}}
+
+#[derive(recursa::Node)]
+pub struct Root {{
+    #[greedy(SELECT, IdentText)]
+    #[sep(SELECT)]
+    pub items: Vec<Inner>,
+    pub tail: Option<Ident>,
+}}
+
+#[derive(recursa::Node)]
+#[pratt]
+pub enum Expr {{
+    Ident(Ident),
+    #[parse(postfix, bp = 10)]
+    #[tok(FROM)]
+    FromTail(Box<Self>),
+    #[parse(postfix, bp = 10)]
+    #[tok(SELECT)]
+    SelectTail(Box<Self>),
+}}
+
+#[derive(recursa::Node)]
+{expr_attribute}
+pub struct Stmt {{
+    pub expr: Expr,
+    pub terminator: From,
+}}
+
+#[derive(recursa::Node)]
+pub struct Other {{
+    #[greedy(SELECT)]
+    pub expr: Expr,
+    pub terminator: Select,
+}}
+"#
+                ),
+            ),
+            (
+                "tokens.rs".to_owned(),
+                r#"
+#[derive(recursa::Node)]
+pub struct Ident {
+    #[lex(pattern = "[a-z]+")]
+    pub text: IdentText,
+}
+
+recursa::tokens! { keywords { FROM => "FROM", SELECT => "SELECT" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+pub struct Select;
+
+#[derive(recursa::Node)]
+#[tok(FROM)]
+pub struct From;
+"#
+                .to_owned(),
+            ),
+        ]
+    }
+
+    fn analyze_two_module_grammar(
+        inner_attribute: &str,
+        expr_attribute: &str,
+    ) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
+        let files = greedy_two_module_grammar(inner_attribute, expr_attribute);
+        let borrowed = files
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.as_str()))
+            .collect::<Vec<_>>();
+        greedy_analysis_in(&fixture_files(&borrowed))
+    }
+
+    #[test]
+    fn greedy_names_resolve_after_renumbering_and_across_modules() {
+        let (_, baseline) = analyze_two_module_grammar("", "");
+        let baseline = baseline.expect("the two-module grammar analyzes with warnings only");
+        assert!(
+            baseline
+                .iter()
+                .any(|warning| warning.starts_with("RCA0300: `maybe` in `Inner`")),
+            "{baseline:?}"
+        );
+        assert!(
+            baseline
+                .iter()
+                .any(|warning| warning.starts_with("RCA0301: `expr` in `Stmt`")),
+            "{baseline:?}"
+        );
+        assert!(
+            baseline
+                .iter()
+                .any(|warning| warning.contains("`#[greedy(IdentText, SELECT)]` on `maybe`")),
+            "the suggestion spells the content token by its type: {baseline:?}"
+        );
+
+        let (_, accepted) =
+            analyze_two_module_grammar("#[greedy(SELECT, IdentText)]", "#[greedy(FROM)]");
+        assert_eq!(
+            accepted,
+            Ok(Vec::new()),
+            "field-level and Node-level acceptances retire every overlap when names resolve to the right kinds",
+        );
+
+        let (_, wrong) = analyze_two_module_grammar("#[greedy(FROM, IdentText)]", "#[greedy(all)]");
+        let wrong = wrong.expect_err("a wrong fixed token is stale and undeclared");
+        assert!(
+            wrong
+                .iter()
+                .any(|line| line.starts_with("RCA0302: ") && line.contains("accepts FROM")),
+            "{wrong:?}"
+        );
+        assert!(
+            wrong
+                .iter()
+                .any(|line| line.starts_with("RCA0303: ")
+                    && line.contains("does not declare SELECT")),
+            "{wrong:?}"
+        );
+    }
+
+    #[test]
+    fn presence_and_variant_sites_are_named_after_their_authored_field() {
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT", FROM => "FROM" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+struct Flag {
+    #[presence(SELECT)]
+    concurrently: bool,
+}
+
+#[derive(recursa::Node)]
+enum Item {
+    Flagged(Flag),
+    Plain(#[tok(FROM)] Option<Select>),
+}
+
+#[derive(recursa::Node)]
+struct Root {
+    #[greedy(all)]
+    #[sep(SELECT)]
+    items: Vec<Item>,
+}
+"#,
+        );
+        let (_, outcome) = greedy_analysis_in(&package);
+        let warnings = outcome.expect("presence and variant sites warn without acceptances");
+        assert!(
+            warnings.iter().any(|warning| {
+                warning.starts_with("RCA0300: the presence of `concurrently` in `Flag`")
+                    && warning.contains("`#[greedy(SELECT)]` on `concurrently`")
+            }),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|warning| {
+                warning.starts_with("RCA0300: field 0 of `Plain` in `Item`")
+                    && warning.contains("on field 0 of `Plain`")
+            }),
+            "{warnings:?}"
+        );
+    }
+
     #[test]
     fn invalid_pratt_extension_filter_reports_source_analysis_diagnostic() {
         let package = fixture(

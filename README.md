@@ -113,7 +113,14 @@ pub struct DropDatabase<'input> {
 The kinds are spelled as in `#[tok(...)]`, and they must match the overlap
 exactly: a declared kind that no overlap produces is `RCA0302`, and an overlap
 kind the attribute omits is `RCA0303`. Both fail the build, so an acceptance
-never hides a new or changed ambiguity.
+never hides a new or changed ambiguity. Content tokens are named by their type.
+
+The attribute also goes on a variant, or on a Node such as a Pratt enum, and
+then covers every site of the variant or Node; the declared kinds must equal
+the union of those sites' overlaps. `#[greedy(all)]` accepts whatever overlap
+exists at the site, the deliberate opt-out of exactness for sites whose overlap
+is every identifier-capable keyword; it still fails with `RCA0302` when there
+is no overlap at all.
 
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a

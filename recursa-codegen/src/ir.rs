@@ -187,8 +187,8 @@ pub struct Declaration {
     pub location: LocationId,
     /// Accepted greedy FOLLOW overlap declared by `#[greedy(...)]` at this declaration.
     pub greedy: Option<GreedyAcceptance>,
-    /// Authored field name for a semantic use site, when the field is named.
-    pub authored: Option<String>,
+    /// The authored item this declaration was materialized from, for diagnostics.
+    pub authored: Option<AuthoredSite>,
 }
 
 impl Declaration {
@@ -202,19 +202,11 @@ impl Declaration {
         }
     }
 
-    /// Records the authored field name that diagnostics should use for this declaration.
+    /// Records the authored item that diagnostics should point at for this declaration.
     #[must_use]
-    pub fn with_authored(mut self, authored: Option<String>) -> Self {
-        self.authored = authored;
+    pub fn with_authored(mut self, authored: AuthoredSite) -> Self {
+        self.authored = Some(authored);
         self
-    }
-
-    /// Returns the name diagnostics use to point at this declaration: the authored field
-    /// name when there is one, else the last segment of the normalized name.
-    pub fn display_name(&self) -> &str {
-        self.authored
-            .as_deref()
-            .unwrap_or_else(|| self.name.rsplit("::").next().unwrap_or(&self.name))
     }
 
     /// Attaches one `#[greedy(...)]` acceptance to this declaration.
@@ -235,13 +227,105 @@ pub struct GreedyAcceptance {
     /// Identity shared by every declaration that one authored attribute covers.
     pub id: u32,
     /// Kinds the author accepts as consumed greedily at this site.
-    pub kinds: Vec<KindId>,
+    pub kinds: GreedyKinds,
 }
 
 impl GreedyAcceptance {
-    /// Declares one acceptance identity over the given kinds.
+    /// Declares one acceptance identity over exactly the given kinds.
     pub fn new(id: u32, kinds: Vec<KindId>) -> Self {
-        Self { id, kinds }
+        Self {
+            id,
+            kinds: GreedyKinds::Exact(kinds),
+        }
+    }
+
+    /// Declares one acceptance identity over whatever overlap analysis finds.
+    pub fn all(id: u32) -> Self {
+        Self {
+            id,
+            kinds: GreedyKinds::All,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The kinds one `#[greedy(...)]` acceptance names.
+pub enum GreedyKinds {
+    /// The overlap must contain exactly these kinds.
+    Exact(Vec<KindId>),
+    /// `#[greedy(all)]`: any non-empty overlap is accepted, the deliberate opt-out of exactness.
+    All,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The authored item a materialized parse site came from, as diagnostics name it.
+pub struct AuthoredSite {
+    /// Authored Node identifier.
+    pub node: String,
+    /// Authored variant identifier when the site belongs to an enum or Pratt variant.
+    pub variant: Option<String>,
+    /// Authored field identifier when the field is named.
+    pub field: Option<String>,
+    /// Position of the field among its siblings, for unnamed fields.
+    pub index: usize,
+    /// What the site represents relative to the authored field.
+    pub role: AuthoredRole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What a materialized site represents relative to its authored field.
+pub enum AuthoredRole {
+    /// The field's own semantic use site.
+    Field,
+    /// The optional fixed-token sequence of a `bool` presence field.
+    Presence,
+    /// A fixed-token group attached by `#[tok(...)]`, with or without a field.
+    Attachment,
+}
+
+impl AuthoredSite {
+    /// Names the authored field itself, without its owner.
+    fn field_name(&self) -> String {
+        match (&self.field, &self.variant) {
+            (Some(field), Some(variant)) => format!("`{variant}::{field}`"),
+            (Some(field), None) => format!("`{field}`"),
+            (None, Some(variant)) => format!("field {} of `{variant}`", self.index),
+            (None, None) => format!("field {}", self.index),
+        }
+    }
+
+    /// Describes the site in prose, for example "`options` in `DropDatabase`".
+    pub fn phrase(&self) -> String {
+        let node = &self.node;
+        match self.role {
+            AuthoredRole::Field => format!("{} in `{node}`", self.field_name()),
+            AuthoredRole::Presence => format!("the presence of {} in `{node}`", self.field_name()),
+            AuthoredRole::Attachment => match (&self.field, &self.variant) {
+                (Some(_), _) => {
+                    format!(
+                        "the optional token group attached to {} in `{node}`",
+                        self.field_name()
+                    )
+                }
+                (None, Some(variant)) => {
+                    format!("the optional token group of variant `{variant}` in `{node}`")
+                }
+                (None, None) => format!("the optional token group of `{node}`"),
+            },
+        }
+    }
+
+    /// Names the item an attribute for this site goes on, for example "`options`".
+    pub fn attribute_target(&self) -> String {
+        match (&self.field, &self.variant) {
+            (Some(_), _) => self.field_name(),
+            (None, Some(variant)) if self.role == AuthoredRole::Attachment => {
+                format!("variant `{variant}`")
+            }
+            (None, Some(variant)) => format!("field {} of `{variant}`", self.index),
+            (None, None) if self.role == AuthoredRole::Attachment => format!("`{}`", self.node),
+            (None, None) => format!("field {} of `{}`", self.index, self.node),
+        }
     }
 }
 

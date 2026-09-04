@@ -133,10 +133,19 @@ pub(crate) struct SourceModel {
 pub(crate) struct GreedyDeclaration {
     /// Fields whose semantic sites the acceptance covers.
     pub(crate) owner: GreedyOwner,
-    /// Token definitions named by the attribute, in authored order without duplicates.
-    pub(crate) definitions: Vec<TokenDefinitionId>,
+    /// Token definitions the attribute names, or every overlap kind for `#[greedy(all)]`.
+    pub(crate) kinds: GreedyKindNames,
     /// Locates the authored attribute.
     pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The token definitions one `#[greedy(...)]` attribute names.
+pub(crate) enum GreedyKindNames {
+    /// Exactly these definitions, in authored order without duplicates.
+    Exact(Vec<TokenDefinitionId>),
+    /// `#[greedy(all)]`: whatever overlap analysis finds at the covered sites.
+    All,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,18 +153,55 @@ pub(crate) struct GreedyDeclaration {
 pub(crate) enum GreedyOwner {
     /// A struct field or tuple-variant field.
     Field(ResolvedFieldId),
-    /// A variant; the acceptance covers every field of the variant.
-    Variant(Vec<ResolvedFieldId>),
+    /// A variant; the acceptance covers every site of the variant.
+    Variant {
+        /// The variant itself, for sites that belong to no field.
+        variant: ResolvedVariantId,
+        /// Fields of the variant.
+        fields: Vec<ResolvedFieldId>,
+    },
+    /// A Node; the acceptance covers every site of the Node, including all variants.
+    Type(NodeId),
 }
 
 impl GreedyOwner {
-    /// Reports whether the acceptance covers the given field.
-    pub(crate) fn covers(&self, field: ResolvedFieldId) -> bool {
+    /// Reports whether the acceptance covers a site of `node`, optionally inside `variant`,
+    /// optionally materialized from `field`.
+    pub(crate) fn covers(
+        &self,
+        node: NodeId,
+        variant: Option<ResolvedVariantId>,
+        field: Option<ResolvedFieldId>,
+    ) -> bool {
         match self {
-            Self::Field(owner) => *owner == field,
-            Self::Variant(fields) => fields.contains(&field),
+            Self::Field(owner) => field == Some(*owner),
+            Self::Variant {
+                variant: owner,
+                fields,
+            } => variant == Some(*owner) || field.is_some_and(|field| fields.contains(&field)),
+            Self::Type(owner) => *owner == node,
         }
     }
+
+    /// Orders owners from most to least specific so a field attribute wins over its variant
+    /// and a variant attribute over its Node.
+    pub(crate) const fn specificity(&self) -> u8 {
+        match self {
+            Self::Field(_) => 0,
+            Self::Variant { .. } => 1,
+            Self::Type(_) => 2,
+        }
+    }
+}
+
+/// One `#[greedy(...)]` attribute whose names await the completed token catalog.
+struct PendingGreedy {
+    /// The authored item that carries the attribute.
+    owner: GreedyOwner,
+    /// Token names as authored, or `None` for `#[greedy(all)]`.
+    names: Option<Vec<(String, SourceSite)>>,
+    /// Locates the authored attribute.
+    site: SourceSite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1081,6 +1127,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         pretty_boundary_analysis: RefCell::default(),
         resolved_field_positions,
         pretty_content_definitions: Vec::new(),
+        pending_greedy: Vec::new(),
         greedy: Vec::new(),
         diagnostics,
     };
@@ -1122,7 +1169,9 @@ struct SourceModelBuilder<'cfg> {
     pretty_content_definitions: Vec<Option<TokenDefinitionId>>,
     /// Supplies the diagnostics used to correlate authored source with normalized grammar.
     diagnostics: Vec<SourceModelDiagnostic>,
-    /// Authored `#[greedy(...)]` acceptances collected while lowering fields and variants.
+    /// Authored `#[greedy(...)]` attributes awaiting name resolution.
+    pending_greedy: Vec<PendingGreedy>,
+    /// Resolved `#[greedy(...)]` acceptances.
     greedy: Vec<GreedyDeclaration>,
 }
 
@@ -4970,6 +5019,7 @@ impl SourceModelBuilder<'_> {
         let pretty_soft_node_evaluations =
             self.pretty_boundary_analysis.borrow().soft_node_evaluations;
         normalize_source_order(&mut self.nodes, &mut self.tokens);
+        self.resolve_greedy();
         let source_modeled = self
             .diagnostics
             .iter()
@@ -5172,7 +5222,10 @@ impl SourceModelBuilder<'_> {
                                     self.lower_greedy(
                                         origin,
                                         &variant.metas,
-                                        GreedyOwner::Variant(variant.fields.clone()),
+                                        GreedyOwner::Variant {
+                                            variant: variant.id,
+                                            fields: variant.fields.clone(),
+                                        },
                                     );
                                     SourcePrattVariant {
                                         common: Variant {
@@ -5228,7 +5281,10 @@ impl SourceModelBuilder<'_> {
                                     self.lower_greedy(
                                         origin,
                                         &variant.metas,
-                                        GreedyOwner::Variant(variant.fields.clone()),
+                                        GreedyOwner::Variant {
+                                            variant: variant.id,
+                                            fields: variant.fields.clone(),
+                                        },
                                     );
                                     Variant {
                                         resolved_variant: variant.id,
@@ -5261,6 +5317,7 @@ impl SourceModelBuilder<'_> {
                 &mut self.diagnostics,
             );
             let pretty = self.lower_pretty_hints(origin, configured, node.range);
+            self.lower_greedy(origin, configured, GreedyOwner::Type(node.id));
             self.nodes.push(Node {
                 resolved_node: node.id,
                 name: node.ident,
@@ -5271,12 +5328,13 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Records one authored `#[greedy(KIND, ...)]` acceptance for a field or variant.
+    /// Records one authored `#[greedy(...)]` attribute for a field, variant, or Node.
     ///
     /// The attribute names token definitions as `#[tok(...)]` spells them: fixed tokens by
-    /// their definition identifier and content tokens by their type name. Malformed syntax,
-    /// an empty list, a duplicate kind, a repeated attribute, or an unknown name is
-    /// `RCA3131`; whether the site actually has an overlap is decided later by analysis.
+    /// their definition identifier and content tokens by their type name, or the single word
+    /// `all`. Names resolve later, once every module is lowered, in [`Self::resolve_greedy`].
+    /// Malformed syntax, an empty list, a duplicate kind, `all` mixed with names, or a repeated
+    /// attribute is `RCA3131`; whether the site has an overlap is decided by analysis.
     fn lower_greedy(&mut self, origin: SourceOrigin, metas: &[Meta], owner: GreedyOwner) {
         let greedy_metas = metas
             .iter()
@@ -5293,41 +5351,42 @@ impl SourceModelBuilder<'_> {
                     .iter()
                     .map(|meta| self.site(origin, span_range(meta.span())))
                     .collect(),
-                message: "a field or variant accepts at most one #[greedy(...)]".to_owned(),
+                message: "a field, variant, or Node accepts at most one #[greedy(...)]".to_owned(),
             });
             return;
         }
         let Meta::List(list) = meta else {
-            self.diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
-                sites: vec![site],
-                message: "#[greedy(...)] must list the accepted token kinds".to_owned(),
-            });
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                    site,
+                    "#[greedy(...)] must list the accepted token kinds, or `all`",
+                ));
             return;
         };
         let parser = syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated;
         let idents = match parser.parse2(list.tokens.clone()) {
             Ok(idents) => idents,
             Err(error) => {
-                self.diagnostics.push(SourceModelDiagnostic {
-                    kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
-                    sites: vec![self.site(origin, span_range(error.span()))],
-                    message: format!(
-                        "#[greedy(...)] accepts a comma-separated list of token kinds: {error}"
+                self.diagnostics.push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                    self.site(origin, span_range(error.span())),
+                    format!(
+                        "#[greedy(...)] accepts a comma-separated list of token kinds, or `all`: {error}"
                     ),
-                });
+                ));
                 return;
             }
         };
         if idents.is_empty() {
-            self.diagnostics.push(
-                SourceModelDiagnosticKind::InvalidGreedyAcceptance
-                    .at(site, "#[greedy(...)] must name at least one token kind"),
-            );
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                    site,
+                    "#[greedy(...)] must name at least one token kind, or `all`",
+                ));
             return;
         }
-        let mut definitions = Vec::new();
+        let mut names = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut all = false;
         for ident in &idents {
             let name = ident.unraw().to_string();
             let ident_site = self.site(origin, span_range(ident.span()));
@@ -5339,27 +5398,76 @@ impl SourceModelBuilder<'_> {
                     ));
                 return;
             }
-            if let Some(definition) = self.tokens.fixed_definition(&name) {
-                definitions.push(definition);
-            } else if let Some(content) = self.tokens.content_by_name.get(&name) {
-                definitions.extend(content.iter().copied());
+            if name == "all" {
+                all = true;
             } else {
-                self.diagnostics
-                    .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                    ident_site,
-                    format!(
-                        "`{name}` in #[greedy(...)] is not a fixed token or a content token type"
-                    ),
-                ));
-                return;
+                names.push((name, ident_site));
             }
         }
-        definitions.dedup();
-        self.greedy.push(GreedyDeclaration {
+        if all && !names.is_empty() {
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                    site,
+                    "#[greedy(all)] accepts every overlap kind and takes no other names",
+                ));
+            return;
+        }
+        self.pending_greedy.push(PendingGreedy {
             owner,
-            definitions,
+            names: (!all).then_some(names),
             site,
         });
+    }
+
+    /// Resolves every pending `#[greedy(...)]` name against the completed, normalized token
+    /// catalog, so a token defined in a module lowered after its use still resolves and every
+    /// definition id is the one lowering will see.
+    fn resolve_greedy(&mut self) {
+        let pending = std::mem::take(&mut self.pending_greedy);
+        for PendingGreedy { owner, names, site } in pending {
+            let Some(names) = names else {
+                self.greedy.push(GreedyDeclaration {
+                    owner,
+                    kinds: GreedyKindNames::All,
+                    site,
+                });
+                continue;
+            };
+            let mut definitions = Vec::new();
+            let mut resolved = true;
+            for (name, name_site) in names {
+                let matches = self
+                    .tokens
+                    .definitions
+                    .iter()
+                    .filter(|definition| {
+                        definition.name == name
+                            && !matches!(definition.kind, TokenDefinitionKind::LexicalBase(_))
+                    })
+                    .map(|definition| definition.id)
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    self.diagnostics.push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                        name_site,
+                        format!(
+                            "`{name}` in #[greedy(...)] is not a fixed token or a content token type"
+                        ),
+                    ));
+                    resolved = false;
+                    continue;
+                }
+                definitions.extend(matches);
+            }
+            if !resolved {
+                continue;
+            }
+            definitions.dedup();
+            self.greedy.push(GreedyDeclaration {
+                owner,
+                kinds: GreedyKindNames::Exact(definitions),
+                site,
+            });
+        }
     }
 
     /// Converts resolved fields and positional tokens into source-model elements.

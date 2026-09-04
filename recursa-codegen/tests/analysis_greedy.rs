@@ -334,3 +334,69 @@ fn greedy_acceptance_retires_a_matching_pratt_follow_overlap() {
     assert_eq!(report.accepted[0].site, expr_site);
     assert_eq!(report.accepted[0].code, DiagnosticCode::PrattFollowOverlap);
 }
+
+#[test]
+fn greedy_all_accepts_any_overlap_but_not_the_absence_of_one() {
+    let (mut builder, maybe_site) = nullable_follow_overlap();
+    let declaration = builder.grammar.sites[maybe_site.index()].declaration;
+    let current = builder.grammar.declarations[declaration.index()].clone();
+    builder.grammar.declarations[declaration.index()] =
+        current.with_greedy(GreedyAcceptance::all(0));
+    let report = analyze(&builder.grammar);
+    assert!(
+        report.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code != DiagnosticCode::NullableFollowOverlap
+                || !matches!(
+                    diagnostic.conflict_remedy,
+                    Some(recursa_codegen::ConflictRemedy::ReviewNullableFollow { site })
+                        if site == maybe_site
+                )
+        }),
+        "{}",
+        report.canonical_diagnostics()
+    );
+    assert_eq!(report.accepted.len(), 1);
+    assert_eq!(
+        report.accepted[0].kinds.iter().collect::<Vec<_>>(),
+        [KindId::new(0)]
+    );
+
+    let (mut builder, expr_site) = pratt_follow_overlap();
+    let tail = SiteId::new(expr_site.index() as u32 + 1);
+    let declaration = builder.grammar.sites[tail.index()].declaration;
+    let current = builder.grammar.declarations[declaration.index()].clone();
+    builder.grammar.declarations[declaration.index()] =
+        current.with_greedy(GreedyAcceptance::all(0));
+    let report = analyze(&builder.grammar);
+    let rendered = report.canonical_diagnostics();
+    assert!(rendered.contains("error[RCA0302]"), "{rendered}");
+    assert!(
+        rendered.contains("`#[greedy(all)]` at `Stmt::tail`"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn one_acceptance_identity_over_several_sites_matches_the_union_of_their_overlaps() {
+    let (mut builder, maybe_site) = nullable_follow_overlap();
+    let root_inner = SiteId::new(maybe_site.index() as u32 + 1);
+    assert_eq!(
+        builder.grammar.declarations[builder.grammar.sites[root_inner.index()]
+            .declaration
+            .index()]
+        .name,
+        "Root::inner"
+    );
+    builder.accept(maybe_site, 7, &[0]);
+    builder.accept(root_inner, 7, &[0]);
+    let report = analyze(&builder.grammar);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != DiagnosticCode::NullableFollowOverlap),
+        "both sites of one acceptance are retired together:\n{}",
+        report.canonical_diagnostics()
+    );
+    assert_eq!(report.accepted.len(), 2);
+}
