@@ -756,11 +756,11 @@ impl DiagnosticRemedy {
             Self::MakeSiteRequired { site } => {
                 format!("make nullable grammar site {site} required")
             }
-            Self::ReviewNullableFollow { site } => {
-                format!("make site {site} required or separate it from caller FOLLOW")
-            }
+            Self::ReviewNullableFollow { site } => format!(
+                "accept the greedy commitment with #[greedy(...)] at {site}, or make the site required, narrow its caller's type, or add a separator"
+            ),
             Self::ReviewPrattFollow { site, min_bp } => format!(
-                "separate caller FOLLOW at {site} from Pratt extenders active at minimum binding power {min_bp}"
+                "accept the greedy commitment with #[greedy(...)] at {site}, or raise its minimum binding power above {min_bp}, or narrow its caller's type"
             ),
             Self::RemoveGreedyAcceptance { site, kinds } => format!(
                 "remove {} from #[greedy(...)] at {site}, or the whole attribute; no caller FOLLOW overlap produces them",

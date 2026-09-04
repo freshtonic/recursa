@@ -187,6 +187,8 @@ pub struct Declaration {
     pub location: LocationId,
     /// Accepted greedy FOLLOW overlap declared by `#[greedy(...)]` at this declaration.
     pub greedy: Option<GreedyAcceptance>,
+    /// Authored field name for a semantic use site, when the field is named.
+    pub authored: Option<String>,
 }
 
 impl Declaration {
@@ -196,7 +198,23 @@ impl Declaration {
             name: name.into(),
             location,
             greedy: None,
+            authored: None,
         }
+    }
+
+    /// Records the authored field name that diagnostics should use for this declaration.
+    #[must_use]
+    pub fn with_authored(mut self, authored: Option<String>) -> Self {
+        self.authored = authored;
+        self
+    }
+
+    /// Returns the name diagnostics use to point at this declaration: the authored field
+    /// name when there is one, else the last segment of the normalized name.
+    pub fn display_name(&self) -> &str {
+        self.authored
+            .as_deref()
+            .unwrap_or_else(|| self.name.rsplit("::").next().unwrap_or(&self.name))
     }
 
     /// Attaches one `#[greedy(...)]` acceptance to this declaration.
