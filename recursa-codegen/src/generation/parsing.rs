@@ -5659,7 +5659,7 @@ pub(super) fn render_pratt_parse(
                     Some(expected) => expected
                         .union(&#expected_ref)
                         .expect("matching generated Pratt expectation widths"),
-                    None => #expected_ref.clone(),
+                    None => &#expected_ref,
                 });
             }
         }
@@ -5708,7 +5708,6 @@ pub(super) fn render_pratt_parse(
                     if !(#continuation_viable) { break; }
                     return Err(context.pratt_ambiguity(
                         __recursa_pratt_guard
-                            .as_ref()
                             .expect("an active extender contributes an expectation"),
                     ));
                 }
@@ -5739,7 +5738,7 @@ pub(super) fn render_pratt_parse(
                     unreachable!("frozen Pratt dispatch selected an unknown branch")
                 }
             };
-            let mut __recursa_pratt_guard: Option<#facade::__private::FollowSet> = None;
+            let mut __recursa_pratt_guard: Option<&'static #facade::__private::FollowSet> = None;
             #(#guard_additions)*
             loop {
                 match { #led_selection } {
@@ -6911,7 +6910,7 @@ pub(super) fn render_follow_value(
             let expected = render_expected_set(plan, expected);
             (
                 quote! {
-                    let #value = &#expected
+                    let #value = #expected
                         .with_caller(context.follow())
                         .expect("matching generated FOLLOW widths");
                 },
@@ -6922,7 +6921,7 @@ pub(super) fn render_follow_value(
             let expected = render_expected_set(plan, expected);
             (
                 quote! {
-                    let #value = &#expected
+                    let #value = #expected
                         .union(context.follow())
                         .expect("matching generated Pratt stop/FOLLOW widths");
                 },

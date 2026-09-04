@@ -117,63 +117,113 @@ impl FollowSet {
     }
 
     /// Combines two sets of the same grammar width into owned storage.
-    pub fn union(&self, other: &Self) -> Result<Self, FollowSetError> {
+    /// Unions two sets into one interned `'static` set.
+    ///
+    /// Composed sets are interned by content in a thread-local table: the first
+    /// composition that produces a given content allocates once and leaks it,
+    /// every later composition with the same content returns the same reference
+    /// without allocating. Parsers compose FOLLOW sets at every use site, so the
+    /// steady state of a parse allocates no FOLLOW storage at all.
+    pub fn union(&self, other: &Self) -> Result<&'static Self, FollowSetError> {
+        self.compose(other, BoundaryMode::Union)
+    }
+
+    /// Unions with the caller FOLLOW while keeping only this set as the Pratt boundary.
+    pub fn with_caller(&self, caller: &Self) -> Result<&'static Self, FollowSetError> {
+        self.compose(caller, BoundaryMode::KeepSelf)
+    }
+
+    /// Composes two sets, memoized first by operand identity, then by content.
+    ///
+    /// The fast path hashes only the two operand addresses and the mode. Every
+    /// operand a parser composes is either a generated static or a set this
+    /// table returned earlier, so addresses are stable and the pair lookup
+    /// needs no word-level work. A pair miss builds the content in reusable
+    /// scratch buffers and canonicalizes it through the content table, so the
+    /// number of leaked sets is bounded by the number of distinct contents.
+    fn compose(&self, other: &Self, mode: BoundaryMode) -> Result<&'static Self, FollowSetError> {
         if self.kind_count != other.kind_count {
             return Err(FollowSetError::WidthMismatch {
                 left: self.kind_count,
                 right: other.kind_count,
             });
         }
-
-        let kinds = self
-            .kinds
-            .iter()
-            .zip(other.kinds.iter())
-            .map(|(left, right)| left | right)
-            .collect();
-        let pratt_boundary_kinds = self
-            .pratt_boundary_kinds
-            .iter()
-            .zip(other.pratt_boundary_kinds.iter())
-            .map(|(left, right)| left | right)
-            .collect();
-
-        let mut expected = Vec::with_capacity(self.expected.len() + other.expected.len());
-        let mut left = self.expected.iter().copied().peekable();
-        let mut right = other.expected.iter().copied().peekable();
-        while let (Some(left_atom), Some(right_atom)) = (left.peek(), right.peek()) {
-            match left_atom.cmp(right_atom) {
-                std::cmp::Ordering::Less => expected.push(left.next().unwrap()),
-                std::cmp::Ordering::Greater => expected.push(right.next().unwrap()),
-                std::cmp::Ordering::Equal => {
-                    expected.push(left.next().unwrap());
-                    right.next();
-                }
+        let pair = (
+            self as *const Self as usize,
+            other as *const Self as usize,
+            mode as u8,
+        );
+        INTERNER.with(|interner| {
+            let mut interner = interner.borrow_mut();
+            if let Some(found) = interner.pairs.get(&pair) {
+                return Ok(*found);
             }
-        }
-        expected.extend(left);
-        expected.extend(right);
-
-        Ok(Self {
-            kind_count: self.kind_count,
-            kinds: Cow::Owned(kinds),
-            expected: Cow::Owned(expected),
-            pratt_boundary_kinds: Cow::Owned(pratt_boundary_kinds),
+            let Interner {
+                scratch,
+                contents,
+                pairs,
+            } = &mut *interner;
+            scratch.kinds.clear();
+            scratch.kinds.extend(
+                self.kinds
+                    .iter()
+                    .zip(other.kinds.iter())
+                    .map(|(l, r)| l | r),
+            );
+            scratch.boundary.clear();
+            match mode {
+                BoundaryMode::Union => scratch.boundary.extend(
+                    self.pratt_boundary_kinds
+                        .iter()
+                        .zip(other.pratt_boundary_kinds.iter())
+                        .map(|(l, r)| l | r),
+                ),
+                BoundaryMode::KeepSelf => scratch.boundary.extend_from_slice(&self.kinds),
+            }
+            scratch.expected.clear();
+            merge_sorted(&self.expected, &other.expected, &mut scratch.expected);
+            let hash = content_hash(
+                self.kind_count,
+                &scratch.kinds,
+                &scratch.boundary,
+                &scratch.expected,
+            );
+            let bucket = contents.entry(hash).or_default();
+            let canonical = match bucket.iter().copied().find(|set| {
+                set.kind_count == self.kind_count
+                    && *set.kinds == *scratch.kinds
+                    && *set.pratt_boundary_kinds == *scratch.boundary
+                    && *set.expected == *scratch.expected
+            }) {
+                Some(found) => found,
+                None => {
+                    let leaked: &'static Self = Box::leak(Box::new(Self {
+                        kind_count: self.kind_count,
+                        kinds: Cow::Owned(scratch.kinds.clone()),
+                        expected: Cow::Owned(scratch.expected.clone()),
+                        pratt_boundary_kinds: Cow::Owned(scratch.boundary.clone()),
+                    }));
+                    bucket.push(leaked);
+                    leaked
+                }
+            };
+            pairs.insert(pair, canonical);
+            Ok(canonical)
         })
     }
 
-    /// Composes a nearer static suffix with an inherited caller FOLLOW.
-    ///
-    /// Ordinary parsing observes the complete union. Pratt ambiguity checks
-    /// retain the nearer static suffix so a farther nullable suffix cannot
-    /// fabricate an immediate extender collision.
-    pub fn with_caller(&self, caller: &Self) -> Result<Self, FollowSetError> {
-        let mut composed = self.union(caller)?;
-        composed.pratt_boundary_kinds = self.kinds.clone();
-        Ok(composed)
+    /// Returns how many distinct composed sets this thread has interned.
+    #[doc(hidden)]
+    pub fn interned_composition_count() -> usize {
+        INTERNER.with(|interner| interner.borrow().contents.values().map(Vec::len).sum())
     }
 
-    /// Reports whether `kind` belongs to the nearest static Pratt boundary.
+    /// Returns how many operand pairs this thread has memoized.
+    #[doc(hidden)]
+    pub fn memoized_pair_count() -> usize {
+        INTERNER.with(|interner| interner.borrow().pairs.len())
+    }
+
     pub(crate) fn pratt_boundary_contains(&self, kind: TokenKind) -> bool {
         if u32::from(kind) >= self.kind_count {
             return false;
@@ -187,6 +237,148 @@ impl FollowSet {
 }
 
 /// A runtime FOLLOW operation combined sets from different grammar widths.
+
+/// Which Pratt boundary a composition keeps.
+#[derive(Clone, Copy)]
+enum BoundaryMode {
+    /// The union of both boundaries (`union`).
+    Union,
+    /// Only the nearer set's kinds (`with_caller`).
+    KeepSelf,
+}
+
+/// Reusable composition buffers and the two memo tables of leaked sets.
+#[derive(Default)]
+struct Interner {
+    /// Buffers the composition is built in before the content lookup.
+    scratch: Scratch,
+    /// Canonical interned sets grouped by content hash.
+    contents: std::collections::HashMap<u64, Vec<&'static FollowSet>, IdentityHashBuilder>,
+    /// Operand-identity memo: (left address, right address, mode) to the canonical set.
+    pairs: std::collections::HashMap<(usize, usize, u8), &'static FollowSet, PairHashBuilder>,
+}
+
+/// Composition buffers reused across calls so a table hit allocates nothing.
+#[derive(Default)]
+struct Scratch {
+    /// Unioned kind words.
+    kinds: Vec<u64>,
+    /// Pratt boundary words for the chosen mode.
+    boundary: Vec<u64>,
+    /// Merged sorted atom refinements.
+    expected: Vec<ExpectedAtomId>,
+}
+
+thread_local! {
+    static INTERNER: std::cell::RefCell<Interner> = std::cell::RefCell::new(Interner::default());
+}
+
+/// Merges two sorted, deduplicated atom lists into `out`.
+fn merge_sorted(left: &[ExpectedAtomId], right: &[ExpectedAtomId], out: &mut Vec<ExpectedAtomId>) {
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() && j < right.len() {
+        match left[i].cmp(&right[j]) {
+            std::cmp::Ordering::Less => {
+                out.push(left[i]);
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(right[j]);
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                out.push(left[i]);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out.extend_from_slice(&left[i..]);
+    out.extend_from_slice(&right[j..]);
+}
+
+/// Hashes composed content with a multiply-rotate mix (no per-call allocation).
+fn content_hash(
+    kind_count: u32,
+    kinds: &[u64],
+    boundary: &[u64],
+    expected: &[ExpectedAtomId],
+) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut hash = u64::from(kind_count).wrapping_mul(K);
+    for word in kinds.iter().chain(boundary.iter()) {
+        hash = (hash.rotate_left(5) ^ word).wrapping_mul(K);
+    }
+    for atom in expected {
+        hash = (hash.rotate_left(5) ^ u64::from(atom.0)).wrapping_mul(K);
+    }
+    hash
+}
+
+/// Mixes an operand-pair key with one multiply per word.
+#[derive(Clone, Copy, Default)]
+struct PairHashBuilder;
+
+impl std::hash::BuildHasher for PairHashBuilder {
+    type Hasher = PairHasher;
+    fn build_hasher(&self) -> PairHasher {
+        PairHasher(0)
+    }
+}
+
+/// Hasher for `(usize, usize, u8)` keys: rotate, xor, multiply per written word.
+#[derive(Default)]
+struct PairHasher(u64);
+
+impl std::hash::Hasher for PairHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+    fn write_u8(&mut self, value: u8) {
+        self.write_u64(u64::from(value));
+    }
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+/// Passes an already-mixed `u64` key through unchanged.
+#[derive(Clone, Copy, Default)]
+struct IdentityHashBuilder;
+
+impl std::hash::BuildHasher for IdentityHashBuilder {
+    type Hasher = IdentityHasher;
+    fn build_hasher(&self) -> IdentityHasher {
+        IdentityHasher(0)
+    }
+}
+
+/// Hasher that returns the single `u64` it was fed.
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl std::hash::Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(8)) ^ u64::from(*byte);
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FollowSetError {
     /// The sets describe different grammar-local token-kind widths.
