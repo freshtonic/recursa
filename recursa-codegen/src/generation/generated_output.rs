@@ -1005,57 +1005,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let word_candidate_kinds = &plan.word_candidate_kinds;
     let word_classification =
         render_word_classifiers(&plan.word_classifiers, word_candidate_kinds, facade);
-    let matchers = plan
-        .lexical_rules
-        .iter()
-        .map(|rule| match rule.closed_matcher.as_ref() {
-            None => {
-                let pattern = &rule.pattern;
-                quote!(#facade::__private::LexMatcher::Regex(#pattern))
-            }
-            Some(ClosedMatcher::SameDelimiter { opener }) => {
-                quote!(#facade::__private::LexMatcher::SameDelimiter { opener: #opener })
-            }
-            Some(ClosedMatcher::Nested { opener, closer }) => {
-                quote!(#facade::__private::LexMatcher::Nested {
-                    opener: #opener,
-                    closer: #closer,
-                })
-            }
-            Some(ClosedMatcher::NextExclusion { pattern, excluded }) => {
-                quote!(#facade::__private::LexMatcher::NextExclusion {
-                    pattern: #pattern,
-                    excluded: #excluded,
-                })
-            }
-            Some(ClosedMatcher::OperatorRun {
-                characters,
-                fences,
-                trailing,
-                qualifying,
-            }) => {
-                quote!(#facade::__private::LexMatcher::OperatorRun {
-                    characters: #characters,
-                    fences: &[#(#fences),*],
-                    trailing: #trailing,
-                    qualifying: #qualifying,
-                })
-            }
-            Some(ClosedMatcher::PhysicalLine { prefix }) => {
-                quote!(#facade::__private::LexMatcher::PhysicalLine { prefix: #prefix })
-            }
-        });
-    let kinds = plan.lexical_rules.iter().map(|rule| rule.kind);
-    let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
-    let trivia_kinds = plan
-        .lexical_rules
-        .iter()
-        .map(|rule| match rule.trivia_kind {
-            Some(kind) => quote!(Some(#kind)),
-            None => quote!(None),
-        });
-    let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
-    let priorities = plan.lexical_rules.iter().map(|rule| rule.priority);
+    let lexical_machine = render_lexical_machine(plan, facade)
+        .expect("the emission plan carries a renderable lexical machine");
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
     let expected_set_count = plan.expected_sets.values().len();
     let expected_sets = plan
@@ -1311,18 +1262,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         mod __recursa_lexical {
             use super::{Input, TokenKind};
 
-            static __RECURSA_LEX_RULES: &[#facade::__private::LexRule] = &[
-                #(
-                    #facade::__private::LexRule {
-                        matcher: #matchers,
-                        kind: #kinds,
-                        skip: #skips,
-                        trivia_kind: #trivia_kinds,
-                        fixed: #fixed,
-                        priority: #priorities,
-                    }
-                ),*
-            ];
+            #lexical_machine
 
         fn __recursa_raw_kind(kind: TokenKind) -> u16 {
             match kind {
@@ -1697,10 +1637,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         pub fn lex(source: &str) -> LexResult<'_> {
-            let scanned = #facade::__private::lex(
+            let scanned = #facade::__private::lex::<__RecursaLexToken>(
                 source,
-                __RECURSA_LEX_RULES,
-                #lexical_error_kind,
+                &__RECURSA_LEX_PLAN,
             );
             let records = #facade::__private::lex_records(&scanned).to_vec();
             let trivia = #facade::__private::lex_trivia(&scanned).map(<[_]>::to_vec);
