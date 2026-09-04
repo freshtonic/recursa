@@ -124,6 +124,38 @@ pub(crate) struct SourceModel {
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     /// Located references to token definitions from grammar positions.
     pub(crate) token_uses: Vec<TokenUse>,
+    /// Authored `#[greedy(...)]` acceptances in source order.
+    pub(crate) greedy: Vec<GreedyDeclaration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored `#[greedy(KIND, ...)]` acceptance and the fields it covers.
+pub(crate) struct GreedyDeclaration {
+    /// Fields whose semantic sites the acceptance covers.
+    pub(crate) owner: GreedyOwner,
+    /// Token definitions named by the attribute, in authored order without duplicates.
+    pub(crate) definitions: Vec<TokenDefinitionId>,
+    /// Locates the authored attribute.
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The authored item that carries one `#[greedy(...)]` attribute.
+pub(crate) enum GreedyOwner {
+    /// A struct field or tuple-variant field.
+    Field(ResolvedFieldId),
+    /// A variant; the acceptance covers every field of the variant.
+    Variant(Vec<ResolvedFieldId>),
+}
+
+impl GreedyOwner {
+    /// Reports whether the acceptance covers the given field.
+    pub(crate) fn covers(&self, field: ResolvedFieldId) -> bool {
+        match self {
+            Self::Field(owner) => *owner == field,
+            Self::Variant(fields) => fields.contains(&field),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -947,6 +979,8 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidPrattTokenPlacement,
     /// Identifies an invalid field-local Pratt extension restriction.
     InvalidPrattExtensionFilter,
+    /// Identifies malformed, duplicated, or unresolvable `#[greedy(...)]` syntax.
+    InvalidGreedyAcceptance,
     /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
     /// Identifies duplicate membership introduced by an admission union.
@@ -975,6 +1009,17 @@ impl SourceModelDiagnosticKind {
     /// Reports whether this source-model finding prevents a coherent lowered model.
     const fn is_error(self) -> bool {
         !matches!(self, Self::DuplicateAdmissionMembership)
+    }
+}
+
+impl SourceModelDiagnosticKind {
+    /// Builds one diagnostic of this kind at a single authored site.
+    fn at(self, site: SourceSite, message: impl Into<String>) -> SourceModelDiagnostic {
+        SourceModelDiagnostic {
+            kind: self,
+            sites: vec![site],
+            message: message.into(),
+        }
     }
 }
 
@@ -1036,6 +1081,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         pretty_boundary_analysis: RefCell::default(),
         resolved_field_positions,
         pretty_content_definitions: Vec::new(),
+        greedy: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
@@ -1076,6 +1122,8 @@ struct SourceModelBuilder<'cfg> {
     pretty_content_definitions: Vec<Option<TokenDefinitionId>>,
     /// Supplies the diagnostics used to correlate authored source with normalized grammar.
     diagnostics: Vec<SourceModelDiagnostic>,
+    /// Authored `#[greedy(...)]` acceptances collected while lowering fields and variants.
+    greedy: Vec<GreedyDeclaration>,
 }
 
 #[derive(Clone, Copy)]
@@ -4934,6 +4982,7 @@ impl SourceModelBuilder<'_> {
                     token_definitions: self.tokens.definitions,
                     lexer_records: self.tokens.lexer_records,
                     token_uses: self.tokens.uses,
+                    greedy: self.greedy,
                 },
             });
         SourceModelReport {
@@ -5120,6 +5169,11 @@ impl SourceModelBuilder<'_> {
                                             second_field_attachment,
                                         },
                                     );
+                                    self.lower_greedy(
+                                        origin,
+                                        &variant.metas,
+                                        GreedyOwner::Variant(variant.fields.clone()),
+                                    );
                                     SourcePrattVariant {
                                         common: Variant {
                                             resolved_variant: variant.id,
@@ -5171,6 +5225,11 @@ impl SourceModelBuilder<'_> {
                                         body.into_elements(),
                                         TokenAttachment::Variant,
                                     );
+                                    self.lower_greedy(
+                                        origin,
+                                        &variant.metas,
+                                        GreedyOwner::Variant(variant.fields.clone()),
+                                    );
                                     Variant {
                                         resolved_variant: variant.id,
                                         name: variant.ident.clone(),
@@ -5212,6 +5271,97 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Records one authored `#[greedy(KIND, ...)]` acceptance for a field or variant.
+    ///
+    /// The attribute names token definitions as `#[tok(...)]` spells them: fixed tokens by
+    /// their definition identifier and content tokens by their type name. Malformed syntax,
+    /// an empty list, a duplicate kind, a repeated attribute, or an unknown name is
+    /// `RCA3131`; whether the site actually has an overlap is decided later by analysis.
+    fn lower_greedy(&mut self, origin: SourceOrigin, metas: &[Meta], owner: GreedyOwner) {
+        let greedy_metas = metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("greedy"))
+            .collect::<Vec<_>>();
+        let Some(meta) = greedy_metas.first() else {
+            return;
+        };
+        let site = self.site(origin, span_range(meta.span()));
+        if greedy_metas.len() > 1 {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
+                sites: greedy_metas
+                    .iter()
+                    .map(|meta| self.site(origin, span_range(meta.span())))
+                    .collect(),
+                message: "a field or variant accepts at most one #[greedy(...)]".to_owned(),
+            });
+            return;
+        }
+        let Meta::List(list) = meta else {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
+                sites: vec![site],
+                message: "#[greedy(...)] must list the accepted token kinds".to_owned(),
+            });
+            return;
+        };
+        let parser = syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated;
+        let idents = match parser.parse2(list.tokens.clone()) {
+            Ok(idents) => idents,
+            Err(error) => {
+                self.diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
+                    sites: vec![self.site(origin, span_range(error.span()))],
+                    message: format!(
+                        "#[greedy(...)] accepts a comma-separated list of token kinds: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        if idents.is_empty() {
+            self.diagnostics.push(
+                SourceModelDiagnosticKind::InvalidGreedyAcceptance
+                    .at(site, "#[greedy(...)] must name at least one token kind"),
+            );
+            return;
+        }
+        let mut definitions = Vec::new();
+        let mut seen = BTreeSet::new();
+        for ident in &idents {
+            let name = ident.unraw().to_string();
+            let ident_site = self.site(origin, span_range(ident.span()));
+            if !seen.insert(name.clone()) {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                        ident_site,
+                        format!("#[greedy(...)] names `{name}` more than once"),
+                    ));
+                return;
+            }
+            if let Some(definition) = self.tokens.fixed_definition(&name) {
+                definitions.push(definition);
+            } else if let Some(content) = self.tokens.content_by_name.get(&name) {
+                definitions.extend(content.iter().copied());
+            } else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
+                    ident_site,
+                    format!(
+                        "`{name}` in #[greedy(...)] is not a fixed token or a content token type"
+                    ),
+                ));
+                return;
+            }
+        }
+        definitions.dedup();
+        self.greedy.push(GreedyDeclaration {
+            owner,
+            definitions,
+            site,
+        });
+    }
+
     /// Converts resolved fields and positional tokens into source-model elements.
     fn lower_fields(&mut self, origin: SourceOrigin, fields: &[ResolvedFieldId]) -> LoweredFields {
         let mut body = LoweredFields::default();
@@ -5220,6 +5370,11 @@ impl SourceModelBuilder<'_> {
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
             let site = self.site(origin, span_range(field.span()));
+            self.lower_greedy(
+                origin,
+                field_configured,
+                GreedyOwner::Field(resolved_field.id),
+            );
             reject_obsolete_parser_postconditions(
                 &self.resolved,
                 origin,

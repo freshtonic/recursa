@@ -728,6 +728,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
         SourceModelDiagnosticKind::InvalidPrattExtensionFilter => "RCA3130",
+        SourceModelDiagnosticKind::InvalidGreedyAcceptance => "RCA3131",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
         SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
         SourceModelDiagnosticKind::DuplicateAdmissionMembership => "RCA3119",
@@ -1211,6 +1212,20 @@ pub(crate) fn adapt_conflict_remedy(
         ConflictRemedy::ReviewPrattFollow { site, min_bp } => DiagnosticRemedy::ReviewPrattFollow {
             site: diagnostic_site_name(*site, grammar),
             min_bp: *min_bp,
+        },
+        ConflictRemedy::RemoveGreedy { site, kinds } => DiagnosticRemedy::RemoveGreedyAcceptance {
+            site: diagnostic_site_name(*site, grammar),
+            kinds: kinds
+                .iter()
+                .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
+                .collect(),
+        },
+        ConflictRemedy::DeclareGreedy { site, kinds } => DiagnosticRemedy::DeclareGreedyKinds {
+            site: diagnostic_site_name(*site, grammar),
+            kinds: kinds
+                .iter()
+                .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
+                .collect(),
         },
     }
 }

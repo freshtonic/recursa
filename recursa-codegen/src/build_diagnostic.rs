@@ -132,7 +132,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3005 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
-        1..=301 => DiagnosticEvidenceSchema::AnalysisWitness,
+        1..=303 => DiagnosticEvidenceSchema::AnalysisWitness,
         1001..=3211 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
@@ -154,7 +154,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3005 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
-        1..=301 => DiagnosticRemedySchema::ResolveAnalysisConflict,
+        1..=303 => DiagnosticRemedySchema::ResolveAnalysisConflict,
         1001..=3211 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }
@@ -210,6 +210,8 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA0203", Analysis, Error),
     diagnostic_spec!("RCA0300", Analysis, Warning),
     diagnostic_spec!("RCA0301", Analysis, Warning),
+    diagnostic_spec!("RCA0302", Analysis, Error),
+    diagnostic_spec!("RCA0303", Analysis, Error),
     diagnostic_spec!("RCA1001", Discovery, Error),
     diagnostic_spec!("RCA1002", Discovery, Error),
     diagnostic_spec!("RCA1003", Discovery, Error),
@@ -280,6 +282,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3128", Lowering, Error),
     diagnostic_spec!("RCA3129", Lowering, Error),
     diagnostic_spec!("RCA3130", Lowering, Error),
+    diagnostic_spec!("RCA3131", Lowering, Error),
     diagnostic_spec!("RCA3202", Lowering, Error),
     diagnostic_spec!("RCA3203", Lowering, Error),
     diagnostic_spec!("RCA3204", Lowering, Error),
@@ -681,6 +684,20 @@ pub enum DiagnosticRemedy {
         /// Minimum binding power currently admitted at the Pratt site.
         min_bp: u8,
     },
+    /// Requests removing declared `#[greedy(...)]` kinds that no caller-FOLLOW overlap produces.
+    RemoveGreedyAcceptance {
+        /// Accepted site the stale declaration covers.
+        site: String,
+        /// Declared kinds no overlap contains, as the attribute spells them.
+        kinds: Vec<String>,
+    },
+    /// Requests declaring the overlap kinds a `#[greedy(...)]` acceptance omits.
+    DeclareGreedyKinds {
+        /// Accepted site whose overlap exceeds the declaration.
+        site: String,
+        /// Undeclared overlap kinds, as the attribute spells them.
+        kinds: Vec<String>,
+    },
     /// Requests the mechanically derived class for fixed syntax.
     UseMechanicalFixedTokenClass {
         /// Mechanically derived fixed-token class to use.
@@ -744,6 +761,14 @@ impl DiagnosticRemedy {
             }
             Self::ReviewPrattFollow { site, min_bp } => format!(
                 "separate caller FOLLOW at {site} from Pratt extenders active at minimum binding power {min_bp}"
+            ),
+            Self::RemoveGreedyAcceptance { site, kinds } => format!(
+                "remove {} from #[greedy(...)] at {site}, or the whole attribute; no caller FOLLOW overlap produces them",
+                kinds.join(", ")
+            ),
+            Self::DeclareGreedyKinds { site, kinds } => format!(
+                "add {} to #[greedy(...)] at {site}, or separate them from caller FOLLOW",
+                kinds.join(", ")
             ),
             Self::UseMechanicalFixedTokenClass { class } => {
                 format!("use the mechanically derived fixed-token class {class}")
@@ -1080,6 +1105,8 @@ fn remedy_matches_schema(schema: DiagnosticRemedySchema, remedy: &DiagnosticReme
                 | DiagnosticRemedy::MakeSiteRequired { .. }
                 | DiagnosticRemedy::ReviewNullableFollow { .. }
                 | DiagnosticRemedy::ReviewPrattFollow { .. }
+                | DiagnosticRemedy::RemoveGreedyAcceptance { .. }
+                | DiagnosticRemedy::DeclareGreedyKinds { .. }
         ),
         DiagnosticRemedySchema::CorrectAuthoredInput => matches!(
             remedy,

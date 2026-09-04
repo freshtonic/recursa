@@ -448,6 +448,40 @@ fn diagram_pratt_role(position: PrattPosition) -> String {
     }
 }
 
+/// Labels a semantic element with the `#[greedy(...)]` acceptance that covers its field.
+///
+/// The label names the accepted kinds as the attribute spells them, so a reader of the
+/// diagram sees where the parser commits greedily on a shared token and why no advisory
+/// warning is reported for that site.
+fn annotate_greedy(
+    element: DiagramNode,
+    field: crate::resolution::ResolvedFieldId,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> DiagramNode {
+    let source_model = lowered.source_modeled.source_model();
+    let Some(greedy) = source_model
+        .greedy
+        .iter()
+        .find(|greedy| greedy.owner.covers(field))
+    else {
+        return element;
+    };
+    let kinds = greedy
+        .definitions
+        .iter()
+        .map(|definition| {
+            source_model.token_definitions[definition.index()]
+                .name
+                .clone()
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    DiagramNode::Sequence(vec![
+        element,
+        DiagramNode::Comment(format!("greedy({kinds})")),
+    ])
+}
+
 /// Projects fixed and semantic elements in their frozen parse order.
 fn diagram_sequence(
     elements: &[ElementParsePlan],
@@ -479,6 +513,7 @@ fn diagram_sequence(
                         ..
                     },
                     MaterializedElement::SemanticField {
+                        field,
                         projection:
                             MaterializedSemanticFieldProjection::Direct { ty, separator, .. },
                         attachment,
@@ -510,6 +545,7 @@ fn diagram_sequence(
                     let separator = diagram_separator_spelling(separator.as_ref(), lowered)?
                         .map(DiagramNode::Terminal);
                     diagram_semantic_element(node, separator, container)
+                        .map(|element| annotate_greedy(element, *field, lowered))
                 }
                 (
                     ElementParseKind::Semantic {

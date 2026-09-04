@@ -39,6 +39,8 @@ pub struct AnalysisReport {
     pub diagnostics: Vec<Diagnostic>,
     /// Frozen semantic facts and decisions, absent when analysis failed.
     pub output: Option<AnalysisOutput>,
+    /// Advisory caller-FOLLOW overlaps retired by matching `#[greedy(...)]` acceptances.
+    pub accepted: Vec<AcceptedOverlap>,
     /// Source locations copied from the input for diagnostic rendering.
     locations: Vec<Location>,
     /// Deduplicated provenance proofs referenced by facts and diagnostics.
@@ -77,6 +79,17 @@ impl DiagnosticContext {
             text_predicates: grammar.text_predicates.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One advisory caller-FOLLOW overlap that a matching `#[greedy(...)]` acceptance retired.
+pub struct AcceptedOverlap {
+    /// Use site whose overlap the acceptance covers.
+    pub site: SiteId,
+    /// Advisory code the overlap would otherwise have reported.
+    pub code: DiagnosticCode,
+    /// Kinds the parser consumes greedily at the site.
+    pub kinds: KindSet,
 }
 
 impl AnalysisReport {
@@ -680,6 +693,7 @@ fn analyze_with_publication_policy(
         return AnalysisReport {
             diagnostics,
             output: None,
+            accepted: Vec::new(),
             locations,
             proofs: ProofArena::default(),
             diagnostic_context,
@@ -693,6 +707,7 @@ fn analyze_with_publication_policy(
         return AnalysisReport {
             diagnostics,
             output: None,
+            accepted: Vec::new(),
             locations,
             proofs: ProofArena::default(),
             diagnostic_context,
@@ -747,9 +762,12 @@ fn analyze_with_publication_policy(
             }
         }
     };
-    if let Some(decisions) = &decisions {
+    let accepted = if let Some(decisions) = &decisions {
         reconcile_follow_warnings_with_decisions(&mut diagnostics, &decisions.0, grammar);
-    }
+        apply_greedy_acceptances(&mut diagnostics, grammar)
+    } else {
+        Vec::new()
+    };
     if decisions.is_some() && policy.materialize_sequences {
         populate_first_sequences(&first_sequence_analysis, &mut first_by_type);
     }
@@ -775,6 +793,7 @@ fn analyze_with_publication_policy(
         .collect();
     let mut report = AnalysisReport {
         diagnostics,
+        accepted,
         output: decisions.map(|decisions| AnalysisOutput {
             first_by_type,
             extenders_by_type,
@@ -795,6 +814,210 @@ fn analyze_with_publication_policy(
 }
 
 /// Derives the publish decisions from normalized grammar structure and previously established semantic facts.
+/// One `#[greedy(...)]` acceptance and the sites it covers.
+struct GreedyGroup {
+    /// Kinds the author declared, in kind order without duplicates.
+    declared: Vec<KindId>,
+    /// Declaration that introduced the acceptance, used for labels.
+    declaration: crate::DeclId,
+    /// Sites whose declarations carry the acceptance.
+    sites: Vec<SiteId>,
+}
+
+/// Overlap findings collected for one acceptance.
+struct GreedyFindings {
+    /// Union of the overlaps reported at the accepted sites.
+    overlap: KindSet,
+    /// Indices of the retained advisory diagnostics the acceptance covers.
+    diagnostics: Vec<usize>,
+    /// One witness borrowed from a covered diagnostic for evidence rendering.
+    witness: crate::ConflictWitness,
+}
+
+/// Retires advisory FOLLOW overlaps that `#[greedy(...)]` acceptances declare exactly.
+///
+/// Every acceptance must match the union of the overlaps found at its sites kind for kind.
+/// Declared kinds that no overlap produces are a stale acceptance (`RCA0302`); overlap kinds
+/// the acceptance omits are undeclared (`RCA0303`). Both are blocking errors, so an acceptance
+/// never hides a new or changed ambiguity. A matching acceptance removes the advisory
+/// diagnostics and records what it retired.
+fn apply_greedy_acceptances(
+    diagnostics: &mut Vec<Diagnostic>,
+    grammar: &GrammarDescription,
+) -> Vec<AcceptedOverlap> {
+    let mut groups = BTreeMap::<u32, GreedyGroup>::new();
+    let mut group_by_site = BTreeMap::<SiteId, u32>::new();
+    for (index, site) in grammar.sites.iter().enumerate() {
+        let Some(acceptance) = &grammar.declarations[site.declaration.index()].greedy else {
+            continue;
+        };
+        let site_id = SiteId::new(index as u32);
+        let group = groups.entry(acceptance.id).or_insert_with(|| {
+            let mut declared = acceptance.kinds.clone();
+            declared.sort_unstable();
+            declared.dedup();
+            GreedyGroup {
+                declared,
+                declaration: site.declaration,
+                sites: Vec::new(),
+            }
+        });
+        group.sites.push(site_id);
+        group_by_site.insert(site_id, acceptance.id);
+    }
+    if groups.is_empty() {
+        return Vec::new();
+    }
+
+    let mut findings = BTreeMap::<u32, GreedyFindings>::new();
+    for (index, diagnostic) in diagnostics.iter().enumerate() {
+        let site = match diagnostic.conflict_remedy {
+            Some(ConflictRemedy::ReviewNullableFollow { site })
+            | Some(ConflictRemedy::ReviewPrattFollow { site, .. }) => site,
+            _ => continue,
+        };
+        let (Some(&group), Some(conflict)) = (group_by_site.get(&site), &diagnostic.conflict)
+        else {
+            continue;
+        };
+        let entry = findings.entry(group).or_insert_with(|| GreedyFindings {
+            overlap: KindSet::empty(grammar.kind_count),
+            diagnostics: Vec::new(),
+            witness: conflict.witness.clone(),
+        });
+        entry.overlap.union_assign(&conflict.overlap);
+        entry.diagnostics.push(index);
+    }
+
+    let spell = |kinds: &[KindId]| {
+        kinds
+            .iter()
+            .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut retired = BTreeSet::new();
+    let mut accepted = Vec::new();
+    let mut errors = Vec::new();
+    for (id, group) in &groups {
+        let owner = &grammar.declarations[group.declaration.index()].name;
+        let declared = KindSet::from_kinds(grammar.kind_count, group.declared.iter().copied())
+            .expect("declared greedy kinds belong to the grammar");
+        let Some(found) = findings.get(id) else {
+            errors.push(Diagnostic::greedy_error(
+                DiagnosticCode::GreedyStale,
+                format!(
+                    "`#[greedy({})]` at `{owner}` accepts an overlap that analysis does not find: no caller FOLLOW kind overlaps this site",
+                    spell(&group.declared),
+                ),
+                declaration_label(
+                    group.declaration,
+                    grammar,
+                    "this acceptance names no reported overlap",
+                ),
+                Vec::new(),
+                None,
+                ConflictRemedy::RemoveGreedy {
+                    site: group.sites[0],
+                    kinds: group.declared.clone(),
+                },
+            ));
+            continue;
+        };
+        let missing = declared
+            .difference(&found.overlap)
+            .expect("greedy kind sets share one grammar width");
+        let extra = found
+            .overlap
+            .difference(&declared)
+            .expect("greedy kind sets share one grammar width");
+        let missing_kinds = missing.iter().collect::<Vec<_>>();
+        let extra_kinds = extra.iter().collect::<Vec<_>>();
+        let matched = missing_kinds.is_empty() && extra_kinds.is_empty();
+        if !missing_kinds.is_empty() {
+            errors.push(Diagnostic::greedy_error(
+                DiagnosticCode::GreedyStale,
+                format!(
+                    "`#[greedy({})]` at `{owner}` accepts {} that no caller FOLLOW overlap at this site contains",
+                    spell(&group.declared),
+                    spell(&missing_kinds),
+                ),
+                declaration_label(
+                    group.declaration,
+                    grammar,
+                    "this acceptance names kinds the overlap does not contain",
+                ),
+                Vec::new(),
+                Some(crate::ConflictEvidence {
+                    overlap: missing,
+                    witness: found.witness.clone(),
+                }),
+                ConflictRemedy::RemoveGreedy {
+                    site: group.sites[0],
+                    kinds: missing_kinds,
+                },
+            ));
+        }
+        if !extra_kinds.is_empty() {
+            errors.push(Diagnostic::greedy_error(
+                DiagnosticCode::GreedyUndeclared,
+                format!(
+                    "`#[greedy({})]` at `{owner}` does not declare {}, which the caller FOLLOW overlap at this site also contains",
+                    spell(&group.declared),
+                    spell(&extra_kinds),
+                ),
+                declaration_label(
+                    group.declaration,
+                    grammar,
+                    "this acceptance omits kinds the overlap contains",
+                ),
+                Vec::new(),
+                Some(crate::ConflictEvidence {
+                    overlap: extra,
+                    witness: found.witness.clone(),
+                }),
+                ConflictRemedy::DeclareGreedy {
+                    site: group.sites[0],
+                    kinds: extra_kinds,
+                },
+            ));
+        }
+        if matched {
+            for &index in &found.diagnostics {
+                let diagnostic = &diagnostics[index];
+                let site = match diagnostic.conflict_remedy {
+                    Some(ConflictRemedy::ReviewNullableFollow { site })
+                    | Some(ConflictRemedy::ReviewPrattFollow { site, .. }) => site,
+                    _ => unreachable!("greedy findings come from FOLLOW overlap remedies"),
+                };
+                accepted.push(AcceptedOverlap {
+                    site,
+                    code: diagnostic.code,
+                    kinds: diagnostic.conflict.as_ref().map_or_else(
+                        || KindSet::empty(grammar.kind_count),
+                        |conflict| conflict.overlap.clone(),
+                    ),
+                });
+                retired.insert(index);
+            }
+        }
+    }
+    if !retired.is_empty() {
+        let mut index = 0;
+        diagnostics.retain(|_| {
+            let keep = !retired.contains(&index);
+            index += 1;
+            keep
+        });
+    }
+    if !errors.is_empty() {
+        diagnostics.extend(errors);
+        diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
+    }
+    accepted.sort_by_key(|overlap| overlap.site);
+    accepted
+}
+
 /// Retires nullable-FOLLOW warnings that frozen viability decisions provably resolve.
 ///
 /// A warning survives only when no suffix-proving decision separates its complete

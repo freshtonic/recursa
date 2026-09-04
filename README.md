@@ -94,6 +94,27 @@ Both forms match the entire fixed-token sequence atomically. An incomplete
 optional sequence consumes nothing; synthetic Pretty output emits a presence
 sequence only when its boolean is true and omits erased optional groups.
 
+When an optional or repeated element can start with a token that may also
+follow the whole node, analysis reports the overlap as an advisory `RCA0300`
+(or `RCA0301` for a Pratt extender). The generated parser resolves it greedily:
+it commits to the element when it sees the shared token. Accept a reviewed
+overlap where it lives with `#[greedy(KIND, ...)]` on the field or variant:
+
+```rust,ignore
+#[derive(recursa::Node)]
+pub struct DropDatabase<'input> {
+    pub name: Identifier<'input>,
+    /// `WITH (FORCE)` wins over a caller's `WITH` continuation.
+    #[greedy(WITH)]
+    pub options: Option<DropOptions>,
+}
+```
+
+The kinds are spelled as in `#[tok(...)]`, and they must match the overlap
+exactly: a declared kind that no overlap produces is `RCA0302`, and an overlap
+kind the attribute omits is `RCA0303`. Both fail the build, so an acceptance
+never hides a new or changed ambiguity.
+
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a
 spanned value, rejects trailing input, and then extracts the semantic AST:
