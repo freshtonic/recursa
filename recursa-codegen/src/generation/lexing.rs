@@ -49,6 +49,10 @@ pub(super) struct TokenBindingPlan {
 pub(super) struct LexRulePlan {
     /// Backend-independent lexical pattern.
     pub(super) pattern: String,
+    /// Exact authored spelling when this rule recognizes fixed syntax.
+    pub(super) spelling: Option<String>,
+    /// Whether a fixed spelling matches under ASCII-case equivalence.
+    pub(super) ascii_insensitive: bool,
     /// Closed scanning mechanism extending or rejecting the starter pattern.
     pub(super) closed_matcher: Option<ClosedMatcher>,
     /// Numeric token kind produced by a successful match.
@@ -617,4 +621,420 @@ pub(super) fn render_token_binding(
         #visibility type #ident<'input> =
             #module_anchor::__recursa_content_tokens::#canonical<'input>;
     }
+}
+
+/// Packs one byte alphabet into the runtime's 256-bit membership words.
+fn render_byte_set(bytes: impl IntoIterator<Item = u8>, facade: &Ident) -> proc_macro2::TokenStream {
+    let mut words = [0_u64; 4];
+    for byte in bytes {
+        words[usize::from(byte >> 6)] |= 1_u64 << (byte & 63);
+    }
+    let words = words.iter().copied();
+    quote!(#facade::__private::ByteSet([#(#words),*]))
+}
+
+/// Projects one next-exclusion predicate into the scalar ranges it accepts.
+///
+/// The runtime rejects a candidate whose following scalar is matched in full by
+/// the authored predicate. Only single-scalar predicates express that, so the
+/// projection is exact and generation refuses anything else.
+fn exclusion_scalar_ranges(pattern: &str) -> Result<Vec<(char, char)>, String> {
+    use regex_syntax::hir::{Class, Hir, HirKind};
+
+    fn collect(hir: &Hir, ranges: &mut Vec<(char, char)>) -> Result<(), String> {
+        match hir.kind() {
+            HirKind::Class(Class::Unicode(class)) => {
+                ranges.extend(class.iter().map(|range| (range.start(), range.end())));
+                Ok(())
+            }
+            HirKind::Class(Class::Bytes(class)) => class.iter().try_for_each(|range| {
+                let (start, end) = (range.start(), range.end());
+                if end > 0x7f {
+                    return Err(
+                        "a next-exclusion predicate must match complete scalars".to_owned()
+                    );
+                }
+                ranges.push((char::from(start), char::from(end)));
+                Ok(())
+            }),
+            HirKind::Literal(literal) => {
+                let text = std::str::from_utf8(&literal.0)
+                    .map_err(|_| "a next-exclusion predicate must be valid UTF-8".to_owned())?;
+                let mut scalars = text.chars();
+                let (Some(scalar), None) = (scalars.next(), scalars.next()) else {
+                    return Err(
+                        "a next-exclusion predicate must match exactly one scalar".to_owned()
+                    );
+                };
+                ranges.push((scalar, scalar));
+                Ok(())
+            }
+            HirKind::Capture(capture) => collect(&capture.sub, ranges),
+            HirKind::Concat(parts) if parts.len() == 1 => collect(&parts[0], ranges),
+            HirKind::Alternation(parts) => {
+                parts.iter().try_for_each(|part| collect(part, ranges))
+            }
+            _ => Err("a next-exclusion predicate must match exactly one scalar".to_owned()),
+        }
+    }
+
+    let hir = regex_syntax::Parser::new()
+        .parse(pattern)
+        .map_err(|_| "a next-exclusion predicate must be a valid pattern".to_owned())?;
+    let mut ranges = Vec::new();
+    collect(&hir, &mut ranges)?;
+    Ok(ranges)
+}
+
+/// Renders one rule's runtime outcome record.
+fn render_lex_rule(rule: &LexRulePlan, rank: u32, facade: &Ident) -> proc_macro2::TokenStream {
+    let kind = rule.kind;
+    let skip = rule.skip;
+    let trivia_kind = match rule.trivia_kind {
+        Some(kind) => quote!(Some(#kind)),
+        None => quote!(None),
+    };
+    let fixed = rule.fixed;
+    quote!(#facade::__private::LexRule {
+        kind: #kind,
+        skip: #skip,
+        trivia_kind: #trivia_kind,
+        fixed: #fixed,
+        rank: #rank,
+    })
+}
+
+/// Reports whether a matcher's final extent can exceed its opening pattern.
+///
+/// A closed region arbitrates on the extent its callback reaches, which the
+/// opening pattern alone cannot express, so those rules run in their own
+/// machine.
+fn is_closed_region(matcher: Option<&ClosedMatcher>) -> bool {
+    matches!(
+        matcher,
+        Some(
+            ClosedMatcher::SameDelimiter { .. }
+                | ClosedMatcher::Nested { .. }
+                | ClosedMatcher::PhysicalLine { .. }
+        )
+    )
+}
+
+/// Collects every byte that can begin a match of `pattern`.
+fn pattern_first_bytes(pattern: &str) -> Result<Vec<u8>, String> {
+    use regex_automata::dfa::Automaton as _;
+    use regex_automata::dfa::{StartKind, dense};
+    use regex_automata::{Anchored, Input};
+
+    let dfa = dense::Builder::new()
+        .configure(dense::DFA::config().start_kind(StartKind::Anchored))
+        .build(pattern)
+        .map_err(|_| "a lexical opener must be a valid pattern".to_owned())?;
+    let start = dfa
+        .start_state_forward(&Input::new(b"").anchored(Anchored::Yes))
+        .map_err(|_| "a lexical opener must have an anchored start".to_owned())?;
+    Ok((0..=u8::MAX)
+        .filter(|&byte| !dfa.is_dead_state(dfa.next_state(start, byte)))
+        .collect())
+}
+
+/// Renders one state-machine variant's pattern attribute.
+///
+/// Every emitted regular pattern carries `allow_greedy = true`. Source analysis
+/// is the authority on which patterns a grammar may declare, and the runtime it
+/// replaces tried every pattern at every offset, so the state machine must not
+/// reject a pattern that the grammar already accepted.
+fn render_machine_attribute(
+    rule: &LexRulePlan,
+    rank: u32,
+    facade: &Ident,
+) -> Result<proc_macro2::TokenStream, String> {
+    let priority = proc_macro2::Literal::usize_unsuffixed(rank as usize);
+    Ok(match rule.closed_matcher.as_ref() {
+        // A case-insensitive fixed spelling keeps the ASCII-folded pattern source
+        // analysis already produced. The state machine's own case flag folds
+        // Unicode, which is a different equivalence.
+        None => match rule.spelling.as_deref() {
+            Some(spelling) if rule.fixed && !rule.ascii_insensitive => {
+                quote!(#[token(#spelling, priority = #priority)])
+            }
+            _ => {
+                let pattern = &rule.pattern;
+                quote!(#[regex(#pattern, allow_greedy = true, priority = #priority)])
+            }
+        },
+        Some(ClosedMatcher::SameDelimiter { opener }) => quote!(
+            #[regex(
+                #opener,
+                callback = #facade::__private::lex_same_delimiter,
+                allow_greedy = true,
+                priority = #priority
+            )]
+        ),
+        Some(ClosedMatcher::Nested { opener, closer }) => quote!(
+            #[token(
+                #opener,
+                callback = |__recursa_lexer| #facade::__private::lex_nested(
+                    __recursa_lexer,
+                    #opener,
+                    #closer,
+                ),
+                priority = #priority
+            )]
+        ),
+        Some(ClosedMatcher::NextExclusion { pattern, excluded }) => {
+            let ranges = exclusion_scalar_ranges(excluded)?;
+            let starts = ranges.iter().map(|&(start, _)| start);
+            let ends = ranges.iter().map(|&(_, end)| end);
+            quote!(
+                #[regex(
+                    #pattern,
+                    callback = |__recursa_lexer| #facade::__private::lex_next_exclusion(
+                        __recursa_lexer,
+                        &[#((#starts, #ends)),*],
+                    ),
+                    allow_greedy = true,
+                    priority = #priority
+                )]
+            )
+        }
+        Some(ClosedMatcher::PhysicalLine { prefix }) => quote!(
+            #[regex(
+                #prefix,
+                callback = #facade::__private::lex_physical_line,
+                allow_greedy = true,
+                priority = #priority
+            )]
+        ),
+        Some(ClosedMatcher::OperatorRun { .. }) => {
+            return Err("an operator run is arbitrated outside the state machine".to_owned());
+        }
+    })
+}
+
+/// Renders the private lexical state machine, its rule tables, and its plan.
+///
+/// # Long-function contract
+///
+/// Rationale: the state machine, its rule table, and its plan are one unit whose
+/// indexes must agree exactly.
+/// Invariants: variant order equals rule-table order; every rank is unique and
+/// reproduces the runtime's fixed-then-priority-then-declaration ordering.
+/// Phases: ranks each rule, partitions runs from machine rules, then renders the
+/// enum, the index projection, and the three static tables.
+pub(super) fn render_lexical_machine(
+    plan: &EmissionPlan,
+    facade: &Ident,
+) -> Result<proc_macro2::TokenStream, String> {
+    let rules = &plan.lexical_rules;
+    let mut order = (0..rules.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| (rules[index].fixed, rules[index].priority, index));
+    let mut ranks = vec![0_u32; rules.len()];
+    for (position, &index) in order.iter().enumerate() {
+        ranks[index] = u32::try_from(position + 1)
+            .map_err(|_| "generated lexical rank exceeds runtime width".to_owned())?;
+    }
+
+    let machine_indexes = (0..rules.len())
+        .filter(|&index| {
+            !matches!(
+                rules[index].closed_matcher,
+                Some(ClosedMatcher::OperatorRun { .. })
+            ) && !is_closed_region(rules[index].closed_matcher.as_ref())
+        })
+        .collect::<Vec<_>>();
+    let run_indexes = (0..rules.len())
+        .filter(|&index| {
+            matches!(
+                rules[index].closed_matcher,
+                Some(ClosedMatcher::OperatorRun { .. })
+            )
+        })
+        .collect::<Vec<_>>();
+    let closed_indexes = (0..rules.len())
+        .filter(|&index| is_closed_region(rules[index].closed_matcher.as_ref()))
+        .collect::<Vec<_>>();
+    if machine_indexes.is_empty() {
+        return Err("a generated grammar needs one state-machine lexical rule".to_owned());
+    }
+
+    let render_machine = |indexes: &[usize], prefix: &str| {
+        let variants = indexes
+            .iter()
+            .enumerate()
+            .map(|(position, &index)| {
+                let ident = format_ident!("{prefix}{position}");
+                let attribute = render_machine_attribute(&rules[index], ranks[index], facade)?;
+                Ok(quote! {
+                    #attribute
+                    #ident,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let arms = (0..indexes.len()).map(|position| {
+            let ident = format_ident!("{prefix}{position}");
+            quote!(Self::#ident => #position,)
+        });
+        let records = indexes
+            .iter()
+            .map(|&index| render_lex_rule(&rules[index], ranks[index], facade));
+        Ok::<_, String>((
+            variants,
+            arms.collect::<Vec<_>>(),
+            records.collect::<Vec<_>>(),
+        ))
+    };
+
+    let (variants, index_arms, machine_rules) = render_machine(&machine_indexes, "__RecursaLex")?;
+    let machine_rule_count = machine_indexes.len();
+    let (closed_variants, closed_index_arms, closed_rules) =
+        render_machine(&closed_indexes, "__RecursaClosedLex")?;
+    let closed_rule_count = closed_indexes.len();
+    let mut closed_first_bytes = Vec::new();
+    for &index in &closed_indexes {
+        let opener = match rules[index].closed_matcher.as_ref() {
+            Some(ClosedMatcher::SameDelimiter { opener }) => opener.clone(),
+            Some(ClosedMatcher::Nested { opener, .. }) => regex_syntax::escape(opener),
+            Some(ClosedMatcher::PhysicalLine { prefix }) => prefix.clone(),
+            _ => unreachable!("closed indexes were partitioned by their closed matcher"),
+        };
+        closed_first_bytes.extend(pattern_first_bytes(&opener)?);
+    }
+    let closed_first_bytes = render_byte_set(closed_first_bytes, facade);
+    let closed_machine = (!closed_indexes.is_empty()).then(|| {
+        quote! {
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            #[derive(#facade::__private::logos::Logos)]
+            #[logos(crate = #facade::__private::logos)]
+            #[logos(extras = #facade::__private::LexExtras)]
+            enum __RecursaClosedLexToken {
+                #(#closed_variants)*
+            }
+
+            impl #facade::__private::LexTokenIndex for __RecursaClosedLexToken {
+                fn rule_index(&self) -> usize {
+                    match self {
+                        #(#closed_index_arms)*
+                    }
+                }
+            }
+
+            static __RECURSA_CLOSED_LEX_RULES: [#facade::__private::LexRule; #closed_rule_count] =
+                [#(#closed_rules),*];
+
+            fn __recursa_scan_closed(
+                source: &str,
+            ) -> Option<#facade::__private::LexClosedMatch> {
+                #facade::__private::scan_closed::<__RecursaClosedLexToken>(
+                    source,
+                    &__RECURSA_CLOSED_LEX_RULES,
+                )
+            }
+        }
+    });
+    let closed_scan = if closed_indexes.is_empty() {
+        quote!(None)
+    } else {
+        quote!(Some(__recursa_scan_closed))
+    };
+
+    let operator_runs = run_indexes
+        .iter()
+        .map(|&index| {
+            let Some(ClosedMatcher::OperatorRun {
+                characters,
+                fences,
+                trailing,
+                qualifying,
+            }) = rules[index].closed_matcher.as_ref()
+            else {
+                unreachable!("run indexes were partitioned by their closed matcher");
+            };
+            let admitted = render_byte_set(characters.bytes(), facade);
+            let fence_starts = render_byte_set(
+                fences.iter().filter_map(|fence| fence.bytes().next()),
+                facade,
+            );
+            let trailing = render_byte_set(trailing.bytes(), facade);
+            let qualifying = render_byte_set(qualifying.bytes(), facade);
+            let rule = render_lex_rule(&rules[index], ranks[index], facade);
+            quote!(#facade::__private::OperatorRunRule {
+                characters: #admitted,
+                fence_starts: #fence_starts,
+                fences: &[#(#fences),*],
+                trailing: #trailing,
+                qualifying: #qualifying,
+                rule: #rule,
+            })
+        })
+        .collect::<Vec<_>>();
+    let operator_run_count = operator_runs.len();
+
+    // Operator-fence suppression is the only mechanism that rejects a winning
+    // candidate, and it rejects only fixed spellings. The recovery table is
+    // therefore emitted only for grammars that declare an operator run.
+    let fixed_literals = if operator_runs.is_empty() {
+        Vec::new()
+    } else {
+        rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.fixed && rule.closed_matcher.is_none())
+            .filter_map(|(index, rule)| {
+                let spelling = rule.spelling.as_deref()?;
+                let ascii_insensitive = rule.ascii_insensitive;
+                let record = render_lex_rule(rule, ranks[index], facade);
+                Some(quote!(#facade::__private::FixedLexLiteral {
+                    spelling: #spelling,
+                    ascii_insensitive: #ascii_insensitive,
+                    rule: #record,
+                }))
+            })
+            .collect::<Vec<_>>()
+    };
+    let fixed_literal_count = fixed_literals.len();
+
+    let lexical_error_kind = plan.lexical_error_kind;
+    let retains_trivia = rules.iter().any(|rule| rule.trivia_kind.is_some());
+
+    Ok(quote! {
+        #closed_machine
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        #[derive(#facade::__private::logos::Logos)]
+        #[logos(crate = #facade::__private::logos)]
+        #[logos(extras = #facade::__private::LexExtras)]
+        enum __RecursaLexToken {
+            #(#variants)*
+        }
+
+        impl #facade::__private::LexTokenIndex for __RecursaLexToken {
+            fn rule_index(&self) -> usize {
+                match self {
+                    #(#index_arms)*
+                }
+            }
+        }
+
+        static __RECURSA_LEX_RULES: [#facade::__private::LexRule; #machine_rule_count] =
+            [#(#machine_rules),*];
+
+        static __RECURSA_FIXED_LEX_LITERALS:
+            [#facade::__private::FixedLexLiteral; #fixed_literal_count] =
+            [#(#fixed_literals),*];
+
+        static __RECURSA_OPERATOR_RUNS:
+            [#facade::__private::OperatorRunRule; #operator_run_count] =
+            [#(#operator_runs),*];
+
+        static __RECURSA_LEX_PLAN: #facade::__private::LexPlan = #facade::__private::LexPlan {
+            rules: &__RECURSA_LEX_RULES,
+            fixed_literals: &__RECURSA_FIXED_LEX_LITERALS,
+            operator_runs: &__RECURSA_OPERATOR_RUNS,
+            closed_first_bytes: #closed_first_bytes,
+            closed_scan: #closed_scan,
+            lexical_error_kind: #lexical_error_kind,
+            retains_trivia: #retains_trivia,
+        };
+    })
 }
