@@ -761,5 +761,44 @@ fn main() {
         assert!(input.is_eof());
     }
 
+    // Perfect-hash word classification: every ASCII-case variant of a keyword
+    // classifies identically, a non-keyword identifier and a keyword's strict
+    // prefix or a keyword plus a trailing character all remain the unclassified
+    // content kind, and a zero-length word-shaped record classifies to `None`
+    // without probing the map on out-of-range input.
+    for variant in ["select", "SELECT", "SeLeCt"] {
+        let classified = grammar::lex(variant).tokens().collect::<Vec<_>>();
+        assert_eq!(classified.len(), 1);
+        assert_eq!(
+            classified[0].kind(),
+            grammar::TokenKind::SELECT,
+            "case variant {variant:?} must classify as SELECT"
+        );
+        assert_eq!(classified[0].text(), variant);
+    }
+    for (source, reason) in [
+        ("banana", "an unrelated word is not a keyword"),
+        ("sel", "a strict prefix of a keyword is not the keyword"),
+        ("selects", "a keyword plus a trailing character is not the keyword"),
+    ] {
+        let classified = grammar::lex(source).tokens().collect::<Vec<_>>();
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].kind(), grammar::TokenKind::WordText, "{reason}");
+        assert_eq!(classified[0].text(), source);
+    }
+    let mut empty_word = grammar::LexBuilder::new("");
+    empty_word
+        .append(grammar::TokenKind::WordText, recursa::Span::new(0, 0).unwrap())
+        .expect("a zero-length word-shaped record is a well-formed alternative-lexer append");
+    let empty_word = empty_word.finish();
+    let empty_word = empty_word.tokens().collect::<Vec<_>>();
+    assert_eq!(empty_word.len(), 1);
+    assert_eq!(
+        empty_word[0].kind(),
+        grammar::TokenKind::WordText,
+        "an empty word never matches a keyword"
+    );
+    assert_eq!(empty_word[0].text(), "");
+
     println!("lexing-ok RCA4000 RCA4001 RCA4002 RCA4004");
 }

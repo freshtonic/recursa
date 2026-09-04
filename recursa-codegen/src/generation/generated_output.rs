@@ -12,7 +12,7 @@ mod tests {
 
     use super::{
         super::test_support, WordClassifierPlan, apply_generated_lint_boundary,
-        render_word_classifiers,
+        deduplicated_word_classifier_keys, render_word_classifiers, word_classifier_key,
     };
 
     #[test]
@@ -77,63 +77,90 @@ mod tests {
     }
 
     #[test]
-    fn word_classification_reads_source_once_and_shards_large_vocabularies() {
-        let classifiers = (0_u16..130)
+    fn word_classification_reads_source_once_through_one_perfect_hash_probe() {
+        let classifiers = (0_u16..4_097)
             .map(|kind| WordClassifierPlan {
-                canonical_spelling: format!("word_{kind}"),
+                canonical_spelling: format!("large_word_{kind}"),
                 kind,
-                ascii_insensitive: kind % 2 == 0,
+                ascii_insensitive: true,
             })
             .collect::<Vec<_>>();
 
         let facade: syn::Ident = syn::parse_quote!(recursa);
         let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
 
-        assert_eq!(rendered.matches("source . get").count(), 1);
-        assert_eq!(rendered.matches("is_some_and").count(), 0);
+        // Exactly one classifier function and one backing map, regardless of vocabulary
+        // size: the perfect hash replaces every sharded helper level with one probe.
+        assert_eq!(rendered.matches("fn __recursa_classify_words").count(), 1);
         assert_eq!(
-            rendered.matches("fn __recursa_classify_words_0_").count(),
-            3
-        );
-        assert_eq!(
-            rendered.matches("fn __recursa_classify_words_1_").count(),
+            rendered.matches("static __RECURSA_WORD_KEYWORDS").count(),
             1
         );
+        assert_eq!(rendered.matches("source . get").count(), 1);
         assert!(rendered.contains("let Some (text) = source . get"));
         assert!(rendered.contains("record . kind = kind"));
         assert_eq!(rendered.matches("record . kind =").count(), 1);
-        assert!(
-            rendered
-                .split("fn __recursa_classify_words_")
-                .skip(1)
-                .all(|body| body.matches("return Some").count() <= 64)
-        );
+        assert!(rendered.contains("recursa :: __private :: phf :: Map"));
+        assert!(rendered.contains("__RECURSA_WORD_KEYWORDS . get"));
+        // Non-keyword identifiers are rejected without probing the map at all: by an
+        // empty check and by a length check bounding the fixed-size fold buffer.
+        assert!(rendered.contains("bytes . is_empty ()"));
+        assert!(rendered.contains("bytes . len () > MAX_KEYWORD_LEN"));
+        assert!(rendered.contains("to_ascii_lowercase ()"));
+    }
 
-        let classifiers = (0_u16..4_097)
-            .map(|kind| WordClassifierPlan {
-                canonical_spelling: format!("large_word_{kind}"),
-                kind,
-                ascii_insensitive: false,
-            })
-            .collect::<Vec<_>>();
+    #[test]
+    fn word_classification_is_case_sensitive_without_folding_when_the_grammar_demands_it() {
+        let classifiers = vec![WordClassifierPlan {
+            canonical_spelling: "Loop".to_owned(),
+            kind: 3,
+            ascii_insensitive: false,
+        }];
+        let facade: syn::Ident = syn::parse_quote!(recursa);
         let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
+
+        assert!(!rendered.contains("to_ascii_lowercase"));
+        let (keys, kinds) = deduplicated_word_classifier_keys(&classifiers, false);
+        assert_eq!(keys, vec![b"Loop".to_vec()], "exact case is preserved");
+        assert_eq!(kinds, vec![3]);
+    }
+
+    #[test]
+    fn word_classification_folds_a_duplicate_key_to_its_first_declared_kind() {
+        // Two spellings that fold to the same key under ASCII-insensitive comparison
+        // must keep only the first declaration's kind, matching the flat if-chain this
+        // rendering replaced (earlier keywords shadowed later duplicate spellings).
+        let classifiers = vec![
+            WordClassifierPlan {
+                canonical_spelling: "SELECT".to_owned(),
+                kind: 11,
+                ascii_insensitive: true,
+            },
+            WordClassifierPlan {
+                canonical_spelling: "select".to_owned(),
+                kind: 22,
+                ascii_insensitive: true,
+            },
+        ];
+        let (keys, kinds) = deduplicated_word_classifier_keys(&classifiers, true);
+        assert_eq!(keys, vec![b"select".to_vec()]);
+        assert_eq!(kinds, vec![11], "the first declared kind wins the collision");
+
+        // The rendering itself must not panic on the surviving single-entry map, and
+        // must still expose the winning kind number literally as an entry value.
+        let facade: syn::Ident = syn::parse_quote!(recursa);
+        let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
+        assert_eq!(rendered.matches("fn __recursa_classify_words").count(), 1);
+    }
+
+    #[test]
+    fn word_classifier_key_folds_only_ascii_bytes() {
+        assert_eq!(word_classifier_key("SELECT", true), b"select".to_vec());
+        assert_eq!(word_classifier_key("SELECT", false), b"SELECT".to_vec());
         assert_eq!(
-            rendered.matches("fn __recursa_classify_words_0_").count(),
-            65
-        );
-        assert_eq!(
-            rendered.matches("fn __recursa_classify_words_1_").count(),
-            2
-        );
-        assert_eq!(
-            rendered.matches("fn __recursa_classify_words_2_").count(),
-            1
-        );
-        assert!(
-            rendered
-                .split("fn __recursa_classify_words_")
-                .skip(1)
-                .all(|body| body.matches("return Some").count() <= 64)
+            word_classifier_key("Ä", true),
+            "Ä".bytes().collect::<Vec<_>>(),
+            "non-ASCII bytes pass through untouched under ASCII-only folding"
         );
     }
 
@@ -153,84 +180,105 @@ mod tests {
     }
 }
 
+/// Folds one canonical spelling into the byte key used by the generated perfect-hash map.
+///
+/// ASCII-insensitive grammars lowercase only ASCII letters, leaving any non-ASCII byte
+/// untouched; the same folding is applied to candidate text bytes at lookup time, so the
+/// comparison is equivalent to the ASCII-case-insensitive `eq_ignore_ascii_case` it replaces.
+/// Sensitive grammars keep the exact bytes.
+fn word_classifier_key(canonical_spelling: &str, ascii_insensitive: bool) -> Vec<u8> {
+    canonical_spelling
+        .bytes()
+        .map(|byte| {
+            if ascii_insensitive {
+                byte.to_ascii_lowercase()
+            } else {
+                byte
+            }
+        })
+        .collect()
+}
+
+/// Folds and deduplicates one grammar's word classifiers into perfect-hash map inputs.
+///
+/// First occurrence wins on a folded-key collision, matching the flat if-chain this
+/// rendering replaces: earlier keywords in declaration order shadowed later duplicate
+/// spellings. Returns parallel `(keys, kinds)` vectors, one pair per surviving classifier.
+fn deduplicated_word_classifier_keys(
+    classifiers: &[WordClassifierPlan],
+    ascii_insensitive: bool,
+) -> (Vec<Vec<u8>>, Vec<u16>) {
+    let mut seen_keys = std::collections::HashSet::new();
+    let mut keys = Vec::new();
+    let mut kinds = Vec::new();
+    for classifier in classifiers {
+        let key = word_classifier_key(&classifier.canonical_spelling, ascii_insensitive);
+        if seen_keys.insert(key.clone()) {
+            keys.push(key);
+            kinds.push(classifier.kind);
+        }
+    }
+    (keys, kinds)
+}
+
 /// Renders bounded private keyword classifiers and their single record-update entry point.
+///
+/// Classification is a perfect-hash lookup (`phf`) over the folded UTF-8 bytes of the
+/// candidate text: non-keyword identifiers, the overwhelming common case, are rejected by a
+/// length check or a single hash probe rather than a scan across every keyword.
 fn render_word_classifiers(
     classifiers: &[WordClassifierPlan],
     candidate_kinds: &[u16],
     facade: &syn::Ident,
 ) -> proc_macro2::TokenStream {
-    const CLASSIFIERS_PER_HELPER: usize = 64;
+    let ascii_insensitive = classifiers
+        .first()
+        .is_none_or(|classifier| classifier.ascii_insensitive);
+    debug_assert!(
+        classifiers
+            .iter()
+            .all(|classifier| classifier.ascii_insensitive == ascii_insensitive),
+        "one grammar's word classifiers share one case-equivalence policy"
+    );
 
-    let mut helper_items = Vec::new();
-    let mut level = classifiers
-        .chunks(CLASSIFIERS_PER_HELPER)
-        .enumerate()
-        .map(|(index, chunk)| {
-            let helper = format_ident!("__recursa_classify_words_0_{index}");
-            let comparisons = chunk.iter().map(|classifier| {
-                let canonical = &classifier.canonical_spelling;
-                let kind = classifier.kind;
-                let matches = if classifier.ascii_insensitive {
-                    quote!(text.eq_ignore_ascii_case(#canonical))
-                } else {
-                    quote!(text == #canonical)
-                };
-                quote! {
-                    if #matches {
-                        return Some(#kind);
-                    }
-                }
-            });
-            helper_items.push(quote! {
-                fn #helper(text: &str) -> Option<u16> {
-                    #(#comparisons)*
-                    None
-                }
-            });
-            helper
-        })
-        .collect::<Vec<_>>();
+    let (keys, kinds) = deduplicated_word_classifier_keys(classifiers, ascii_insensitive);
+    let max_key_len = keys.iter().map(Vec::len).max().unwrap_or(0);
 
-    let mut level_index = 1_usize;
-    while level.len() > 1 {
-        let next_level = level
-            .chunks(CLASSIFIERS_PER_HELPER)
-            .enumerate()
-            .map(|(index, children)| {
-                let helper = format_ident!("__recursa_classify_words_{level_index}_{index}");
-                let calls = children.iter().map(|child| {
-                    quote! {
-                        if let Some(kind) = #child(text) {
-                            return Some(kind);
-                        }
-                    }
-                });
-                helper_items.push(quote! {
-                    fn #helper(text: &str) -> Option<u16> {
-                        #(#calls)*
-                        None
-                    }
-                });
-                helper
-            })
-            .collect::<Vec<_>>();
-        level = next_level;
-        level_index += 1;
+    let phf_path = format!("{facade}::__private::phf");
+    let mut builder = phf_codegen::Map::<&[u8]>::new();
+    builder.phf_path(&phf_path);
+    for (key, kind) in keys.iter().zip(kinds.iter()) {
+        builder.entry(key.as_slice(), &kind.to_string());
     }
+    let map_source = builder.build().to_string();
+    let map_tokens: proc_macro2::TokenStream = map_source
+        .parse()
+        .expect("phf_codegen renders the generated map as valid Rust tokens");
 
-    let classification = level.first().map(|root| {
-        quote! {
-            let Some(text) = source.get(record.span.range()) else {
-                return;
-            };
-            if let Some(kind) = #root(text) {
-                record.kind = kind;
-            }
-        }
-    });
+    let fold_byte = if ascii_insensitive {
+        quote!(bytes[index].to_ascii_lowercase())
+    } else {
+        quote!(bytes[index])
+    };
 
     quote! {
-        #(#helper_items)*
+        static __RECURSA_WORD_KEYWORDS: #facade::__private::phf::Map<&'static [u8], u16> =
+            #map_tokens;
+
+        fn __recursa_classify_words(text: &str) -> Option<u16> {
+            const MAX_KEYWORD_LEN: usize = #max_key_len;
+            let bytes = text.as_bytes();
+            if bytes.is_empty() || bytes.len() > MAX_KEYWORD_LEN {
+                return None;
+            }
+            let mut folded = [0_u8; MAX_KEYWORD_LEN];
+            let mut index = 0_usize;
+            while index < bytes.len() {
+                folded[index] = #fold_byte;
+                index += 1;
+            }
+            __RECURSA_WORD_KEYWORDS.get(&folded[..bytes.len()]).copied()
+        }
 
         fn __recursa_classify(
             source: &str,
@@ -239,7 +287,12 @@ fn render_word_classifiers(
             if ![#(#candidate_kinds),*].contains(&record.kind) {
                 return;
             }
-            #classification
+            let Some(text) = source.get(record.span.range()) else {
+                return;
+            };
+            if let Some(kind) = __recursa_classify_words(text) {
+                record.kind = kind;
+            }
         }
     }
 }
