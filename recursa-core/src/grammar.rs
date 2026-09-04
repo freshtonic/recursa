@@ -108,6 +108,16 @@ impl FollowSet {
             .is_some_and(|value| value & (1_u64 << bit) != 0)
     }
 
+    /// Exact token-kind width this set was cut to.
+    pub(crate) fn kind_count(&self) -> u32 {
+        self.kind_count
+    }
+
+    /// Raw bitset words of the accepted kinds, least significant kind first.
+    pub(crate) fn kind_words(&self) -> &[u64] {
+        &self.kinds
+    }
+
     /// Symbolic expectations carried for diagnostics.
     pub fn expected(&self) -> &[ExpectedAtomId] {
         &self.expected

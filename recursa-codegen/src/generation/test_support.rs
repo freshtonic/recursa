@@ -747,7 +747,7 @@ pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
     let rendered = quote!(#items #selection).to_string();
 
     assert!(
-        rendered.contains(", & [] , 1usize , &")
+        rendered.contains(", & [] , 1usize , 4usize , 1usize , &")
             && rendered.contains(":: __RECURSA_EXPECTED_SETS ,)"),
         "a single-digit table records width 1 and no spellings: {rendered}",
     );

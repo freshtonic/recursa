@@ -1436,7 +1436,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         let mut state = root;
         let mut depth = initial_depth;
         loop {
-            let [target, edge_start, edge_count, expected_index] = table.state::<4>(state);
+            let [target, _, _, expected_index] = table.state::<4>(state);
             let expected = &table.expected()[expected_index];
             let target = decode_target(target);
             if let Some((variant, mode)) = target {
@@ -1450,9 +1450,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                     return Ok(variant);
                 }
             }
-            if let Some(next) =
-                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
-            {
+            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
                 state = next;
                 depth += 1;
                 continue;
@@ -1481,10 +1479,8 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         let mut state = root;
         let mut depth = 0usize;
         loop {
-            let [target, edge_start, edge_count] = table.state::<3>(state);
-            if let Some(next) =
-                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
-            {
+            let [target, _, _] = table.state::<3>(state);
+            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
                 state = next;
                 depth += 1;
                 continue;
@@ -1511,11 +1507,8 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         let mut state = root;
         let mut depth = 0usize;
         loop {
-            let [caller_action, unconditional_action, edge_start, edge_count] =
-                table.state::<4>(state);
-            if let Some(next) =
-                table.follow_edge(edge_start, edge_count, self.peek(depth), self.source())
-            {
+            let [caller_action, unconditional_action, _, _] = table.state::<4>(state);
+            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
                 state = next;
                 depth += 1;
                 continue;
