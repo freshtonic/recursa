@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use super::automaton::TerminalSet;
-use super::{LrGrammar, NonterminalId, Rule, RuleAction, Symbol, TerminalId};
+use super::{LrGrammar, NonterminalId, Rule, RuleAction, Symbol, TerminalFilter, TerminalId};
 use super::report::{LOOKAHEAD_AMBIGUITY, LrDiagnostic};
 use crate::{GrammarDescription, SiteId};
 
@@ -153,6 +153,21 @@ pub(super) fn apply(
         return Err(diagnostics);
     }
     grammar.replace_rules(rules);
+    grammar.set_filters(
+        description
+            .lookahead_filters
+            .iter()
+            .map(|filter| TerminalFilter {
+                token: TerminalId::new(u32::from(filter.token.get())),
+                merged: TerminalId::new(u32::from(filter.merged.get())),
+                triggers: filter
+                    .triggers
+                    .iter()
+                    .map(|trigger| TerminalId::new(u32::from(trigger.get())))
+                    .collect(),
+            })
+            .collect(),
+    );
     Ok(())
 }
 
@@ -577,6 +592,39 @@ pub struct Other<'input> {
         assert_eq!(trace.consumed, 3);
         let trace = simulate(&grammar, &tables, start, &[name, terminal(&grammar, "NOT"), name]).expect("`a not b` parses");
         assert_eq!(trace.consumed, 3);
+    }
+
+    #[test]
+    fn the_packed_tables_carry_the_filter_as_token_merged_trigger_triples() {
+        let (_, with) = lr(&not_between_grammar(true));
+        let with = with.expect("lowers");
+        let word = |name: &str| terminal(&with, name).index() as u32;
+        assert_eq!(
+            with.filters(),
+            [super::TerminalFilter {
+                token: terminal(&with, "NOT"),
+                merged: terminal(&with, "NOT_LA"),
+                triggers: vec![terminal(&with, "BETWEEN"), terminal(&with, "IN"), terminal(&with, "LIKE")],
+            }]
+        );
+        let automaton = Automaton::build(&with, &NoPrecedence, AutomatonOptions::default());
+        let tables = LrTables::pack(&with, &automaton);
+        assert_eq!(
+            tables.lookahead,
+            [
+                word("NOT"), word("NOT_LA"), word("BETWEEN"),
+                word("NOT"), word("NOT_LA"), word("IN"),
+                word("NOT"), word("NOT_LA"), word("LIKE"),
+            ]
+        );
+        let decoded = LrTables::decode(&tables.encode()).expect("round trip");
+        assert_eq!(decoded, tables);
+
+        let (_, without) = lr(&not_between_grammar(false));
+        let without = without.expect("lowers");
+        assert!(without.filters().is_empty());
+        let automaton = Automaton::build(&without, &NoPrecedence, AutomatonOptions::default());
+        assert!(LrTables::pack(&without, &automaton).lookahead.is_empty());
     }
 
     #[test]

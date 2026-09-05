@@ -59,6 +59,9 @@ pub struct LrTables {
     /// Start state of each grammar type indexed by [`TypeId`](crate::TypeId), or
     /// [`NO_START_STATE`].
     pub start_states: Vec<u32>,
+    /// The lookahead filters as flat `(token, merged, trigger)` triples, one per trigger, in
+    /// filter then trigger order; the token feed reads `token` before `trigger` as `merged`.
+    pub lookahead: Vec<u32>,
 }
 
 /// One sparse vector to pack: `(key, value)` pairs in ascending key order.
@@ -112,6 +115,19 @@ impl LrTables {
                 .collect(),
             value_pops: grammar.rules().iter().map(|rule| rule.value_pops).collect(),
             start_states,
+            lookahead: grammar
+                .filters()
+                .iter()
+                .flat_map(|filter| {
+                    filter.triggers.iter().flat_map(move |trigger| {
+                        [
+                            filter.token.index() as u32,
+                            filter.merged.index() as u32,
+                            trigger.index() as u32,
+                        ]
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -128,6 +144,7 @@ impl LrTables {
             r2: encode_unsigned(&self.r2),
             value_pops: encode_unsigned(&self.value_pops),
             start_states: encode_unsigned(&self.start_states),
+            lookahead: encode_unsigned(&self.lookahead),
         }
     }
 
@@ -144,6 +161,7 @@ impl LrTables {
             r2: decode_unsigned(&encoded.r2)?,
             value_pops: decode_unsigned(&encoded.value_pops)?,
             start_states: decode_unsigned(&encoded.start_states)?,
+            lookahead: decode_unsigned(&encoded.lookahead)?,
         })
     }
 
@@ -365,6 +383,8 @@ pub struct EncodedLrTables {
     pub value_pops: EncodedTable,
     /// Encoded `start_states`.
     pub start_states: EncodedTable,
+    /// Encoded `lookahead`.
+    pub lookahead: EncodedTable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -35,7 +35,7 @@ pub use automaton::{
 };
 pub use grammar::{
     Associativity, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin, Rule, RuleAction,
-    RuleId, RulePrecedence, StartRule, Symbol, TerminalId,
+    RuleId, RulePrecedence, StartRule, Symbol, TerminalFilter, TerminalId,
 };
 pub use lowering::{TypeRoles, lower};
 pub use report::{LrDiagnostic, automaton_dump, conflict_diagnostics};
