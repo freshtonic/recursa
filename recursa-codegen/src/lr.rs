@@ -250,7 +250,7 @@ mod tests {
     fn pratt_grammar(lbp: u8, rbp: u8) -> GrammarDescription {
         let mut grammar = GrammarDescription::new("pratt", 2, 1, TextEquivalence::Sensitive);
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
-        let mut token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
+        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
             let declaration = grammar.push_declaration(Declaration::new(name, location));
             let kind = grammar.push_kind(KindDescription::new(kind, declaration));
             let atom = grammar.push_atom(AtomDescription::new(
@@ -307,6 +307,73 @@ mod tests {
             expr
         );
         grammar
+    }
+
+    /// A normalized `Pair` sequence over `Expr` with three sites carrying the given exclusion
+    /// sets, appended to the Pratt grammar; returns the grammar and the sites.
+    fn pratt_grammar_with_exclusion_sites(
+        excluded: [&[u32]; 3],
+    ) -> (GrammarDescription, TypeRoles) {
+        let mut grammar = pratt_grammar(10, 11);
+        let expr = TypeId::new(2);
+        let add_declaration = crate::DeclId::new(4);
+        assert_eq!(grammar.declarations[add_declaration.index()].name, "Expr::Add");
+        let location = grammar.locations.len() - 1;
+        let location = crate::LocationId::new(location as u32);
+        let pair_declaration = grammar.push_declaration(Declaration::new("Pair", location));
+        let pair = TypeId::new(grammar.types.len() as u32);
+        let mut roles = TypeRoles::default();
+        let sites: Vec<_> = excluded
+            .iter()
+            .map(|excluded| {
+                let site = grammar.push_site(ParseSite::new(
+                    pair,
+                    expr,
+                    pair_declaration,
+                    ContainerShape::Direct,
+                ));
+                if !excluded.is_empty() {
+                    roles.pratt_exclusions.insert(
+                        site,
+                        crate::lr::lowering::PrattExclusion {
+                            type_id: expr,
+                            excluded: excluded.iter().map(|id| crate::DeclId::new(*id)).collect(),
+                        },
+                    );
+                }
+                site
+            })
+            .collect();
+        grammar.push_type(TypeDescription::new(
+            "Pair",
+            pair_declaration,
+            TypeShape::Sequence { sites },
+        ));
+        (grammar, roles)
+    }
+
+    #[test]
+    fn sites_with_equal_exclusion_sets_share_one_clone() {
+        let (grammar, roles) = pratt_grammar_with_exclusion_sites([&[4], &[4], &[]]);
+        let lowered = lower(&grammar, &roles).expect("the exclusion sites lower");
+        let names: Vec<&str> = lowered
+            .nonterminals()
+            .iter()
+            .map(|nonterminal| nonterminal.name.as_str())
+            .collect();
+        assert_eq!(names, ["Expr", "Pair", "Expr[excl Add]"]);
+        let pair = lowered.nonterminal_by_name("Pair").unwrap();
+        assert_eq!(
+            lowered.render_rule(lowered.rules_of(pair)[0]),
+            "Pair -> Expr[excl Add] Expr[excl Add] Expr"
+        );
+        let clone = lowered.nonterminal_by_name("Expr[excl Add]").unwrap();
+        let rules: Vec<String> = lowered
+            .rules_of(clone)
+            .iter()
+            .map(|rule| lowered.render_rule(*rule))
+            .collect();
+        assert_eq!(rules, ["Expr[excl Add] -> Number"]);
     }
 
     #[test]

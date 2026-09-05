@@ -302,16 +302,16 @@ pub(crate) enum MaterializedNodeBody {
 }
 
 /// Borrows one source-ordered materialized element group with its Pratt operand threshold.
-struct MaterializedElementGroup<'a> {
+pub(crate) struct MaterializedElementGroup<'a> {
     /// Elements belonging to one struct, enum variant, or Pratt branch.
-    elements: &'a [MaterializedElement],
+    pub(crate) elements: &'a [MaterializedElement],
     /// Minimum binding power applied to recursive operands in this group.
-    recursive_min_bp: u8,
+    pub(crate) recursive_min_bp: u8,
 }
 
 impl MaterializedNodeBody {
     /// Returns every source-ordered element group through one shared body traversal.
-    fn element_groups(&self) -> Vec<MaterializedElementGroup<'_>> {
+    pub(crate) fn element_groups(&self) -> Vec<MaterializedElementGroup<'_>> {
         match self {
             Self::Struct(elements) | Self::Presence(elements) => vec![MaterializedElementGroup {
                 elements,
