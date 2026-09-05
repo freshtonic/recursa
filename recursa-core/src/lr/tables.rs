@@ -1,7 +1,9 @@
 //! The packed LALR(1) tables and their decoder.
 //!
 //! The tables mirror bison's `yypact`, `yytable`, `yycheck`, `yydefact`, `yypgoto`, `yydefgoto`,
-//! `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule. Codegen packs them
+//! `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule and its `lookahead` filter table,
+//! the flat `(token, merged, trigger)` triples of the grammar's `lookahead` declarations, which
+//! [`DecodedTables::merged_terminal`] applies to the token feed. Codegen packs them
 //! (`recursa_codegen::lr::tables`) and renders each as one byte-string literal so a table costs
 //! the compiler one token; this module is the runtime half of that format and must agree with
 //! the codegen encoder cell for cell.
@@ -58,6 +60,8 @@ pub struct LrTables {
     r2: &'static [u8],
     /// Packed `value_pops`.
     value_pops: &'static [u8],
+    /// Packed `lookahead`.
+    lookahead: &'static [u8],
     /// The decoded form, filled on first lookup.
     decoded: OnceLock<DecodedTables>,
 }
@@ -84,6 +88,8 @@ pub struct DecodedTables {
     pub r2: Vec<u32>,
     /// Value-carrying right-hand-side symbols of each rule.
     pub value_pops: Vec<u32>,
+    /// Lookahead filters as flat `(token, merged, trigger)` triples.
+    pub lookahead: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +118,7 @@ impl LrTables {
         r1: &'static [u8],
         r2: &'static [u8],
         value_pops: &'static [u8],
+        lookahead: &'static [u8],
     ) -> Self {
         Self {
             end_marker,
@@ -124,6 +131,7 @@ impl LrTables {
             r1,
             r2,
             value_pops,
+            lookahead,
             decoded: OnceLock::new(),
         }
     }
@@ -147,11 +155,26 @@ impl LrTables {
             r1: decode_unsigned(self.r1),
             r2: decode_unsigned(self.r2),
             value_pops: decode_unsigned(self.value_pops),
+            lookahead: decode_unsigned(self.lookahead),
         })
     }
 }
 
 impl DecodedTables {
+    /// The terminal the token feed presents for a record of `kind` followed by a record of
+    /// `next`: the merged terminal of the lookahead filter whose token is `kind` and whose
+    /// triggers hold `next`, otherwise `kind` itself. Only the table lookup sees the merged
+    /// terminal; the records themselves keep their lexed kinds.
+    pub fn merged_terminal(&self, kind: u32, next: Option<u32>) -> u32 {
+        let Some(next) = next else {
+            return kind;
+        };
+        self.lookahead
+            .chunks_exact(3)
+            .find(|triple| triple[0] == kind && triple[2] == next)
+            .map_or(kind, |triple| triple[1])
+    }
+
     /// Reports whether a state acts without reading a lookahead.
     pub fn acts_by_default(&self, state: u32) -> bool {
         self.pact[state as usize] == PACT_NINF
@@ -284,6 +307,24 @@ pub(super) mod tests {
         b"BBAACCDD",
         b"BBDBDBDB",
         b"BBCBCBBA",
+        b"B",
+    );
+
+    /// The textbook tables with a synthetic lookahead filter: `(` before `)` is read as `id`
+    /// (terminals 2, 4 and 3), which is what `lr::tests` uses to prove the feed substitutes the
+    /// lookup terminal only.
+    pub(in crate::lr) static FILTERED_TEXTBOOK: LrTables = LrTables::new(
+        5,
+        b"BFFADJABFFAJA",
+        b"BPPVTDRFNBBBX",
+        b"BBBPHFDJDCCCR",
+        b"BAAHBDFAAAGCE",
+        b"BNAKH",
+        b"BDAEF",
+        b"BBAACCDD",
+        b"BBDBDBDB",
+        b"BBCBCBBA",
+        b"BCED",
     );
 
     /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
@@ -298,7 +339,20 @@ pub(super) mod tests {
             r1: vec![1, 0, 0, 2, 2, 3, 3],
             r2: vec![1, 3, 1, 3, 1, 3, 1],
             value_pops: vec![1, 2, 1, 2, 1, 1, 0],
+            lookahead: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_lookahead_table_maps_a_token_before_a_trigger_to_its_merged_terminal() {
+        let decoded = FILTERED_TEXTBOOK.decoded();
+        assert_eq!(decoded.lookahead, [2, 4, 3]);
+        assert_eq!(decoded.merged_terminal(2, Some(3)), 4, "`(` before `)` is `id`");
+        assert_eq!(decoded.merged_terminal(2, Some(0)), 2, "`(` before `+` stays `(`");
+        assert_eq!(decoded.merged_terminal(2, None), 2, "`(` at the end stays `(`");
+        assert_eq!(decoded.merged_terminal(4, Some(3)), 4, "an unfiltered token stays");
+        assert!(TEXTBOOK.decoded().lookahead.is_empty());
+        assert_eq!(TEXTBOOK.decoded().merged_terminal(2, Some(3)), 2);
     }
 
     #[test]

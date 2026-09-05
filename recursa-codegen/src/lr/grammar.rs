@@ -196,6 +196,18 @@ pub struct Nonterminal {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One lookahead filter over terminals, as the table-driven token feed applies it: a record of
+/// `token` followed by a record of one of `triggers` is presented to the automaton as `merged`.
+pub struct TerminalFilter {
+    /// The lexed terminal the filter merges.
+    pub token: TerminalId,
+    /// The merged terminal the feed presents instead.
+    pub merged: TerminalId,
+    /// The lexed terminals that trigger the merge, in declaration order.
+    pub triggers: Vec<TerminalId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// One grammar type's synthetic start rule, which gives the type its own start state.
 pub struct StartRule {
     /// The grammar type the start rule enters.
@@ -223,6 +235,8 @@ pub struct LrGrammar {
     starts: Vec<StartRule>,
     /// Nonterminal lookup by name, so the textbook builders can refer to symbols by spelling.
     by_name: BTreeMap<String, NonterminalId>,
+    /// The lookahead filters the token feed must apply, in declaration order.
+    filters: Vec<TerminalFilter>,
 }
 
 /// Display name of the synthetic end marker terminal.
@@ -240,6 +254,7 @@ impl LrGrammar {
             rules_by_lhs: Vec::new(),
             starts: Vec::new(),
             by_name: BTreeMap::new(),
+            filters: Vec::new(),
         }
     }
 
@@ -334,6 +349,17 @@ impl LrGrammar {
         self.rules_by_lhs[rule.lhs.index()].push(id);
         self.rules.push(rule);
         id
+    }
+
+    /// The lookahead filters the token feed must apply.
+    pub fn filters(&self) -> &[TerminalFilter] {
+        &self.filters
+    }
+
+    /// Records the lookahead filters the substitution pass applied, which the tables carry to
+    /// the token feed.
+    pub fn set_filters(&mut self, filters: Vec<TerminalFilter>) {
+        self.filters = filters;
     }
 
     /// Replaces every rule with `rules`, in the given order, before any start rule exists.
