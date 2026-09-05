@@ -188,7 +188,7 @@ pub(super) fn render_token(
     plan: &EmissionPlan,
     token: &TokenParsePlan,
     index: usize,
-    lr: Option<&TableDrivenRendering>,
+    parsers: &ParserSet,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -233,8 +233,8 @@ pub(super) fn render_token(
     );
     let expected = render_expected_set(plan, &token.expected);
     let capture = token.capture.render(facade);
-    let parse_impl = match lr {
-        Some(lr) => render_token_items(plan, token, lr),
+    let parse_impls = parsers.iter().map(|parser| match parser.tables() {
+        Some(lr) => render_token_items(plan, token, lr, parser),
         None => quote! {
             impl<'input, A> #facade::__private::Parse<'input, A, #facade::__private::RecursiveDescent>
                 for #ident<'input>
@@ -261,7 +261,8 @@ pub(super) fn render_token(
                 }
             }
         },
-    };
+    });
+    let parse_impl = quote!(#(#parse_impls)*);
     let mut standard_derives = token
         .configured_traits
         .iter()

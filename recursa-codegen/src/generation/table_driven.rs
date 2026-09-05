@@ -25,8 +25,9 @@
 //! `presence(...)`, `list(...)`, `list1(...)`, `list1t(...)`) and a presence envelope are reduced
 //! in the root dispatcher, where the value they build is spelled through the element's node
 //! type or content-token path, so a shared helper is typed once and every user pops the same
-//! type by inference. Named parsers (#116) still fail generation with a message naming the
-//! ticket.
+//! type by inference. A named table-driven parser (#119) renders the same items: its tables
+//! and dispatcher under `parsers::<name>` when it is not the default parser, and its parse
+//! impls against the same `TableDriven` marker, which its own `Input` names.
 //!
 //! Deviations from the section 8 sketch, all deliberate: a type's start state and accept rule
 //! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`, so the
@@ -146,14 +147,7 @@ fn render_diagnostics(diagnostics: &[LrDiagnostic]) -> String {
 
 impl TableDrivenRendering {
     /// Runs the analysis and indexes its rules by node application and content token.
-    pub(super) fn build(plan: &EmissionPlan, lowered: &LoweredGrammar) -> Result<Self, String> {
-        if plan.explorer.is_some() || plan.framing.is_some() {
-            return Err(
-                "table-driven generation does not support the explorer or framing capability yet; \
-                 those seams drive the recursive-descent impl until named parsers land (#116)"
-                    .to_owned(),
-            );
-        }
+    pub(super) fn build(lowered: &LoweredGrammar) -> Result<Self, String> {
         let analysis = LrAnalysis::from_lowered(lowered, AutomatonOptions::default())
             .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
         if !analysis.diagnostics.is_empty() {
@@ -495,7 +489,9 @@ impl TableDrivenRendering {
     }
 }
 
-/// Renders `root.rs`'s `__recursa_lr` module: the tables and the reduce dispatcher.
+/// Renders the `__recursa_lr` module of one table-driven parser, the tables and the reduce
+/// dispatcher: at the grammar module in `root.rs` for the default parser, under
+/// `parsers::<name>` for an extra one.
 pub(super) fn render_root_items(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
@@ -581,21 +577,24 @@ pub(super) fn render_root_items(
 }
 
 /// Renders the `TableDriven` parse impl of one type: `parse` runs the facade loop from the
-/// type's start state.
+/// type's start state over the parser's tables.
 fn render_parse_impl(
     plan: &EmissionPlan,
     ty: &Type,
     capture: proc_macro2::TokenStream,
     start: &StartTables,
+    parser: &RenderedParser,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
+    let marker = parser.marker(plan);
+    let tables_module = parser.tables_module(plan);
     let input_lifetime = input_lifetime();
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
     quote! {
         impl<#input_lifetime, A>
-            #facade::__private::Parse<#input_lifetime, A, #facade::__private::TableDriven>
+            #facade::__private::Parse<#input_lifetime, A, #marker>
             for #ty
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
@@ -610,10 +609,10 @@ fn render_parse_impl(
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 #facade::__private::lr_run::<Self, A>(
                     context,
-                    &#module_anchor::__recursa_lr::TABLES,
+                    &#tables_module::TABLES,
                     #start_state,
                     #accept_rule,
-                    #module_anchor::__recursa_lr::__recursa_reduce,
+                    #tables_module::__recursa_reduce,
                 )
             }
         }
@@ -626,6 +625,7 @@ pub(super) fn render_node_application(
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
     lr: &TableDrivenRendering,
+    parser: &RenderedParser,
 ) -> Result<proc_macro2::TokenStream, String> {
     let facade = &plan.facade;
     let input_lifetime = input_lifetime();
@@ -634,7 +634,7 @@ pub(super) fn render_node_application(
     let Some(start) = &tables.start else {
         return Ok(quote!());
     };
-    let parse_impl = render_parse_impl(plan, ty, node.capture.render(facade), start);
+    let parse_impl = render_parse_impl(plan, ty, node.capture.render(facade), start, parser);
     let mut helper_generics = Generics::default();
     if node.generics.lifetimes().next().is_some() {
         helper_generics
@@ -955,6 +955,7 @@ pub(super) fn render_token_items(
     plan: &EmissionPlan,
     token: &super::lexing::TokenParsePlan,
     lr: &TableDrivenRendering,
+    parser: &RenderedParser,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -966,6 +967,7 @@ pub(super) fn render_token_items(
         &ty,
         token.capture.render(facade),
         lr.token(token.semantic),
+        parser,
     );
     let parsed_kind = (token.accepted_kind_variants.len() > 1).then(
         || quote!(kind: #module_anchor::__recursa_lexical::__recursa_typed_kind(record.kind),),
