@@ -52,7 +52,7 @@ use crate::source_model::{
     NodeBody as SourceNodeBody, PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition,
     PrettySpacing, PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
 };
-use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
+use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, ParserStyle, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
 
 mod configured_traits;
@@ -206,7 +206,7 @@ pub(crate) fn generate_with(
     }
     let plan = EmissionPlan::join(&success.analyzed, &request.cfg)
         .map_err(|detail| failure(root, &detail))?;
-    let rendered = render(&plan).map_err(|detail| failure(root, &detail))?;
+    let rendered = render_by_parser_style(&plan).map_err(|detail| failure(root, &detail))?;
     let debug_bundle = request
         .debug_directory
         .as_deref()
@@ -227,6 +227,35 @@ pub(crate) fn generate_with(
         report: success.build_report,
         reused: false,
     })
+}
+
+/// Selects the renderer for the plan's declared parsers.
+///
+/// This is the one point where a parser style chooses its rendering. Every
+/// parser of the implicit or explicit recursive-descent style renders through
+/// [`render`]. A `table_driven` parser has no renderer yet; selecting one is
+/// reported as an internal emission failure until the table renderer lands.
+fn render_by_parser_style(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
+    let parsers = &plan.emission_plan().parsers;
+    if let Some(table) = parsers
+        .iter()
+        .find(|parser| parser.style == ParserStyle::TableDriven)
+    {
+        let selector = match &table.name {
+            Some(name) => format!("parser `{name}`"),
+            None => "the default parser".to_string(),
+        };
+        return Err(format!(
+            "table-driven rendering not implemented yet: {selector} selects `table_driven`"
+        ));
+    }
+    if parsers.iter().count() > 1 {
+        return Err(
+            "named parser rendering not implemented yet: only the default parser renders"
+                .to_string(),
+        );
+    }
+    render(plan)
 }
 
 /// Registers the optional debug destination as a Cargo build input.

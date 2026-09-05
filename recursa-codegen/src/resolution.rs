@@ -919,6 +919,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         spans: configuration.syntax.spans,
         diagrams: configuration.syntax.diagrams,
         pretty: configuration.syntax.pretty,
+        parsers: configuration.syntax.parsers.clone(),
     };
     let mut resolver = Resolver {
         cfg: input.cfg,
@@ -3618,6 +3619,15 @@ mod tests {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             "recursa::grammar! { module = self::sql }",
+            &["RCA1017"],
+        );
+    }
+
+    #[test]
+    fn rca1017_reports_parser_style_together_with_named_parsers() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            "recursa::grammar! { module = crate, parser_style = table_driven, parsers(lr = table_driven) }",
             &["RCA1017"],
         );
     }

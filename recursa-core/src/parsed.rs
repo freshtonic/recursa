@@ -1640,9 +1640,7 @@ where
 /// `P` selects which generated parser of `T` runs; call sites bound by a
 /// single [`GeneratedParse`] impl leave it to inference.
 #[doc(hidden)]
-pub fn parse<'input, T, A, P>(
-    input: &mut Input<'input, A>,
-) -> Result<Parsed<'input, T>, ParseError>
+pub fn parse<'input, T, A, P>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
 where
     T: GeneratedParse<'input, A, P>,
     P: ParserMarker,
