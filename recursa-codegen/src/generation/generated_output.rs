@@ -1289,6 +1289,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         impl<'input, A> #facade::__private::GeneratedInput for Input<'input, A> {
             type Inner = #facade::__private::Input<'input, A>;
+            type Parser = #facade::__private::RecursiveDescent;
             fn __recursa_inner(&mut self) -> &mut Self::Inner {
                 &mut self.inner
             }
