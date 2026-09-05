@@ -5,9 +5,9 @@
 //! The in-memory [`LrTables`] mirror bison's `yypact`, `yytable`, `yycheck`, `yydefact`,
 //! `yypgoto`, `yydefgoto`, `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule and
 //! `start_states` per grammar type. Action rows and goto columns share one `table`/`check` pair.
-//! The encoding is the fixed-width URL-safe base64 that `DispatchTable` uses, so ticket #113 can
-//! render each table as one byte-string literal; the runtime decoder is that ticket's, the
-//! decoder here proves the round trip.
+//! The encoding is the fixed-width URL-safe base64 that `DispatchTable` uses, so each table
+//! renders as one byte-string literal (`EncodedTable::literal`); `recursa_core::lr` carries the
+//! runtime decoder, the decoder here proves the round trip.
 //!
 //! Lookup contract, which the runtime must follow exactly:
 //! - action on terminal `t` in state `s`: if `pact[s] == PACT_NINF` take `defact[s]`; else let
@@ -329,6 +329,17 @@ pub struct EncodedTable {
     pub width: usize,
     /// The digits, `width` per cell, no padding.
     pub text: String,
+}
+
+impl EncodedTable {
+    /// Renders the table as the byte-string literal the runtime decoder reads: one base64 digit
+    /// for the width, then the cells.
+    pub fn literal(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.text.len() + 1);
+        bytes.push(ALPHABET[self.width]);
+        bytes.extend_from_slice(self.text.as_bytes());
+        bytes
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
