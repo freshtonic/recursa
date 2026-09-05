@@ -7,6 +7,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use recursa_generated_table_driven::grammar;
+use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 
 /// Counts live heap allocations so a failed parse can prove it dropped every boxed partial
 /// value.
@@ -14,11 +15,15 @@ struct LiveCounting;
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 
+/// Counts every heap allocation, so a capture-off parse can be compared with a capturing one.
+static ALLOCATIONS: AtomicIsize = AtomicIsize::new(0);
+
 // SAFETY: every allocation is forwarded to the system allocator unchanged; the counter is a
 // side channel that never influences the returned pointer or layout.
 unsafe impl GlobalAlloc for LiveCounting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         LIVE.fetch_add(1, Ordering::SeqCst);
+        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract for `layout`.
         unsafe { System.alloc(layout) }
     }
@@ -52,7 +57,31 @@ fn main() {
             input.cursor(),
             input.is_eof()
         );
+        provenance(source);
     }
+
+    // Capture off allocates nothing for provenance: a parse with the default request allocates
+    // strictly less than the same parse with capture requested, whose occurrence tree is heap
+    // allocated in both styles. (The recursive-descent parser interns FOLLOW sets on first use,
+    // so both counts are taken on warm parses.)
+    let lexed = grammar::lex("print(!!false);");
+    let allocations = |spanned: bool| {
+        let mut input = lexed.input();
+        let before = ALLOCATIONS.load(Ordering::SeqCst);
+        let parsed = if spanned {
+            grammar::Statement::parse_spanned(&mut input)
+        } else {
+            grammar::Statement::parse(&mut input)
+        };
+        let count = ALLOCATIONS.load(Ordering::SeqCst) - before;
+        drop(parsed.expect("positive input parses"));
+        count
+    };
+    let warm_up = (allocations(false), allocations(true));
+    drop(warm_up);
+    let (off, on) = (allocations(false), allocations(true));
+    assert!(off < on, "capture off allocated {off}, capture on {on}");
+    println!("capture off allocates less than capture on: {}", off < on);
 
     let source = "let x = 5; print(x); true";
     let lexed = grammar::lex(source);
@@ -73,6 +102,32 @@ fn main() {
         third.found(),
         input.cursor()
     );
+
+    // A root decided by its FOLLOW rejects the token after it: an alternative one token long
+    // (`true`, `5`, `x`), also behind a nested alternative (`!!x`, `5 + 6`); a content-token
+    // root and a root ending in a fixed token accept the prefix (#118).
+    for source in ["true x", "5 x", "!!x y", "5 + 6 x", "5 + !6 ;"] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        match grammar::Value::parse(&mut input) {
+            Ok(value) => println!("trailing {source:?} => ok {:?} cursor={}", value.into_ast(), input.cursor()),
+            Err(error) => {
+                let expected: Vec<&'static str> = error.expected().collect();
+                println!(
+                    "trailing {source:?} => code={} kind={:?} span={:?} found={:?} cursor={} expected={expected:?}",
+                    error.code(),
+                    error.kind(),
+                    error.span(),
+                    error.found(),
+                    input.cursor()
+                );
+            }
+        }
+    }
+    let lexed = grammar::lex("count x");
+    let mut input = lexed.input();
+    let name = grammar::Name::parse(&mut input).expect("a content-token root accepts the prefix");
+    println!("trailing \"count x\" => ok {:?} cursor={}", name.into_ast(), input.cursor());
 
     let source = "!!x";
     let lexed = grammar::lex(source);
@@ -120,4 +175,33 @@ fn main() {
         assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
     }
     println!("table-driven-ok");
+}
+
+/// Prints the provenance of one positive input parsed with capture requested: the occurrence
+/// tree, the root's elements and the Pretty rendering. The twin comparison requires all three
+/// to be identical between the parser styles.
+fn provenance(source: &str) {
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Statement::parse_spanned(&mut input).expect("positive input parses with capture");
+    println!("prov {source:?} => {}", parsed.debug_provenance());
+    let elements: Vec<String> = parsed
+        .root()
+        .span_elements()
+        .map(|element| {
+            format!(
+                "{}:{:?}@{}",
+                element.name().unwrap_or("?"),
+                element.role(),
+                span_text(element.span())
+            )
+        })
+        .collect();
+    println!("elements {source:?} => [{}]", elements.join(" "));
+    println!("pretty {source:?} => {:?}", parsed.render());
+}
+
+/// Renders an optional span as `start..end` or `-`.
+fn span_text(span: Option<recursa::Span>) -> String {
+    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
 }

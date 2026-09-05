@@ -21,13 +21,15 @@
 //! partially built value through the value stack's drop stack.
 
 use crate::input::TokenRecord;
-use crate::parsed::{ContentText, ParseContext, ParsedNode};
+use crate::parsed::{ContentText, Occurrence, ParseContext, ParsedNode};
 use crate::ParseError;
 
 pub mod lac;
+pub mod provenance;
 mod tables;
 mod value_stack;
 
+use provenance::OccurrenceStack;
 pub use tables::{DecodedTables, LrTables, PACT_NINF, TABLE_NINF, TableAction};
 pub use value_stack::ValueStack;
 
@@ -53,8 +55,10 @@ pub type ReduceFn<'input, A> =
 /// context for token text and the caller's builder.
 ///
 /// The frames are the rule's `r2` state-stack entries in right-hand-side order, so a token rule
-/// (`Ident -> IDENT`) reads its terminal through [`Reduction::token`]. Provenance (#118) will
-/// add its occurrence stack here without touching the reduce signature.
+/// (`Ident -> IDENT`) reads its terminal through [`Reduction::token`]. Provenance is not the
+/// reduce action's concern: the loop folds the occurrence stack from the rule's static fold
+/// after the action ran (see [`provenance`]), so the action only learns through
+/// [`Reduction::capturing`] whether a stack exists at all.
 pub struct Reduction<'reduction, 'context, 'input, A> {
     /// The value stack; values are popped in reverse right-hand-side order.
     values: &'reduction mut ValueStack,
@@ -62,9 +66,17 @@ pub struct Reduction<'reduction, 'context, 'input, A> {
     frames: &'reduction [Frame],
     /// The parse context, for token text and the builder.
     context: &'reduction mut ParseContext<'context, 'input, A>,
+    /// Whether this parse keeps an occurrence stack.
+    capturing: bool,
 }
 
 impl<'input, A> Reduction<'_, '_, 'input, A> {
+    /// Reports whether the parse folds provenance: capture was requested, the root's policy is
+    /// mandatory, or the grammar has a mandatory site. When false no occurrence work runs.
+    pub fn capturing(&self) -> bool {
+        self.capturing
+    }
+
     /// Pushes the value the rule built.
     pub fn push<V>(&mut self, value: V) {
         self.values.push(value);
@@ -102,7 +114,8 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
     }
 }
 
-/// Runs the automaton from a grammar type's start state and returns its value.
+/// Runs the automaton from a grammar type's start state and returns its value with the
+/// provenance the parse retained.
 ///
 /// `accept_rule` is the type's start rule `S'(T) -> T`; reducing it ends the parse, with the
 /// single value on the value stack as the root. `reduce` is the generation's dispatcher for
@@ -110,6 +123,10 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
 /// and the error names the token the automaton could not act on, which is the token recursive
 /// descent fails on; its expected set is computed by lookahead correction ([`lac`]) from the
 /// state stack as it was before that token triggered any reduction.
+///
+/// The occurrence stack exists only when the context captures (the request or the root's
+/// policy asks for spans) or the grammar has a mandatory site; otherwise no occurrence work
+/// runs and the root is returned without provenance, as recursive descent returns it.
 pub fn run<'input, T, A>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
@@ -119,10 +136,20 @@ pub fn run<'input, T, A>(
 ) -> Result<ParsedNode<T>, ParseError> {
     let checkpoint = context.cursor();
     let mut values = ValueStack::new();
-    match drive::<T, A>(context, tables, start_state, accept_rule, reduce, &mut values) {
-        Ok(value) => {
+    let mut occurrences =
+        (context.captures() || tables.mandatory_provenance()).then(OccurrenceStack::new);
+    match drive::<T, A>(
+        context,
+        tables,
+        start_state,
+        accept_rule,
+        reduce,
+        &mut values,
+        &mut occurrences,
+    ) {
+        Ok((value, occurrence)) => {
             debug_assert_eq!(values.depth(), 0, "accept leaves exactly one value");
-            context.finish_with_children(value, None, std::iter::empty())
+            Ok(ParsedNode::from_parts(value, occurrence))
         }
         Err(error) => {
             values.unwind();
@@ -132,7 +159,36 @@ pub fn run<'input, T, A>(
     }
 }
 
+/// Builds the error for the token at the cursor, with its expected set corrected from the
+/// state stack as it was before that token triggered any reduction; `accepts` says whether
+/// acceptance counts as a continuation (see [`lac::ErrorSite::accepts`]).
+fn unexpected_here<A>(
+    context: &ParseContext<'_, '_, A>,
+    tables: &LrTables,
+    start_state: u32,
+    accept_rule: u32,
+    origin: usize,
+    accepts: bool,
+) -> ParseError {
+    let site = lac::ErrorSite {
+        start_state,
+        accept_rule,
+        origin,
+        failing: context.cursor(),
+        accepts,
+    };
+    let expected = lac::expected_set(context, tables, site);
+    context.unexpected(&expected)
+}
+
 /// The automaton loop proper; `run` wraps it with the transactional restore.
+///
+/// `tail` tracks whether recursive descent would decide the end of what has been parsed so far
+/// by its caller FOLLOW: after the last shift the reductions up to acceptance are exactly the
+/// spine of last symbols, so one flag set by the rules' `tail` table (a one-token enum
+/// alternative or a repetition tail sets it, a Pratt rule clears it) tells at acceptance whether
+/// a following token outside the root FOLLOW is an error, as it is for recursive descent, or
+/// leaves the greedy prefix accepted.
 fn drive<'input, T, A>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
@@ -140,7 +196,8 @@ fn drive<'input, T, A>(
     accept_rule: u32,
     reduce: ReduceFn<'input, A>,
     values: &mut ValueStack,
-) -> Result<T, ParseError> {
+    occurrences: &mut Option<OccurrenceStack>,
+) -> Result<(T, Occurrence), ParseError> {
     let decoded = tables.decoded();
     let end_marker = tables.end_marker();
     // The one thing the error path needs from the hot path: where this parse began, so that
@@ -150,6 +207,7 @@ fn drive<'input, T, A>(
         state: start_state,
         token: NO_TOKEN,
     }];
+    let mut tail = false;
     loop {
         let state = states.last().expect("the state stack keeps the start state").state;
         let action = if decoded.acts_by_default(state) {
@@ -167,16 +225,40 @@ fn drive<'input, T, A>(
         match action {
             TableAction::Shift(target) => {
                 let token = context.cursor() as u32;
-                context.advance();
+                let shifted = context.advance();
+                if let Some(stack) = occurrences.as_mut() {
+                    let record = shifted.expect("a shift consumes the lookahead it read");
+                    stack.shift(context, token, record.span)?;
+                }
                 states.push(Frame {
                     state: target,
                     token,
                 });
+                tail = false;
             }
             TableAction::Reduce(rule) if rule == accept_rule => {
+                if tail
+                    && context
+                        .peek(0)
+                        .is_some_and(|record| !context.follow().contains(record.kind))
+                {
+                    return Err(unexpected_here(
+                        context,
+                        tables,
+                        start_state,
+                        accept_rule,
+                        origin,
+                        false,
+                    ));
+                }
                 // SAFETY: the accept rule `S'(T) -> T` pops the root value, which the reduce
                 // action of a `T` rule pushed as a `T`.
-                return Ok(unsafe { values.pop::<T>() });
+                let value = unsafe { values.pop::<T>() };
+                let occurrence = match occurrences.take() {
+                    Some(stack) => stack.into_root(context)?,
+                    None => Occurrence::absent(),
+                };
+                return Ok((value, occurrence));
             }
             TableAction::Reduce(rule) => {
                 let pops = decoded.r2[rule as usize] as usize;
@@ -188,12 +270,21 @@ fn drive<'input, T, A>(
                     values,
                     frames: &states[kept..],
                     context,
+                    capturing: occurrences.is_some(),
                 };
                 reduce(rule, &mut reduction)?;
                 debug_assert!(
                     values.depth() == depth - value_pops || values.depth() == depth - value_pops + 1,
                     "a reduce action pops `value_pops` values and pushes at most one"
                 );
+                if let Some(stack) = occurrences.as_mut() {
+                    stack.reduce(context, tables.folds(), rule, pops)?;
+                }
+                match decoded.tail[rule as usize] {
+                    1 => tail = true,
+                    2 => tail = false,
+                    _ => {}
+                }
                 states.truncate(kept);
                 let top = states.last().expect("the state stack keeps the start state").state;
                 states.push(Frame {
@@ -202,14 +293,7 @@ fn drive<'input, T, A>(
                 });
             }
             TableAction::Error => {
-                let site = lac::ErrorSite {
-                    start_state,
-                    accept_rule,
-                    origin,
-                    failing: context.cursor(),
-                };
-                let expected = lac::expected_set(context, tables, site);
-                return Err(context.unexpected(&expected));
+                return Err(unexpected_here(context, tables, start_state, accept_rule, origin, true));
             }
         }
     }
@@ -476,6 +560,57 @@ mod tests {
         assert_eq!(error.span(), Span::new(5, 6).unwrap());
         assert_eq!(error.found(), Some("id"));
         assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*", "fixed:)"]);
+    }
+
+    #[test]
+    fn capture_off_keeps_no_occurrence_stack_and_returns_no_provenance() {
+        // Every reduce sees `capturing() == false` under the default request with an optional
+        // policy, so no occurrence stack exists to be pushed or folded, and the root carries
+        // no occurrence.
+        fn assert_off(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+            assert!(!reduction.capturing(), "capture is off");
+            evaluate(rule, reduction)
+        }
+        let live = Rc::new(Cell::new(0));
+        let lexed = lex("(2+3)*4");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live);
+        let occurrence = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_off).map(|node| node.into_parts().1)
+        })
+        .unwrap();
+        assert!(!occurrence.is_captured());
+    }
+
+    #[test]
+    fn a_capturing_parse_folds_the_occurrence_tree_recursive_descent_would_build() {
+        // With capture requested every reduce sees the stack and the textbook folds build the
+        // tree: each rule a node over the rule's extent whose children are its sites, a
+        // nonterminal site grouped around the child's node, a terminal site a leaf, and
+        // `F -> id` passing its token through to the group that consumes it.
+        fn assert_on(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+            assert!(reduction.capturing(), "capture is on");
+            evaluate(rule, reduction)
+        }
+        let live = Rc::new(Cell::new(0));
+        let lexed = lex("2+3*4");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live);
+        let occurrence = crate::parsed::test_context_spanned(&mut input, |context| {
+            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|node| node.into_parts().1)
+        })
+        .unwrap();
+        assert_eq!(
+            occurrence.render(),
+            "(0..5: (0..1: (0..1: (0..1: (0..1: (0..1: (0..1)))))) (1..2) (2..5: (2..5: (2..3: (2..3: (2..3: (2..3)))) (3..4) (4..5: (4..5)))))"
+        );
+        // A failed capturing parse drops the stack with everything else.
+        let lexed = lex("2+3*+");
+        let mut input = lexed.input_with_builder(&GRAMMAR, Rc::new(Cell::new(0)));
+        let error = crate::parsed::test_context_spanned(&mut input, |context| {
+            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|_| ())
+        })
+        .unwrap_err();
+        assert_eq!(error.span(), Span::new(4, 5).unwrap());
+        assert_eq!(input.cursor(), 0);
     }
 
     #[test]
