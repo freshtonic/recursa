@@ -7,9 +7,9 @@
 //! normalized grammar to an [`LrGrammar`](crate::lr::grammar::LrGrammar), builds one LALR(1)
 //! [`Automaton`](crate::lr::automaton::Automaton) with a start state per grammar type, packs it
 //! into [`LrTables`](crate::lr::tables::LrTables) and reports every conflict as a diagnostic.
-//! Nothing here is wired into generation yet; ticket #113 renders the tables and ticket #115
-//! plugs binding-power precedence into the
-//! [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam.
+//! Generation runs it from the renderer-selection point when the grammar selects the
+//! `table_driven` style (`generation::table_driven`); ticket #115 plugs binding-power precedence
+//! into the [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam.
 
 /// LR(0) item sets, DeRemer–Pennello lookaheads and conflict detection.
 pub mod automaton;

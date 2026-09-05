@@ -1,10 +1,10 @@
 //! The table-driven parser's runtime: the LALR(1) automaton loop over generated tables.
 //!
 //! Generated code supplies data and reduce actions only (`docs/table-driven-parsing.md`,
-//! section 3): the packed [`LrTables`] of the whole grammar, one start state and accept rule per
-//! grammar type, and one reduce function that builds a value for each rule. [`run`] is the loop
+//! section 3): the packed [`crate::lr::LrTables`] of the whole grammar, one start state and accept rule per
+//! grammar type, and one reduce function that builds a value for each rule. [`crate::lr::run`] is the loop
 //! that joins them. It keeps two stacks: the state stack, whose frames remember the shifted token
-//! so that a content-token rule can read it, and the [`ValueStack`], which holds only semantic
+//! so that a content-token rule can read it, and the [`crate::lr::ValueStack`], which holds only semantic
 //! values, so fixed tokens cost the value stack nothing.
 //!
 //! Three behaviours are decisions of the design document and are pinned by this module's tests:

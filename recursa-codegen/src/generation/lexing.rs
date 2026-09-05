@@ -188,6 +188,7 @@ pub(super) fn render_token(
     plan: &EmissionPlan,
     token: &TokenParsePlan,
     index: usize,
+    lr: Option<&TableDrivenRendering>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -232,6 +233,35 @@ pub(super) fn render_token(
     );
     let expected = render_expected_set(plan, &token.expected);
     let capture = token.capture.render(facade);
+    let parse_impl = match lr {
+        Some(lr) => render_token_items(plan, token, lr),
+        None => quote! {
+            impl<'input, A> #facade::__private::Parse<'input, A, #facade::__private::RecursiveDescent>
+                for #ident<'input>
+            {
+                const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
+                fn grammar() -> &'static #facade::__private::GrammarInfo {
+                    &#module_anchor::__RECURSA_GRAMMAR
+                }
+                fn root_follow() -> &'static #facade::__private::FollowSet {
+                    &#module_anchor::__RECURSA_EMPTY_FOLLOW
+                }
+                fn parse(
+                    context: &mut #facade::__private::ParseContext<'_, 'input, A>,
+                ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
+                    let Some(record) = context.peek(0) else {
+                        return Err(context.unexpected(&#expected));
+                    };
+                    if !#expected.contains(record.kind) {
+                        return Err(context.unexpected(&#expected));
+                    }
+                    context.advance();
+                    let text = context.matched_text(record)?;
+                    context.finish(Self { text, #parsed_kind }, record.span)
+                }
+            }
+        },
+    };
     let mut standard_derives = token
         .configured_traits
         .iter()
@@ -556,30 +586,7 @@ pub(super) fn render_token(
                 #module_anchor::View { value: self, cursor }
             }
         }
-        impl<'input, A> #facade::__private::Parse<'input, A, #facade::__private::RecursiveDescent>
-            for #ident<'input>
-        {
-            const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
-            fn grammar() -> &'static #facade::__private::GrammarInfo {
-                &#module_anchor::__RECURSA_GRAMMAR
-            }
-            fn root_follow() -> &'static #facade::__private::FollowSet {
-                &#module_anchor::__RECURSA_EMPTY_FOLLOW
-            }
-            fn parse(
-                context: &mut #facade::__private::ParseContext<'_, 'input, A>,
-            ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
-                let Some(record) = context.peek(0) else {
-                    return Err(context.unexpected(&#expected));
-                };
-                if !#expected.contains(record.kind) {
-                    return Err(context.unexpected(&#expected));
-                }
-                context.advance();
-                let text = context.matched_text(record)?;
-                context.finish(Self { text, #parsed_kind }, record.span)
-            }
-        }
+        #parse_impl
 
         #visit_with_impl
         #visit_mut_with_impl
