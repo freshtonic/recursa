@@ -70,6 +70,7 @@ mod protocol;
 mod publication;
 mod reuse;
 mod rust_names;
+mod table_driven;
 mod visit;
 
 use configured_traits::*;
@@ -80,6 +81,7 @@ use emission_plan::*;
 use explorer::*;
 use generated_output::*;
 use lexing::*;
+use table_driven::*;
 use node_views::*;
 use parsing::*;
 use pretty::*;
@@ -206,7 +208,8 @@ pub(crate) fn generate_with(
     }
     let plan = EmissionPlan::join(&success.analyzed, &request.cfg)
         .map_err(|detail| failure(root, &detail))?;
-    let rendered = render_by_parser_style(&plan).map_err(|detail| failure(root, &detail))?;
+    let rendered = render_by_parser_style(&plan, &success.analyzed.lowered)
+        .map_err(|detail| failure(root, &detail))?;
     let debug_bundle = request
         .debug_directory
         .as_deref()
@@ -233,32 +236,27 @@ pub(crate) fn generate_with(
 ///
 /// This is the one point where a parser style chooses its rendering. The
 /// single implicit or explicit recursive-descent parser renders through
-/// [`render`]. A `table_driven` parser has no renderer yet; selecting one is
-/// reported as an internal emission failure until the table renderer lands.
-/// Extra named parsers are refused for the same reason: each needs its own
-/// parser marker to satisfy trait coherence, and only `RecursiveDescent`
-/// exists, so `render` can emit exactly one parser per type today.
-fn render_by_parser_style(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
+/// [`render`]; a single `table_driven` parser renders through
+/// [`render_table_driven`], which runs the LALR(1) analysis over the lowered
+/// grammar and fails on any conflict. Extra named parsers are refused: each
+/// needs its own parser marker to satisfy trait coherence, and only the two
+/// style markers exist, so one generation emits exactly one parser per type
+/// today (#116).
+fn render_by_parser_style(
+    plan: &impl RenderingPlan,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<RenderedGeneration, String> {
     let parsers = &plan.emission_plan().parsers;
-    if let Some(table) = parsers
-        .iter()
-        .find(|parser| parser.style == ParserStyle::TableDriven)
-    {
-        let selector = match &table.name {
-            Some(name) => format!("parser `{name}`"),
-            None => "the default parser".to_string(),
-        };
-        return Err(format!(
-            "table-driven rendering not implemented yet: {selector} selects `table_driven`"
-        ));
-    }
     if parsers.iter().count() > 1 {
         return Err(
             "named parser rendering not implemented yet: only the default parser renders"
                 .to_string(),
         );
     }
-    render(plan)
+    match parsers.default_parser().style {
+        ParserStyle::RecursiveDescent => render(plan),
+        ParserStyle::TableDriven => render_table_driven(plan, lowered),
+    }
 }
 
 /// Registers the optional debug destination as a Cargo build input.

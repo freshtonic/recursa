@@ -307,39 +307,43 @@ fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_m
 }
 
 #[test]
-fn table_driven_selection_reaches_the_renderer_selection_point_and_fails_with_rca9105() {
-    let (_package, _analyzed, plan) =
+fn the_renderer_selection_point_routes_table_driven_and_refuses_named_parsers() {
+    // The Pratt fixture reaches the table-driven renderer, which refuses Pratt nodes until
+    // binding-power precedence lands (#115); the refusal is an emission failure like any other
+    // renderer invariant, and the recursive-descent default renders as before.
+    let (_package, analyzed, plan) =
         joined_pratt_plan_with_setting("parser_style = table_driven,");
-    let detail = match render_by_parser_style(&plan) {
-        Ok(_) => panic!("table-driven rendering is not implemented in this ticket"),
+    let detail = match render_by_parser_style(&plan, &analyzed.lowered) {
+        Ok(_) => panic!("the Pratt fixture cannot render table-driven before #115"),
         Err(detail) => detail,
     };
-    assert_eq!(
-        detail,
-        "table-driven rendering not implemented yet: the default parser selects `table_driven`"
+    assert!(
+        detail.starts_with("table-driven generation does not render Pratt nodes yet"),
+        "{detail}"
     );
     let error = failure(Path::new("grammar.rs"), &detail);
     let [diagnostic] = error.report().diagnostics() else {
-        panic!("one renderer-selection failure must produce one diagnostic")
+        panic!("one renderer failure must produce one diagnostic")
     };
     assert_eq!(diagnostic.code().as_str(), "RCA9105");
     assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
 
-    let (_package, _analyzed, named) =
+    let (_package, analyzed, named) =
         joined_pratt_plan_with_setting("parsers(rd = recursive_descent, lr = table_driven),");
     assert_eq!(
-        render_by_parser_style(&named).err().as_deref(),
-        Some("table-driven rendering not implemented yet: parser `lr` selects `table_driven`")
+        render_by_parser_style(&named, &analyzed.lowered).err().as_deref(),
+        Some("named parser rendering not implemented yet: only the default parser renders"),
+        "a second parser needs its own marker before it can render (#116)"
     );
 
-    let (_package, _analyzed, two_recursive) =
+    let (_package, analyzed, two_recursive) =
         joined_pratt_plan_with_setting("parsers(a = recursive_descent, b = recursive_descent),");
     assert_eq!(
-        render_by_parser_style(&two_recursive).err().as_deref(),
+        render_by_parser_style(&two_recursive, &analyzed.lowered).err().as_deref(),
         Some("named parser rendering not implemented yet: only the default parser renders"),
-        "a second parser needs its own marker before it can render"
     );
 
-    let (_package, _analyzed, recursive) = joined_pratt_plan_with_setting("");
-    render_by_parser_style(&recursive).expect("the default parser style renders as before");
+    let (_package, analyzed, recursive) = joined_pratt_plan_with_setting("");
+    render_by_parser_style(&recursive, &analyzed.lowered)
+        .expect("the default parser style renders as before");
 }

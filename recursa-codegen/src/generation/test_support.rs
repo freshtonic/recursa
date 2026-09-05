@@ -2800,6 +2800,7 @@ pub(super) fn incomplete_staging_is_unselectable() {
         node_anchors: vec!["anchor-0".to_owned()],
         selector: "fn selected() {}".to_owned(),
         diagram_plan: None,
+        automaton_dump: None,
     };
     assert_eq!(
         stage_and_publish(&staging, &published, &rendered, || {
@@ -2844,6 +2845,7 @@ fn publication_fixture(identity: &str) -> RenderedGeneration {
         selector: format!(
             "// recursa-generation:{identity}\ninclude!(concat!(env!(\"OUT_DIR\"), \"/recursa-generations/{identity}/root.rs\"));\n"
         ),
+        automaton_dump: None,
         diagram_plan: Some(format!("// {identity} diagram plan")),
     }
 }
