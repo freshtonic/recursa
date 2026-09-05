@@ -3633,6 +3633,24 @@ mod tests {
     }
 
     #[test]
+    fn rca1017_reports_an_empty_named_parser_list() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            "recursa::grammar! { module = crate, parsers() }",
+            &["RCA1017"],
+        );
+    }
+
+    #[test]
+    fn rca1017_reports_a_duplicate_parser_name() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            "recursa::grammar! { module = crate, parsers(lr = table_driven, lr = recursive_descent) }",
+            &["RCA1017"],
+        );
+    }
+
+    #[test]
     fn rca2002_reports_invalid_item_configuration() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),

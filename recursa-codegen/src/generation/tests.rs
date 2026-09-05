@@ -332,6 +332,14 @@ fn table_driven_selection_reaches_the_renderer_selection_point_and_fails_with_rc
         Some("table-driven rendering not implemented yet: parser `lr` selects `table_driven`")
     );
 
+    let (_package, _analyzed, two_recursive) =
+        joined_pratt_plan_with_setting("parsers(a = recursive_descent, b = recursive_descent),");
+    assert_eq!(
+        render_by_parser_style(&two_recursive).err().as_deref(),
+        Some("named parser rendering not implemented yet: only the default parser renders"),
+        "a second parser needs its own marker before it can render"
+    );
+
     let (_package, _analyzed, recursive) = joined_pratt_plan_with_setting("");
     render_by_parser_style(&recursive).expect("the default parser style renders as before");
 }

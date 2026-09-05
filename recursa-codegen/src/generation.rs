@@ -231,10 +231,13 @@ pub(crate) fn generate_with(
 
 /// Selects the renderer for the plan's declared parsers.
 ///
-/// This is the one point where a parser style chooses its rendering. Every
-/// parser of the implicit or explicit recursive-descent style renders through
+/// This is the one point where a parser style chooses its rendering. The
+/// single implicit or explicit recursive-descent parser renders through
 /// [`render`]. A `table_driven` parser has no renderer yet; selecting one is
 /// reported as an internal emission failure until the table renderer lands.
+/// Extra named parsers are refused for the same reason: each needs its own
+/// parser marker to satisfy trait coherence, and only `RecursiveDescent`
+/// exists, so `render` can emit exactly one parser per type today.
 fn render_by_parser_style(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
     let parsers = &plan.emission_plan().parsers;
     if let Some(table) = parsers
