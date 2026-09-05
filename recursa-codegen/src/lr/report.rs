@@ -21,6 +21,8 @@ pub const SHIFT_REDUCE: &str = "RCA0400";
 pub const REDUCE_REDUCE: &str = "RCA0401";
 /// Registered code of a token type refined by a text predicate, which table mode cannot lower.
 pub const TEXT_PREDICATE: &str = "RCA0403";
+/// An ambiguous lookahead-filter substitution.
+pub const LOOKAHEAD_AMBIGUITY: &str = "RCA0404";
 /// Registered code of the note attached to a reduce/reduce conflict that no canonical LR(1)
 /// state exhibits, so a move to IELR(1) would remove it.
 pub const MERGE_ARTEFACT: &str = "RCA0405";

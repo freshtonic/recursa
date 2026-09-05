@@ -84,6 +84,13 @@ pub fn lower(grammar: &GrammarDescription, roles: &TypeRoles) -> Result<LrGramma
     }
     let mut lowering = Lowering::new(grammar, roles);
     lowering.lower_types();
+    let start_nonterminals = lowering.start_nonterminals();
+    super::lookahead::apply(
+        &mut lowering.lr,
+        grammar,
+        &lowering.rule_sites,
+        &start_nonterminals,
+    )?;
     lowering.lower_starts();
     Ok(lowering.lr)
 }
@@ -201,6 +208,9 @@ struct Lowering<'a> {
     helpers: HashMap<HelperKey, NonterminalId>,
     /// Names already taken, to keep nonterminal names unique.
     names: BTreeSet<String>,
+    /// The parse site of every position of each site-derived rule, for the lookahead-filter
+    /// pass to name an ambiguous position's node and field.
+    rule_sites: super::lookahead::RuleSites,
 }
 
 impl<'a> Lowering<'a> {
@@ -249,7 +259,25 @@ impl<'a> Lowering<'a> {
             type_symbols,
             helpers: HashMap::new(),
             names,
+            rule_sites: HashMap::new(),
         }
+    }
+
+    /// The nonterminals that receive a start rule, in start-type order.
+    fn start_nonterminals(&self) -> Vec<NonterminalId> {
+        self.roles
+            .start_types
+            .iter()
+            .filter_map(|type_id| match self.type_symbols[type_id.index()] {
+                Symbol::Nonterminal(target) => Some(target),
+                Symbol::Terminal(_) => None,
+            })
+            .collect()
+    }
+
+    /// Records the sites behind the positions of the rule about to be added.
+    fn record_sites(&mut self, sites: &[SiteId]) {
+        self.rule_sites.insert(self.lr.rules().len(), sites.to_vec());
     }
 
     /// Emits the rules of every type that has a nonterminal.
@@ -281,10 +309,12 @@ impl<'a> Lowering<'a> {
                 }
                 TypeShape::Alias { site } => {
                     let rhs = self.sites_symbols(&[site]);
+                    self.record_sites(&[site]);
                     self.add_construct(lhs, rhs, None, type_id, None);
                 }
                 TypeShape::Sequence { sites } => {
                     let rhs = self.sites_symbols(&sites);
+                    self.record_sites(&sites);
                     if self.roles.fixed_sequences.contains(&type_id) {
                         self.lr.add_rule(Rule {
                             lhs,
@@ -300,6 +330,7 @@ impl<'a> Lowering<'a> {
                 TypeShape::Enum { alternatives } => {
                     for alternative in alternatives {
                         let rhs = self.sites_symbols(&alternative.sites);
+                        self.record_sites(&alternative.sites);
                         self.add_construct(lhs, rhs, Some(alternative.declaration), type_id, None);
                     }
                 }

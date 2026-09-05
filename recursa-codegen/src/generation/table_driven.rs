@@ -317,6 +317,7 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
     let r2 = literal(&lr.tables.r2);
     let value_pops = literal(&lr.tables.value_pops);
     let expected_atoms = literal(&lr.expected_atoms);
+    let lookahead = literal(&lr.tables.lookahead);
     let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
         .tokens
         .iter()
@@ -350,7 +351,7 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
         pub(crate) mod __recursa_lr {
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
-                #expected_atoms,
+                #expected_atoms, #lookahead,
             );
 
             pub(crate) fn __recursa_reduce<#input_lifetime, A>(

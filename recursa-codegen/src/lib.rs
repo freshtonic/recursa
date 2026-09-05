@@ -82,8 +82,9 @@ pub use ids::{
 pub use ir::{
     Alternative, AtomDescription, AtomExpression, AuthoredRole, AuthoredSite, BalancedDelimiter,
     ContainerShape, Declaration, GrammarDescription, GreedyAcceptance, GreedyKinds,
-    KindDescription, Location, ParseSite, PrattPosition, PrattVariant, RepeatSeparator,
-    RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription, TypeShape,
+    KindDescription, Location, LookaheadFilter, ParseSite, PrattPosition, PrattVariant,
+    RepeatSeparator, RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription,
+    TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
 pub use provenance::{

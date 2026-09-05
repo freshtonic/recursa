@@ -7,6 +7,12 @@
 //! so that a content-token rule can read it, and the [`crate::lr::ValueStack`], which holds only semantic
 //! values, so fixed tokens cost the value stack nothing.
 //!
+//! The token feed applies the grammar's lookahead filters (`docs/table-driven-parsing.md`,
+//! section 5) at the one place the loop reads a terminal: a record whose kind is a filtered
+//! token, followed by a record whose kind is one of its triggers, is looked up as the merged
+//! terminal. Nothing else changes: the record is shifted as lexed, so a reduce action and the
+//! error path see the lexed kind and span, and the trigger record is read next as itself.
+//!
 //! Three behaviours are decisions of the design document and are pinned by this module's tests:
 //! default reductions are taken before any lookahead is read, so a state that can only reduce
 //! never asks for a token; a root parse accepts greedily, reducing its accept rule as soon as the
@@ -152,7 +158,10 @@ fn drive<'input, T, A>(
             match context.peek(0) {
                 None => decoded.action(state, end_marker),
                 Some(record) if u32::from(record.kind) >= end_marker => TableAction::Error,
-                Some(record) => decoded.action(state, u32::from(record.kind)),
+                Some(record) => {
+                    let next = context.peek(1).map(|next| u32::from(next.kind));
+                    decoded.action(state, decoded.merged_terminal(u32::from(record.kind), next))
+                }
             }
         };
         match action {
@@ -208,7 +217,7 @@ fn drive<'input, T, A>(
 
 #[cfg(test)]
 mod tests {
-    use super::tables::tests::TEXTBOOK;
+    use super::tables::tests::{FILTERED_TEXTBOOK, TEXTBOOK};
     use super::*;
     use crate::input::LexResult;
     use crate::{GrammarInfo, ParseErrorKind, Span};
@@ -366,6 +375,65 @@ mod tests {
         assert_eq!(error.span(), Span::new(2, 3).unwrap());
         assert_eq!(cursor, 0);
         assert_eq!(live, 0);
+    }
+
+    /// Reduces the textbook grammar by recording, for every `F -> id` rule, the lexed kind of
+    /// the shifted record; sums record the kinds seen so far.
+    fn record_kinds(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+        // SAFETY: every pop names the type the child rule pushed, `Value`.
+        unsafe {
+            match rule {
+                1 | 3 => {
+                    let right = reduction.pop::<Value>();
+                    let left = reduction.pop::<Value>();
+                    let live = reduction.builder().clone();
+                    reduction.push(Value::new(left.number * 10 + right.number, &live));
+                }
+                2 | 4 | 5 => {}
+                6 => {
+                    let record = reduction.token();
+                    let live = reduction.builder().clone();
+                    reduction.push(Value::new(i64::from(record.kind), &live));
+                }
+                other => panic!("rule {other} is not reduced by the dispatcher"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_feed_substitutes_the_lookup_terminal_and_keeps_the_lexed_record() {
+        // Under the synthetic filter `(` before `)` is looked up as `id`, so `()` parses as one
+        // `id` whose reduce action still sees the lexed `(` (kind 2); the `)` is then read as
+        // itself and, having no action, ends the greedy root parse without being consumed.
+        let live = Rc::new(Cell::new(0));
+        let lexed = lex("()");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
+        let result = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
+                .map(|node| node.into_parts().0.number)
+        });
+        assert_eq!(result.unwrap(), 2);
+        assert_eq!(input.cursor(), 1);
+        // `(+` is not filtered (`+` is no trigger), so `(` is looked up as itself and the parse
+        // fails on the `+` that cannot open an operand.
+        let lexed = lex("(+");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
+        let result = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
+                .map(|node| node.into_parts().0.number)
+        });
+        let error = result.unwrap_err();
+        assert_eq!(error.span(), Span::new(1, 2).unwrap());
+        assert_eq!(error.found(), Some("+"));
+        // Without a filter the same tables reject `()` at the `)`.
+        let lexed = lex("()");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live);
+        let result = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _>(context, &TEXTBOOK, 0, 0, record_kinds)
+                .map(|node| node.into_parts().0.number)
+        });
+        assert_eq!(result.unwrap_err().found(), Some(")"));
     }
 
     #[test]

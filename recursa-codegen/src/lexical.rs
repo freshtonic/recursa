@@ -53,6 +53,8 @@ pub(crate) struct LexicalPlan {
     pub(crate) non_token_rules: Vec<NonTokenLexicalRule>,
     /// Correlation from source definitions to their assigned kind.
     pub(crate) lowering_map: LexicalLoweringMap,
+    /// Lookahead filters in declaration order; their merged kinds are the last `token_kinds`.
+    pub(crate) lookahead_filters: Vec<LookaheadFilterPlan>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,6 +168,19 @@ impl LexicalPlan {
             )
             .expect("writing to String cannot fail");
         }
+        for filter in &self.lookahead_filters {
+            let label = |kind: KindId| kind_label(&self.token_kinds[kind.index()].identity);
+            let mut triggers = filter.triggers.iter().map(|kind| label(*kind)).collect::<Vec<_>>();
+            triggers.sort();
+            writeln!(
+                rendered,
+                "lookahead {} = {} before [{}]",
+                label(filter.merged),
+                label(filter.token),
+                triggers.join(","),
+            )
+            .expect("writing to String cannot fail");
+        }
         let mut rules = self
             .rules
             .iter()
@@ -251,6 +266,7 @@ const fn lexical_priority_projection_key(priority: LexicalPriority) -> (u8, Opti
 pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
     match identity {
         TokenKindIdentity::Fixed(spelling) => format!("fixed:{spelling}"),
+        TokenKindIdentity::Merged(merged) => format!("merged:{}", merged.name),
         TokenKindIdentity::ContentBase(base) => {
             let closed = base
                 .closed_matcher
@@ -280,6 +296,30 @@ pub(crate) enum TokenKindIdentity {
     Fixed(String),
     /// A merged content-token matcher.
     ContentBase(ContentBaseIdentity),
+    /// A lookahead filter's merged kind: never lexed, produced only by a table-driven parser's
+    /// token feed.
+    Merged(MergedKindIdentity),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Identity of a lookahead filter's merged kind.
+pub(crate) struct MergedKindIdentity {
+    /// The authored merged kind name, such as `NOT_LA`, unique among merged kinds.
+    pub(crate) name: String,
+    /// The canonical spelling of the merged token, which the merged kind shares for Pretty
+    /// output.
+    pub(crate) spelling: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One lookahead filter over planned kinds: `token` read before any of `triggers` is `merged`.
+pub(crate) struct LookaheadFilterPlan {
+    /// The merged kind.
+    pub(crate) merged: KindId,
+    /// The lexed kind the filter merges.
+    pub(crate) token: KindId,
+    /// The lexed kinds that trigger the merge, in authored order without duplicates.
+    pub(crate) triggers: Vec<KindId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1185,9 +1225,22 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
     ordered_identities.sort_by(|(left_identity, left_site), (right_identity, right_site)| {
         (left_site, kind_label(left_identity)).cmp(&(right_site, kind_label(right_identity)))
     });
+    // Merged kinds follow every lexed kind, so a `lookahead` block never renumbers the kinds a
+    // recursive-descent generation dispatches on.
+    let merged_identities = model.lookahead_filters.iter().map(|filter| {
+        let TokenDefinitionKind::Fixed(fixed) = &model.token_definitions[filter.token.index()].kind
+        else {
+            unreachable!("a lookahead filter merges a fixed token definition")
+        };
+        TokenKindIdentity::Merged(MergedKindIdentity {
+            name: filter.name.clone(),
+            spelling: canonical_fixed_spelling(&fixed.spelling, text_equivalence),
+        })
+    });
     let token_kinds = ordered_identities
         .into_iter()
         .map(|(identity, _)| identity)
+        .chain(merged_identities)
         .enumerate()
         .map(|(index, identity)| TokenKindPlan {
             id: KindId::new(index.try_into().expect("token kind identity overflow")),
@@ -1379,10 +1432,38 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
             })
         })
         .collect::<Vec<_>>();
+    let lookahead_filters = model
+        .lookahead_filters
+        .iter()
+        .map(|filter| {
+            let merged = token_kinds
+                .iter()
+                .find_map(|kind| match &kind.identity {
+                    TokenKindIdentity::Merged(merged) if merged.name == filter.name => {
+                        Some(kind.id)
+                    }
+                    _ => None,
+                })
+                .expect("every lookahead filter plans one merged kind");
+            let mut triggers = Vec::new();
+            for trigger in &filter.triggers {
+                let kind = definition_kinds[trigger];
+                if !triggers.contains(&kind) {
+                    triggers.push(kind);
+                }
+            }
+            LookaheadFilterPlan {
+                merged,
+                token: definition_kinds[&filter.token],
+                triggers,
+            }
+        })
+        .collect::<Vec<_>>();
     let plan = LexicalPlan {
         text_equivalence,
         selection_order: LexicalSelectionOrder::LongestPrefixThenFixedThenAuthoredPatternPriority,
         token_kinds,
+        lookahead_filters,
         content_bases,
         keywords,
         parser_targets,
@@ -2373,6 +2454,61 @@ struct Root;
                 &super::TokenKindIdentity::Fixed("A".to_owned()),
                 &super::TokenKindIdentity::Fixed("B".to_owned()),
             ],
+        );
+    }
+
+    #[test]
+    fn merged_lookahead_kinds_follow_every_lexed_kind_and_have_no_lexical_rule() {
+        let report = plan(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { NOT => "not", BETWEEN => "between", IN => "in" }
+    lookahead { NOT_LA = NOT before { BETWEEN, IN } }
+    punctuation { PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+#[tok(NOT, BETWEEN, PLUS)]
+struct Root;
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let plan = report.plan.expect("a lookahead filter plans");
+        let identities = plan
+            .token_kinds
+            .iter()
+            .map(|kind| &kind.identity)
+            .collect::<Vec<_>>();
+        let super::TokenKindIdentity::Fixed(not_spelling) = identities[0] else {
+            panic!("the first kind is `NOT`: {identities:?}");
+        };
+        assert_eq!(identities.len(), 5, "{identities:?}");
+        assert_eq!(
+            identities[4],
+            &super::TokenKindIdentity::Merged(super::MergedKindIdentity {
+                name: "NOT_LA".to_owned(),
+                spelling: not_spelling.clone(),
+            }),
+            "the merged kind follows every lexed kind"
+        );
+        let merged = plan.token_kinds[4].id;
+        assert!(plan.rules.iter().all(|rule| rule.kind != merged), "no lexical rule produces it");
+        assert!(plan.keywords.iter().all(|keyword| keyword.kind != merged));
+        assert_eq!(
+            plan.lookahead_filters,
+            [super::LookaheadFilterPlan {
+                merged,
+                token: plan.token_kinds[0].id,
+                triggers: vec![plan.token_kinds[1].id, plan.token_kinds[2].id],
+            }]
+        );
+        assert_eq!(super::kind_label(identities[4]), "merged:NOT_LA");
+        assert!(
+            plan.canonical_lexical_projection()
+                .contains("lookahead merged:NOT_LA = fixed:"),
+            "{}",
+            plan.canonical_lexical_projection()
         );
     }
 
