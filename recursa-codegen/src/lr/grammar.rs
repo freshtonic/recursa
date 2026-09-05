@@ -72,7 +72,7 @@ pub enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Associativity a binding-power pair lowers to; ticket #115 consumes it, this ticket records it.
+/// Associativity a binding-power pair lowers to; the precedence resolver consults it on a tie.
 pub enum Associativity {
     /// `rbp = lbp + 1`: the left operand binds first.
     Left,
@@ -91,27 +91,53 @@ pub struct RulePrecedence {
     pub level: u8,
     /// The associativity derived from the binding-power pair.
     pub associativity: Associativity,
+    /// The Pratt nonterminal whose operator tokens this precedence is compared with: the rule's
+    /// own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion clone) that
+    /// owns the operand for a fixed-token attachment around one.
+    pub owner: NonterminalId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// An infix binding-power pair with no precedence equivalent: `rbp` is neither `lbp + 1`
+/// (left-associative) nor `lbp` or `lbp - 1` (right-associative). The lowering reports it as
+/// `RCA0402` naming the variant.
+pub struct UnrepresentableBindingPowers {
+    /// The left binding power.
+    pub lbp: u8,
+    /// The right binding power.
+    pub rbp: u8,
 }
 
 impl RulePrecedence {
-    /// Derives the precedence facts of one Pratt position; atoms have none.
-    pub fn from_position(position: PrattPosition) -> Option<Self> {
+    /// Derives the precedence facts of one Pratt position of `owner`; atoms have none, and an
+    /// infix pair outside the three representable shapes is the error.
+    pub fn from_position(
+        position: PrattPosition,
+        owner: NonterminalId,
+    ) -> Result<Option<Self>, UnrepresentableBindingPowers> {
         match position {
-            PrattPosition::Atom => None,
-            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Some(Self {
+            PrattPosition::Atom => Ok(None),
+            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Ok(Some(Self {
                 position,
                 level: bp,
                 associativity: Associativity::None,
-            }),
-            PrattPosition::Infix { lbp, rbp } => Some(Self {
-                position,
-                level: lbp,
-                associativity: if rbp > lbp {
+                owner,
+            })),
+            PrattPosition::Infix { lbp, rbp } => {
+                let associativity = if u16::from(rbp) == u16::from(lbp) + 1 {
                     Associativity::Left
-                } else {
+                } else if rbp == lbp || u16::from(rbp) + 1 == u16::from(lbp) {
                     Associativity::Right
-                },
-            }),
+                } else {
+                    return Err(UnrepresentableBindingPowers { lbp, rbp });
+                };
+                Ok(Some(Self {
+                    position,
+                    level: lbp,
+                    associativity,
+                    owner,
+                }))
+            }
         }
     }
 }
@@ -182,6 +208,19 @@ pub enum NonterminalOrigin {
     Start(TypeId),
     /// A helper the container lowering invented around a symbol.
     Helper,
+    /// A distinct Pratt language: the grammar type minus the LED variants a
+    /// `#[parse(pratt(exclude(...)))]` site names and minus the LED variants below an operand's
+    /// minimum binding power, or the fixed-token attachment around such an operand, cloned once
+    /// per distinct restriction the way gram.y has `b_expr` beside `a_expr`. Its rules build
+    /// the original type.
+    Restriction {
+        /// The Pratt type, or the attachment sequence around one of its operands, cloned.
+        type_id: TypeId,
+        /// The excluded LED variants, as normalized declarations in ascending order.
+        excluded: Vec<DeclId>,
+        /// The minimum binding power; zero for an exclusion-only clone and for attachments.
+        min_bp: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -512,6 +551,29 @@ impl TextbookGrammar {
                 variant: None,
             },
         })
+    }
+
+    /// Adds `lhs -> rhs` as a Pratt rule with the binding powers of `position`, the way the
+    /// lowering records an infix, prefix or postfix variant.
+    pub fn pratt_rule(&mut self, lhs: &str, rhs: &str, position: PrattPosition) -> RuleId {
+        self.attachment_rule(lhs, rhs, lhs, position)
+    }
+
+    /// Adds `lhs -> rhs` carrying the binding powers of `position` as a rule of `owner`'s
+    /// Pratt language, the way the lowering records a fixed-token attachment around an operand
+    /// (`Plus -> + E` for `E -> E Plus`).
+    pub fn attachment_rule(
+        &mut self,
+        lhs: &str,
+        rhs: &str,
+        owner: &str,
+        position: PrattPosition,
+    ) -> RuleId {
+        let id = self.rule(lhs, rhs);
+        let owner = self.nonterminal(owner);
+        self.grammar.rules[id.index()].precedence = RulePrecedence::from_position(position, owner)
+            .expect("textbook Pratt rules use representable binding powers");
+        id
     }
 
     /// Adds the start rule for one nonterminal.

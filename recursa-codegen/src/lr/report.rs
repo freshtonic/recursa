@@ -3,14 +3,16 @@
 //! Bison-style automaton dump and conflict diagnostics.
 //!
 //! The dump is the human-readable half of the generated-code debug bundle: the rules, then every
-//! state with its items, actions, rejected actions in brackets, and gotos, then a conflict
-//! summary. The diagnostics carry the same facts in the shape the build report needs: a code,
-//! a message, the shortest path to the state, the state's items, the competing actions, and
-//! notes such as `RCA0405`.
+//! state with its shortest path, items, the conflicts precedence resolved, actions, rejected
+//! actions in brackets, and gotos, then a conflict summary. The diagnostics carry the same
+//! facts in the shape the build report needs: a code, a message, the shortest path to the
+//! state, the state's items, the competing actions, and notes such as `RCA0405`.
 
 use std::fmt::Write as _;
 
-use super::automaton::{Action, Automaton, Conflict, ConflictKind, MergeArtefactCheck, State};
+use super::automaton::{
+    Action, Automaton, Conflict, ConflictKind, MergeArtefactCheck, Resolution, State,
+};
 use super::grammar::{LrGrammar, RuleId, Symbol};
 use super::paths::{SymbolPath, render_path, shortest_paths};
 
@@ -19,6 +21,9 @@ use super::paths::{SymbolPath, render_path, shortest_paths};
 pub const SHIFT_REDUCE: &str = "RCA0400";
 /// Registered code of a reduce/reduce conflict: a state where two rules end on one lookahead.
 pub const REDUCE_REDUCE: &str = "RCA0401";
+/// Registered code of a Pratt binding power with no precedence equivalent: the table-driven
+/// style cannot reproduce the recursive Pratt parse of that variant.
+pub const NO_PRECEDENCE_EQUIVALENT: &str = "RCA0402";
 /// Registered code of a token type refined by a text predicate, which table mode cannot lower.
 pub const TEXT_PREDICATE: &str = "RCA0403";
 /// An ambiguous lookahead-filter substitution.
@@ -175,8 +180,8 @@ pub fn automaton_dump(grammar: &LrGrammar, automaton: &Automaton) -> String {
     text
 }
 
-/// Renders one state: its shortest path, items, actions with rejected alternatives in
-/// brackets, then gotos.
+/// Renders one state: its shortest path, items, the conflicts precedence resolved, actions
+/// with rejected alternatives in brackets, then gotos.
 fn render_state(
     text: &mut String,
     grammar: &LrGrammar,
@@ -192,6 +197,29 @@ fn render_state(
         let _ = writeln!(text, "{:>5} {}", item.rule.index(), item.render(grammar));
     }
     text.push('\n');
+
+    let mut wrote_resolved = false;
+    for resolved in automaton
+        .resolved_conflicts()
+        .iter()
+        .filter(|resolved| resolved.state == state.id())
+    {
+        let verdict = match resolved.resolution {
+            Resolution::Shift => "shift",
+            Resolution::Reduce => "reduce",
+            Resolution::Error => "an error",
+        };
+        let _ = writeln!(
+            text,
+            "    Conflict between rule {} and token {} resolved by precedence ({verdict}).",
+            resolved.reduce.index(),
+            grammar.terminal_name(resolved.lookahead)
+        );
+        wrote_resolved = true;
+    }
+    if wrote_resolved {
+        text.push('\n');
+    }
 
     let conflicts: Vec<&Conflict> = automaton
         .conflicts()
