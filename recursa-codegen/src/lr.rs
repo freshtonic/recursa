@@ -6,7 +6,8 @@
 //! This is a source-independent analysis beside [`analyze`](crate::analyze): it lowers a
 //! normalized grammar to an [`LrGrammar`](crate::lr::grammar::LrGrammar), builds one LALR(1)
 //! [`Automaton`](crate::lr::automaton::Automaton) with a start state per grammar type, packs it
-//! into [`LrTables`](crate::lr::tables::LrTables) and reports every conflict as a diagnostic.
+//! into [`LrTables`](crate::lr::tables::LrTables) and reports every conflict as a diagnostic
+//! that names the shortest path to its state ([`paths`](crate::lr::paths)).
 //! Generation runs it from the renderer-selection point when the grammar selects the
 //! `table_driven` style (`generation::table_driven`); ticket #115 plugs binding-power precedence
 //! into the [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam.
@@ -17,6 +18,8 @@ pub mod automaton;
 pub mod grammar;
 /// Lowering from the normalized grammar to LR rules.
 pub mod lowering;
+/// Shortest symbol paths from the start states, for diagnostics and the dump.
+pub mod paths;
 /// Bison-style automaton dump and conflict diagnostics.
 pub mod report;
 /// Comb-vector table packing and its deterministic encoding.
@@ -36,6 +39,7 @@ pub use grammar::{
     RuleId, RulePrecedence, StartRule, Symbol, TerminalId,
 };
 pub use lowering::{TypeRoles, lower};
+pub use paths::{SymbolPath, render_path, shortest_paths};
 pub use report::{LrDiagnostic, automaton_dump, conflict_diagnostics};
 pub use tables::{EncodedLrTables, LrTables, PACT_NINF, TABLE_NINF};
 
@@ -165,11 +169,28 @@ mod tests {
             ]
         );
         assert!(diagnostic.notes.is_empty());
+        assert_eq!(diagnostic.path, "S -> i S . e");
         let text = diagnostic.render();
         assert!(
-            text.starts_with("error[RCA0400]: shift/reduce conflict in state 4 on lookahead `e`"),
+            text.starts_with(
+                "error[RCA0400]: shift/reduce conflict in state 4 on lookahead `e`\n  path: S -> i S . e\n  items:\n"
+            ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn conflict_paths_are_the_shortest_and_break_ties_by_symbol_order() {
+        // The merged state `A -> c .` / `B -> c .` is reached by both `a c` and `b c`; the
+        // paths have equal length and `a` sorts first.
+        let grammar = lalr_merge_grammar();
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        let diagnostics = conflict_diagnostics(&grammar, &automaton);
+        let paths: Vec<&str> = diagnostics.iter().map(|diagnostic| diagnostic.path.as_str()).collect();
+        assert_eq!(paths, ["S -> a c . d", "S -> a c . e"]);
+        let dump = super::automaton_dump(&grammar, &automaton);
+        assert!(dump.contains("State 4\n\n    path: S -> a c .\n\n"), "{dump}");
+        assert!(dump.contains("State 0\n\n    path: S -> .\n\n"), "{dump}");
     }
 
     #[test]

@@ -32,14 +32,16 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::*;
 use super::parsing::{
-    ElementParseKind, ElementParsePlan, FieldPlan, FieldWrapper, NodeApplicationParsePlan,
-    NodeBodyPlan, NodeParsePlan, PlannedContainer, SemanticParseProjection, render_construction,
+    ElementParseKind, ElementParsePlan, ExpectedAtomIndex, FieldPlan, FieldWrapper,
+    NodeApplicationParsePlan, NodeBodyPlan, NodeParsePlan, PlannedContainer,
+    SemanticParseProjection, render_construction,
 };
-use crate::TypeId;
+use crate::lr::tables::EncodedTable;
 use crate::lr::{
     AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, NoPrecedence, Rule, RuleAction,
     Symbol,
 };
+use crate::{KindId, TypeId};
 use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
 
 /// What a block of contiguous rules reduces to.
@@ -86,6 +88,10 @@ pub(super) struct TableDrivenRendering {
     end_marker: u32,
     /// The encoded tables.
     tables: EncodedLrTables,
+    /// Per terminal, its canonical atom plus one or `0`: the vocabulary the error path names
+    /// expected terminals by, the same canonical atom per kind recursive descent's expected
+    /// sets carry.
+    expected_atoms: EncodedTable,
     /// The dispatcher arms in ascending rule order.
     arms: Vec<DispatchArm>,
     /// Per node application: its rules and start facts.
@@ -136,6 +142,7 @@ impl TableDrivenRendering {
         if !analysis.diagnostics.is_empty() {
             return Err(render_diagnostics(&analysis.diagnostics));
         }
+        let expected_atoms = expected_atoms(&lowered.grammar)?;
         let map = &lowered.lowering_map;
         let application_by_type: HashMap<TypeId, MaterializedApplicationId> = map
             .applications
@@ -242,6 +249,7 @@ impl TableDrivenRendering {
                 .collect(),
             variants: map.variants.clone(),
             dump: analysis.dump(),
+            expected_atoms,
         })
     }
 
@@ -262,6 +270,19 @@ impl TableDrivenRendering {
             Symbol::Nonterminal(id) => self.carries_value[id.index()],
         }
     }
+}
+
+/// Encodes the canonical atom of every token kind, in terminal order, as the atom index plus
+/// one or `0` for a kind without a direct atom.
+fn expected_atoms(grammar: &crate::GrammarDescription) -> Result<EncodedTable, String> {
+    let index = ExpectedAtomIndex::from_grammar(grammar)?;
+    let atoms: Vec<u32> = (0..grammar.kind_count)
+        .map(|kind| {
+            let kind = u16::try_from(kind).expect("token kinds fit the runtime kind width");
+            index.get(KindId::new(kind)).map_or(0, |atom| atom + 1)
+        })
+        .collect();
+    Ok(EncodedTable::unsigned(&atoms))
 }
 
 /// Reports whether two dispatch targets are the same reduce function.
@@ -295,6 +316,7 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
     let r1 = literal(&lr.tables.r1);
     let r2 = literal(&lr.tables.r2);
     let value_pops = literal(&lr.tables.value_pops);
+    let expected_atoms = literal(&lr.expected_atoms);
     let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
         .tokens
         .iter()
@@ -328,6 +350,7 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
         pub(crate) mod __recursa_lr {
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
+                #expected_atoms,
             );
 
             pub(crate) fn __recursa_reduce<#input_lifetime, A>(

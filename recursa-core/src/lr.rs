@@ -16,8 +16,9 @@
 
 use crate::input::TokenRecord;
 use crate::parsed::{ContentText, ParseContext, ParsedNode};
-use crate::{FollowSet, ParseError};
+use crate::ParseError;
 
+pub mod lac;
 mod tables;
 mod value_stack;
 
@@ -101,7 +102,8 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
 /// single value on the value stack as the root. `reduce` is the generation's dispatcher for
 /// every other rule. On failure the input cursor is restored and every partial value dropped,
 /// and the error names the token the automaton could not act on, which is the token recursive
-/// descent fails on; its expected set is the state's explicit terminals until #117.
+/// descent fails on; its expected set is computed by lookahead correction ([`lac`]) from the
+/// state stack as it was before that token triggered any reduction.
 pub fn run<'input, T, A>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
@@ -135,6 +137,9 @@ fn drive<'input, T, A>(
 ) -> Result<T, ParseError> {
     let decoded = tables.decoded();
     let end_marker = tables.end_marker();
+    // The one thing the error path needs from the hot path: where this parse began, so that
+    // lookahead correction can replay the state stack up to the failing token.
+    let origin = context.cursor();
     let mut states = vec![Frame {
         state: start_state,
         token: NO_TOKEN,
@@ -188,29 +193,17 @@ fn drive<'input, T, A>(
                 });
             }
             TableAction::Error => {
-                let expected = expected_set(context, decoded, state, end_marker);
+                let site = lac::ErrorSite {
+                    start_state,
+                    accept_rule,
+                    origin,
+                    failing: context.cursor(),
+                };
+                let expected = lac::expected_set(context, tables, site);
                 return Err(context.unexpected(&expected));
             }
         }
     }
-}
-
-/// The crude expected set of an error state: the terminals with an explicit action.
-fn expected_set<A>(
-    context: &ParseContext<'_, '_, A>,
-    decoded: &DecodedTables,
-    state: u32,
-    end_marker: u32,
-) -> FollowSet {
-    let kind_count = context.grammar().kind_count();
-    let mut words = vec![0_u64; kind_count.div_ceil(64)];
-    for terminal in decoded.explicit_terminals(state, end_marker) {
-        let terminal = terminal as usize;
-        if terminal < kind_count {
-            words[terminal / 64] |= 1 << (terminal % 64);
-        }
-    }
-    FollowSet::owned(kind_count as u32, words)
 }
 
 #[cfg(test)]
@@ -226,7 +219,7 @@ mod tests {
     static GRAMMAR: GrammarInfo = GrammarInfo {
         name: "lr-tests",
         kind_names: &["+", "*", "(", ")", "id", "lexical error"],
-        atom_names: &[],
+        atom_names: &["fixed:+", "fixed:*", "fixed:(", "fixed:)", "content:id"],
         lexical_error_kind: 5,
     };
 
@@ -373,6 +366,48 @@ mod tests {
         assert_eq!(error.span(), Span::new(2, 3).unwrap());
         assert_eq!(cursor, 0);
         assert_eq!(live, 0);
+    }
+
+    #[test]
+    fn the_expected_set_names_the_terminals_the_pre_reduction_stack_could_shift() {
+        // `+` after `*` errors in a state with no reductions, so the row is the whole answer.
+        let (result, _, _) = parse("2+3*+");
+        let error = result.unwrap_err();
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+        // An empty input fails in the start state, which shifts `(` and `id`.
+        let (result, _, _) = parse("");
+        let error = result.unwrap_err();
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+        // A lexical error is never shifted, so the expected set is still the pre-reduction one.
+        let (result, _, _) = parse("2+!");
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ParseErrorKind::LexicalError);
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+    }
+
+    #[test]
+    fn lookahead_correction_recovers_the_continuations_a_default_reduction_hides() {
+        // After `(2+3` the end of input takes the default reductions `F -> id`, `T -> F` and
+        // `E -> E + T`, and the error is raised in state 6 (`F -> ( E . )`, `E -> E . + T`),
+        // whose explicit row is `+` and `)`. But `*` could have continued `T -> T . * F` before
+        // the reductions ran, so the expected set must name it too.
+        let tables = TEXTBOOK.decoded();
+        assert_eq!(tables.explicit_terminals(6, 6), [0, 3], "the post-reduction row hides `*`");
+        let (result, cursor, live) = parse("(2+3");
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ParseErrorKind::UnexpectedEof);
+        assert_eq!(error.span(), Span::new(4, 4).unwrap());
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*", "fixed:)"]);
+        assert_eq!(cursor, 0);
+        assert_eq!(live, 0);
+        // The same state, reached with a token instead of the end: the token is the failing one
+        // and the set is the same.
+        let (result, _, _) = parse("(2+3 4");
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ParseErrorKind::UnexpectedToken);
+        assert_eq!(error.span(), Span::new(5, 6).unwrap());
+        assert_eq!(error.found(), Some("id"));
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*", "fixed:)"]);
     }
 
     #[test]

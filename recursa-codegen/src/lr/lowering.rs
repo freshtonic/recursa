@@ -113,6 +113,7 @@ fn text_predicate_diagnostics(grammar: &GrammarDescription) -> Vec<LrDiagnostic>
                  table-driven parser style",
                 description.name
             ),
+            path: String::new(),
             items: Vec::new(),
             actions: Vec::new(),
             notes: Vec::new(),

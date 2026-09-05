@@ -5,12 +5,14 @@
 //! The dump is the human-readable half of the generated-code debug bundle: the rules, then every
 //! state with its items, actions, rejected actions in brackets, and gotos, then a conflict
 //! summary. The diagnostics carry the same facts in the shape the build report needs: a code,
-//! a message, the state's items, the competing actions, and notes such as `RCA0405`.
+//! a message, the shortest path to the state, the state's items, the competing actions, and
+//! notes such as `RCA0405`.
 
 use std::fmt::Write as _;
 
 use super::automaton::{Action, Automaton, Conflict, ConflictKind, MergeArtefactCheck, State};
 use super::grammar::{LrGrammar, RuleId, Symbol};
+use super::paths::{SymbolPath, render_path, shortest_paths};
 
 /// Registered code of a shift/reduce conflict: a state where one lookahead can both be shifted
 /// and end a rule, which precedence did not resolve.
@@ -30,6 +32,9 @@ pub struct LrDiagnostic {
     pub code: &'static str,
     /// The one-line message.
     pub message: String,
+    /// The shortest symbol path from a start state to the state the diagnostic concerns, with
+    /// the lookahead after the dot (`S -> i S . e`); empty for a diagnostic without a state.
+    pub path: String,
     /// The items of the state the diagnostic concerns, rendered.
     pub items: Vec<String>,
     /// The competing actions, rendered, for a conflict.
@@ -42,6 +47,9 @@ impl LrDiagnostic {
     /// Renders the diagnostic as indented text.
     pub fn render(&self) -> String {
         let mut text = format!("error[{}]: {}\n", self.code, self.message);
+        if !self.path.is_empty() {
+            let _ = writeln!(text, "  path: {}", self.path);
+        }
         if !self.items.is_empty() {
             text.push_str("  items:\n");
             for item in &self.items {
@@ -91,12 +99,16 @@ fn competing_actions(grammar: &LrGrammar, conflict: &Conflict) -> Vec<String> {
 
 /// Converts every conflict into a diagnostic, in (state, lookahead) order.
 pub fn conflict_diagnostics(grammar: &LrGrammar, automaton: &Automaton) -> Vec<LrDiagnostic> {
+    let paths = shortest_paths(automaton);
     automaton
         .conflicts()
         .iter()
         .map(|conflict| {
             let state = &automaton.states()[conflict.state.index()];
             let lookahead = grammar.terminal_name(conflict.lookahead);
+            let path = paths[conflict.state.index()]
+                .as_ref()
+                .map_or_else(String::new, |path| render_path(grammar, path, Some(conflict.lookahead)));
             let (code, message) = match &conflict.kind {
                 ConflictKind::ShiftReduce { .. } => (
                     SHIFT_REDUCE,
@@ -128,6 +140,7 @@ pub fn conflict_diagnostics(grammar: &LrGrammar, automaton: &Automaton) -> Vec<L
             LrDiagnostic {
                 code,
                 message,
+                path,
                 items: state
                     .items()
                     .iter()
@@ -152,16 +165,27 @@ pub fn automaton_dump(grammar: &LrGrammar, automaton: &Automaton) -> String {
         );
     }
     text.push('\n');
+    let paths = shortest_paths(automaton);
     for state in automaton.states() {
-        render_state(&mut text, grammar, automaton, state);
+        render_state(&mut text, grammar, automaton, state, paths[state.id().index()].as_ref());
     }
     render_conflict_summary(&mut text, grammar, automaton);
     text
 }
 
-/// Renders one state: items, actions with rejected alternatives in brackets, then gotos.
-fn render_state(text: &mut String, grammar: &LrGrammar, automaton: &Automaton, state: &State) {
+/// Renders one state: its shortest path, items, actions with rejected alternatives in
+/// brackets, then gotos.
+fn render_state(
+    text: &mut String,
+    grammar: &LrGrammar,
+    automaton: &Automaton,
+    state: &State,
+    path: Option<&SymbolPath>,
+) {
     let _ = writeln!(text, "State {}\n", state.id().index());
+    if let Some(path) = path {
+        let _ = writeln!(text, "    path: {}\n", render_path(grammar, path, None));
+    }
     for item in state.items() {
         let _ = writeln!(text, "{:>5} {}", item.rule.index(), item.render(grammar));
     }
