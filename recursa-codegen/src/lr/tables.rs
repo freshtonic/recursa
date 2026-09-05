@@ -62,6 +62,10 @@ pub struct LrTables {
     /// The lookahead filters as flat `(token, merged, trigger)` triples, one per trigger, in
     /// filter then trigger order; the token feed reads `token` before `trigger` as `merged`.
     pub lookahead: Vec<u32>,
+    /// The provenance fold of each rule, packed as [`super::grammar::RuleFold::pack`] packs it, in rule order.
+    pub folds: Vec<u32>,
+    /// The tail decision of each rule ([`super::grammar::TailDecision::code`]).
+    pub tail: Vec<u32>,
 }
 
 /// One sparse vector to pack: `(key, value)` pairs in ascending key order.
@@ -128,6 +132,18 @@ impl LrTables {
                     })
                 })
                 .collect(),
+            folds: {
+                let mut folds = Vec::new();
+                for rule in grammar.rules() {
+                    rule.fold.pack(&mut folds);
+                }
+                folds
+            },
+            tail: grammar
+                .rules()
+                .iter()
+                .map(|rule| rule.tail.code())
+                .collect(),
         }
     }
 
@@ -145,6 +161,8 @@ impl LrTables {
             value_pops: encode_unsigned(&self.value_pops),
             start_states: encode_unsigned(&self.start_states),
             lookahead: encode_unsigned(&self.lookahead),
+            folds: encode_unsigned(&self.folds),
+            tail: encode_unsigned(&self.tail),
         }
     }
 
@@ -162,6 +180,8 @@ impl LrTables {
             value_pops: decode_unsigned(&encoded.value_pops)?,
             start_states: decode_unsigned(&encoded.start_states)?,
             lookahead: decode_unsigned(&encoded.lookahead)?,
+            folds: decode_unsigned(&encoded.folds)?,
+            tail: decode_unsigned(&encoded.tail)?,
         })
     }
 
@@ -391,6 +411,10 @@ pub struct EncodedLrTables {
     pub start_states: EncodedTable,
     /// Encoded `lookahead`.
     pub lookahead: EncodedTable,
+    /// Encoded `folds`.
+    pub folds: EncodedTable,
+    /// Encoded `tail`.
+    pub tail: EncodedTable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
