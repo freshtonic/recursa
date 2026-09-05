@@ -1,0 +1,211 @@
+//! End-to-end proof of the table-driven tracer (#113): the fixture grammar generates and runs
+//! under `parser_style = table_driven`, and everything its consumer observes equals what the
+//! recursive-descent twin of the same grammar produces.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use tempfile::TempDir;
+
+const FIXTURE: &str = "tests/fixtures/generation/table-driven";
+
+/// The line of the fixture grammar the test flips to obtain the recursive-descent twin.
+const TABLE_DRIVEN: &str = "parser_style = table_driven,";
+
+#[test]
+fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
+    let package = scaffold_fixture();
+
+    let table_driven = run_fixture(&package);
+    assert_success(&table_driven);
+    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
+    assert!(table_stdout.ends_with("table-driven-ok\n"), "{table_stdout}");
+
+    // The generated root is the table-driven shape: tables, a dispatcher, the marker.
+    let root = read_selected_root(&package);
+    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
+    assert!(root.contains("TableDriven"), "the grammar input names the table-driven marker");
+    assert!(root.contains("__recursa_reduce"), "root carries the reduce dispatcher");
+    assert!(!root.contains("RecursiveDescent"), "a table-driven generation emits no recursive-descent parser");
+
+    // Positive inputs parse to equal values and leave the cursor at the end.
+    assert!(
+        table_stdout.contains("ok \"let x = 5;\" => Let { assignment: Assignment { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } }, value: Number(Number { text: __RecursaContentToken1 { text: ContentText(\"5\") } }) } } cursor=5 eof=true"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("ok \"print(!!false);\" => Print { print: Print { value: Negated { mark: Bang, inner: Negated { mark: Bang, inner: False } } } } cursor=7 eof=true"),
+        "{table_stdout}"
+    );
+    // A root parse stops where recursive descent stops when tokens follow the root.
+    assert!(table_stdout.contains("prefix first Let { assignment: Assignment { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } }, value: Number(Number { text: __RecursaContentToken1 { text: ContentText(\"5\") } }) } } cursor=5\n"), "{table_stdout}");
+    assert!(table_stdout.contains("prefix second Print { print: Print { value: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=10 eof=false\n"), "{table_stdout}");
+    assert!(table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:true\") cursor=10\n"), "{table_stdout}");
+    // Every grammar type is an entry point.
+    assert!(table_stdout.contains("entry Negated { mark: Bang, inner: Negated { mark: Bang, inner: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=3\n"), "{table_stdout}");
+    assert!(table_stdout.contains("entry Name { text: __RecursaContentToken0 { text: ContentText(\"count\") } } cursor=1\n"), "{table_stdout}");
+    // Failures name the failing token, restore the cursor and drop every partial value.
+    assert!(table_stdout.contains("err \"\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 0, end: 0 } found=None cursor=0 leaked=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = ;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 8, end: 9 } found=Some(\"fixed:;\") cursor=0 leaked=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = !!!!!!!!(1);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 16, end: 17 } found=Some(\"fixed:(\") cursor=0 leaked=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = 1 print(2);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 15 } found=Some(\"fixed:print\") cursor=0 leaked=0\n"), "{table_stdout}");
+
+    // The twin: the same grammar under recursive descent prints the same lines.
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
+    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
+    fs::write(&grammar, source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,"))
+        .expect("flip the fixture to recursive descent");
+    let recursive = run_fixture(&package);
+    assert_success(&recursive);
+    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
+    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
+    let root = read_selected_root(&package);
+    assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
+}
+
+#[test]
+fn the_debug_bundle_of_a_table_driven_generation_carries_the_automaton_dump() {
+    let package = scaffold_fixture();
+    let destination = tempfile::tempdir().unwrap();
+    assert_success(&run_fixture_with_debug(&package, destination.path()));
+    let index_path = find_one_debug_index(destination.path());
+    let index = fs::read_to_string(&index_path).unwrap();
+    assert_eq!(
+        index.lines().filter(|line| line.starts_with("automaton\t")).count(),
+        1,
+        "index:\n{index}"
+    );
+    let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
+        .expect("the bundle carries the automaton dump");
+    assert!(dump.contains("$accept(grammar::Statement) -> grammar::Statement"), "{dump}");
+    assert!(dump.contains("State 0"), "{dump}");
+}
+
+fn scaffold_fixture() -> TempDir {
+    let package = tempfile::tempdir().expect("temporary generated grammar package");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .expect("recursa-codegen belongs to the workspace root");
+    let fixture = manifest_dir.join(FIXTURE);
+
+    copy(&fixture, package.path(), "build.rs");
+    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
+    copy(&fixture, package.path(), "src/lib.rs");
+    copy(&fixture, package.path(), "src/grammar.rs");
+    copy(&fixture, package.path(), "src/main.rs");
+
+    let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
+        .expect("read generated grammar fixture manifest")
+        .replace("{{RECURSA}}", &toml_path(&workspace.join("recursa")))
+        .replace(
+            "{{RECURSA_CODEGEN}}",
+            &toml_path(&workspace.join("recursa-codegen")),
+        );
+    fs::write(package.path().join("Cargo.toml"), manifest)
+        .expect("write generated grammar fixture manifest");
+    package
+}
+
+fn read_selected_root(package: &TempDir) -> String {
+    let selected = find_selected_generation(&target_dir(package));
+    let selector = fs::read_to_string(&selected).expect("read selected Generation");
+    let identity = selector
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("// recursa-generation:"))
+        .expect("selector names its generation");
+    let root = selected
+        .parent()
+        .unwrap()
+        .join("recursa-generations")
+        .join(identity)
+        .join("root.rs");
+    fs::read_to_string(&root).expect("read the selected root")
+}
+
+fn copy(fixture: &Path, package: &Path, relative: &str) {
+    let destination = package.join(relative);
+    fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
+    fs::copy(fixture.join(relative), destination).expect("copy generated grammar fixture file");
+}
+
+fn copy_as(fixture: &Path, package: &Path, source: &str, destination: &str) {
+    let destination = package.join(destination);
+    fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
+    fs::copy(fixture.join(source), destination).expect("copy generated grammar fixture file");
+}
+
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\")
+}
+
+fn cargo_run(package: &TempDir, debug_directory: Option<&Path>) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .arg("run")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--quiet")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", target_dir(package));
+    match debug_directory {
+        Some(directory) => command.env("RECURSA_DEBUG_DIR", directory),
+        None => command.env_remove("RECURSA_DEBUG_DIR"),
+    };
+    command.output().expect("run generated grammar fixture")
+}
+
+fn run_fixture(package: &TempDir) -> Output {
+    cargo_run(package, None)
+}
+
+fn run_fixture_with_debug(package: &TempDir, debug_directory: &Path) -> Output {
+    cargo_run(package, Some(debug_directory))
+}
+
+fn target_dir(package: &TempDir) -> PathBuf {
+    package.path().join("target")
+}
+
+fn find_selected_generation(directory: &Path) -> PathBuf {
+    let mut found = Vec::new();
+    find_named(directory, "recursa-selected.rs", &mut found);
+    assert_eq!(found.len(), 1, "one selected Generation: {found:?}");
+    found.pop().unwrap()
+}
+
+fn find_one_debug_index(directory: &Path) -> PathBuf {
+    let mut found = Vec::new();
+    find_named(directory, "index", &mut found);
+    assert_eq!(found.len(), 1, "one generated-code debug index: {found:?}");
+    found.pop().unwrap()
+}
+
+fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            find_named(&path, name, found);
+        } else if path.file_name().is_some_and(|file| file == name) {
+            found.push(path);
+        }
+    }
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

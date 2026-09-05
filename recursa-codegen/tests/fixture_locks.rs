@@ -22,6 +22,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "pratt/Cargo.lock",
         "repetitions/Cargo.core.lock",
         "repetitions/Cargo.lock",
+        "table-driven/Cargo.core.lock",
     ] {
         let lock = fs::read_to_string(
             manifest_dir

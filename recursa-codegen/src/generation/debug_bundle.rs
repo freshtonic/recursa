@@ -267,6 +267,15 @@ pub(super) fn render_debug_logical_files(
         });
     }
 
+    if let Some(dump) = &rendered.automaton_dump {
+        files.push(DebugLogicalFile {
+            role: "automaton",
+            logical_name: "automaton".to_owned(),
+            private_name: "automaton.txt".to_owned(),
+            contents: dump.clone(),
+        });
+    }
+
     let mut capabilities = render_debug_capability_fragments(plan)?;
     for (index, (logical_name, contents)) in capabilities.drain(..).enumerate() {
         files.push(DebugLogicalFile {
@@ -350,7 +359,7 @@ pub(super) fn render_debug_capability_fragments(
         .collect::<Vec<_>>()
         .join("+");
     for (index, token) in plan.tokens.iter().enumerate() {
-        let rendered = render_token(plan, token, index).to_string();
+        let rendered = render_token(plan, token, index, None).to_string();
         fragments.push((
             format!("intrinsic-token:{}:{intrinsic_token_traits}", token.ident),
             rendered.clone(),
