@@ -132,7 +132,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3005 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
-        1..=303 => DiagnosticEvidenceSchema::AnalysisWitness,
+        1..=405 => DiagnosticEvidenceSchema::AnalysisWitness,
         1001..=3211 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
@@ -154,7 +154,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3005 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
-        1..=303 => DiagnosticRemedySchema::ResolveAnalysisConflict,
+        1..=405 => DiagnosticRemedySchema::ResolveAnalysisConflict,
         1001..=3211 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }
@@ -212,6 +212,10 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA0301", Analysis, Warning),
     diagnostic_spec!("RCA0302", Analysis, Error),
     diagnostic_spec!("RCA0303", Analysis, Error),
+    diagnostic_spec!("RCA0400", Analysis, Error),
+    diagnostic_spec!("RCA0401", Analysis, Error),
+    diagnostic_spec!("RCA0403", Analysis, Error),
+    diagnostic_spec!("RCA0405", Analysis, Warning),
     diagnostic_spec!("RCA1001", Discovery, Error),
     diagnostic_spec!("RCA1002", Discovery, Error),
     diagnostic_spec!("RCA1003", Discovery, Error),

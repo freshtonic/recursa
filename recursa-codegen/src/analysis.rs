@@ -1945,7 +1945,7 @@ fn sites_of(shape: &TypeShape) -> Vec<SiteId> {
 }
 
 /// Expands atom membership into concrete token-kind sets.
-fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
+pub(crate) fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
     fn expand(id: AtomId, grammar: &GrammarDescription, cache: &mut [Option<KindSet>]) -> KindSet {
         if let Some(cached) = &cache[id.index()] {
             return cached.clone();
