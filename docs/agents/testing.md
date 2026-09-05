@@ -60,6 +60,17 @@ cargo test -p recursa-codegen --lib --locked \
   --ignored --exact
 ```
 
+The LALR(1) construction over the pg-sql grammar is manual because it analyzes an external
+checkout (`PG_SQL_MANIFEST_DIR`, else the sibling `pg-sql` directory) and prints a conflict
+report rather than asserting one. It is an integration test, and runs in release, because the
+library's unit-test build enables the materializer's cycle-cut oracle, which is exponential at
+pg-sql's size:
+
+```sh
+cargo test -p recursa-codegen --release --test lr_pg_sql --locked \
+  pg_sql_grammar_constructs_and_reports_its_conflicts -- --ignored --exact --nocapture
+```
+
 Representative-scale and benchmark work associated with the deferred performance ticket remains
 manual until the user explicitly requests it. Correctness failures discovered by ordinary tests
 remain part of the default suite even when their fixture compilation is relatively slow.

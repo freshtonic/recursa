@@ -521,6 +521,27 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen materialization::tests::rejects_missing_unboxed_and_foreign_pratt_lhs_fields --locked",
     },
     ProducerEvidence {
+        codes: &["RCA0400"],
+        producer_source: "src/lr/report.rs",
+        test_source: "src/lr.rs",
+        test_name: "shift_reduce_conflicts_report_rca0400_with_items_lookahead_and_actions",
+        command: "cargo test -p recursa-codegen lr::tests::shift_reduce_conflicts_report_rca0400_with_items_lookahead_and_actions --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA0401", "RCA0405"],
+        producer_source: "src/lr/report.rs",
+        test_source: "src/lr.rs",
+        test_name: "lalr_merge_artefacts_report_rca0401_with_an_rca0405_note",
+        command: "cargo test -p recursa-codegen lr::tests::lalr_merge_artefacts_report_rca0401_with_an_rca0405_note --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA0403"],
+        producer_source: "src/lr/lowering.rs",
+        test_source: "src/lr.rs",
+        test_name: "text_predicates_are_rejected_with_rca0403",
+        command: "cargo test -p recursa-codegen lr::tests::text_predicates_are_rejected_with_rca0403 --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],
         producer_source: "src/build_diagnostic.rs",
         test_source: "src/source_analysis_contract_tests.rs",
