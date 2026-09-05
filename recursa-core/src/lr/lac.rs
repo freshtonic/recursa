@@ -16,8 +16,9 @@
 //! until it is shifted, accepted or rejected. The terminals that are shifted or accepted form
 //! the expected set; each is named by the canonical atom of its token kind, the vocabulary
 //! recursive descent's expected sets use, so [`ParseError::expected`](crate::ParseError::expected)
-//! renders the same names under both styles. The end marker is explored too, so an input that
-//! could have ended is accepted by the exploration, but it has no atom and no kind bit.
+//! renders the same names under both styles. The end marker is not explored: it has no atom
+//! and no kind bit, so nothing could report it. A terminal whose exploration reaches the accept
+//! rule counts as a continuation, since the parse would have ended without an error on it.
 
 use super::tables::{DecodedTables, LrTables, TableAction};
 use crate::parsed::ParseContext;
