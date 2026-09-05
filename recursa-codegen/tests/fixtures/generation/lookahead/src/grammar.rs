@@ -22,6 +22,7 @@ recursa::grammar! {
     keyword_matching = sensitive,
     max_lookahead = 3,
     parser_style = table_driven,
+    derives(Pretty),
 }
 
 recursa::tokens! {

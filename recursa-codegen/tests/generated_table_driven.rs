@@ -45,6 +45,18 @@ fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
     assert!(table_stdout.contains("prefix first Let { assignment: Assignment { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } }, value: Number(Number { text: __RecursaContentToken1 { text: ContentText(\"5\") } }) } } cursor=5\n"), "{table_stdout}");
     assert!(table_stdout.contains("prefix second Print { print: Print { value: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=10 eof=false\n"), "{table_stdout}");
     assert!(table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:true\") cursor=10\n"), "{table_stdout}");
+    // Provenance (#118): with capture requested the occurrence tree equals recursive descent's,
+    // node by node, including every fixed token, and so do the root's elements and the Pretty
+    // rendering; the twin comparison below holds every `prov`, `elements` and `pretty` line to
+    // byte equality.
+    assert!(table_stdout.contains("prov \"let x = 5;\" => captured 0..10 (0..10: (0..10: (0..10: (0..3) (4..5: (4..5: (4..5: (4..5)))) (6..7) (8..9: (8..9: (8..9: (8..9: (8..9: (8..9)))))) (9..10))))\n"), "{table_stdout}");
+    assert!(table_stdout.contains("elements \"let x = 5;\" => [let_assignment:SemanticField@0..10]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("pretty \"print(!!false);\" => \"print(! ! false);\"\n"), "{table_stdout}");
+    // A root decided by its FOLLOW rejects the token after it as recursive descent does, with
+    // the same failing token and an expected set of what could have continued (#118).
+    assert!(table_stdout.contains("trailing \"true x\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 5, end: 6 } found=Some(\"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\") cursor=0 expected=[]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing \"5 + 6 x\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 6, end: 7 } found=Some(\"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\") cursor=0 expected=[\"fixed:+\"]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing \"count x\" => ok Name { text: __RecursaContentToken0 { text: ContentText(\"count\") } } cursor=1\n"), "{table_stdout}");
     // Every grammar type is an entry point.
     assert!(table_stdout.contains("entry Negated { mark: Bang, inner: Negated { mark: Bang, inner: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=3\n"), "{table_stdout}");
     assert!(table_stdout.contains("entry Name { text: __RecursaContentToken0 { text: ContentText(\"count\") } } cursor=1\n"), "{table_stdout}");

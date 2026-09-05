@@ -116,9 +116,11 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
         .expect("read the example grammar");
     assert_eq!(example.matches("max_lookahead = 1,").count(), 1);
     assert_eq!(example.matches("    diagrams,\n").count(), 1);
+    assert_eq!(example.matches("    derives(Visit),\n").count(), 1);
     let grammar = example
         .replace("max_lookahead = 1,", "max_lookahead = 1,\n    parser_style = table_driven,")
         .replace("    diagrams,\n", "")
+        .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace("#[derive(recursa::Node)]", "#[derive(recursa::Node, Debug)]");
     let package = scaffold(FIXTURE, Some(&grammar));
     fs::write(package.path().join("src/main.rs"), EXAMPLE_MAIN).unwrap();
@@ -146,6 +148,7 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
 /// few more that mix every operator.
 const EXAMPLE_MAIN: &str = r#"//! Drives the example grammar and prints every parse for the twin comparison.
 
+use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_table_driven_pratt::grammar;
 
 fn main() {
@@ -177,12 +180,15 @@ fn main() {
         }
         let mut input = lexed.input();
         match grammar::Expr::parse(&mut input) {
-            Ok(parsed) => println!(
-                "ok {source:?} => {:?} cursor={} eof={}",
-                parsed.into_ast(),
-                input.cursor(),
-                input.is_eof()
-            ),
+            Ok(parsed) => {
+                println!(
+                    "ok {source:?} => {:?} cursor={} eof={}",
+                    parsed.into_ast(),
+                    input.cursor(),
+                    input.is_eof()
+                );
+                provenance(source);
+            }
             Err(error) => println!(
                 "err {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
                 error.code(),
@@ -194,6 +200,29 @@ fn main() {
         }
     }
     println!("example-ok");
+}
+
+/// Prints the provenance of one positive input parsed with capture requested: the occurrence
+/// tree, the root's elements and the Pretty rendering, all compared between the styles.
+fn provenance(source: &str) {
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse_spanned(&mut input).expect("positive input parses with capture");
+    println!("prov {source:?} => {}", parsed.debug_provenance());
+    let elements: Vec<String> = parsed
+        .root()
+        .span_elements()
+        .map(|element| {
+            format!(
+                "{}:{:?}@{}",
+                element.name().unwrap_or("?"),
+                element.role(),
+                element.span().map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+            )
+        })
+        .collect();
+    println!("elements {source:?} => [{}]", elements.join(" "));
+    println!("pretty {source:?} => {:?}", parsed.render());
 }
 "#;
 

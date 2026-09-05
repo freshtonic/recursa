@@ -13,6 +13,7 @@ recursa::grammar! {
     keyword_matching = sensitive,
     max_lookahead = 1,
     parser_style = table_driven,
+    derives(Pretty),
 }
 
 recursa::tokens! {

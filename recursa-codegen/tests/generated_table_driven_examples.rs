@@ -42,6 +42,17 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
     assert!(table_stdout.contains("prefix first object{} cursor=2 eof=false\n"), "{table_stdout}");
     assert!(table_stdout.contains("prefix fourth array[bool(true)] cursor=14 eof=true\n"), "{table_stdout}");
     assert!(table_stdout.contains("err \"@\" => code=RCA4000 kind=LexicalError"), "{table_stdout}");
+    // A root whose selected alternative is one token long rejects the token after it, as
+    // recursive descent's dispatch does (#118); a closing token above accepted the prefix.
+    assert!(table_stdout.contains("trailing \"null,\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 5 } found=Some(\"fixed:,\") cursor=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing \"null true\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 5, end: 9 } found=Some(\"fixed:true\") cursor=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing \"42 ]\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 3, end: 4 } found=Some(\"fixed:]\") cursor=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing \"true\" => ok bool(true) cursor=1 eof=true\n"), "{table_stdout}");
+    // Provenance (#118): the occurrence tree, the root's elements and the Pretty rendering of
+    // every positive input are printed and compared line by line with the twin below.
+    assert!(table_stdout.contains("prov \"{}\" => captured 0..2 ("), "{table_stdout}");
+    assert!(table_stdout.contains("elements \"[]\" => ["), "{table_stdout}");
+    assert!(table_stdout.contains("pretty \"{\\\"answer\\\":[true,null,42]}\" => \""), "{table_stdout}");
 
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
@@ -75,8 +86,10 @@ fn scaffold_fixture() -> TempDir {
         .expect("read the JSON example grammar");
     assert_eq!(example.matches("    diagrams,\n").count(), 1, "the example declares diagrams once");
     assert_eq!(example.matches(LOOKAHEAD).count(), 1, "the example configures lookahead once");
+    assert_eq!(example.matches("    derives(Visit),\n").count(), 1, "the example declares derives once");
     let grammar = example
         .replace("    diagrams,\n", "")
+        .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace(LOOKAHEAD, &format!("{LOOKAHEAD}\n    {TABLE_DRIVEN}"));
     fs::write(package.path().join("src/grammar.rs"), grammar).expect("write the scaffolded grammar");
 
