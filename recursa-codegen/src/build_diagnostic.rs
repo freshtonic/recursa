@@ -215,6 +215,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA0400", Analysis, Error),
     diagnostic_spec!("RCA0401", Analysis, Error),
     diagnostic_spec!("RCA0403", Analysis, Error),
+    diagnostic_spec!("RCA0404", Analysis, Error),
     diagnostic_spec!("RCA0405", Analysis, Warning),
     diagnostic_spec!("RCA1001", Discovery, Error),
     diagnostic_spec!("RCA1002", Discovery, Error),
