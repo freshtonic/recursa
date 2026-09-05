@@ -116,8 +116,72 @@ impl RulePrecedence {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// How one grammar site of a construction rule appears on the rule's right-hand side.
+///
+/// The lowering expands optional sites into alternatives (`docs/table-driven-parsing.md`,
+/// section 5), so a rule may hold fewer or more symbols than its type has sites. Each form
+/// names the slice of the right-hand side that belongs to one site, in site order, so that a
+/// reduce action can walk the node's fields and the rule's symbols together.
+pub struct SiteForm {
+    /// Index of the site's first symbol on the right-hand side.
+    pub start: u32,
+    /// Number of right-hand-side symbols the site occupies; zero for an absent choice.
+    pub len: u32,
+    /// Whether the site's content is present in this alternative.
+    pub present: bool,
+    /// Whether the choice was inlined: an absent inlined optional has no symbol and a present
+    /// one shows its inner symbols, while a helper site shows the one helper symbol whose value
+    /// is the complete field value.
+    pub inlined: bool,
+}
+
+impl SiteForm {
+    /// The form of a required site or a helper site: one symbol carrying the whole value.
+    pub const fn required(start: u32) -> Self {
+        Self {
+            start,
+            len: 1,
+            present: true,
+            inlined: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The Rust value of one element as a reduce action names it: a grammar type's value wrapped in
+/// `boxes` layers of `Box`.
+///
+/// The type is never an attachment unit; the lowering resolves a unit to the type of the
+/// semantic site it passes through, because a unit's reduce is a pass-through.
+pub struct ElementValue {
+    /// The grammar type whose value the element carries.
+    pub type_id: TypeId,
+    /// `Box` layers around the value in the authored container shape.
+    pub boxes: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// What an optional helper nonterminal wraps, so its reduce action knows the value to push.
+pub enum OptionalContent {
+    /// An erased optional fixed-token group: no value.
+    Erased,
+    /// A fixed-token presence: a `bool`.
+    Presence,
+    /// `Option<T>` around one element.
+    Element(ElementValue),
+    /// `Option<Vec1<T>>`, with `boxes` layers of `Box` between the option and the list.
+    NonEmptyList {
+        /// The list element.
+        element: ElementValue,
+        /// `Box` layers between the option and the list.
+        boxes: u32,
+    },
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-/// What the reduce action of a rule must build; ticket #113 renders one match arm per action.
+/// What the reduce action of a rule must build; the table-driven renderer emits one match arm
+/// per action.
 pub enum RuleAction {
     /// The synthetic start rule of a grammar type: reducing it accepts the parse.
     Accept {
@@ -135,25 +199,61 @@ pub enum RuleAction {
         type_id: TypeId,
         /// The enum alternative or Pratt variant selected, when the type has several.
         variant: Option<DeclId>,
+        /// One form per explicit site of the type, in site order. A Pratt infix or postfix
+        /// rule's implicit left operand is the first right-hand-side symbol and has no form.
+        sites: Vec<SiteForm>,
     },
     /// A fixed-token-only sequence: it carries no value and pops none.
     FixedSequence {
         /// The normalized fixed-only sequence type.
         type_id: TypeId,
     },
-    /// An absent optional: `None` for a valued target, `false` for a presence, nothing when erased.
-    OptionalAbsent,
-    /// A present optional: `Some(value)` for a valued target, `true` for a presence, nothing when
-    /// erased.
-    OptionalPresent,
-    /// An empty zero-or-more list.
-    ListEmpty,
-    /// A one-element list opened by its first element.
-    ListFirst,
-    /// A list extended by one element after an optional separator.
-    ListPush,
-    /// A list whose value passes through unchanged: a trailing separator or a non-empty zero-or-more list.
-    ListPass,
+    /// A repetition attachment unit: fixed tokens around one semantic site whose value passes
+    /// through unchanged.
+    Attachment {
+        /// The synthetic unit type.
+        type_id: TypeId,
+    },
+    /// A fixed-token presence envelope: required tokens around an optional sequence, reducing
+    /// to the `bool` that says whether the sequence occurred.
+    Envelope {
+        /// The synthetic envelope type.
+        type_id: TypeId,
+        /// Whether this alternative carries the optional sequence.
+        present: bool,
+    },
+    /// An absent optional helper: `None`, `false` or nothing, by content.
+    OptionalAbsent {
+        /// What the helper wraps.
+        content: OptionalContent,
+    },
+    /// A present optional helper: `Some(value)`, `true` or nothing, by content.
+    OptionalPresent {
+        /// What the helper wraps.
+        content: OptionalContent,
+    },
+    /// The empty alternative of a zero-or-more list helper: an empty `Vec`.
+    ListEmpty {
+        /// The list element.
+        element: ElementValue,
+    },
+    /// A one-element non-empty list opened by its first element: `Vec1::new(element)`.
+    ListFirst {
+        /// The list element.
+        element: ElementValue,
+    },
+    /// A non-empty list extended by one element after an optional separator.
+    ListPush {
+        /// The list element.
+        element: ElementValue,
+    },
+    /// A zero-or-more list helper that holds a non-empty list: `Vec1` becomes `Vec`.
+    ListFromNonEmpty {
+        /// The list element.
+        element: ElementValue,
+    },
+    /// A non-empty list with or without its trailing separator: the value passes through.
+    ListTrailing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -460,6 +560,7 @@ impl TextbookGrammar {
             NonterminalOrigin::Type(type_id) => type_id,
             _ => unreachable!("textbook nonterminals are grammar types"),
         };
+        let sites = (0..symbols.len() as u32).map(SiteForm::required).collect();
         self.grammar.add_rule(Rule {
             lhs,
             rhs: symbols,
@@ -468,6 +569,7 @@ impl TextbookGrammar {
             action: RuleAction::Construct {
                 type_id,
                 variant: None,
+                sites,
             },
         })
     }

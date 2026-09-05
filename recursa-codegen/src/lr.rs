@@ -32,8 +32,9 @@ pub use automaton::{
     NoPrecedence, Resolution, State, StateId, TerminalSet,
 };
 pub use grammar::{
-    Associativity, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin, Rule, RuleAction,
-    RuleId, RulePrecedence, StartRule, Symbol, TerminalId,
+    Associativity, ElementValue, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin,
+    OptionalContent, Rule, RuleAction, RuleId, RulePrecedence, SiteForm, StartRule, Symbol,
+    TerminalId,
 };
 pub use lowering::{TypeRoles, lower};
 pub use report::{LrDiagnostic, automaton_dump, conflict_diagnostics};

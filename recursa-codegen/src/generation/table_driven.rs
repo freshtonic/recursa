@@ -4,8 +4,8 @@
 //! Section 8 of `docs/table-driven-parsing.md` is the shape. The renderer runs the [`crate::lr`]
 //! analysis over the lowered grammar at the renderer-selection point, refuses to generate on any
 //! conflict, and then emits data plus reduce actions: the packed tables as byte-string literals,
-//! one generic dispatcher with a range match over the contiguous rule block of each grammar
-//! type, and for every node application and content token an `impl GeneratedParse<'i, A,
+//! one generic dispatcher with a range match over each contiguous block of a grammar type's
+//! rules, and for every node application and content token an `impl GeneratedParse<'i, A,
 //! TableDriven>` whose `parse` hands its start state and accept rule to the facade loop.
 //!
 //! A reduce action pops the values of its rule's value-carrying symbols in reverse right-hand
@@ -15,9 +15,14 @@
 //! constructed field, so a mismatch cannot be written by hand. Fixed tokens never reach the
 //! value stack: a field whose type is a fixed token is constructed as a unit value.
 //!
-//! Only what the tracer ticket (#113) needs is rendered: sequences, enum alternatives, fixed
-//! tokens and content tokens. Containers (#114), Pratt (#115) and named parsers (#116) fail
-//! generation with a message naming the ticket.
+//! Containers (#114) follow the lowering's two forms. An inlined choice is visible to the node's
+//! own reduce action through the rule's [`SiteForm`]s: an absent site is `None`, `false` or an
+//! empty `Vec`, a present one wraps the inner value. A helper nonterminal (`opt(...)`,
+//! `presence(...)`, `list(...)`, `list1(...)`, `list1t(...)`) and a presence envelope are reduced
+//! in the root dispatcher, where the value they build is spelled through the element's node
+//! type or content-token path, so a shared helper is typed once and every user pops the same
+//! type by inference. Pratt (#115) and named parsers (#116) still fail generation with a message
+//! naming the ticket.
 //!
 //! Deviations from the section 8 sketch, all deliberate: a type's start state and accept rule
 //! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`, so the
@@ -30,15 +35,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::*;
 use super::parsing::{
     ElementParseKind, ElementParsePlan, FieldPlan, FieldWrapper, NodeApplicationParsePlan,
-    NodeBodyPlan, NodeParsePlan, PlannedContainer, SemanticParseProjection, render_construction,
+    NodeBodyPlan, NodeParsePlan, SemanticParseProjection, render_construction,
 };
+use super::*;
 use crate::TypeId;
 use crate::lr::{
-    AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, NoPrecedence, Rule, RuleAction,
-    Symbol,
+    AutomatonOptions, ElementValue, EncodedLrTables, LrAnalysis, LrDiagnostic, NoPrecedence,
+    NonterminalOrigin, OptionalContent, Rule, RuleAction, SiteForm, Symbol,
 };
 use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
 
@@ -60,6 +65,9 @@ struct DispatchArm {
     last: u32,
     /// Where the block's rules are reduced.
     target: DispatchTarget,
+    /// The target's local index of the block's first rule; a type's rules form several blocks
+    /// when the lowering creates a helper in the middle of them.
+    local_base: u32,
 }
 
 /// The table facts one grammar type's parse impl needs.
@@ -94,6 +102,14 @@ pub(super) struct TableDrivenRendering {
     tokens: HashMap<ContentTokenId, StartTables>,
     /// Whether each nonterminal carries a value, indexed by nonterminal.
     carries_value: Vec<bool>,
+    /// Whether each grammar type's symbol carries a value; a type inlined as a terminal does not.
+    type_carries_value: HashMap<TypeId, bool>,
+    /// Node applications by normalized type, for spelling element types in helper actions.
+    application_by_type: HashMap<TypeId, MaterializedApplicationId>,
+    /// Content tokens by normalized type, for spelling element types in helper actions.
+    token_by_type: HashMap<TypeId, ContentTokenId>,
+    /// The helper and envelope rules the root dispatcher reduces itself, by rule index.
+    root_rules: Vec<(u32, Rule)>,
     /// Authored variants correlated with lowered alternatives, for enum reduce actions.
     variants: Vec<VariantAlternativeCorrelation>,
     /// The bison-style automaton dump, for the debug bundle.
@@ -131,8 +147,9 @@ impl TableDrivenRendering {
                 ));
             }
         }
-        let analysis = LrAnalysis::from_lowered(lowered, &NoPrecedence, AutomatonOptions::default())
-            .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
+        let analysis =
+            LrAnalysis::from_lowered(lowered, &NoPrecedence, AutomatonOptions::default())
+                .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
         if !analysis.diagnostics.is_empty() {
             return Err(render_diagnostics(&analysis.diagnostics));
         }
@@ -150,7 +167,8 @@ impl TableDrivenRendering {
 
         let grammar = &analysis.grammar;
         let mut arms: Vec<DispatchArm> = Vec::new();
-        let mut applications: HashMap<MaterializedApplicationId, ApplicationTables> = HashMap::new();
+        let mut applications: HashMap<MaterializedApplicationId, ApplicationTables> =
+            HashMap::new();
         let mut tokens: HashMap<ContentTokenId, StartTables> = HashMap::new();
         let start_of = |type_id: TypeId| -> Option<StartTables> {
             let start_state = analysis.automaton.start_state(type_id)?;
@@ -173,26 +191,23 @@ impl TableDrivenRendering {
                 },
             );
         }
+        let mut root_rules = Vec::new();
         for (index, rule) in grammar.rules().iter().enumerate() {
             let index = index as u32;
             let target = match &rule.action {
-                RuleAction::Accept { .. } | RuleAction::FixedSequence { .. } => None,
+                RuleAction::Accept { .. }
+                | RuleAction::FixedSequence { .. }
+                | RuleAction::Attachment { .. }
+                | RuleAction::ListTrailing => None,
                 RuleAction::Token { type_id } => {
                     let token = token_by_type[type_id];
-                    tokens
-                        .entry(token)
-                        .or_insert_with(|| start_of(*type_id).expect("content tokens have a start rule"));
+                    tokens.entry(token).or_insert_with(|| {
+                        start_of(*type_id).expect("content tokens have a start rule")
+                    });
                     Some(DispatchTarget::Token(token))
                 }
                 RuleAction::Construct { type_id, .. } => match application_by_type.get(type_id) {
-                    Some(application) => {
-                        applications
-                            .get_mut(application)
-                            .expect("every application was indexed")
-                            .rules
-                            .push(rule.clone());
-                        Some(DispatchTarget::Application(*application))
-                    }
+                    Some(application) => Some(DispatchTarget::Application(*application)),
                     None if rule.value_pops <= 1 => None,
                     None => {
                         return Err(format!(
@@ -203,20 +218,29 @@ impl TableDrivenRendering {
                         ));
                     }
                 },
-                RuleAction::OptionalAbsent
-                | RuleAction::OptionalPresent
-                | RuleAction::ListEmpty
-                | RuleAction::ListFirst
-                | RuleAction::ListPush
-                | RuleAction::ListPass => {
-                    return Err(format!(
-                        "table-driven generation does not render containers yet (`{}`, #114)",
-                        grammar.render_rule(crate::lr::RuleId::new(index))
-                    ));
+                RuleAction::Envelope { .. }
+                | RuleAction::OptionalAbsent { .. }
+                | RuleAction::OptionalPresent { .. }
+                | RuleAction::ListEmpty { .. }
+                | RuleAction::ListFirst { .. }
+                | RuleAction::ListPush { .. }
+                | RuleAction::ListFromNonEmpty { .. } => {
+                    root_rules.push((index, rule.clone()));
+                    None
                 }
             };
             let Some(target) = target else {
                 continue;
+            };
+            let local_base = match target {
+                DispatchTarget::Application(application) => {
+                    let tables = applications
+                        .get_mut(&application)
+                        .expect("every application was indexed");
+                    tables.rules.push(rule.clone());
+                    tables.rules.len() as u32 - 1
+                }
+                DispatchTarget::Token(_) => 0,
             };
             match arms.last_mut() {
                 Some(arm) if arm.last + 1 == index && same_target(arm.target, target) => {
@@ -226,7 +250,14 @@ impl TableDrivenRendering {
                     first: index,
                     last: index,
                     target,
+                    local_base,
                 }),
+            }
+        }
+        let mut type_carries_value = HashMap::new();
+        for nonterminal in grammar.nonterminals() {
+            if let NonterminalOrigin::Type(type_id) = nonterminal.origin {
+                type_carries_value.insert(type_id, nonterminal.carries_value);
             }
         }
         Ok(Self {
@@ -240,6 +271,10 @@ impl TableDrivenRendering {
                 .iter()
                 .map(|nonterminal| nonterminal.carries_value)
                 .collect(),
+            type_carries_value,
+            application_by_type,
+            token_by_type,
+            root_rules,
             variants: map.variants.clone(),
             dump: analysis.dump(),
         })
@@ -279,13 +314,176 @@ fn input_lifetime() -> syn::Lifetime {
     syn::parse_quote!('__recursa_input)
 }
 
+/// The Rust spelling of one element value: its type and the expression that takes it off the
+/// value stack (or names it, for a fixed-token unit node), boxed as the container shape says.
+struct ElementRendering {
+    /// The element's type.
+    ty: proc_macro2::TokenStream,
+    /// The expression yielding one element.
+    value: proc_macro2::TokenStream,
+}
+
+impl TableDrivenRendering {
+    /// Spells one element value from the root: a node application through its plan type, a
+    /// content token through its generated path.
+    fn element(
+        &self,
+        plan: &EmissionPlan,
+        element: ElementValue,
+    ) -> Result<ElementRendering, String> {
+        let module_anchor = &plan.module_anchor;
+        let input_lifetime = input_lifetime();
+        let (mut ty, mut value) = if let Some(application) =
+            self.application_by_type.get(&element.type_id)
+        {
+            let ty = plan
+                .nodes
+                .iter()
+                .flat_map(|node| node.parse_applications.iter())
+                .find(|candidate| candidate.application == *application)
+                .map(|candidate| &candidate.ty)
+                .ok_or_else(|| "a lowered element has no planned node application".to_owned())?;
+            let carries_value = self
+                .type_carries_value
+                .get(&element.type_id)
+                .copied()
+                .unwrap_or(false);
+            let value = if carries_value {
+                quote!(unsafe { reduction.pop::<#ty>() })
+            } else {
+                let Type::Path(path) = ty else {
+                    return Err(
+                        "a valueless element must name a unit fixed-token struct".to_owned()
+                    );
+                };
+                let path = &path.path;
+                quote!(#path)
+            };
+            (quote!(#ty), value)
+        } else if let Some(token) = self.token_by_type.get(&element.type_id) {
+            let ident = plan
+                .tokens
+                .iter()
+                .find(|candidate| candidate.semantic == *token)
+                .map(|candidate| &candidate.ident)
+                .ok_or_else(|| "a lowered element has no planned content token".to_owned())?;
+            let ty = quote!(#module_anchor::__recursa_content_tokens::#ident<#input_lifetime>);
+            (ty.clone(), quote!(unsafe { reduction.pop::<#ty>() }))
+        } else {
+            return Err(
+                "a lowered element is neither a node application nor a content token".to_owned(),
+            );
+        };
+        for _ in 0..element.boxes {
+            ty = quote!(Box<#ty>);
+            value = quote!(Box::new(#value));
+        }
+        Ok(ElementRendering { ty, value })
+    }
+
+    /// Renders the reduce action of one helper or envelope rule in the root dispatcher.
+    fn render_root_arm(
+        &self,
+        plan: &EmissionPlan,
+        index: u32,
+        rule: &Rule,
+    ) -> Result<proc_macro2::TokenStream, String> {
+        let facade = &plan.facade;
+        let boxed =
+            |mut ty: proc_macro2::TokenStream, mut value: proc_macro2::TokenStream, boxes: u32| {
+                for _ in 0..boxes {
+                    ty = quote!(Box<#ty>);
+                    value = quote!(Box::new(#value));
+                }
+                (ty, value)
+            };
+        let body = match &rule.action {
+            RuleAction::Envelope { present, .. } => quote!(reduction.push(#present);),
+            RuleAction::OptionalAbsent { content } => match content {
+                OptionalContent::Erased => quote!(),
+                OptionalContent::Presence => quote!(reduction.push(false);),
+                OptionalContent::Element(element) => {
+                    let ty = self.element(plan, *element)?.ty;
+                    quote!(reduction.push::<Option<#ty>>(None);)
+                }
+                OptionalContent::NonEmptyList { element, boxes } => {
+                    let ty = self.element(plan, *element)?.ty;
+                    let (ty, _) = boxed(quote!(#facade::Vec1<#ty>), quote!(), *boxes);
+                    quote!(reduction.push::<Option<#ty>>(None);)
+                }
+            },
+            RuleAction::OptionalPresent { content } => match content {
+                OptionalContent::Erased => quote!(),
+                OptionalContent::Presence => quote!(reduction.push(true);),
+                OptionalContent::Element(element) => {
+                    let value = self.element(plan, *element)?.value;
+                    quote! {
+                        let value = #value;
+                        reduction.push(Some(value));
+                    }
+                }
+                OptionalContent::NonEmptyList { element, boxes } => {
+                    let ty = self.element(plan, *element)?.ty;
+                    let (_, value) = boxed(
+                        quote!(),
+                        quote!(unsafe { reduction.pop::<#facade::Vec1<#ty>>() }),
+                        *boxes,
+                    );
+                    quote! {
+                        let list = #value;
+                        reduction.push(Some(list));
+                    }
+                }
+            },
+            RuleAction::ListEmpty { element } => {
+                let ty = self.element(plan, *element)?.ty;
+                quote!(reduction.push(Vec::<#ty>::new());)
+            }
+            RuleAction::ListFirst { element } => {
+                let value = self.element(plan, *element)?.value;
+                quote! {
+                    let element = #value;
+                    reduction.push(#facade::Vec1::new(element));
+                }
+            }
+            RuleAction::ListPush { element } => {
+                let ElementRendering { ty, value } = self.element(plan, *element)?;
+                quote! {
+                    let element = #value;
+                    let mut list = unsafe { reduction.pop::<#facade::Vec1<#ty>>() };
+                    list.push(element);
+                    reduction.push(list);
+                }
+            }
+            RuleAction::ListFromNonEmpty { element } => {
+                let ty = self.element(plan, *element)?.ty;
+                quote! {
+                    let list = unsafe { reduction.pop::<#facade::Vec1<#ty>>() };
+                    reduction.push(list.into_vec());
+                }
+            }
+            other => {
+                return Err(format!(
+                    "rule {index} with action {other:?} is not a root-reduced rule"
+                ));
+            }
+        };
+        Ok(quote!(#index => { #body Ok(()) }))
+    }
+}
+
 /// Renders `root.rs`'s `__recursa_lr` module: the tables and the reduce dispatcher.
-pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) -> proc_macro2::TokenStream {
+pub(super) fn render_root_items(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+) -> Result<proc_macro2::TokenStream, String> {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
     let end_marker = lr.end_marker;
-    let literal = |table: &crate::lr::tables::EncodedTable| proc_macro2::Literal::byte_string(&table.literal());
+    let literal = |table: &crate::lr::tables::EncodedTable| {
+        proc_macro2::Literal::byte_string(&table.literal())
+    };
     let pact = literal(&lr.tables.pact);
     let table = literal(&lr.tables.table);
     let check = literal(&lr.tables.check);
@@ -307,12 +505,12 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
         .map(|application| (application.application, &application.ty))
         .collect();
     let arms = lr.arms.iter().map(|arm| {
-        let (first, last) = (arm.first, arm.last);
+        let (first, last, base) = (arm.first, arm.last, arm.local_base);
         match arm.target {
             DispatchTarget::Application(application) => {
                 let ty = application_types[&application];
                 quote! {
-                    #first..=#last => <#ty>::__recursa_reduce_lr(rule - #first, reduction),
+                    #first..=#last => <#ty>::__recursa_reduce_lr(rule - #first + #base, reduction),
                 }
             }
             DispatchTarget::Token(token) => {
@@ -323,24 +521,34 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
             }
         }
     });
-    quote! {
+    let root_arms = lr
+        .root_rules
+        .iter()
+        .map(|(index, rule)| lr.render_root_arm(plan, *index, rule))
+        .collect::<Result<Vec<_>, _>>()?;
+    let safety = "Reduce actions of the helper nonterminals and presence envelopes. SAFETY: each \
+                  `pop` names the type the child rule's action pushed for the same grammar \
+                  symbol, spelled through the element's node type or content-token path.";
+    Ok(quote! {
         #[doc(hidden)]
         pub(crate) mod __recursa_lr {
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
             );
 
+            #[doc = #safety]
             pub(crate) fn __recursa_reduce<#input_lifetime, A>(
                 rule: u32,
                 reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
             ) -> Result<(), #facade::ParseError> {
                 match rule {
                     #(#arms)*
+                    #(#root_arms)*
                     _ => Ok(()),
                 }
             }
         }
-    }
+    })
 }
 
 /// Renders the `TableDriven` parse impl of one type: `parse` runs the facade loop from the
@@ -400,7 +608,9 @@ pub(super) fn render_node_application(
     let parse_impl = render_parse_impl(plan, ty, node.capture.render(facade), start);
     let mut helper_generics = Generics::default();
     if node.generics.lifetimes().next().is_some() {
-        helper_generics.params.push(syn::parse_quote!(#input_lifetime));
+        helper_generics
+            .params
+            .push(syn::parse_quote!(#input_lifetime));
     }
     let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
     let helper_method_generics = if node.generics.lifetimes().next().is_some() {
@@ -437,6 +647,9 @@ pub(super) fn render_node_application(
 }
 
 /// Renders one reduce arm: pops for the rule's value-carrying elements and the construction.
+///
+/// The rule's site forms and the node plan's elements are walked together, in reverse, so that
+/// every element finds its symbols and every inlined choice its absent or present form.
 fn render_reduce_arm(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -445,86 +658,73 @@ fn render_reduce_arm(
     index: u32,
     rule: &Rule,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let RuleAction::Construct { variant, .. } = &rule.action else {
+    let RuleAction::Construct { variant, sites, .. } = &rule.action else {
         return Ok(quote!(#index => {},));
     };
-    let (variant_ident, style, elements): (Option<&Ident>, ResolvedFieldStyle, &[ElementParsePlan]) =
-        match (&application.body, variant) {
-            (NodeBodyPlan::Struct { style, elements }, None) => (None, *style, elements),
-            (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
-                let resolved = plan_variant(lr, application, *declaration)?;
-                let variant = variants
-                    .iter()
-                    .find(|variant| variant.resolved_variant == resolved)
-                    .ok_or_else(|| format!("`{}` has no plan for one of its alternatives", node.ident))?;
-                (Some(&variant.ident), variant.style, &variant.elements)
-            }
-            _ => {
-                return Err(format!(
-                    "`{}`: the lowered rule and the node plan disagree on the node's shape",
-                    node.ident
-                ));
-            }
-        };
-    if elements.len() != rule.rhs.len() {
+    let (variant_ident, style, elements): (
+        Option<&Ident>,
+        ResolvedFieldStyle,
+        &[ElementParsePlan],
+    ) = match (&application.body, variant) {
+        (NodeBodyPlan::Struct { style, elements }, None) => (None, *style, elements),
+        (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
+            let resolved = plan_variant(lr, application, *declaration)?;
+            let variant = variants
+                .iter()
+                .find(|variant| variant.resolved_variant == resolved)
+                .ok_or_else(|| {
+                    format!("`{}` has no plan for one of its alternatives", node.ident)
+                })?;
+            (Some(&variant.ident), variant.style, &variant.elements)
+        }
+        _ => {
+            return Err(format!(
+                "`{}`: the lowered rule and the node plan disagree on the node's shape",
+                node.ident
+            ));
+        }
+    };
+    if elements.len() != sites.len() {
         return Err(format!(
-            "`{}`: rule has {} symbols but the node plan has {} elements",
+            "`{}`: rule has {} sites but the node plan has {} elements",
             node.ident,
-            rule.rhs.len(),
+            sites.len(),
             elements.len()
         ));
     }
     let mut pops = Vec::new();
     let mut values: Vec<(FieldPlan, Ident)> = Vec::new();
-    for (position, (element, symbol)) in elements.iter().zip(&rule.rhs).enumerate().rev() {
+    for (position, (element, form)) in elements.iter().zip(sites).enumerate().rev() {
         let ElementParseKind::Semantic { field, projection } = &element.kind else {
-            if let ElementParseKind::OptionalFixedTokenGroup { .. } = &element.kind {
-                return Err(format!(
-                    "`{}`: optional fixed-token groups are not rendered by the table-driven tracer (#114)",
-                    node.ident
-                ));
-            }
             continue;
         };
-        let SemanticParseProjection::Direct {
-            terminal,
-            terminal_node,
-            wrappers,
-            container,
-            ..
-        } = projection.as_ref()
-        else {
-            return Err(format!(
-                "`{}`: boolean presence fields are not rendered by the table-driven tracer (#114)",
-                node.ident
-            ));
-        };
-        if !matches!(container.as_ref(), PlannedContainer::Direct { .. }) {
-            return Err(format!(
-                "`{}`: optional and repeated fields are not rendered by the table-driven tracer (#114)",
-                node.ident
-            ));
-        }
-        let boxes = wrappers
-            .iter()
-            .map(|wrapper| match wrapper {
-                FieldWrapper::Boxed => Ok(()),
-                _ => Err(format!(
-                    "`{}`: optional and repeated fields are not rendered by the table-driven tracer (#114)",
-                    node.ident
-                )),
-            })
-            .collect::<Result<Vec<()>, String>>()?
-            .len();
+        let symbols = &rule.rhs[form.start as usize..(form.start + form.len) as usize];
         let value = format_ident!("__recursa_value_{position}");
-        let mut expression = if lr.symbol_carries_value(*symbol) {
-            quote!(unsafe { reduction.pop() })
-        } else {
-            unit_value(plan, node, terminal, *terminal_node)?
+        let expression = match projection.as_ref() {
+            SemanticParseProjection::FixedPresence { .. } => {
+                if form.inlined {
+                    let present = form.present;
+                    quote!(#present)
+                } else {
+                    quote!(unsafe { reduction.pop() })
+                }
+            }
+            SemanticParseProjection::Direct {
+                terminal,
+                terminal_node,
+                wrappers,
+                ..
+            } => render_field_value(
+                plan,
+                node,
+                lr,
+                terminal,
+                *terminal_node,
+                wrappers,
+                *form,
+                symbols,
+            )?,
         };
-        for _ in 0..boxes {
-            expression = quote!(Box::new(#expression));
-        }
         pops.push(quote!(let #value = #expression;));
         values.push((field.clone(), value));
     }
@@ -536,6 +736,73 @@ fn render_reduce_arm(
             reduction.push(#construction);
         }
     })
+}
+
+/// Wraps a value expression in `boxes` layers of `Box::new`.
+fn boxed(mut expression: proc_macro2::TokenStream, boxes: usize) -> proc_macro2::TokenStream {
+    for _ in 0..boxes {
+        expression = quote!(Box::new(#expression));
+    }
+    expression
+}
+
+/// Renders the value of one direct field from its site form: a required or helper site pops
+/// the whole value, an inlined choice builds `None`, an empty `Vec`, or `Some` around the
+/// inner value, with the authored `Box` layers applied where the wrappers place them.
+#[allow(clippy::too_many_arguments)]
+fn render_field_value(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    lr: &TableDrivenRendering,
+    terminal: &Type,
+    terminal_node: Option<NodeId>,
+    wrappers: &[FieldWrapper],
+    form: SiteForm,
+    symbols: &[Symbol],
+) -> Result<proc_macro2::TokenStream, String> {
+    let facade = &plan.facade;
+    let is_choice = |wrapper: &FieldWrapper| !matches!(wrapper, FieldWrapper::Boxed);
+    // One element popped or named through the symbol at `symbols[0]`, boxed `boxes` times.
+    let element = |boxes: usize| -> Result<proc_macro2::TokenStream, String> {
+        let carries = symbols
+            .first()
+            .is_some_and(|symbol| lr.symbol_carries_value(*symbol));
+        let value = if carries {
+            quote!(unsafe { reduction.pop() })
+        } else {
+            unit_value(plan, node, terminal, terminal_node)?
+        };
+        Ok(boxed(value, boxes))
+    };
+    let Some(depth) = wrappers.iter().position(is_choice) else {
+        return element(wrappers.len());
+    };
+    if !form.inlined {
+        // A required list or a helper: the symbol's value is the field value from `depth` on.
+        return Ok(boxed(quote!(unsafe { reduction.pop() }), depth));
+    }
+    let inner = match (&wrappers[depth], form.present) {
+        (FieldWrapper::Optional, false) => quote!(None),
+        (FieldWrapper::ZeroOrMore, false) => quote!(Vec::new()),
+        (FieldWrapper::ZeroOrMore, true) => {
+            quote!(unsafe { reduction.pop::<#facade::Vec1<_>>() }.into_vec())
+        }
+        (FieldWrapper::Optional, true) => {
+            let rest = &wrappers[depth + 1..];
+            let inner = match rest.iter().position(is_choice) {
+                None => element(rest.len())?,
+                Some(list_depth) => boxed(quote!(unsafe { reduction.pop() }), list_depth),
+            };
+            quote!(Some(#inner))
+        }
+        (FieldWrapper::OneOrMore, _) | (FieldWrapper::Boxed, _) => {
+            return Err(format!(
+                "`{}`: a one-or-more list is never an inlined choice",
+                node.ident
+            ));
+        }
+    };
+    Ok(boxed(inner, depth))
 }
 
 /// Finds the resolved variant a lowered alternative declaration stands for.
@@ -576,10 +843,16 @@ fn unit_value(
             node.ident
         ));
     };
-    if !is_unit || path.path.segments.iter().any(|segment| !segment.arguments.is_empty()) {
+    if !is_unit
+        || path
+            .path
+            .segments
+            .iter()
+            .any(|segment| !segment.arguments.is_empty())
+    {
         return Err(format!(
             "`{}`: a field of a fixed-token type must be a unit struct without generics for the \
-             table-driven tracer",
+             table-driven parser",
             node.ident
         ));
     }
@@ -598,7 +871,12 @@ pub(super) fn render_token_items(
     let ident = &token.ident;
     let input_lifetime = input_lifetime();
     let ty: Type = syn::parse_quote!(#ident<#input_lifetime>);
-    let parse_impl = render_parse_impl(plan, &ty, token.capture.render(facade), lr.token(token.semantic));
+    let parse_impl = render_parse_impl(
+        plan,
+        &ty,
+        token.capture.render(facade),
+        lr.token(token.semantic),
+    );
     let parsed_kind = (token.accepted_kind_variants.len() > 1).then(
         || quote!(kind: #module_anchor::__recursa_lexical::__recursa_typed_kind(record.kind),),
     );
