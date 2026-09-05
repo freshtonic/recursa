@@ -267,24 +267,42 @@ generation identity hash.
 mutually exclusive with `parser_style`. Names are author-chosen
 identifiers. The first entry is the default parser. One generation emits
 one lexer, one `TokenKind`, one AST, and one `GeneratedParse` impl per
-node per parser. Multiple `grammar!` invocations were rejected: the macro
-interprets nothing, discovery enforces exactly one config (`RCA1016`),
-and two invocations would emit two token enums for one AST.
+node per parser. Each style may be declared once: a repeated style is
+`RCA1017`, because the parsers of one style share their marker and their
+per-node helpers, so a second one would be the same parser twice. Multiple
+`grammar!` invocations were rejected: the macro interprets nothing,
+discovery enforces exactly one config (`RCA1016`), and two invocations
+would emit two token enums for one AST.
 
 **Selecting a parser.** The default parser owns today's surface
 unchanged: the root `Input`, `lexed.input()`, framing, the explorer
-adapter, and the inherent `Foo::parse(&mut Input)`. Each extra parser
-gets a generated module `crate::parsers::<name>` with its own `Input`
-newtype and an `input(&lexed)` constructor. The sealed `Parse<I>` impl is
-selected by the input type, so pg-sql's differential test writes
-`Statement::parse(&mut lr::input(&lexed))` and nothing else changes.
+adapter, and the inherent `Foo::parse(&mut Input)` and `parse_spanned`.
+Each extra parser gets a generated module `crate::parsers::<name>` with
+its own `Input<'input, A = ()>` newtype, an `input(&lexed)` constructor
+and `input_with_builder(&lexed, builder)`. The sealed `Parse<I>` impl is
+selected by the input type, and so are the inherent `Foo::parse` and
+`parse_spanned`: with an extra parser declared they accept every input
+type of the generation (an inherent associated function shadows a trait
+one in a path call, so the trait alone would not do), and pg-sql's
+differential test writes `Statement::parse(&mut lr::input(&lexed))` and
+`Statement::parse_spanned(&mut lr::input(&lexed))` and nothing else
+changes. A single-parser generation keeps the inherent entry points over
+its root `Input` alone, spelled exactly as before. Framing and the
+explorer adapter drive the default parser through facade seams bound to
+the recursive-descent impl, so a table-driven default parser beside
+either capability is refused at generation with a remedy: declare the
+recursive-descent parser first.
 
 **The one trait change.** `GeneratedParse<'input, A>` gains a third
 parameter `P = RecursiveDescent`, and `GeneratedInput` gains an
 associated `type Parser`. Coherence forbids two impls of one trait for
 one type, and the marker is the only way to have two parsers over one
 AST. Every existing generation compiles unchanged because the default
-fills in.
+fills in. The markers are the two style markers, `RecursiveDescent` and
+`TableDriven`; no marker type is generated per named parser. The
+recursive-descent bodies recurse through facade helpers bound to the
+trait-default marker, so that style cannot carry another marker, and one
+parser per style leaves nothing for a generated marker to distinguish.
 
 **Diagnostics.** New codes in the analysis stage, appended to the
 registry:
@@ -305,14 +323,16 @@ conflict state. Bison-style counterexample derivations are not in v1.
 
 ## 8. The generated shape
 
-Table mode with a parser named `lr`. In `root.rs`:
+Table mode with a parser named `lr` beside the default. In `root.rs`
+(the implemented shape reuses the style marker and nests the module
+under `parsers`):
 
 ```rust
-pub mod lr {
-    pub struct Parser;                                   // marker type
+pub mod parsers { pub mod lr {
     pub struct Input<'input, A = ()> { inner: recursa::__private::Input<'input, A> }
-    impl<'input, A> GeneratedInput for Input<'input, A> { type Parser = Parser; /* ... */ }
+    impl<'input, A> GeneratedInput for Input<'input, A> { type Parser = TableDriven; /* ... */ }
     pub fn input<'i>(lexed: &LexResult<'i>) -> Input<'i> { /* ... */ }
+    pub fn input_with_builder<'i, A>(lexed: &LexResult<'i>, builder: A) -> Input<'i, A> { /* ... */ }
 
     static __RECURSA_LR: recursa::__private::LrTables = recursa::__private::lr_tables(
         b"...pact...", b"...table...", b"...check...", b"...defact...",
