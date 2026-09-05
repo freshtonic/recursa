@@ -264,6 +264,80 @@ fn joined_pratt_plan_with_setting(
     (package, success.analyzed, plan)
 }
 
+/// Analyzes and joins one inline grammar source.
+fn joined_plan_from_source(
+    source: &str,
+) -> (
+    tempfile::TempDir,
+    crate::source_analysis::AnalyzedGrammar,
+    EmissionPlan,
+) {
+    let package = tempfile::tempdir().expect("temporary inline fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write inline fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze inline fixture");
+    let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join inline Emission plan");
+    (package, success.analyzed, plan)
+}
+
+#[test]
+fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical() {
+    let fixture = include_str!("../../tests/fixtures/generation/lookahead/src/grammar.rs");
+    let table_driven = "parser_style = table_driven,";
+    let lookahead = "    lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }\n";
+    assert_eq!(fixture.matches(table_driven).count(), 1);
+    assert_eq!(fixture.matches(lookahead).count(), 1);
+    let declared = fixture.replace(table_driven, "parser_style = recursive_descent,");
+    let undeclared = declared.replace(lookahead, "");
+    let (_declared_package, _, declared_plan) = joined_plan_from_source(&declared);
+    let (_undeclared_package, _, undeclared_plan) = joined_plan_from_source(&undeclared);
+    let (_table_package, table_analyzed, table_plan) = joined_plan_from_source(fixture);
+
+    let declared_rendered = render(&declared_plan).expect("render declared");
+    let undeclared_rendered = render(&undeclared_plan).expect("render undeclared");
+    assert!(!declared_rendered.nodes.is_empty());
+    // Every generated source embeds its generation identity in the handshake; the merged kind
+    // changes the identity, so the comparison reads the sources with the identity normalized.
+    let normalized = |rendered: &RenderedGeneration, identity: &str| {
+        rendered
+            .nodes
+            .iter()
+            .map(|(name, text)| (name.clone(), text.replace(identity, "IDENTITY")))
+            .collect::<Vec<_>>()
+    };
+    let declared_nodes = normalized(&declared_rendered, &declared_plan.identity);
+    let undeclared_nodes = normalized(&undeclared_rendered, &undeclared_plan.identity);
+    if declared_nodes != undeclared_nodes {
+        if let Some(directory) = std::env::var_os("RECURSA_TEST_DUMP_DIR") {
+            for (label, nodes) in [("declared", &declared_nodes), ("undeclared", &undeclared_nodes)] {
+                for (name, text) in nodes {
+                    fs::write(Path::new(&directory).join(format!("{label}-{name}")), text).unwrap();
+                }
+            }
+        }
+    }
+    assert_eq!(
+        declared_nodes, undeclared_nodes,
+        "a lookahead declaration is inert under recursive descent"
+    );
+    assert!(declared_rendered.root.contains("NOT_LA"), "the merged kind is a TokenKind variant");
+    assert!(!undeclared_rendered.root.contains("NOT_LA"));
+    assert_ne!(
+        declared_plan.identity, undeclared_plan.identity,
+        "the merged kind must re-generate"
+    );
+
+    let table_rendered = render_by_parser_style(&table_plan, &table_analyzed.lowered)
+        .expect("render table-driven");
+    assert!(table_rendered.root.contains("__recursa_lr"));
+    assert!(table_rendered.root.contains("NOT_LA"));
+    assert_ne!(table_rendered.nodes, declared_rendered.nodes);
+}
+
 #[test]
 fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_moves_it() {
     let (_omitted_package, omitted, omitted_plan) = joined_pratt_plan_with_setting("");

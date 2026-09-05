@@ -586,11 +586,11 @@ mod tests {
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 24);
+        assert_eq!(PRIVATE_PROTOCOL, 25);
         assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v41");
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(24, GENERATOR_SOURCE_FINGERPRINT)
+            generation_protocol_identity_for(25, GENERATOR_SOURCE_FINGERPRINT)
         );
         assert_ne!(
             generation_protocol_identity(),

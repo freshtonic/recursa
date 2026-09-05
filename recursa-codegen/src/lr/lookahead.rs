@@ -473,21 +473,23 @@ mod tests {
         let not = terminal(&without, "NOT");
         assert!(
             automaton.conflicts().iter().any(|conflict| {
-                conflict.lookahead == not && matches!(conflict.kind, ConflictKind::ShiftReduce { .. })
+                conflict.lookahead == not && matches!(conflict.kind, ConflictKind::ReduceReduce { .. })
             }),
-            "without the filter, `name . NOT` is a shift/reduce conflict: {:?}",
+            "without the filter, `Subject` and `Operand` both reduce on `NOT`: {:?}",
             automaton.conflicts()
         );
-        assert_eq!(rules_of(&without, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Name NOT BETWEEN grammar::Number AND grammar::Number"]);
+        assert_eq!(rules_of(&without, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Subject NOT BETWEEN grammar::Number AND grammar::Number"]);
 
         let (_, with) = lr(&not_between_grammar(true));
         let with = with.expect("the fixture lowers with the filter");
         let automaton = Automaton::build(&with, &NoPrecedence, AutomatonOptions::default());
         assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
-        assert_eq!(rules_of(&with, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Name NOT_LA BETWEEN grammar::Number AND grammar::Number"]);
-        assert_eq!(rules_of(&with, "grammar::NotIn"), ["grammar::NotIn -> grammar::Name NOT_LA IN LPAREN grammar::Number RPAREN"]);
-        assert_eq!(rules_of(&with, "grammar::NotLike"), ["grammar::NotLike -> grammar::Name NOT_LA LIKE grammar::Name"]);
-        // The unary mark ends its rule and is followed only by a condition, never by a trigger.
+        assert_eq!(rules_of(&with, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Subject NOT_LA BETWEEN grammar::Number AND grammar::Number"]);
+        assert_eq!(rules_of(&with, "grammar::NotIn"), ["grammar::NotIn -> grammar::Subject NOT_LA IN LPAREN grammar::Number RPAREN"]);
+        assert_eq!(rules_of(&with, "grammar::NotLike"), ["grammar::NotLike -> grammar::Subject NOT_LA LIKE grammar::Name"]);
+        // `NOT` before a condition, which never begins with a trigger, stays `NOT`; so does the
+        // unary mark, which ends its rule and is followed only by a condition.
+        assert_eq!(rules_of(&with, "grammar::AndNot"), ["grammar::AndNot -> grammar::Operand NOT grammar::Cond"]);
         assert_eq!(rules_of(&with, "grammar::NotMark"), ["grammar::NotMark -> NOT"]);
         assert_eq!(with.terminal_count(), without.terminal_count() + 1);
         // The tables parse both readings of `NOT`.
@@ -497,12 +499,14 @@ mod tests {
         let name = terminal(&with, "NameText");
         let number = terminal(&with, "NumberText");
         let word = |spelling: &str| terminal(&with, spelling);
-        // `a not between 1 and 2 not b;`
-        let trace = simulate(&with, &tables, start, &[name, word("NOT_LA"), word("BETWEEN"), number, word("AND"), number, word("NOT"), name, word("SEMI")]).expect("NOT BETWEEN then unary NOT parses");
-        assert_eq!(trace.consumed, 9);
-        // `a not b;`
-        let trace = simulate(&with, &tables, start, &[name, word("NOT"), name, word("SEMI")]).expect("unary NOT after a name parses");
-        assert_eq!(trace.consumed, 4);
+        // `a not between 1 and 2;`
+        let trace = simulate(&with, &tables, start, &[name, word("NOT_LA"), word("BETWEEN"), number, word("AND"), number, word("SEMI")]).expect("NOT BETWEEN parses");
+        assert_eq!(trace.consumed, 7);
+        assert!(trace.reductions.iter().any(|rule| rule == "grammar::Subject -> grammar::Name"), "{:?}", trace.reductions);
+        // `a not not b;`
+        let trace = simulate(&with, &tables, start, &[name, word("NOT"), word("NOT"), name, word("SEMI")]).expect("a conjunction with a unary NOT parses");
+        assert_eq!(trace.consumed, 5);
+        assert!(trace.reductions.iter().any(|rule| rule == "grammar::Operand -> grammar::Name"), "{:?}", trace.reductions);
     }
 
     #[test]
