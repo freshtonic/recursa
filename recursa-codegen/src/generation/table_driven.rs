@@ -718,11 +718,13 @@ fn render_reduce_arm(
                 plan,
                 node,
                 lr,
-                terminal,
-                *terminal_node,
-                wrappers,
-                *form,
-                symbols,
+                FieldSite {
+                    terminal,
+                    terminal_node: *terminal_node,
+                    wrappers,
+                    form: *form,
+                    symbols,
+                },
             )?,
         };
         pops.push(quote!(let #value = #expression;));
@@ -746,20 +748,37 @@ fn boxed(mut expression: proc_macro2::TokenStream, boxes: usize) -> proc_macro2:
     expression
 }
 
+/// One direct field as a reduce action sees it: the authored terminal type and wrappers from the
+/// plan, and the site form and symbols from the lowered rule.
+struct FieldSite<'a> {
+    /// Authored terminal type before materialization.
+    terminal: &'a Type,
+    /// Resolved node family, when the terminal is generated.
+    terminal_node: Option<NodeId>,
+    /// Authored type wrappers, outermost first.
+    wrappers: &'a [FieldWrapper],
+    /// How the site appears on the rule's right-hand side.
+    form: SiteForm,
+    /// The right-hand-side symbols the site occupies.
+    symbols: &'a [Symbol],
+}
+
 /// Renders the value of one direct field from its site form: a required or helper site pops
 /// the whole value, an inlined choice builds `None`, an empty `Vec`, or `Some` around the
 /// inner value, with the authored `Box` layers applied where the wrappers place them.
-#[allow(clippy::too_many_arguments)]
 fn render_field_value(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     lr: &TableDrivenRendering,
-    terminal: &Type,
-    terminal_node: Option<NodeId>,
-    wrappers: &[FieldWrapper],
-    form: SiteForm,
-    symbols: &[Symbol],
+    site: FieldSite<'_>,
 ) -> Result<proc_macro2::TokenStream, String> {
+    let FieldSite {
+        terminal,
+        terminal_node,
+        wrappers,
+        form,
+        symbols,
+    } = site;
     let facade = &plan.facade;
     let is_choice = |wrapper: &FieldWrapper| !matches!(wrapper, FieldWrapper::Boxed);
     // One element popped or named through the symbol at `symbols[0]`, boxed `boxes` times.

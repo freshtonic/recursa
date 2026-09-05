@@ -285,6 +285,22 @@ _Avoid_: Symbol stack, union stack
 A table-driven root parse accepts once the root type is reduced and the lookahead has no shift action; a shiftable lookahead always shifts. This equals the greedy boundary of a recursive-descent root parse.
 _Avoid_: End-of-input accept, longest-match search
 
+**Inlined choice**:
+An optional grammar element lowered into its parent rule as one alternative with the content and one without, the way gram.y writes optional syntax by hand, so that no epsilon reduce precedes the token that decides it. Fixed-only choices are always inlined; valued choices are inlined when their content can begin with an admitted keyword.
+_Avoid_: Expanded optional, rule duplication
+
+**Helper nonterminal**:
+A nonterminal the table-driven lowering invents and shares between use sites: a nullable optional or presence helper, or a list core and its zero-or-more and trailing-separator forms. Its rules carry the element type and `Box` layers their reduce actions need.
+_Avoid_: Synthetic node, bison `opt_` rule
+
+**Attachment unit**:
+The private sequence type materialized for one semantic field with attached fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one occurrence of the field's element. Under the table-driven style it is a nonterminal whose reduce passes the element's value through unchanged.
+_Avoid_: Surrounded node, per-element wrapper
+
+**Presence envelope**:
+The private sequence type materialized for a fixed-token presence with required fixed tokens before or after its optional sequence (`#[tok(IF, this, EXISTS)] #[presence(NOT)]`). Under the table-driven style it is a nonterminal with one alternative per presence value whose reduce yields the `bool`.
+_Avoid_: Presence wrapper, optional keyword node
+
 **Binding-power precedence**:
 The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct extender exclusion set becomes its own lowered expression type.
 _Avoid_: Runtime Pratt loop, precedence climbing
