@@ -1,6 +1,9 @@
 //! End-to-end proof of the table-driven tracer (#113): the fixture grammar generates and runs
 //! under `parser_style = table_driven`, and everything its consumer observes equals what the
-//! recursive-descent twin of the same grammar produces.
+//! recursive-descent twin of the same grammar produces. Error parity (#117) is checked line by
+//! line: the failing token, span, kind and restored cursor must be equal, and the table-driven
+//! expected set must contain recursive descent's, with the one principled difference pinned in
+//! [`EXPECTED_SET_DIFFERENCES`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,10 +49,10 @@ fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
     assert!(table_stdout.contains("entry Negated { mark: Bang, inner: Negated { mark: Bang, inner: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=3\n"), "{table_stdout}");
     assert!(table_stdout.contains("entry Name { text: __RecursaContentToken0 { text: ContentText(\"count\") } } cursor=1\n"), "{table_stdout}");
     // Failures name the failing token, restore the cursor and drop every partial value.
-    assert!(table_stdout.contains("err \"\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 0, end: 0 } found=None cursor=0 leaked=0\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"let x = ;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 8, end: 9 } found=Some(\"fixed:;\") cursor=0 leaked=0\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"let x = !!!!!!!!(1);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 16, end: 17 } found=Some(\"fixed:(\") cursor=0 leaked=0\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"let x = 1 print(2);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 15 } found=Some(\"fixed:print\") cursor=0 leaked=0\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 0, end: 0 } found=None cursor=0 leaked=0 expected=[\"fixed:let\", \"fixed:print\"]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = ;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 8, end: 9 } found=Some(\"fixed:;\") cursor=0 leaked=0 expected=[\"fixed:true\", \"fixed:false\", \"fixed:!\", \"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\", \"content:\\\"[0-9]+\\\":priority=None\"]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = !!!!!!!!(1);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 16, end: 17 } found=Some(\"fixed:(\") cursor=0 leaked=0 expected=[\"fixed:true\", \"fixed:false\", \"fixed:!\", \"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\", \"content:\\\"[0-9]+\\\":priority=None\"]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"let x = 1 print(2);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 15 } found=Some(\"fixed:print\") cursor=0 leaked=0 expected=[\"fixed:;\", \"fixed:+\"]\n"), "{table_stdout}");
 
     // The twin: the same grammar under recursive descent prints the same lines.
     let grammar = package.path().join("src/grammar.rs");
@@ -60,7 +63,7 @@ fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
     let recursive = run_fixture(&package);
     assert_success(&recursive);
     let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
+    assert_twins_agree(&table_stdout, &recursive_stdout);
     let root = read_selected_root(&package);
     assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
 }
@@ -208,4 +211,77 @@ fn assert_success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// The error lines whose expected sets differ between the styles, as `(line head, table-driven
+/// set, recursive-descent set)`.
+///
+/// At the end of input recursive descent's predictive dispatch selects the complete alternative
+/// (`Value::Number`) rather than failing, so the error is raised by the enclosing `Print` and
+/// names only `)`. Lookahead correction explores from the state before that choice was forced
+/// and names every terminal that could have continued, `+` included. Before a token, as in
+/// `let x = 1 print(2);`, the dispatch fails at the token itself and both styles agree.
+const EXPECTED_SET_DIFFERENCES: &[(&str, &str, &str)] = &[(
+    "err \"print(1 + 2\"",
+    "[\"fixed:)\", \"fixed:+\"]",
+    "[\"fixed:)\"]",
+)];
+
+/// Asserts that the two styles' outputs agree line by line, with error expected sets compared
+/// as sets: the table-driven set must contain the recursive-descent set, and the lines where it
+/// is strictly larger must be exactly [`EXPECTED_SET_DIFFERENCES`].
+fn assert_twins_agree(table: &str, recursive: &str) {
+    let table_lines: Vec<&str> = table.lines().collect();
+    let recursive_lines: Vec<&str> = recursive.lines().collect();
+    assert_eq!(
+        table_lines.len(),
+        recursive_lines.len(),
+        "the two parser styles must print the same lines:\n{table}\n---\n{recursive}"
+    );
+    let mut differences = Vec::new();
+    for (table_line, recursive_line) in table_lines.iter().zip(&recursive_lines) {
+        if table_line == recursive_line {
+            continue;
+        }
+        let (table_head, table_expected) = split_expected(table_line);
+        let (recursive_head, recursive_expected) = split_expected(recursive_line);
+        assert_eq!(
+            table_head, recursive_head,
+            "the failing token, span, kind and cursor must agree:\n{table_line}\n{recursive_line}"
+        );
+        let table_names = expected_names(table_expected);
+        let recursive_names = expected_names(recursive_expected);
+        assert!(
+            recursive_names.iter().all(|name| table_names.contains(name)),
+            "the table-driven expected set must contain recursive descent's:\n{table_line}\n{recursive_line}"
+        );
+        let head = table_line.split_once(" =>").map_or(*table_line, |(head, _)| head);
+        differences.push((head.to_owned(), table_expected.to_owned(), recursive_expected.to_owned()));
+    }
+    let differences: Vec<(&str, &str, &str)> = differences
+        .iter()
+        .map(|(head, table, recursive)| (head.as_str(), table.as_str(), recursive.as_str()))
+        .collect();
+    assert_eq!(differences, EXPECTED_SET_DIFFERENCES, "the expected-set differences are pinned");
+}
+
+/// Splits an error line into everything before its expected set and the set's Debug text.
+fn split_expected(line: &str) -> (&str, &str) {
+    line.split_once(" expected=")
+        .unwrap_or_else(|| panic!("only error lines with an expected set may differ: {line}"))
+}
+
+/// Parses the Debug text of a list of expected names.
+fn expected_names(list: &str) -> Vec<&str> {
+    let inner = list
+        .strip_prefix('[')
+        .and_then(|list| list.strip_suffix(']'))
+        .unwrap_or_else(|| panic!("an expected set is a Debug list: {list}"));
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split("\", \"")
+        .map(|name| name.trim_start_matches('"').trim_end_matches('"'))
+        .collect()
 }
