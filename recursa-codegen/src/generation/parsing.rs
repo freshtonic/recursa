@@ -1171,7 +1171,7 @@ impl ExpectedAtomIndex {
     }
 
     /// Returns the canonical direct atom for one validated token kind.
-    fn get(&self, kind: crate::KindId) -> Option<u32> {
+    pub(super) fn get(&self, kind: crate::KindId) -> Option<u32> {
         self.by_kind.get(kind.index()).copied().flatten()
     }
 }
