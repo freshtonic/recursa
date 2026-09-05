@@ -1113,6 +1113,16 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.input.cursor()
     }
 
+    /// Restores a cursor saved by [`ParseContext::cursor`] after a failed transactional parse.
+    pub(crate) fn restore(&mut self, cursor: usize) {
+        self.input.restore(cursor);
+    }
+
+    /// Returns a record by absolute token index without moving the cursor.
+    pub(crate) fn record(&self, index: usize) -> Option<TokenRecord> {
+        self.input.record(index)
+    }
+
     /// Returns the source extent consumed since a saved token cursor.
     pub fn consumed_span_from(&self, start: usize) -> Option<Span> {
         let end = self.input.cursor();
@@ -1580,6 +1590,20 @@ impl parser_marker_seal::Sealed for RecursiveDescent {}
 
 impl ParserMarker for RecursiveDescent {}
 
+/// Marker for the table-driven parser style.
+///
+/// A generation whose default parser is `table_driven` renders its
+/// [`GeneratedParse`] impls against this marker and names it as the
+/// [`GeneratedInput::Parser`] of its grammar-local input, so the same blanket
+/// [`Parse`] facade selects the LALR(1) loop in [`crate::lr`].
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct TableDriven;
+
+impl parser_marker_seal::Sealed for TableDriven {}
+
+impl ParserMarker for TableDriven {}
+
 /// Matching-version recursive parsing protocol implemented by generated code.
 ///
 /// `P` names the parser style whose generated body this impl carries; the
@@ -1729,6 +1753,22 @@ where
         Origin::Uncaptured
     };
     Ok(Parsed { ast: value, origin })
+}
+
+/// Binds a root-style [`ParseContext`] over an input for the runtime's own unit tests.
+#[cfg(test)]
+pub(crate) fn test_context<'input, A, R>(
+    input: &mut Input<'input, A>,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+) -> R {
+    static EMPTY_FOLLOW: FollowSet = FollowSet::from_static(0, &[], &[]);
+    let mut context = ParseContext::new(
+        input,
+        &EMPTY_FOLLOW,
+        CapturePolicy::Optional,
+        CaptureRequest::Default,
+    );
+    operation(&mut context)
 }
 
 #[cfg(test)]

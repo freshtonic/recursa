@@ -102,6 +102,19 @@ impl FollowSet {
         }
     }
 
+    /// Builds an owned set of accepted kinds with no symbolic expectations, the crude expected
+    /// set the table-driven loop reports until lookahead correction computes a symbolic one.
+    pub(crate) fn owned(kind_count: u32, kinds: Vec<u64>) -> Self {
+        debug_assert_eq!(kinds.len(), (kind_count as usize).div_ceil(64));
+        Self {
+            kind_count,
+            kinds: Cow::Owned(kinds.clone()),
+            expected: Cow::Borrowed(&[]),
+            pratt_boundary_kinds: Cow::Owned(kinds),
+            greedy_kinds: Cow::Borrowed(&[]),
+        }
+    }
+
     /// Whether this set contains `kind`.
     pub fn contains(&self, kind: TokenKind) -> bool {
         if u32::from(kind) >= self.kind_count {
