@@ -332,6 +332,12 @@ pub struct EncodedTable {
 }
 
 impl EncodedTable {
+    /// Encodes one unsigned table that is not part of [`LrTables`], such as the per-terminal
+    /// expected atoms the renderer adds beside the action tables.
+    pub fn unsigned(values: &[u32]) -> Self {
+        encode_unsigned(values)
+    }
+
     /// Renders the table as the byte-string literal the runtime decoder reads: one base64 digit
     /// for the width, then the cells.
     pub fn literal(&self) -> Vec<u8> {

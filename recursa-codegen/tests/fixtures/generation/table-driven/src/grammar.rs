@@ -1,5 +1,8 @@
 //! The table-driven tracer grammar: sequences, enum alternatives, fixed tokens and content
-//! tokens, and nothing a later ticket owns (no `Vec`, no `Option`, no Pratt).
+//! tokens, and nothing a later ticket owns (no `Vec`, no `Option`, no Pratt). `Value::Sum`
+//! shares its first symbol with `Value::Number`, so the automaton state after a number both
+//! shifts `+` and reduces by default: the case where a default reduction hides a continuation
+//! from the failing state's row (#117).
 //!
 //! The integration test generates this file twice, once as written and once with the parser
 //! style flipped to `recursive_descent`, and compares what the two parsers produce.
@@ -7,7 +10,7 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
+    max_lookahead = 2,
     parser_style = table_driven,
 }
 
@@ -25,6 +28,7 @@ recursa::tokens! {
         LPAREN => "(",
         RPAREN => ")",
         BANG => "!",
+        PLUS => "+",
     }
 }
 
@@ -59,6 +63,11 @@ pub enum Value<'input> {
     Negated {
         mark: Bang,
         inner: Box<Value<'input>>,
+    },
+    Sum {
+        left: Number<'input>,
+        #[tok(PLUS)]
+        right: Box<Value<'input>>,
     },
 }
 

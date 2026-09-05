@@ -1,7 +1,8 @@
 //! The packed LALR(1) tables and their decoder.
 //!
 //! The tables mirror bison's `yypact`, `yytable`, `yycheck`, `yydefact`, `yypgoto`, `yydefgoto`,
-//! `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule. Codegen packs them
+//! `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule and `expected_atoms` per terminal,
+//! the symbolic expectation the error path names a terminal by. Codegen packs them
 //! (`recursa_codegen::lr::tables`) and renders each as one byte-string literal so a table costs
 //! the compiler one token; this module is the runtime half of that format and must agree with
 //! the codegen encoder cell for cell.
@@ -58,8 +59,12 @@ pub struct LrTables {
     r2: &'static [u8],
     /// Packed `value_pops`.
     value_pops: &'static [u8],
+    /// Packed `expected_atoms`: per terminal, its canonical atom plus one, or `0` for none.
+    expected_atoms: &'static [u8],
     /// The decoded form, filled on first lookup.
     decoded: OnceLock<DecodedTables>,
+    /// The decoded `expected_atoms`, filled by the first error, never by a successful parse.
+    atoms: OnceLock<Vec<u32>>,
 }
 
 /// The decoded tables, the form every lookup reads.
@@ -112,6 +117,7 @@ impl LrTables {
         r1: &'static [u8],
         r2: &'static [u8],
         value_pops: &'static [u8],
+        expected_atoms: &'static [u8],
     ) -> Self {
         Self {
             end_marker,
@@ -124,7 +130,9 @@ impl LrTables {
             r1,
             r2,
             value_pops,
+            expected_atoms,
             decoded: OnceLock::new(),
+            atoms: OnceLock::new(),
         }
     }
 
@@ -148,6 +156,16 @@ impl LrTables {
             r2: decode_unsigned(self.r2),
             value_pops: decode_unsigned(self.value_pops),
         })
+    }
+
+    /// Returns the canonical atom of each terminal, as the atom index plus one or `0` when the
+    /// terminal has no atom; the end marker has no entry.
+    ///
+    /// This is the vocabulary [`ParseError::expected`](crate::ParseError::expected) renders,
+    /// the same canonical atom per token kind that recursive descent's expected sets carry.
+    /// Only the error path reads it, so it is decoded apart from the action tables.
+    pub fn expected_atoms(&self) -> &[u32] {
+        self.atoms.get_or_init(|| decode_unsigned(self.expected_atoms))
     }
 }
 
@@ -204,8 +222,9 @@ impl DecodedTables {
 
     /// Returns the terminals with an explicit shift or reduce in a state, in ascending order.
     ///
-    /// This is the crude expected set of an error in the state; lookahead correction (#117)
-    /// refines it.
+    /// This is the state's own row, not the expected set of an error raised in it: default
+    /// reductions taken on the way to the state hide continuations, which
+    /// [`lac`](crate::lr::lac) recovers from the pre-reduction stack.
     pub fn explicit_terminals(&self, state: u32, terminal_count: u32) -> Vec<u32> {
         let base = self.pact[state as usize];
         if base == PACT_NINF {
@@ -272,7 +291,8 @@ pub(super) mod tests {
     /// `F -> ( E ) | id`, as codegen's `lr::textbook::expression_grammar` packs and encodes it.
     /// Terminals are `+ * ( ) id $end` (0..=5); rules are `0: $accept -> E`, `1: E -> E + T`,
     /// `2: E -> T`, `3: T -> T * F`, `4: T -> F`, `5: F -> ( E )`, `6: F -> id`; the start state
-    /// of `E` is 0. The literals are copied from that encoder's output.
+    /// of `E` is 0. The literals are copied from that encoder's output; the last one maps each
+    /// terminal to its atom (`+ * ( ) id` are atoms 0 to 4), which the tests' `GrammarInfo` names.
     pub(in crate::lr) static TEXTBOOK: LrTables = LrTables::new(
         5,
         b"BFFADJABFFAJA",
@@ -284,6 +304,7 @@ pub(super) mod tests {
         b"BBAACCDD",
         b"BBDBDBDB",
         b"BBCBCBBA",
+        b"BBCDEF",
     );
 
     /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
