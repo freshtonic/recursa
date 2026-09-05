@@ -37,7 +37,7 @@ use super::parsing::{
 };
 use crate::TypeId;
 use crate::lr::{
-    AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, NoPrecedence, Rule, RuleAction,
+    AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, Rule, RuleAction,
     Symbol,
 };
 use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
@@ -131,7 +131,7 @@ impl TableDrivenRendering {
                 ));
             }
         }
-        let analysis = LrAnalysis::from_lowered(lowered, &NoPrecedence, AutomatonOptions::default())
+        let analysis = LrAnalysis::from_lowered(lowered, AutomatonOptions::default())
             .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
         if !analysis.diagnostics.is_empty() {
             return Err(render_diagnostics(&analysis.diagnostics));

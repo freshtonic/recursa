@@ -14,12 +14,12 @@ use std::collections::{BTreeSet, HashMap};
 
 use super::grammar::{
     LrGrammar, NonterminalId, NonterminalOrigin, Rule, RuleAction, RulePrecedence, Symbol,
-    TerminalId,
+    TerminalId, UnrepresentableBindingPowers,
 };
-use super::report::{LrDiagnostic, TEXT_PREDICATE};
+use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
 use crate::{
-    ContainerShape, GrammarDescription, KindSet, PrattPosition, RepetitionCardinality, SiteId,
-    TextPredicate, TypeId, TypeShape,
+    ContainerShape, GrammarDescription, KindSet, PrattPosition, PrattVariant,
+    RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -76,7 +76,8 @@ impl TypeRoles {
     }
 }
 
-/// Lowers a normalized grammar to an LR grammar, or reports every text predicate it carries.
+/// Lowers a normalized grammar to an LR grammar, or reports every text predicate (`RCA0403`)
+/// and every Pratt binding power with no precedence equivalent (`RCA0402`) it carries.
 pub fn lower(grammar: &GrammarDescription, roles: &TypeRoles) -> Result<LrGrammar, Vec<LrDiagnostic>> {
     let diagnostics = text_predicate_diagnostics(grammar);
     if !diagnostics.is_empty() {
@@ -84,6 +85,9 @@ pub fn lower(grammar: &GrammarDescription, roles: &TypeRoles) -> Result<LrGramma
     }
     let mut lowering = Lowering::new(grammar, roles);
     lowering.lower_types();
+    if !lowering.diagnostics.is_empty() {
+        return Err(lowering.diagnostics);
+    }
     lowering.lower_starts();
     Ok(lowering.lr)
 }
@@ -200,6 +204,8 @@ struct Lowering<'a> {
     helpers: HashMap<HelperKey, NonterminalId>,
     /// Names already taken, to keep nonterminal names unique.
     names: BTreeSet<String>,
+    /// `RCA0402` diagnostics collected while lowering Pratt variants.
+    diagnostics: Vec<LrDiagnostic>,
 }
 
 impl<'a> Lowering<'a> {
@@ -248,6 +254,7 @@ impl<'a> Lowering<'a> {
             type_symbols,
             helpers: HashMap::new(),
             names,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -312,15 +319,33 @@ impl<'a> Lowering<'a> {
                             rhs.push(Symbol::Nonterminal(lhs));
                         }
                         rhs.extend(self.sites_symbols(&variant.sites));
-                        self.add_construct(
-                            lhs,
-                            rhs,
-                            Some(variant.declaration),
-                            type_id,
-                            RulePrecedence::from_position(variant.position),
-                        );
+                        let precedence = self.variant_precedence(&variant);
+                        self.add_construct(lhs, rhs, Some(variant.declaration), type_id, precedence);
                     }
                 }
+            }
+        }
+    }
+
+    /// Derives a Pratt variant's rule precedence, reporting `RCA0402` naming the variant when
+    /// its binding powers have no precedence equivalent; the rule then carries none.
+    fn variant_precedence(&mut self, variant: &PrattVariant) -> Option<RulePrecedence> {
+        match RulePrecedence::from_position(variant.position) {
+            Ok(precedence) => precedence,
+            Err(UnrepresentableBindingPowers { lbp, rbp }) => {
+                self.diagnostics.push(LrDiagnostic {
+                    code: NO_PRECEDENCE_EQUIVALENT,
+                    message: format!(
+                        "Pratt variant `{}` has lbp = {lbp} and rbp = {rbp}, which no rule \
+                         precedence reproduces; the table-driven parser style needs rbp = lbp + 1 \
+                         (left-associative), rbp = lbp or rbp = lbp - 1 (right-associative)",
+                        self.grammar.declarations[variant.declaration.index()].name
+                    ),
+                    items: Vec::new(),
+                    actions: Vec::new(),
+                    notes: Vec::new(),
+                });
+                None
             }
         }
     }

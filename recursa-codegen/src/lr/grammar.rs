@@ -72,7 +72,7 @@ pub enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Associativity a binding-power pair lowers to; ticket #115 consumes it, this ticket records it.
+/// Associativity a binding-power pair lowers to; the precedence resolver consults it on a tie.
 pub enum Associativity {
     /// `rbp = lbp + 1`: the left operand binds first.
     Left,
@@ -93,25 +93,44 @@ pub struct RulePrecedence {
     pub associativity: Associativity,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// An infix binding-power pair with no precedence equivalent: `rbp` is neither `lbp + 1`
+/// (left-associative) nor `lbp` or `lbp - 1` (right-associative). The lowering reports it as
+/// `RCA0402` naming the variant.
+pub struct UnrepresentableBindingPowers {
+    /// The left binding power.
+    pub lbp: u8,
+    /// The right binding power.
+    pub rbp: u8,
+}
+
 impl RulePrecedence {
-    /// Derives the precedence facts of one Pratt position; atoms have none.
-    pub fn from_position(position: PrattPosition) -> Option<Self> {
+    /// Derives the precedence facts of one Pratt position; atoms have none, and an infix pair
+    /// outside the three representable shapes is the error.
+    pub fn from_position(
+        position: PrattPosition,
+    ) -> Result<Option<Self>, UnrepresentableBindingPowers> {
         match position {
-            PrattPosition::Atom => None,
-            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Some(Self {
+            PrattPosition::Atom => Ok(None),
+            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Ok(Some(Self {
                 position,
                 level: bp,
                 associativity: Associativity::None,
-            }),
-            PrattPosition::Infix { lbp, rbp } => Some(Self {
-                position,
-                level: lbp,
-                associativity: if rbp > lbp {
+            })),
+            PrattPosition::Infix { lbp, rbp } => {
+                let associativity = if u16::from(rbp) == u16::from(lbp) + 1 {
                     Associativity::Left
-                } else {
+                } else if rbp == lbp || u16::from(rbp) + 1 == u16::from(lbp) {
                     Associativity::Right
-                },
-            }),
+                } else {
+                    return Err(UnrepresentableBindingPowers { lbp, rbp });
+                };
+                Ok(Some(Self {
+                    position,
+                    level: lbp,
+                    associativity,
+                }))
+            }
         }
     }
 }
@@ -470,6 +489,15 @@ impl TextbookGrammar {
                 variant: None,
             },
         })
+    }
+
+    /// Adds `lhs -> rhs` as a Pratt rule with the binding powers of `position`, the way the
+    /// lowering records an infix, prefix or postfix variant.
+    pub fn pratt_rule(&mut self, lhs: &str, rhs: &str, position: PrattPosition) -> RuleId {
+        let id = self.rule(lhs, rhs);
+        self.grammar.rules[id.index()].precedence = RulePrecedence::from_position(position)
+            .expect("textbook Pratt rules use representable binding powers");
+        id
     }
 
     /// Adds the start rule for one nonterminal.
