@@ -239,3 +239,107 @@ fn transient_provenance_preserves_semantics_identity_and_generated_artifacts() {
     );
     assert_eq!(transient_rendered.selector, compact_rendered.selector);
 }
+
+/// Joins the Pratt fixture with `setting` appended to its root `grammar!` configuration.
+fn joined_pratt_plan_with_setting(
+    setting: &str,
+) -> (
+    tempfile::TempDir,
+    crate::source_analysis::AnalyzedGrammar,
+    EmissionPlan,
+) {
+    let source = include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs").replace(
+        "    max_lookahead = 1,\n}",
+        &format!("    max_lookahead = 1,\n    {setting}\n}}"),
+    );
+    let package = tempfile::tempdir().expect("temporary parser-style fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write parser-style fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze parser-style fixture");
+    let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join parser-style Emission plan");
+    (package, success.analyzed, plan)
+}
+
+#[test]
+fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_moves_it() {
+    let (_omitted_package, omitted, omitted_plan) = joined_pratt_plan_with_setting("");
+    let (_explicit_package, explicit, explicit_plan) =
+        joined_pratt_plan_with_setting("parser_style = recursive_descent,");
+    let (_table_package, table, table_plan) =
+        joined_pratt_plan_with_setting("parser_style = table_driven,");
+    let (_named_package, _named, named_plan) =
+        joined_pratt_plan_with_setting("parsers(rd = recursive_descent, lr = table_driven),");
+
+    assert!(omitted_plan.parsers.is_implicit_default());
+    assert_eq!(explicit_plan.parsers, omitted_plan.parsers);
+    assert_eq!(
+        omitted_plan.identity, explicit_plan.identity,
+        "an explicit recursive_descent selection states the implicit default"
+    );
+    assert_ne!(
+        omitted_plan.identity, table_plan.identity,
+        "selecting table_driven must re-generate"
+    );
+    assert_ne!(
+        omitted_plan.identity, named_plan.identity,
+        "declaring named parsers must re-generate"
+    );
+    assert_ne!(table_plan.identity, named_plan.identity);
+
+    let projection = crate::semantic_projection::canonical_semantic_projection(&omitted);
+    assert_eq!(
+        projection,
+        crate::semantic_projection::canonical_semantic_projection(&explicit),
+        "parser style is a generation choice, not a semantic fact"
+    );
+    assert_eq!(
+        projection,
+        crate::semantic_projection::canonical_semantic_projection(&table),
+    );
+    assert_eq!(
+        render(&omitted_plan).expect("render omitted").nodes,
+        render(&explicit_plan).expect("render explicit").nodes,
+    );
+}
+
+#[test]
+fn table_driven_selection_reaches_the_renderer_selection_point_and_fails_with_rca9105() {
+    let (_package, _analyzed, plan) =
+        joined_pratt_plan_with_setting("parser_style = table_driven,");
+    let detail = match render_by_parser_style(&plan) {
+        Ok(_) => panic!("table-driven rendering is not implemented in this ticket"),
+        Err(detail) => detail,
+    };
+    assert_eq!(
+        detail,
+        "table-driven rendering not implemented yet: the default parser selects `table_driven`"
+    );
+    let error = failure(Path::new("grammar.rs"), &detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one renderer-selection failure must produce one diagnostic")
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+    assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
+
+    let (_package, _analyzed, named) =
+        joined_pratt_plan_with_setting("parsers(rd = recursive_descent, lr = table_driven),");
+    assert_eq!(
+        render_by_parser_style(&named).err().as_deref(),
+        Some("table-driven rendering not implemented yet: parser `lr` selects `table_driven`")
+    );
+
+    let (_package, _analyzed, two_recursive) =
+        joined_pratt_plan_with_setting("parsers(a = recursive_descent, b = recursive_descent),");
+    assert_eq!(
+        render_by_parser_style(&two_recursive).err().as_deref(),
+        Some("named parser rendering not implemented yet: only the default parser renders"),
+        "a second parser needs its own marker before it can render"
+    );
+
+    let (_package, _analyzed, recursive) = joined_pratt_plan_with_setting("");
+    render_by_parser_style(&recursive).expect("the default parser style renders as before");
+}

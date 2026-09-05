@@ -556,7 +556,9 @@ pub(super) fn render_token(
                 #module_anchor::View { value: self, cursor }
             }
         }
-        impl<'input, A> #facade::__private::Parse<'input, A> for #ident<'input> {
+        impl<'input, A> #facade::__private::Parse<'input, A, #facade::__private::RecursiveDescent>
+            for #ident<'input>
+        {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
             fn grammar() -> &'static #facade::__private::GrammarInfo {
                 &#module_anchor::__RECURSA_GRAMMAR

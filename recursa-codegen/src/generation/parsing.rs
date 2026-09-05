@@ -7452,7 +7452,8 @@ pub(super) fn render_node_parse_application(
         #parse_items
         #generated_helpers
 
-        impl #recursive_impl_generics #facade::__private::Parse<#input_lifetime, A>
+        impl #recursive_impl_generics
+            #facade::__private::Parse<#input_lifetime, A, #facade::__private::RecursiveDescent>
             for #ty #recursive_where_clause
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #node_capture;

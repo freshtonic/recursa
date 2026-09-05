@@ -22,7 +22,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
 use syn::{Attribute, Fields, Item, LitStr, Path as SynPath, Token, Type};
 
-use crate::source_syntax::{CaptureMode, GrammarConfigSyntax, PrettyDefaults};
+use crate::source_syntax::{CaptureMode, GrammarConfigSyntax, ParserDeclarations, PrettyDefaults};
 use crate::{
     AnalysisReport, AtomDescription, AtomExpression, AtomId, ContainerShape, DeclId, Declaration,
     Diagnostic, GrammarDescription, KindDescription, KindId, Location, LocationId, ParseSite,
@@ -282,6 +282,8 @@ pub(crate) struct BuildInputs {
     pub(crate) diagrams: bool,
     /// Supplies the pretty needed to preserve authored meaning during lowering.
     pub(crate) pretty: PrettyDefaults,
+    /// Parsers the generation emits, default first; a generation choice carried to emission.
+    pub(crate) parsers: ParserDeclarations,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1387,6 +1389,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
                 spans: config.spans,
                 diagrams: config.diagrams,
                 pretty: config.pretty,
+                parsers: config.parsers.clone(),
             },
             grammar,
             source_model,
