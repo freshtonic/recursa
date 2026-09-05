@@ -1665,7 +1665,10 @@ where
 /// Runs the generated root parser with one generated caller FOLLOW.
 ///
 /// Document framing uses this seam to keep its separator outside the authored
-/// root while preserving ordinary transactional parse behavior.
+/// root while preserving ordinary transactional parse behavior. Framing belongs
+/// to the default parser, so this seam drives only the [`RecursiveDescent`]
+/// impl of `T`; a root whose only impl carries another marker does not satisfy
+/// its bound.
 #[cfg(feature = "explorer")]
 pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
     input: &mut Input<'input, A>,

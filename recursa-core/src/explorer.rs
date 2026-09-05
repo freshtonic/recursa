@@ -1490,6 +1490,10 @@ pub fn pretty_root<T: crate::Pretty>(
 ///
 /// Lexical errors take precedence and are all retained. A successful root
 /// parse must also consume every token before its typed value is erased.
+///
+/// The explorer adapter belongs to the default parser, so the root always
+/// runs through its recursive-descent impl; other parser styles are not
+/// reachable from this seam.
 fn parse_document<'input, T, A>(
     input: &mut Input<'input, A>,
     lexical_errors: impl IntoIterator<Item = Span>,
