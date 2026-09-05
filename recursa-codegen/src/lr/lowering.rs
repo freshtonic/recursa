@@ -790,10 +790,19 @@ impl<'a> Lowering<'a> {
                 ConstructKind::Envelope {
                     type_id,
                     presence_index,
-                } => RuleAction::Envelope {
-                    type_id,
-                    present: forms[presence_index].present,
-                },
+                } => {
+                    // The envelope's reduce pushes its `bool` as a literal, so the presence
+                    // choice must be inlined; it is the envelope's only choice and never meets
+                    // the budget.
+                    assert!(
+                        forms[presence_index].inlined,
+                        "a presence envelope inlines its presence choice"
+                    );
+                    RuleAction::Envelope {
+                        type_id,
+                        present: forms[presence_index].present,
+                    }
+                }
             };
             let value_pops = self.value_pops(&rhs);
             self.lr.add_rule(Rule {
