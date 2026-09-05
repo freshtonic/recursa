@@ -41,6 +41,42 @@ fn framing_fixture_join_error(
     detail
 }
 
+#[cfg(feature = "explorer")]
+#[test]
+fn a_table_driven_default_parser_is_refused_beside_framing_or_the_explorer() {
+    // Framing and the explorer adapter drive the default parser through facade seams bound to
+    // the recursive-descent impl (#119): a table-driven default is refused at the renderer
+    // selection point with a remedy, whether declared through `parser_style` or first in
+    // `parsers(...)`; the same declaration with recursive descent first renders.
+    let framing = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs");
+    let with_setting = |setting: &str| {
+        framing.replace(
+            "    max_lookahead = 2,\n",
+            &format!("    max_lookahead = 2,\n    {setting}\n"),
+        )
+    };
+    for setting in [
+        "parser_style = table_driven,",
+        "parsers(lr = table_driven, rd = recursive_descent),",
+    ] {
+        let (_package, analyzed, plan) = joined_plan_from_source(&with_setting(setting));
+        let detail = render_by_parser_style(&plan, &analyzed.lowered)
+            .err()
+            .unwrap_or_else(|| panic!("{setting} is refused beside framing"));
+        assert_eq!(
+            detail,
+            "the explorer and framing capabilities drive the default parser, which must be \
+             recursive descent: declare a `recursive_descent` parser first in `parsers(...)` \
+             or select `parser_style = recursive_descent`"
+        );
+    }
+    let (_package, analyzed, plan) =
+        joined_plan_from_source(&with_setting("parsers(rd = recursive_descent, lr = table_driven),"));
+    let rendered = render_by_parser_style(&plan, &analyzed.lowered)
+        .expect("a recursive-descent default parser renders beside framing");
+    assert!(rendered.root.contains("pub mod parsers"));
+}
+
 #[test]
 fn framing_planner_rejects_an_undefined_boundary_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
@@ -287,11 +323,11 @@ fn joined_plan_from_source(
 #[test]
 fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical() {
     let fixture = include_str!("../../tests/fixtures/generation/lookahead/src/grammar.rs");
-    let table_driven = "parser_style = table_driven,";
+    let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";
     let lookahead = "    lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }\n";
-    assert_eq!(fixture.matches(table_driven).count(), 1);
+    assert_eq!(fixture.matches(named_parsers).count(), 1);
     assert_eq!(fixture.matches(lookahead).count(), 1);
-    let declared = fixture.replace(table_driven, "parser_style = recursive_descent,");
+    let declared = fixture.replace(named_parsers, "parser_style = recursive_descent,");
     let undeclared = declared.replace(lookahead, "");
     let (_declared_package, _, declared_plan) = joined_plan_from_source(&declared);
     let (_undeclared_package, _, undeclared_plan) = joined_plan_from_source(&undeclared);
@@ -381,25 +417,26 @@ fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_m
 }
 
 #[test]
-fn the_renderer_selection_point_routes_table_driven_and_refuses_named_parsers() {
+fn the_renderer_selection_point_routes_table_driven_and_named_parsers() {
     // The Pratt fixture reaches the table-driven renderer, whose analysis lowers the binding
     // powers to precedence and then reports the fixture's genuine conflict, the optional
     // `ESCAPE` clause after a `LIKE` operand (a container, #114); the refusal is an emission
     // failure like any other renderer invariant, and the recursive-descent default renders as
     // before. The Pratt fixtures that render table-driven are the `generated_pratt_table_driven`
-    // integration test's.
-    let (_package, analyzed, plan) =
-        joined_pratt_plan_with_setting("parser_style = table_driven,");
-    let detail = match render_by_parser_style(&plan, &analyzed.lowered) {
+    // integration test's. Named parsers reach the same point (#119): the table-driven `lr`
+    // parser runs the analysis and reports the conflict beside the recursive-descent default.
+    let is_the_escape_conflict = |detail: &str| {
+        detail.starts_with("the table-driven parser cannot be generated: ")
+            && detail.contains("error[RCA0400]: shift/reduce conflict")
+            && detail.contains("on lookahead `ESCAPE`")
+    };
+    let (_package, analyzed, named) =
+        joined_pratt_plan_with_setting("parsers(rd = recursive_descent, lr = table_driven),");
+    let detail = match render_by_parser_style(&named, &analyzed.lowered) {
         Ok(_) => panic!("the optional ESCAPE clause is a shift/reduce conflict"),
         Err(detail) => detail,
     };
-    assert!(
-        detail.starts_with("the table-driven parser cannot be generated: ")
-            && detail.contains("error[RCA0400]: shift/reduce conflict")
-            && detail.contains("on lookahead `ESCAPE`"),
-        "{detail}"
-    );
+    assert!(is_the_escape_conflict(&detail), "{detail}");
     let error = failure(Path::new("grammar.rs"), &detail);
     let [diagnostic] = error.report().diagnostics() else {
         panic!("one renderer failure must produce one diagnostic")
@@ -407,22 +444,46 @@ fn the_renderer_selection_point_routes_table_driven_and_refuses_named_parsers() 
     assert_eq!(diagnostic.code().as_str(), "RCA9105");
     assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
 
-    let (_package, analyzed, named) =
-        joined_pratt_plan_with_setting("parsers(rd = recursive_descent, lr = table_driven),");
-    assert_eq!(
-        render_by_parser_style(&named, &analyzed.lowered).err().as_deref(),
-        Some("named parser rendering not implemented yet: only the default parser renders"),
-        "a second parser needs its own marker before it can render (#116)"
-    );
-
-    let (_package, analyzed, two_recursive) =
-        joined_pratt_plan_with_setting("parsers(a = recursive_descent, b = recursive_descent),");
-    assert_eq!(
-        render_by_parser_style(&two_recursive, &analyzed.lowered).err().as_deref(),
-        Some("named parser rendering not implemented yet: only the default parser renders"),
-    );
+    // A table-driven default parser reports the same conflict, unless the explorer generation
+    // feature makes every eligible node an explorer root, in which case the default parser is
+    // refused first: the explorer adapter drives the recursive-descent impl.
+    let (_package, analyzed, plan) =
+        joined_pratt_plan_with_setting("parser_style = table_driven,");
+    let detail = render_by_parser_style(&plan, &analyzed.lowered)
+        .err()
+        .expect("a table-driven default parser does not render the Pratt fixture");
+    if cfg!(feature = "explorer") {
+        assert!(detail.starts_with("the explorer and framing capabilities drive the default parser"), "{detail}");
+    } else {
+        assert!(is_the_escape_conflict(&detail), "{detail}");
+    }
 
     let (_package, analyzed, recursive) = joined_pratt_plan_with_setting("");
-    render_by_parser_style(&recursive, &analyzed.lowered)
+    let default_rendering = render_by_parser_style(&recursive, &analyzed.lowered)
         .expect("the default parser style renders as before");
+
+    // One named recursive-descent parser renders the implicit default's files: the name is a
+    // generation-identity fact and nothing else.
+    let (_package, analyzed, only_named) =
+        joined_pratt_plan_with_setting("parsers(rd = recursive_descent),");
+    assert_ne!(only_named.identity, recursive.identity);
+    let named_rendering = render_by_parser_style(&only_named, &analyzed.lowered)
+        .expect("one named recursive-descent parser renders");
+    let normalize = |text: &str, identity: &str| text.replace(identity, "IDENTITY");
+    assert_eq!(
+        normalize(&named_rendering.root, &only_named.identity),
+        normalize(&default_rendering.root, &recursive.identity)
+    );
+    assert_eq!(
+        named_rendering
+            .nodes
+            .iter()
+            .map(|(name, text)| (name.clone(), normalize(text, &only_named.identity)))
+            .collect::<Vec<_>>(),
+        default_rendering
+            .nodes
+            .iter()
+            .map(|(name, text)| (name.clone(), normalize(text, &recursive.identity)))
+            .collect::<Vec<_>>()
+    );
 }

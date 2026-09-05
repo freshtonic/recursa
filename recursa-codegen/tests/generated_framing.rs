@@ -39,6 +39,38 @@ fn generated_framing_partitions_mixed_source_and_rejects_the_first_failing_islan
 }
 
 #[test]
+fn framing_drives_the_default_parser_beside_a_table_driven_parser() {
+    // Named parsers (#119): framing and the explorer adapter bind to the default parser, so
+    // the framing fixture, whose driver also parses through `Entry::explorer()`, generates and
+    // partitions as before when a table-driven `lr` parser is declared beside the
+    // recursive-descent default.
+    let package = scaffold_fixture();
+    let grammar = package.path.join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read framing grammar");
+    assert_eq!(source.matches("    max_lookahead = 2,\n").count(), 1);
+    fs::write(
+        &grammar,
+        source.replace(
+            "    max_lookahead = 2,\n",
+            "    max_lookahead = 2,\n    parsers(rd = recursive_descent, lr = table_driven),\n",
+        ),
+    )
+    .expect("declare a second parser");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "framing fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "framing-ok"
+    );
+}
+
+#[test]
 fn framing_references_follow_normal_import_alias_resolution() {
     let package = scaffold_fixture();
     let grammar = package.path.join("src/grammar.rs");

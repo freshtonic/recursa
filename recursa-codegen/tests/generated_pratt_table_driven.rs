@@ -1,8 +1,8 @@
-//! End-to-end proof of Pratt lowering to precedence (#115): a Pratt grammar generates and runs
-//! under `parser_style = table_driven`, and everything its consumer observes equals what the
-//! recursive-descent twin of the same grammar produces. Two grammars: the table-driven Pratt
-//! fixture (the textbook expression grammar with an exclusion site) and the
-//! `examples/pratt-expressions` grammar, rewritten to the table-driven style at test time.
+//! End-to-end proof of Pratt lowering to precedence (#115): a Pratt grammar generates once with
+//! `parsers(rd = recursive_descent, lr = table_driven)` (#119) and everything the `lr` parser's
+//! consumer observes equals what the `rd` parser of the same generation produces. Two grammars:
+//! the table-driven Pratt fixture (the textbook expression grammar with an exclusion site) and
+//! the `examples/pratt-expressions` grammar, given both parsers at test time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,21 +12,22 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/table-driven-pratt";
 
-/// The line of a grammar the test flips to obtain the recursive-descent twin.
-const TABLE_DRIVEN: &str = "parser_style = table_driven,";
+/// The configuration both grammars carry: both parsers, the recursive-descent one as default.
+const NAMED_PARSERS: &str = "parsers(rd = recursive_descent, lr = table_driven),";
 
 #[test]
-fn the_pratt_fixture_parses_like_its_recursive_descent_twin_and_dumps_the_clone() {
+fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clone() {
     let package = scaffold(FIXTURE, None);
     let debug = tempfile::tempdir().unwrap();
 
-    let table_driven = run_fixture(&package, Some(debug.path()));
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("table-driven-pratt-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package, Some(debug.path()));
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("table-driven-pratt-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
     assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(!root.contains("RecursiveDescent"), "a table-driven generation emits no recursive-descent parser");
+    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
 
     // Associativity and precedence through parsed values: `1 - 2 - 3` is `(1 - 2) - 3`,
     // `2 ^ 3 ^ 2` is `2 ^ (3 ^ 2)`, `-a!` is `-(a!)`, and the needle of `position` stops at
@@ -99,14 +100,8 @@ fn the_pratt_fixture_parses_like_its_recursive_descent_twin_and_dumps_the_clone(
     assert!(dump.contains("resolved by precedence (reduce)."), "{dump}");
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 
-    // The twin: the same grammar under recursive descent prints the same lines.
-    flip_to_recursive_descent(&package);
-    let recursive = run_fixture(&package, None);
-    assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
-    let root = read_selected_root(&package);
-    assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
+    // The recursive-descent parser of the same generation prints the same lines.
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
 #[test]
@@ -118,17 +113,18 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
     assert_eq!(example.matches("    diagrams,\n").count(), 1);
     assert_eq!(example.matches("    derives(Visit),\n").count(), 1);
     let grammar = example
-        .replace("max_lookahead = 1,", "max_lookahead = 1,\n    parser_style = table_driven,")
+        .replace("max_lookahead = 1,", &format!("max_lookahead = 1,\n    {NAMED_PARSERS}"))
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace("#[derive(recursa::Node)]", "#[derive(recursa::Node, Debug)]");
     let package = scaffold(FIXTURE, Some(&grammar));
     fs::write(package.path().join("src/main.rs"), EXAMPLE_MAIN).unwrap();
 
-    let table_driven = run_fixture(&package, None);
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("example-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package, None);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("example-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     assert!(table_stdout.contains("ok \"1 + 2 + 3\" => Add(Add("), "{table_stdout}");
     assert!(table_stdout.contains("ok \"2 ^ 3 ^ 4\" => Power(Integer("), "{table_stdout}");
     assert!(table_stdout.contains("ok \"-name!\" => Negate(Factorial("), "{table_stdout}");
@@ -136,12 +132,7 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
     assert!(table_stdout.contains("lexical \"@\" => 1 error(s)"), "{table_stdout}");
     assert!(table_stdout.contains("err \"1 +\" => code=RCA4101"), "{table_stdout}");
     assert!(read_selected_root(&package).contains("__recursa_lr"));
-
-    flip_to_recursive_descent(&package);
-    let recursive = run_fixture(&package, None);
-    assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
 /// The driver of the example grammar: every input the example's tests and binary use, and a
@@ -151,79 +142,96 @@ const EXAMPLE_MAIN: &str = r#"//! Drives the example grammar and prints every pa
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_table_driven_pratt::grammar;
 
-fn main() {
-    for source in [
-        "1 + 2 + 3",
-        "-name!",
-        "(1 + 2) * 3",
-        "1 + 2 * 3",
-        "2 ^ 3 ^ 4",
-        "-a! + 2 * 3 ^ 4",
-        "2 * 3 + 4",
-        "-2 ^ 2",
-        "1 + -2",
-        "- - 1",
-        "a ! !",
-        "(a + b) ^ (c * d) !",
-        "@",
-        "1 +",
-        "1 2",
-        "",
-        "(1 + 2",
-        "* 1",
-    ] {
-        let lexed = grammar::lex(source);
-        let lexical = lexed.errors().count();
-        if lexical > 0 {
-            println!("lexical {source:?} => {lexical} error(s)");
-            continue;
-        }
-        let mut input = lexed.input();
-        match grammar::Expr::parse(&mut input) {
-            Ok(parsed) => {
-                println!(
-                    "ok {source:?} => {:?} cursor={} eof={}",
-                    parsed.into_ast(),
-                    input.cursor(),
-                    input.is_eof()
-                );
-                provenance(source);
+/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
+/// builds that parser's input over a lexing result. The test compares the lines of the two
+/// parsers of the one generation.
+macro_rules! drive {
+    ($tag:expr, $input:expr) => {{
+        let tag: &str = $tag;
+        // Prints the provenance of one positive input parsed with capture requested: the
+        // occurrence tree, the root's elements and the Pretty rendering. The comparison
+        // requires all three to be identical between the parsers.
+        let provenance = |source: &str| {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::Expr::parse_spanned(&mut input).expect("positive input parses with capture");
+            println!("{tag} prov {source:?} => {}", parsed.debug_provenance());
+            let elements: Vec<String> = parsed
+                .root()
+                .span_elements()
+                .map(|element| {
+                    format!(
+                        "{}:{:?}@{}",
+                        element.name().unwrap_or("?"),
+                        element.role(),
+                        element.span().map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+                    )
+                })
+                .collect();
+            println!("{tag} elements {source:?} => [{}]", elements.join(" "));
+            println!("{tag} pretty {source:?} => {:?}", parsed.render());
+        };
+        for source in [
+            "1 + 2 + 3",
+            "-name!",
+            "(1 + 2) * 3",
+            "1 + 2 * 3",
+            "2 ^ 3 ^ 4",
+            "-a! + 2 * 3 ^ 4",
+            "2 * 3 + 4",
+            "-2 ^ 2",
+            "1 + -2",
+            "- - 1",
+            "a ! !",
+            "(a + b) ^ (c * d) !",
+            "@",
+            "1 +",
+            "1 2",
+            "",
+            "(1 + 2",
+            "* 1",
+        ] {
+            let lexed = grammar::lex(source);
+            let lexical = lexed.errors().count();
+            if lexical > 0 {
+                println!("{tag} lexical {source:?} => {lexical} error(s)");
+                continue;
             }
-            Err(error) => println!(
-                "err {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
-                error.code(),
-                error.kind(),
-                error.span(),
-                error.found(),
-                input.cursor()
-            ),
+            let mut input = $input(&lexed);
+            match grammar::Expr::parse(&mut input) {
+                Ok(parsed) => {
+                    println!(
+                        "{tag} ok {source:?} => {:?} cursor={} eof={}",
+                        parsed.into_ast(),
+                        input.cursor(),
+                        input.is_eof()
+                    );
+                    provenance(source);
+                }
+                Err(error) => println!(
+                    "{tag} err {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
+                    error.code(),
+                    error.kind(),
+                    error.span(),
+                    error.found(),
+                    input.cursor()
+                ),
+            }
         }
-    }
+    }};
+}
+
+/// The default parser's input.
+fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+    lexed.input()
+}
+
+fn main() {
+    drive!("rd", rd_input);
+    drive!("lr", grammar::parsers::lr::input);
     println!("example-ok");
 }
 
-/// Prints the provenance of one positive input parsed with capture requested: the occurrence
-/// tree, the root's elements and the Pretty rendering, all compared between the styles.
-fn provenance(source: &str) {
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let parsed = grammar::Expr::parse_spanned(&mut input).expect("positive input parses with capture");
-    println!("prov {source:?} => {}", parsed.debug_provenance());
-    let elements: Vec<String> = parsed
-        .root()
-        .span_elements()
-        .map(|element| {
-            format!(
-                "{}:{:?}@{}",
-                element.name().unwrap_or("?"),
-                element.role(),
-                element.span().map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
-            )
-        })
-        .collect();
-    println!("elements {source:?} => [{}]", elements.join(" "));
-    println!("pretty {source:?} => {:?}", parsed.render());
-}
 "#;
 
 /// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.
@@ -253,13 +261,21 @@ fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     package
 }
 
-/// Rewrites the package's grammar from the table-driven style to recursive descent.
-fn flip_to_recursive_descent(package: &TempDir) {
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
-    fs::write(&grammar, source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,"))
-        .expect("flip the fixture to recursive descent");
+/// Splits the fixture's output into the lines of the two parsers, each without its tag and
+/// terminated by a newline so that the assertions can match whole lines.
+fn split_by_parser(stdout: &str) -> (String, String) {
+    let mut rd = String::new();
+    let mut lr = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("rd ") {
+            rd.push_str(rest);
+            rd.push('\n');
+        } else if let Some(rest) = line.strip_prefix("lr ") {
+            lr.push_str(rest);
+            lr.push('\n');
+        }
+    }
+    (rd, lr)
 }
 
 fn read_selected_root(package: &TempDir) -> String {

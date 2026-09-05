@@ -1,8 +1,9 @@
-//! End-to-end proof of the table-driven tracer (#113): the fixture grammar generates and runs
-//! under `parser_style = table_driven`, and everything its consumer observes equals what the
-//! recursive-descent twin of the same grammar produces. Error parity (#117) is checked line by
-//! line: the failing token, span, kind and restored cursor must be equal, and the table-driven
-//! expected set must contain recursive descent's, with the one principled difference pinned in
+//! End-to-end proof of the table-driven tracer (#113): the fixture grammar generates once with
+//! `parsers(rd = recursive_descent, lr = table_driven)` (#119), the fixture drives every input
+//! through both parsers in one binary, and everything the `lr` consumer observes equals what
+//! the `rd` parser produces. Error parity (#117) is checked line by line: the failing token,
+//! span, kind and restored cursor must be equal, and the table-driven expected set must contain
+//! recursive descent's, with the one principled difference pinned in
 //! [`EXPECTED_SET_DIFFERENCES`].
 
 use std::fs;
@@ -13,24 +14,25 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/table-driven";
 
-/// The line of the fixture grammar the test flips to obtain the recursive-descent twin.
-const TABLE_DRIVEN: &str = "parser_style = table_driven,";
-
 #[test]
-fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
+fn the_table_driven_parser_parses_like_the_recursive_descent_parser_of_the_same_generation() {
     let package = scaffold_fixture();
 
-    let table_driven = run_fixture(&package);
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("table-driven-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("table-driven-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
 
-    // The generated root is the table-driven shape: tables, a dispatcher, the marker.
+    // One generation carries both parsers: the recursive-descent default on the root input,
+    // the table-driven tables, dispatcher and marker under `parsers::lr`.
     let root = read_selected_root(&package);
+    assert!(root.contains("RecursiveDescent"), "the default parser is recursive descent");
+    assert!(root.contains("pub mod parsers"), "root declares the extra parsers");
+    assert!(root.contains("pub mod lr"), "root declares the lr parser");
     assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(root.contains("TableDriven"), "the grammar input names the table-driven marker");
+    assert!(root.contains("TableDriven"), "the lr input names the table-driven marker");
     assert!(root.contains("__recursa_reduce"), "root carries the reduce dispatcher");
-    assert!(!root.contains("RecursiveDescent"), "a table-driven generation emits no recursive-descent parser");
 
     // Positive inputs parse to equal values and leave the cursor at the end.
     assert!(
@@ -66,18 +68,8 @@ fn the_table_driven_fixture_parses_like_its_recursive_descent_twin() {
     assert!(table_stdout.contains("err \"let x = !!!!!!!!(1);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 16, end: 17 } found=Some(\"fixed:(\") cursor=0 leaked=0 expected=[\"fixed:true\", \"fixed:false\", \"fixed:!\", \"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\", \"content:\\\"[0-9]+\\\":priority=None\"]\n"), "{table_stdout}");
     assert!(table_stdout.contains("err \"let x = 1 print(2);\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 15 } found=Some(\"fixed:print\") cursor=0 leaked=0 expected=[\"fixed:;\", \"fixed:+\"]\n"), "{table_stdout}");
 
-    // The twin: the same grammar under recursive descent prints the same lines.
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
-    fs::write(&grammar, source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,"))
-        .expect("flip the fixture to recursive descent");
-    let recursive = run_fixture(&package);
-    assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
+    // The recursive-descent parser of the same generation prints the same lines.
     assert_twins_agree(&table_stdout, &recursive_stdout);
-    let root = read_selected_root(&package);
-    assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
 }
 
 #[test]
@@ -214,6 +206,23 @@ fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// Splits the fixture's output into the lines of the two parsers, each without its tag and
+/// terminated by a newline so that the assertions can match whole lines.
+fn split_by_parser(stdout: &str) -> (String, String) {
+    let mut rd = String::new();
+    let mut lr = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("rd ") {
+            rd.push_str(rest);
+            rd.push('\n');
+        } else if let Some(rest) = line.strip_prefix("lr ") {
+            lr.push_str(rest);
+            lr.push('\n');
+        }
+    }
+    (rd, lr)
 }
 
 fn assert_success(output: &Output) {
