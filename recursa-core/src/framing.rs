@@ -475,9 +475,15 @@ where
     let mut byte = 0_usize;
     let mut drafts = Vec::new();
 
+    // One lex per segment, not one per island. Every candidate window below begins and
+    // ends on a record boundary of this lex, so slicing its records is equivalent to
+    // lexing the window and costs nothing per island. Only a payload region, whose
+    // interior the grammar does not tokenize, can change how the text after it lexes, so
+    // only a payload forces a fresh lex.
+    let mut segment = lex_rebased(source, 0, lex)?;
+
     while byte < source.len() {
-        let lexed = lex_rebased(source, byte, lex)?;
-        let records = lexed.records();
+        let records = remaining_records(segment.records(), byte);
         let Some(first) = records.first().copied() else {
             drafts.push(DraftPart::Gap(checked_span(source, byte, source.len())?));
             break;
@@ -505,35 +511,46 @@ where
         }
 
         let island_start = byte;
-        let boundaries = records
+        // Candidate boundaries are visited lazily. The first one that completes a strict
+        // island wins, so the common case reads one boundary rather than every boundary
+        // left in the document.
+        let mut strict_match = None;
+        for boundary in records
             .iter()
             .copied()
             .filter(|record| record.kind == plan.boundary_kind)
-            .collect::<Vec<_>>();
-        let mut strict_match = None;
-        for boundary in &boundaries {
+        {
             let mut input = island_input(
                 source,
                 checked_span(source, island_start, boundary.span.end() as usize)?,
-                lex,
+                &segment,
                 plan,
             )?;
             if let Ok(parsed) =
                 parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow)
-                && input.peek(0).is_some_and(|record| record == *boundary)
+                && input.peek(0).is_some_and(|record| record == boundary)
             {
-                strict_match = Some((parsed, *boundary));
+                strict_match = Some((parsed, boundary));
                 break;
             }
         }
         let Some((parsed, boundary)) = strict_match else {
+            // This arm ends the document: it either publishes a final island without a
+            // trailing boundary or rejects. Naming the rejected extent needs the
+            // candidate boundaries, so they are collected here, once, rather than once
+            // per island on the path that succeeds.
+            let boundaries = records
+                .iter()
+                .copied()
+                .filter(|record| record.kind == plan.boundary_kind)
+                .collect::<Vec<_>>();
             // No candidate boundary completes a strict island. The strict attempt
             // over the whole remaining source names the exact failure, or proves a
             // complete final island without a trailing boundary.
             let mut input = island_input(
                 source,
                 checked_span(source, island_start, source.len())?,
-                lex,
+                &segment,
                 plan,
             )?;
             match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
@@ -588,7 +605,7 @@ where
                         source,
                         island_start,
                         failure_span.start() as usize,
-                        lex,
+                        &segment,
                         plan,
                     )?
                     .then(|| FrameDiagnostic {
@@ -649,6 +666,10 @@ where
                 terminator,
             });
             byte = end;
+            // The grammar does not tokenize payload interiors, so an unbalanced quote,
+            // dollar tag or comment opener inside one would change how everything after
+            // it lexes. Restart the lex after the payload, as a per-island lex did.
+            segment = lex_rebased(source, byte, lex)?;
         }
     }
 
@@ -667,7 +688,7 @@ fn prefix_is_complete_island<'input, T>(
     source: &'input str,
     island_start: usize,
     prefix_end: usize,
-    lex: LexFn,
+    segment: &LexResult<'input>,
     plan: &'static PlanData,
 ) -> Result<bool, FrameError<'input>>
 where
@@ -679,7 +700,7 @@ where
     let mut input = island_input(
         source,
         checked_span(source, island_start, prefix_end)?,
-        lex,
+        segment,
         plan,
     )?;
     Ok(
@@ -731,16 +752,25 @@ fn complete_from_drafts<'input, T>(
     }
 }
 
-/// Projects one already-lexed suffix into an exact absolute island window.
+/// Projects one already-lexed segment into an exact absolute island window.
+///
+/// Both ends of `bounds` fall on record boundaries of `segment`, so the window's records
+/// are exactly what lexing that window would produce, and only they are copied.
 fn island_input<'input>(
     source: &'input str,
     bounds: Span,
-    lex: LexFn,
+    segment: &LexResult<'input>,
     plan: &PlanData,
 ) -> Result<Input<'input>, FrameError<'input>> {
-    lex_window(source, bounds, lex)?
-        .input_bounded(plan.grammar, bounds)
+    segment
+        .input_window(plan.grammar, bounds)
         .ok_or_else(|| fatal(source, bounds, "framing input window is invalid"))
+}
+
+/// Returns the records of one segment that begin at or after an absolute byte position.
+fn remaining_records(records: &[TokenRecord], byte: usize) -> &[TokenRecord] {
+    let start = records.partition_point(|record| (record.span.start() as usize) < byte);
+    records.get(start..).unwrap_or(&[])
 }
 
 /// Returns the end of the last consumed record without absorbing the following gap.
