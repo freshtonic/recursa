@@ -4,9 +4,10 @@
 //!
 //! The construction is the one bison uses: LR(0) states from every start rule, then lookaheads
 //! by DeRemer and Pennello's `reads`, `includes` and `lookback` relations over the digraph
-//! algorithm. Conflicts are resolved through a [`ConflictResolver`] seam so that ticket #115 can
-//! plug in binding-power precedence; without a resolution a shift/reduce conflict keeps the shift
-//! and a reduce/reduce conflict keeps the lowest rule, as bison does, and both are reported.
+//! algorithm. Shift/reduce conflicts go through a [`ConflictResolver`] seam, which binding-power
+//! precedence implements; a resolved conflict is recorded, not reported. Without a resolution a
+//! shift/reduce conflict keeps the shift and a reduce/reduce conflict keeps the lowest rule, as
+//! bison does, and both are reported.
 //!
 //! Prefix acceptance shapes two details. The synthetic start rule `S'(T) -> T` has the end marker
 //! as its only lookahead, and the end marker means "no other action applies" at runtime; the

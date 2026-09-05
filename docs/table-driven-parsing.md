@@ -111,11 +111,35 @@ powers to rule precedence and associativity: the level is `lbp`,
 `rbp = lbp + 1` is left-associative, `rbp = lbp` or `lbp - 1` is
 right-associative, prefix and postfix use `bp` as the rule's precedence,
 and interleaved shapes (`BETWEEN a AND b`) become one rule with an
-explicit precedence. A combination with no precedence equivalent is a
-hard error naming the variant. `#[parse(pratt(exclude(...)))]` on a field
+explicit precedence. Precedence decides where a bare last operand
+stops. Every other operand (the middle of `BETWEEN a AND b`, the inside
+of `a[b]`, anything behind a fixed-token attachment such as pg-sql's
+`#[tok(BETWEEN, this)] Box<Self>`) is parsed by the Pratt loop with a
+minimum binding power, and lowers to the clone of that minimum,
+`Expr[min 8]`: the type minus every LED rule below the minimum, its own
+operands unrestricted. A fixed-token attachment around an operand also
+inherits its variant's precedence, so its own reduce against the next
+operator is decided as the variant's would be. A combination with no
+precedence equivalent is a hard error naming the variant (`RCA0402`): an
+infix `rbp` other than `lbp + 1`, `lbp` or `lbp - 1`, or an `rbp = lbp -
+1` beside an operator at that level. A token's precedence is read off the
+rules rather than declared: the level of the infix or postfix operator it
+introduces in the reducing rule's nonterminal. A token that introduces
+several operators at different levels (pg-sql's `/` starts both `a / b`
+and `a / ANY (...)`, which recursive descent tells apart with a second
+token) settles a conflict only when every level gives the same verdict;
+otherwise the conflict stands, because no one-token decision reproduces
+the Pratt parse. `#[parse(pratt(exclude(...)))]` on a field
 names a distinct language, so the lowering clones the expression
-nonterminal once per distinct exclusion set, the way gram.y has `a_expr`
-and `b_expr`. The Pratt loop, `select_pratt` and `RCA4102` do not exist
+nonterminal once per distinct exclusion set (`Expr[excl In]`, or
+`Expr[excl In, min 8]` with a minimum), the way gram.y has `a_expr`
+and `b_expr`; inside the clone the prefix, infix and postfix operands
+carry the exclusion (through a cloned fixed-token attachment when one
+wraps them) and an atom's operands keep the full language, as
+`b_expr: '(' a_expr ')'` does. A resolved conflict is recorded in the
+automaton dump (`Conflict between rule N and token T resolved by
+precedence (shift)`), as in bison's `.output`, and is not a conflict.
+The Pratt loop, `select_pratt` and `RCA4102` do not exist
 in table mode; what they guarded is a shift/reduce conflict that
 precedence resolves. Facts: pg-sql has one `#[pratt]` enum, `Expr`, with
 116 variants; every infix variant has `rbp = lbp + 1`; exactly one

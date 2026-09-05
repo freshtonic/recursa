@@ -112,8 +112,8 @@ fn arith_pratt_variants_lower_to_plain_rules_with_recorded_binding_powers() {
         .collect();
     assert_eq!(value_pops, [1, 1, 1, 1, 2, 2, 2, 2]);
 
-    // Without precedence the naive lowering is ambiguous exactly where ticket #115 resolves it:
-    // every conflict is a shift/reduce between an infix reduce and an operator shift.
+    // Without precedence the naive lowering is ambiguous exactly where binding-power precedence
+    // resolves it: every conflict is a shift/reduce between an infix reduce and an operator shift.
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
     assert!(!automaton.conflicts().is_empty());
     for conflict in automaton.conflicts() {
@@ -370,6 +370,8 @@ fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Au
             "^" => "CARET",
             "!" => "BANG",
             "in" => "IN",
+            "between" => "BETWEEN",
+            "and" => "AND",
             "position" => "POSITION",
             "(" => "LPAREN",
             ")" => "RPAREN",
@@ -448,6 +450,29 @@ fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixt
         expr_reductions(&lowered, &grammar, &automaton, "1 + 2 in 3"),
         [integer, integer, add, integer, membership]
     );
+    // An interleaved shape: each operand is the clone of its minimum binding power, so it
+    // binds `+` and `*` (above 8) and stops at `and` and `in` (below 8), as `parse_bp(8)` does.
+    let min_integer = "grammar::Expr[min 8] -> grammar::Integer";
+    let min_add = "grammar::Expr[min 8] -> grammar::Expr[min 8] PLUS grammar::Expr";
+    let min_multiply = "grammar::Expr[min 8] -> grammar::Expr[min 8] STAR grammar::Expr";
+    let between_head = "grammar::Expr::__recursa_attachment#22 -> BETWEEN grammar::Expr[min 8]";
+    let between_tail = "grammar::Expr::__recursa_attachment#23 -> AND grammar::Expr[min 8]";
+    let between = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#22 grammar::Expr::__recursa_attachment#23";
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "1 between 2 + 3 and 4 * 5 in 6"),
+        [
+            integer, min_integer, integer, min_add, between_head, min_integer, integer,
+            min_multiply, between_tail, between, integer, membership
+        ]
+    );
+    for attachment in ["grammar::Expr::__recursa_attachment#22", "grammar::Expr::__recursa_attachment#23"] {
+        let attachment = grammar.nonterminal_by_name(attachment).expect("a between attachment");
+        let precedence = grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited");
+        assert_eq!(
+            (precedence.level, precedence.owner),
+            (8, grammar.nonterminal_by_name("grammar::Expr").unwrap())
+        );
+    }
 }
 
 #[test]
@@ -466,9 +491,10 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         .expect("the needle's exclusion set clones Expr");
     assert_eq!(
         grammar.nonterminal(clone).origin,
-        NonterminalOrigin::Exclusion {
+        NonterminalOrigin::Restriction {
             type_id: expr,
             excluded: vec![excluded],
+            min_bp: 0,
         }
     );
     assert!(grammar.nonterminal(clone).carries_value);
@@ -478,8 +504,9 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         .map(|rule| grammar.render_rule(*rule))
         .collect();
     // Atoms keep the full language (the parenthesised operand stays the original attachment,
-    // as gram.y's `b_expr: '(' a_expr ')'`), prefix and infix operands carry the exclusion,
-    // and the excluded `In` rule is gone.
+    // as gram.y's `b_expr: '(' a_expr ')'`), prefix and infix operands carry the exclusion, the
+    // interleaved operands carry it through cloned attachments, and the excluded `In` rule is
+    // gone.
     assert_eq!(
         rules,
         [
@@ -489,6 +516,9 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             "grammar::Expr[excl In] -> grammar::Expr::__recursa_attachment",
             "grammar::Expr[excl In] -> MINUS grammar::Expr[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] BANG",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] grammar::Expr::__recursa_attachment#22[excl In] grammar::Expr::__recursa_attachment#23[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] FROM grammar::Expr[excl In, min 7] FOR grammar::Expr[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] grammar::Expr::__recursa_attachment#24[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] CARET grammar::Expr[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] STAR grammar::Expr[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]",
@@ -528,9 +558,60 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             .iter()
             .filter(|nonterminal| nonterminal.name.contains("[excl"))
             .count(),
-        1,
-        "one exclusion set, one clone"
+        7,
+        "one exclusion set: one clone of Expr, one of each attachment around an operand (between's \
+         two, index's one), and one clone per operand minimum inside the exclusion (8, 7, 50)"
     );
+    assert_eq!(
+        grammar
+            .nonterminals()
+            .iter()
+            .filter(|nonterminal| nonterminal.name.starts_with("grammar::Expr["))
+            .map(|nonterminal| nonterminal.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "grammar::Expr[excl In]",
+            "grammar::Expr[min 7]",
+            "grammar::Expr[min 8]",
+            "grammar::Expr[min 50]",
+            "grammar::Expr[excl In, min 8]",
+            "grammar::Expr[excl In, min 7]",
+            "grammar::Expr[excl In, min 50]",
+        ],
+        "clones in creation order: the needle's exclusion (Position lowers before Expr), then \
+         the bare, attached and delimited operand minima, then the same minima inside the \
+         exclusion clone"
+    );
+    assert_eq!(
+        grammar
+            .rules_of(grammar.nonterminal_by_name("grammar::Expr[excl In, min 50]").unwrap())
+            .iter()
+            .map(|rule| grammar.render_rule(*rule))
+            .collect::<Vec<_>>(),
+        [
+            "grammar::Expr[excl In, min 50] -> grammar::Integer",
+            "grammar::Expr[excl In, min 50] -> grammar::Name",
+            "grammar::Expr[excl In, min 50] -> grammar::Position",
+            "grammar::Expr[excl In, min 50] -> grammar::Expr::__recursa_attachment",
+            "grammar::Expr[excl In, min 50] -> MINUS grammar::Expr[excl In]",
+            "grammar::Expr[excl In, min 50] -> grammar::Expr[excl In, min 50] BANG",
+            "grammar::Expr[excl In, min 50] -> grammar::Expr[excl In, min 50] grammar::Expr::__recursa_attachment#24[excl In]",
+        ],
+        "a minimum of 50 keeps the atoms, the prefix and the two postfix operators at 50"
+    );
+    for (attachment, rule) in [
+        ("grammar::Expr::__recursa_attachment#22[excl In]", "grammar::Expr::__recursa_attachment#22[excl In] -> BETWEEN grammar::Expr[excl In, min 8]"),
+        ("grammar::Expr::__recursa_attachment#23[excl In]", "grammar::Expr::__recursa_attachment#23[excl In] -> AND grammar::Expr[excl In, min 8]"),
+    ] {
+        let attachment = grammar
+            .nonterminal_by_name(attachment)
+            .expect("the attachment around a between operand is cloned under the exclusion");
+        assert_eq!(grammar.render_rule(grammar.rules_of(attachment)[0]), rule);
+        assert!(grammar.nonterminal(attachment).carries_value);
+        // The cloned attachment carries the variant's precedence, owned by the clone.
+        let precedence = grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited");
+        assert_eq!((precedence.level, precedence.owner), (8, clone));
+    }
 
     let precedence = BindingPowerPrecedence::new(&grammar).expect("the clone keeps the levels");
     let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
