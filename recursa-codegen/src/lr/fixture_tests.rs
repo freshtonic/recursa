@@ -4,7 +4,8 @@ use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
 use super::grammar::{
-    Associativity, LrGrammar, NonterminalOrigin, RuleAction, Symbol, TerminalId,
+    Associativity, ElementValue, LrGrammar, NonterminalOrigin, OptionalContent, RuleAction, Symbol,
+    TerminalId,
 };
 use super::lowering::{TypeRoles, lower};
 use super::precedence::BindingPowerPrecedence;
@@ -23,6 +24,25 @@ fn lowered_tree(manifest_dir: &Path, root: &str) -> LoweredGrammar {
     .unwrap_or_else(|error| panic!("{} failed source analysis:\n{error}", manifest_dir.display()))
     .analyzed
     .lowered
+}
+
+/// Runs source analysis over the container grammar of the table-driven generation fixture.
+fn lowered_containers() -> LoweredGrammar {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/generation/table-driven-containers");
+    lowered_tree(&fixture, "src/grammar.rs")
+}
+
+/// Renders every rule of one nonterminal as `lhs -> rhs`.
+fn rules_of(grammar: &LrGrammar, name: &str) -> Vec<String> {
+    let id = grammar
+        .nonterminal_by_name(name)
+        .unwrap_or_else(|| panic!("no nonterminal named {name}"));
+    grammar
+        .rules_of(id)
+        .iter()
+        .map(|rule| grammar.render_rule(*rule))
+        .collect()
 }
 
 /// Runs source analysis over one fixture under `tests/fixtures/source-analysis`.
@@ -196,7 +216,11 @@ fn sql_fixture_inlines_fixed_tokens_and_parses_from_every_start_state() {
 
 #[test]
 fn json_fixture_lowers_separated_lists_to_left_recursive_helpers() {
-    let (_, grammar) = lr_fixture("json");
+    let (lowered, grammar) = lr_fixture("json");
+    let member = ElementValue {
+        type_id: type_named(&lowered, "json::Member"),
+        boxes: 0,
+    };
     let object = grammar.nonterminal_by_name("json::Object").expect("the object node");
     let rules: Vec<String> = grammar
         .rules_of(object)
@@ -219,11 +243,15 @@ fn json_fixture_lowers_separated_lists_to_left_recursive_helpers() {
     assert_eq!(
         list_rules,
         [
-            ("list(json::Member, sep=COMMA) -> %empty".to_owned(), 0, RuleAction::ListEmpty),
+            (
+                "list(json::Member, sep=COMMA) -> %empty".to_owned(),
+                0,
+                RuleAction::ListEmpty { element: member }
+            ),
             (
                 "list(json::Member, sep=COMMA) -> list1(json::Member, sep=COMMA)".to_owned(),
                 1,
-                RuleAction::ListPass
+                RuleAction::ListFromNonEmpty { element: member }
             ),
         ]
     );
@@ -540,7 +568,7 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         .map(|rule| {
             let rule = grammar.rule(*rule);
             assert!(
-                matches!(rule.action, RuleAction::Construct { type_id, variant: Some(_) } if type_id == expr),
+                matches!(rule.action, RuleAction::Construct { type_id, variant: Some(_), .. } if type_id == expr),
                 "a clone rule builds the original type"
             );
             (rule.value_pops, rule.precedence.map(|p| (p.level, p.associativity)))
@@ -638,4 +666,363 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             "grammar::Expr -> grammar::Position",
         ]
     );
+}
+
+/// Lowers the container fixture grammar and builds its automaton.
+fn containers() -> (LoweredGrammar, LrGrammar, Automaton) {
+    let lowered = lowered_containers();
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the container fixture has no text predicates");
+    let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+    (lowered, grammar, automaton)
+}
+
+#[test]
+fn containers_fixture_builds_without_conflicts_and_deterministically() {
+    let (_, grammar, automaton) = containers();
+    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    let (_, again, again_automaton) = containers();
+    assert_eq!(format!("{grammar:?}"), format!("{again:?}"));
+    assert_eq!(automaton_dump(&grammar, &automaton), automaton_dump(&again, &again_automaton));
+}
+
+#[test]
+fn fixed_only_choices_are_inlined_as_terminals_and_valued_ones_by_admitted_first_kinds() {
+    let (_, grammar, _) = containers();
+    // `Let`: an erased group inlined as `ONE`, a presence envelope, and `Option<Box<Alias>>`
+    // inlined because `Alias` begins with `AS`, which `Name` admits.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Let"),
+        [
+            "grammar::Let -> LET grammar::Let::__recursa_presence_envelope grammar::Name EQ grammar::Value SEMI",
+            "grammar::Let -> LET grammar::Let::__recursa_presence_envelope grammar::Name EQ grammar::Value grammar::Alias SEMI",
+            "grammar::Let -> LET ONE grammar::Let::__recursa_presence_envelope grammar::Name EQ grammar::Value SEMI",
+            "grammar::Let -> LET ONE grammar::Let::__recursa_presence_envelope grammar::Name EQ grammar::Value grammar::Alias SEMI",
+        ]
+    );
+    let envelope = grammar
+        .nonterminal_by_name("grammar::Let::__recursa_presence_envelope")
+        .unwrap();
+    let envelope_rules: Vec<(String, RuleAction)> = grammar
+        .rules_of(envelope)
+        .iter()
+        .map(|rule| (grammar.render_rule(*rule), grammar.rule(*rule).action.clone()))
+        .collect();
+    let type_id = match envelope_rules[0].1 {
+        RuleAction::Envelope { type_id, .. } => type_id,
+        ref action => panic!("expected an envelope action, found {action:?}"),
+    };
+    assert_eq!(
+        envelope_rules,
+        [
+            (
+                "grammar::Let::__recursa_presence_envelope -> IF EXISTS".to_owned(),
+                RuleAction::Envelope { type_id, present: false }
+            ),
+            (
+                "grammar::Let::__recursa_presence_envelope -> IF NOT EXISTS".to_owned(),
+                RuleAction::Envelope { type_id, present: true }
+            ),
+        ]
+    );
+    // `Print`: a bare presence inlined; `Option<Guard>` delegated because `IF` is not admitted.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Print"),
+        [
+            "grammar::Print -> PRINT grammar::Value opt(grammar::Guard) SEMI",
+            "grammar::Print -> PRINT NOT grammar::Value opt(grammar::Guard) SEMI",
+        ]
+    );
+    assert_eq!(
+        rules_of(&grammar, "opt(grammar::Guard)"),
+        ["opt(grammar::Guard) -> %empty", "opt(grammar::Guard) -> grammar::Guard"]
+    );
+    // The gram.y `arg_class` shape: `Option<Mode>` inlined, so no epsilon reduce competes with
+    // the shift of `IN` or `OUT`, which `Callee` admits.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Param"),
+        ["grammar::Param -> grammar::Name", "grammar::Param -> grammar::Mode grammar::Name"]
+    );
+}
+
+#[test]
+fn lists_lower_to_a_left_recursive_core_with_inlined_or_delegated_emptiness_and_trailing() {
+    let (lowered, grammar, _) = containers();
+    let value = ElementValue {
+        type_id: type_named(&lowered, "grammar::Value"),
+        boxes: 0,
+    };
+    let core = grammar.nonterminal_by_name("list1(grammar::Value, sep=COMMA)").unwrap();
+    let core_rules: Vec<(String, u32, RuleAction)> = grammar
+        .rules_of(core)
+        .iter()
+        .map(|rule| {
+            (
+                grammar.render_rule(*rule),
+                grammar.rule(*rule).value_pops,
+                grammar.rule(*rule).action.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        core_rules,
+        [
+            (
+                "list1(grammar::Value, sep=COMMA) -> grammar::Value".to_owned(),
+                1,
+                RuleAction::ListFirst { element: value }
+            ),
+            (
+                "list1(grammar::Value, sep=COMMA) -> list1(grammar::Value, sep=COMMA) COMMA grammar::Value".to_owned(),
+                2,
+                RuleAction::ListPush { element: value }
+            ),
+        ]
+    );
+    // `Vec<Value>` with a trailing separator, inlined: absent, the core, the core and a comma.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Args"),
+        [
+            "grammar::Args -> LPAREN RPAREN",
+            "grammar::Args -> LPAREN list1(grammar::Value, sep=COMMA) RPAREN",
+            "grammar::Args -> LPAREN list1(grammar::Value, sep=COMMA) COMMA RPAREN",
+        ]
+    );
+    // `Option<Vec1<Value>>` inlined; `Vec<Box<Value>>` shares nothing with the unboxed core.
+    assert_eq!(
+        rules_of(&grammar, "grammar::List"),
+        [
+            "grammar::List -> LBRACKET RBRACKET",
+            "grammar::List -> LBRACKET list1(grammar::Value, sep=COMMA) RBRACKET",
+        ]
+    );
+    assert_eq!(
+        rules_of(&grammar, "grammar::Boxes"),
+        [
+            "grammar::Boxes -> BOXES SEMI",
+            "grammar::Boxes -> BOXES list1(Box<grammar::Value>, sep=COMMA) SEMI",
+        ]
+    );
+    let boxed_core = grammar.nonterminal_by_name("list1(Box<grammar::Value>, sep=COMMA)").unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(boxed_core)[0]).action,
+        RuleAction::ListFirst {
+            element: ElementValue {
+                type_id: value.type_id,
+                boxes: 1
+            }
+        }
+    );
+    // `Vec1<Name>` with a trailing separator and a presence, both inlined.
+    assert_eq!(
+        rules_of(&grammar, "grammar::With"),
+        [
+            "grammar::With -> WITH list1(grammar::Name, sep=PIPE) SEMI",
+            "grammar::With -> WITH list1(grammar::Name, sep=PIPE) PIPE SEMI",
+            "grammar::With -> WITH RECURSIVE list1(grammar::Name, sep=PIPE) SEMI",
+            "grammar::With -> WITH RECURSIVE list1(grammar::Name, sep=PIPE) PIPE SEMI",
+        ]
+    );
+    // `Vec<Statement>` without a separator, inlined because a statement can begin with a callee.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Block"),
+        ["grammar::Block -> LBRACE RBRACE", "grammar::Block -> LBRACE list1(grammar::Statement) RBRACE"]
+    );
+    // `Vec<Bang>` and `Option<Vec1<Bang>>` are delegated: `BANG` is no admitted keyword.
+    let bang = ElementValue {
+        type_id: type_named(&lowered, "grammar::Bang"),
+        boxes: 0,
+    };
+    assert_eq!(
+        rules_of(&grammar, "grammar::Marks"),
+        ["grammar::Marks -> MARKS list(grammar::Bang) COLON opt(list1(grammar::Bang)) SEMI"]
+    );
+    let list = grammar.nonterminal_by_name("list(grammar::Bang)").unwrap();
+    assert_eq!(
+        grammar
+            .rules_of(list)
+            .iter()
+            .map(|rule| grammar.rule(*rule).action.clone())
+            .collect::<Vec<_>>(),
+        [
+            RuleAction::ListEmpty { element: bang },
+            RuleAction::ListFromNonEmpty { element: bang },
+        ]
+    );
+    let optional_list = grammar.nonterminal_by_name("opt(list1(grammar::Bang))").unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(optional_list)[1]).action,
+        RuleAction::OptionalPresent {
+            content: OptionalContent::NonEmptyList {
+                element: bang,
+                boxes: 0
+            }
+        }
+    );
+}
+
+#[test]
+fn choices_past_the_inline_budget_are_demoted_to_helpers_from_the_right_valued_first() {
+    let (lowered, grammar, _) = containers();
+    // Six fixed-only choices: the two rightmost presences become `presence(...)` helpers and
+    // the sixteen remaining alternatives stay inlined.
+    let modifiers = rules_of(&grammar, "grammar::Modifiers");
+    assert_eq!(modifiers.len(), 16);
+    assert_eq!(
+        modifiers[0],
+        "grammar::Modifiers -> MODS presence(FIVE) presence(SIX) grammar::Name SEMI"
+    );
+    assert_eq!(
+        modifiers[15],
+        "grammar::Modifiers -> MODS ONE TWO THREE FOUR presence(FIVE) presence(SIX) grammar::Name SEMI"
+    );
+    assert_eq!(
+        rules_of(&grammar, "presence(SIX)"),
+        ["presence(SIX) -> %empty", "presence(SIX) -> SIX"]
+    );
+    let presence = grammar.nonterminal_by_name("presence(SIX)").unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(presence)[1]).action,
+        RuleAction::OptionalPresent {
+            content: OptionalContent::Presence
+        }
+    );
+    // Five erased groups: the rightmost becomes an erased `opt(FIVE)` helper without a value.
+    let erased = rules_of(&grammar, "grammar::Erased");
+    assert_eq!(erased.len(), 16);
+    assert_eq!(erased[0], "grammar::Erased -> ERASED opt(FIVE) grammar::Name SEMI");
+    let helper = grammar.nonterminal_by_name("opt(FIVE)").unwrap();
+    assert!(!grammar.nonterminal(helper).carries_value);
+    assert_eq!(
+        grammar.rule(grammar.rules_of(helper)[0]).action,
+        RuleAction::OptionalAbsent {
+            content: OptionalContent::Erased
+        }
+    );
+    // Five valued optionals of unit nodes: the rightmost becomes `opt(KwTemp)`.
+    let options = rules_of(&grammar, "grammar::Options");
+    assert_eq!(options.len(), 16);
+    assert_eq!(options[0], "grammar::Options -> OPTIONS opt(grammar::KwTemp) SEMI");
+    assert_eq!(
+        options[15],
+        "grammar::Options -> OPTIONS grammar::KwAs grammar::KwIn grammar::KwOut grammar::KwOnly opt(grammar::KwTemp) SEMI"
+    );
+    let temp = grammar.nonterminal_by_name("opt(grammar::KwTemp)").unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(temp)[1]).action,
+        RuleAction::OptionalPresent {
+            content: OptionalContent::Element(ElementValue {
+                type_id: type_named(&lowered, "grammar::KwTemp"),
+                boxes: 0
+            })
+        }
+    );
+    // Four erased groups and a trailing separator: the trailing choice becomes `list1t`.
+    let trail = rules_of(&grammar, "grammar::Trail");
+    assert_eq!(trail.len(), 16);
+    assert_eq!(trail[0], "grammar::Trail -> TRAIL list1t(grammar::Name, sep=COMMA) SEMI");
+    assert_eq!(
+        rules_of(&grammar, "list1t(grammar::Name, sep=COMMA)"),
+        [
+            "list1t(grammar::Name, sep=COMMA) -> list1(grammar::Name, sep=COMMA)",
+            "list1t(grammar::Name, sep=COMMA) -> list1(grammar::Name, sep=COMMA) COMMA",
+        ]
+    );
+}
+
+#[test]
+fn attachment_units_pass_their_semantic_value_through_and_inline_their_own_groups() {
+    let (lowered, grammar, _) = containers();
+    let value = type_named(&lowered, "grammar::Value");
+    // Per-element parentheses around a `Vec1<Value>`: the unit is the list element and its
+    // reduce is a pass-through, so the list element value is `Value`.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Tuple"),
+        ["grammar::Tuple -> list1(grammar::Tuple::__recursa_attachment, sep=PIPE)"]
+    );
+    let unit = grammar.nonterminal_by_name("grammar::Tuple::__recursa_attachment").unwrap();
+    assert_eq!(
+        grammar.render_rule(grammar.rules_of(unit)[0]),
+        "grammar::Tuple::__recursa_attachment -> LPAREN grammar::Value RPAREN"
+    );
+    assert!(matches!(
+        grammar.rule(grammar.rules_of(unit)[0]).action,
+        RuleAction::Attachment { .. }
+    ));
+    let core = grammar
+        .nonterminal_by_name("list1(grammar::Tuple::__recursa_attachment, sep=PIPE)")
+        .unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(core)[0]).action,
+        RuleAction::ListFirst {
+            element: ElementValue {
+                type_id: value,
+                boxes: 0
+            }
+        }
+    );
+    // `Option<Box<Value>>` behind `RETURNS`: the helper wraps the child's value, boxed once.
+    assert_eq!(
+        rules_of(&grammar, "opt(grammar::Define::__recursa_attachment)"),
+        [
+            "opt(grammar::Define::__recursa_attachment) -> %empty",
+            "opt(grammar::Define::__recursa_attachment) -> grammar::Define::__recursa_attachment",
+        ]
+    );
+    let returns = grammar
+        .nonterminal_by_name("opt(grammar::Define::__recursa_attachment)")
+        .unwrap();
+    assert_eq!(
+        grammar.rule(grammar.rules_of(returns)[1]).action,
+        RuleAction::OptionalPresent {
+            content: OptionalContent::Element(ElementValue {
+                type_id: value,
+                boxes: 1
+            })
+        }
+    );
+    // An erased group inside the attachment is inlined into the unit's own alternatives.
+    assert_eq!(
+        rules_of(&grammar, "grammar::Filter::__recursa_attachment"),
+        [
+            "grammar::Filter::__recursa_attachment -> COLON grammar::Value",
+            "grammar::Filter::__recursa_attachment -> COLON NOT grammar::Value",
+        ]
+    );
+}
+
+#[test]
+fn site_forms_map_every_element_to_its_symbols() {
+    let (_, grammar, _) = containers();
+    let let_rules = grammar.rules_of(grammar.nonterminal_by_name("grammar::Let").unwrap());
+    // `LET ONE envelope Name EQ Value Alias SEMI`: eight elements, the erased group and the
+    // alias present and inlined, everything else required.
+    let RuleAction::Construct { sites, .. } = &grammar.rule(let_rules[3]).action else {
+        panic!("a node rule constructs");
+    };
+    let forms: Vec<(u32, u32, bool, bool)> = sites
+        .iter()
+        .map(|form| (form.start, form.len, form.present, form.inlined))
+        .collect();
+    assert_eq!(
+        forms,
+        [
+            (0, 1, true, false),
+            (1, 1, true, true),
+            (2, 1, true, false),
+            (3, 1, true, false),
+            (4, 1, true, false),
+            (5, 1, true, false),
+            (6, 1, true, true),
+            (7, 1, true, false),
+        ]
+    );
+    // The first alternative has both choices absent: zero-length forms at the same offset.
+    let RuleAction::Construct { sites, .. } = &grammar.rule(let_rules[0]).action else {
+        panic!("a node rule constructs");
+    };
+    assert_eq!((sites[1].len, sites[1].present, sites[1].inlined), (0, false, true));
+    assert_eq!((sites[6].start, sites[6].len, sites[6].present), (5, 0, false));
+    assert_eq!(grammar.rule(let_rules[0]).value_pops, 3);
+    assert_eq!(grammar.rule(let_rules[3]).value_pops, 4);
 }

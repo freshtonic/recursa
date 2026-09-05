@@ -256,6 +256,7 @@ fn position_name(
         RuleAction::Construct {
             type_id,
             variant: Some(variant),
+            ..
         } => format!(
             "node `{}`, variant `{}`",
             description.types[type_id.index()].name,

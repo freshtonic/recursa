@@ -186,6 +186,29 @@ one nonterminal with one rule per member kind, gram.y's
 has a real alternative; each is listed because it is a place where the
 two styles could silently disagree.
 
+**Where a nullable nonterminal lives (#114).** A nullable helper carries an
+epsilon reduce that LALR(1) must take before the token that decides the
+choice. When that token is a keyword an admission set also accepts as
+content, the epsilon reduce competes with the shift of the same keyword;
+the first pg-sql construction showed 2,970 such shift/reduce conflicts on
+`opt(...)` helpers and 421 reduce/reduce conflicts between the shared
+erased groups of `ALTER [COLUMN] ... SET DEFAULT` and `DROP DEFAULT`.
+gram.y avoids both by writing the alternatives out by hand, and so does the
+lowering: a fixed-only choice (an erased group, a presence, a trailing
+separator) is always inlined into the parent rule as its terminals; a
+valued choice (`Option<T>`, a zero-or-more list) is inlined when its
+content can begin with an admitted keyword and delegated to a shared helper
+(`opt(...)`, `presence(...)`, `list(...)`, `list1t(...)`) otherwise. A rule
+inlines at most sixteen alternatives; past that, choices are demoted to
+helpers from the right, valued choices first. Repetitions always share the
+core `list1 -> e | list1 [sep] e`. Measured on pg-sql, the same day: total
+conflicts 17,220 to 15,353, the `opt(...)` shift/reduce family 2,970 to
+301, its reduce/reduce family 425 to 16, the erased-group and
+`WITH [RECURSIVE]` reduce/reduce pairs to zero; the cost is rules 11,586 to
+12,006, states 17,549 to 18,515 and encoded tables 814 KB to 1.33 MB, the
+last because inlined alternatives give more states explicit actions that
+comb packing cannot share.
+
 ## 6. Runtime
 
 **Value stack.** A type-erased byte stack with a parallel `(offset,
