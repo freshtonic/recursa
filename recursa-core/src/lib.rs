@@ -11,6 +11,8 @@ mod grammar;
 mod input;
 /// Generated lexer execution protocol.
 mod lex;
+/// The table-driven parser's runtime loop, tables and value stack.
+pub mod lr;
 #[cfg(test)]
 mod lex_tests;
 /// Span-bearing output traits and non-empty semantic sequences.
@@ -95,9 +97,10 @@ pub mod __private {
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
         NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode,
-        ParserMarker, RecursiveDescent, Repeated, RepeatedIter, ViewCursor, parse,
+        ParserMarker, RecursiveDescent, Repeated, RepeatedIter, TableDriven, ViewCursor, parse,
         parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
     };
+    pub use crate::lr::{LrTables, ReduceFn as LrReduceFn, Reduction as LrReduction, run as lr_run};
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     pub use logos;
     #[cfg(feature = "arbitrary")]
