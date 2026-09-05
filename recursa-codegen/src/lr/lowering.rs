@@ -39,8 +39,6 @@ pub struct TypeRoles {
 
 impl TypeRoles {
     /// Reads the roles off a lowered grammar's correlations.
-    // Ticket #113 wires this into generation; until then only tests call it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_lowered(lowered: &crate::materialization::LoweredGrammar) -> Self {
         let map = &lowered.lowering_map;
         let content_tokens: BTreeSet<TypeId> = map
