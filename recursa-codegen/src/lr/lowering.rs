@@ -20,8 +20,9 @@
 //! keyword. So a fixed-only choice (an erased optional group, a presence, a trailing separator)
 //! is always inlined as its terminals, and a valued choice (`Option<T>`, a zero-or-more list) is
 //! inlined when its content can begin with an admitted keyword and delegated to a helper
-//! otherwise. A rule inlines at most [`INLINE_BUDGET`] alternatives; past that, choices are
-//! demoted to helpers from the right, valued choices first, so the expansion stays bounded.
+//! otherwise. A rule inlines at most [`INLINE_BUDGET`](crate::lr::lowering::INLINE_BUDGET)
+//! alternatives; past that, choices are demoted to helpers from the right, valued choices
+//! first, so the expansion stays bounded.
 //!
 //! Helpers carry on their rules everything a reduce action needs to name the value it builds:
 //! the element type and its `Box` layers, or the optional's content.
