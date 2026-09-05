@@ -71,6 +71,35 @@ fn main() {
     assert_eq!(&complete_source[payload.terminator_span().range()], "\\.\r\n");
     assert_owned_once(complete_source, complete.spans());
 
+    // A payload interior is not tokenized by the grammar, so an unbalanced quote,
+    // dollar tag or comment opener inside one must not change how the text after the
+    // payload terminator lexes. This is what forces framing to restart its lex after a
+    // payload rather than reuse one lex of the whole document.
+    for interior in ["it's raw", "$q$ unclosed", "/* unclosed", "'"] {
+        let source = format!("copy 'table';\r\n{interior}\r\n\\.\r\nput 'tail';");
+        let complete = grammar::Entry::frame(&source).unwrap_or_else(|failure| {
+            panic!("payload interior {interior:?} must not leak into later lexing: {failure:?}")
+        });
+        let sources = complete
+            .typed_islands()
+            .map(|parsed| parsed.source().expect("framing requests island provenance"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sources,
+            ["copy 'table';", "put 'tail';"],
+            "payload interior {interior:?} changed the islands after it",
+        );
+        let payload = complete
+            .parts()
+            .find_map(|part| match part {
+                grammar::CompletePart::Payload(payload) => Some(payload),
+                _ => None,
+            })
+            .expect("the copy island opens one payload region");
+        assert_eq!(payload.data_text(), format!("\r\n{interior}\r\n"));
+        assert_owned_once(&source, complete.spans());
+    }
+
     // The first failing island rejects the whole document with its own strict
     // diagnostic; later valid islands are never parsed into a partial result.
     let rejected_source = concat!(
