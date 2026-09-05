@@ -1,7 +1,8 @@
 //! Every non-Pratt example grammar in the repository parses all of its inputs identically under
 //! both parser styles (#114). The JSON example is the one Pratt-free example; its grammar is
 //! copied from `examples/json` at scaffold time, so the example stays the single source of
-//! truth, and generated once with `parser_style = table_driven` and once as written.
+//! truth, and generated once with `parsers(rd = recursive_descent, lr = table_driven)` (#119),
+//! so that the fixture drives every input through both parsers in one binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,20 +15,21 @@ const FIXTURE: &str = "tests/fixtures/generation/table-driven-json";
 /// The example grammar's configuration line after which the parser style is inserted.
 const LOOKAHEAD: &str = "max_lookahead = 1,";
 
-/// The line the scaffold inserts, and the test flips to obtain the recursive-descent twin.
-const TABLE_DRIVEN: &str = "parser_style = table_driven,";
+/// The line the scaffold inserts: both parsers, the recursive-descent one as the default.
+const NAMED_PARSERS: &str = "parsers(rd = recursive_descent, lr = table_driven),";
 
 #[test]
 fn the_json_example_parses_every_input_identically_under_both_styles() {
     let package = scaffold_fixture();
 
-    let table_driven = run_fixture(&package);
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("table-driven-json-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("table-driven-json-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
     assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(!root.contains("RecursiveDescent"), "a table-driven generation emits no recursive-descent parser");
+    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
     // The example's own expectations, seen through the table-driven parser.
     assert!(table_stdout.contains("ok \"{}\" => object{} cursor=2 eof=true\n"), "{table_stdout}");
     assert!(table_stdout.contains("ok \"[]\" => array(none) cursor=2 eof=true\n"), "{table_stdout}");
@@ -49,22 +51,12 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
     assert!(table_stdout.contains("trailing \"42 ]\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 3, end: 4 } found=Some(\"fixed:]\") cursor=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing \"true\" => ok bool(true) cursor=1 eof=true\n"), "{table_stdout}");
     // Provenance (#118): the occurrence tree, the root's elements and the Pretty rendering of
-    // every positive input are printed and compared line by line with the twin below.
+    // every positive input are printed and compared line by line with the `rd` parser below.
     assert!(table_stdout.contains("prov \"{}\" => captured 0..2 ("), "{table_stdout}");
     assert!(table_stdout.contains("elements \"[]\" => ["), "{table_stdout}");
     assert!(table_stdout.contains("pretty \"{\\\"answer\\\":[true,null,42]}\" => \""), "{table_stdout}");
 
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
-    fs::write(&grammar, source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,"))
-        .expect("flip the fixture to recursive descent");
-    let recursive = run_fixture(&package);
-    assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
-    let root = read_selected_root(&package);
-    assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -81,7 +73,7 @@ fn scaffold_fixture() -> TempDir {
     copy(&fixture, package.path(), "src/main.rs");
 
     // The example grammar, with the diagrams feature dropped (the fixture enables no features)
-    // and the table-driven style selected.
+    // and both parsers declared.
     let example = fs::read_to_string(workspace.join("examples/json/src/grammar.rs"))
         .expect("read the JSON example grammar");
     assert_eq!(example.matches("    diagrams,\n").count(), 1, "the example declares diagrams once");
@@ -90,7 +82,7 @@ fn scaffold_fixture() -> TempDir {
     let grammar = example
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
-        .replace(LOOKAHEAD, &format!("{LOOKAHEAD}\n    {TABLE_DRIVEN}"));
+        .replace(LOOKAHEAD, &format!("{LOOKAHEAD}\n    {NAMED_PARSERS}"));
     fs::write(package.path().join("src/grammar.rs"), grammar).expect("write the scaffolded grammar");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
@@ -177,6 +169,23 @@ fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// Splits the fixture's output into the lines of the two parsers, each without its tag and
+/// terminated by a newline so that the assertions can match whole lines.
+fn split_by_parser(stdout: &str) -> (String, String) {
+    let mut rd = String::new();
+    let mut lr = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("rd ") {
+            rd.push_str(rest);
+            rd.push('\n');
+        } else if let Some(rest) = line.strip_prefix("lr ") {
+            lr.push_str(rest);
+            lr.push('\n');
+        }
+    }
+    (rd, lr)
 }
 
 fn assert_success(output: &Output) {

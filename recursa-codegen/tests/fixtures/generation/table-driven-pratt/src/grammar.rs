@@ -12,7 +12,7 @@ recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
     max_lookahead = 1,
-    parser_style = table_driven,
+    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 

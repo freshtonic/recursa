@@ -127,124 +127,140 @@ const NEGATIVE: &[&str] = &[
     "print [;",
 ];
 
-fn main() {
-    for source in POSITIVE {
-        let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        let parsed = grammar::Statement::parse(&mut input)
-            .unwrap_or_else(|error| panic!("positive input {source:?} failed: {error}"));
-        println!(
-            "ok {source:?} => {:?} cursor={} eof={}",
-            parsed.into_ast(),
-            input.cursor(),
-            input.is_eof()
-        );
-        assert!(input.is_eof(), "a positive input is consumed whole");
-        provenance(source);
-    }
-
-    let source = "with a | b print 1; { }";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let first = grammar::Statement::parse(&mut input).expect_err("a list without its terminator fails");
-    println!("prefix first code={} found={:?} cursor={}", first.code(), first.found(), input.cursor());
-    let source = "f(1) ; {} print 2;";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let first = grammar::Statement::parse(&mut input).expect("first root parses");
-    println!("prefix second {:?} cursor={}", first.into_ast(), input.cursor());
-    let second = grammar::Statement::parse(&mut input).expect("second root parses");
-    println!("prefix third {:?} cursor={}", second.into_ast(), input.cursor());
-    let third = grammar::Statement::parse(&mut input).expect("third root parses");
-    println!("prefix fourth {:?} cursor={} eof={}", third.into_ast(), input.cursor(), input.is_eof());
-
-    let source = "[1, [as, only]]";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let value = grammar::Value::parse(&mut input).expect("a value parses from its own entry");
-    println!("entry {:?} cursor={}", value.into_ast(), input.cursor());
-    let source = "(in x, out temp)";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let params = grammar::Params::parse(&mut input).expect("a parameter list parses from its own entry");
-    println!("entry {:?} cursor={}", params.into_ast(), input.cursor());
-    let source = "only";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let name = grammar::Name::parse(&mut input).expect("an admitted keyword parses as a name");
-    println!("entry {:?} cursor={}", name.into_ast(), input.cursor());
-    let source = "as x";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let alias = grammar::Alias::parse(&mut input).expect("an alias parses from its own entry");
-    println!("entry {:?} cursor={}", alias.into_ast(), input.cursor());
-
-    // A struct root ending in a content token accepts the prefix; a repetition tail and a
-    // one-token alternative reject the token after them; a closing token accepts (#118).
-    for (source, expect) in [("x y", "Param"), ("(1) x", "Value"), ("[1] x", "Value"), ("x y", "Value")] {
-        let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        let result = match expect {
-            "Param" => grammar::Param::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
-            _ => grammar::Value::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
+/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
+/// builds that parser's input over a lexing result. The test compares the lines of the two
+/// parsers of the one generation.
+macro_rules! drive {
+    ($tag:expr, $input:expr) => {{
+        let tag: &str = $tag;
+        // Prints the provenance of one positive input parsed with capture requested: the
+        // occurrence tree, the root's elements and the Pretty rendering. The comparison
+        // requires all three to be identical between the parsers.
+        let provenance = |source: &str| {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::Statement::parse_spanned(&mut input).expect("positive input parses with capture");
+            println!("{tag} prov {source:?} => {}", parsed.debug_provenance());
+            let elements: Vec<String> = parsed
+                .root()
+                .span_elements()
+                .map(|element| {
+                    format!(
+                        "{}:{:?}@{}",
+                        element.name().unwrap_or("?"),
+                        element.role(),
+                        span_text(element.span())
+                    )
+                })
+                .collect();
+            println!("{tag} elements {source:?} => [{}]", elements.join(" "));
+            println!("{tag} pretty {source:?} => {:?}", parsed.render());
         };
-        match result {
-            Ok(value) => println!("trailing {expect} {source:?} => ok {value} cursor={} eof={}", input.cursor(), input.is_eof()),
-            Err(error) => println!(
-                "trailing {expect} {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
-                error.code(),
-                error.kind(),
-                error.span(),
-                error.found(),
-                input.cursor()
-            ),
+        for source in POSITIVE {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::Statement::parse(&mut input)
+                .unwrap_or_else(|error| panic!("positive input {source:?} failed: {error}"));
+            println!(
+                "{tag} ok {source:?} => {:?} cursor={} eof={}",
+                parsed.into_ast(),
+                input.cursor(),
+                input.is_eof()
+            );
+            assert!(input.is_eof(), "a positive input is consumed whole");
+            provenance(source);
         }
-    }
 
-    for source in NEGATIVE {
+        let source = "with a | b print 1; { }";
         let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-        // those records by design, so the live count is taken on a warm second parse.
-        drop(grammar::Statement::parse(&mut input).expect_err("failing input fails"));
-        let baseline = LIVE.load(Ordering::SeqCst);
-        let error = grammar::Statement::parse(&mut input).expect_err("failing input fails");
-        let (code, kind, span, found) = (error.code(), error.kind(), error.span(), error.found());
-        drop(error);
-        let leaked = LIVE.load(Ordering::SeqCst) - baseline;
-        println!(
-            "err {source:?} => code={code} kind={kind:?} span={span:?} found={found:?} cursor={} leaked={leaked}",
-            input.cursor()
-        );
-        assert_eq!(leaked, 0, "a failed parse must drop every partial value");
-        assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
-    }
+        let mut input = $input(&lexed);
+        let first = grammar::Statement::parse(&mut input).expect_err("a list without its terminator fails");
+        println!("{tag} prefix first code={} found={:?} cursor={}", first.code(), first.found(), input.cursor());
+        let source = "f(1) ; {} print 2;";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let first = grammar::Statement::parse(&mut input).expect("first root parses");
+        println!("{tag} prefix second {:?} cursor={}", first.into_ast(), input.cursor());
+        let second = grammar::Statement::parse(&mut input).expect("second root parses");
+        println!("{tag} prefix third {:?} cursor={}", second.into_ast(), input.cursor());
+        let third = grammar::Statement::parse(&mut input).expect("third root parses");
+        println!("{tag} prefix fourth {:?} cursor={} eof={}", third.into_ast(), input.cursor(), input.is_eof());
+
+        let source = "[1, [as, only]]";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let value = grammar::Value::parse(&mut input).expect("a value parses from its own entry");
+        println!("{tag} entry {:?} cursor={}", value.into_ast(), input.cursor());
+        let source = "(in x, out temp)";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let params = grammar::Params::parse(&mut input).expect("a parameter list parses from its own entry");
+        println!("{tag} entry {:?} cursor={}", params.into_ast(), input.cursor());
+        let source = "only";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let name = grammar::Name::parse(&mut input).expect("an admitted keyword parses as a name");
+        println!("{tag} entry {:?} cursor={}", name.into_ast(), input.cursor());
+        let source = "as x";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let alias = grammar::Alias::parse(&mut input).expect("an alias parses from its own entry");
+        println!("{tag} entry {:?} cursor={}", alias.into_ast(), input.cursor());
+
+        // A struct root ending in a content token accepts the prefix; a repetition tail and a
+        // one-token alternative reject the token after them; a closing token accepts (#118).
+        for (source, expect) in [("x y", "Param"), ("(1) x", "Value"), ("[1] x", "Value"), ("x y", "Value")] {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let result = match expect {
+                "Param" => grammar::Param::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
+                _ => grammar::Value::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
+            };
+            match result {
+                Ok(value) => println!("{tag} trailing {expect} {source:?} => ok {value} cursor={} eof={}", input.cursor(), input.is_eof()),
+                Err(error) => println!(
+                    "{tag} trailing {expect} {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
+                    error.code(),
+                    error.kind(),
+                    error.span(),
+                    error.found(),
+                    input.cursor()
+                ),
+            }
+        }
+
+        for source in NEGATIVE {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
+            // those records by design, so the live count is taken on a warm second parse.
+            drop(grammar::Statement::parse(&mut input).expect_err("failing input fails"));
+            let baseline = LIVE.load(Ordering::SeqCst);
+            let error = grammar::Statement::parse(&mut input).expect_err("failing input fails");
+            let (code, kind, span, found) = (error.code(), error.kind(), error.span(), error.found());
+            drop(error);
+            let leaked = LIVE.load(Ordering::SeqCst) - baseline;
+            println!(
+                "{tag} err {source:?} => code={code} kind={kind:?} span={span:?} found={found:?} cursor={} leaked={leaked}",
+                input.cursor()
+            );
+            assert_eq!(leaked, 0, "a failed parse must drop every partial value");
+            assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
+        }
+    }};
+}
+
+/// The default parser's input.
+fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+    lexed.input()
+}
+
+fn main() {
+    drive!("rd", rd_input);
+    drive!("lr", grammar::parsers::lr::input);
     println!("table-driven-containers-ok");
 }
 
-/// Prints the provenance of one positive input parsed with capture requested: the occurrence
-/// tree, the root's elements and the Pretty rendering. The twin comparison requires all three
-/// to be identical between the parser styles.
-fn provenance(source: &str) {
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let parsed = grammar::Statement::parse_spanned(&mut input).expect("positive input parses with capture");
-    println!("prov {source:?} => {}", parsed.debug_provenance());
-    let elements: Vec<String> = parsed
-        .root()
-        .span_elements()
-        .map(|element| {
-            format!(
-                "{}:{:?}@{}",
-                element.name().unwrap_or("?"),
-                element.role(),
-                span_text(element.span())
-            )
-        })
-        .collect();
-    println!("elements {source:?} => [{}]", elements.join(" "));
-    println!("pretty {source:?} => {:?}", parsed.render());
-}
 
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {
