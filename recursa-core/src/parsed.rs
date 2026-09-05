@@ -1550,9 +1550,42 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     }
 }
 
-/// Matching-version recursive parsing protocol implemented by generated code.
 #[doc(hidden)]
-pub trait GeneratedParse<'input, A = ()>: Node + Sized {
+/// Seal implemented only by Recursa's own parser-style markers.
+pub mod parser_marker_seal {
+    /// Prevents external parser-style markers; the set of styles is fixed by
+    /// the matching Recursa version.
+    pub trait Sealed {}
+}
+
+/// Parser-style marker that distinguishes the generated parsers over one AST.
+///
+/// Trait coherence allows one [`GeneratedParse`] impl per type, so every
+/// generated parser names its marker as the trait's third parameter and the
+/// generated grammar-local input names the parser it drives through
+/// [`GeneratedInput::Parser`]. The blanket [`Parse`] facade joins the two.
+#[doc(hidden)]
+pub trait ParserMarker: parser_marker_seal::Sealed + 'static {}
+
+/// Marker for the recursive-descent parser style.
+///
+/// This is the default parser of every generation and the default of the
+/// [`GeneratedParse`] marker parameter, so a generation that names no parser
+/// style compiles against it unchanged.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct RecursiveDescent;
+
+impl parser_marker_seal::Sealed for RecursiveDescent {}
+
+impl ParserMarker for RecursiveDescent {}
+
+/// Matching-version recursive parsing protocol implemented by generated code.
+///
+/// `P` names the parser style whose generated body this impl carries; the
+/// default keeps every recursive-descent generation source-compatible.
+#[doc(hidden)]
+pub trait GeneratedParse<'input, A = (), P: ParserMarker = RecursiveDescent>: Node + Sized {
     /// Grammar-fixed provenance capture policy for this Node.
     const CAPTURE_POLICY: CapturePolicy;
 
@@ -1576,6 +1609,9 @@ pub trait GeneratedInput {
     /// The runtime input wrapped by the generated grammar-local type.
     type Inner: ?Sized;
 
+    /// The parser style this input selects through the [`Parse`] facade.
+    type Parser: ParserMarker;
+
     /// Exposes the wrapped runtime input.
     fn __recursa_inner(&mut self) -> &mut Self::Inner;
 }
@@ -1583,46 +1619,56 @@ pub trait GeneratedInput {
 impl<'input, A, I, T> parse_seal::Sealed<I> for T
 where
     I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, I::Parser>,
 {
 }
 
 impl<'input, A, I, T> Parse<I> for T
 where
     I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, I::Parser>,
 {
     type Output = Parsed<'input, T>;
 
     fn parse(input: &mut I) -> Result<Self::Output, ParseError> {
-        parse::<T, A>(input.__recursa_inner())
+        parse::<T, A, I::Parser>(input.__recursa_inner())
     }
 }
 
 /// Runs the generated root parser with the default capture request.
+///
+/// `P` selects which generated parser of `T` runs; call sites bound by a
+/// single [`GeneratedParse`] impl leave it to inference.
 #[doc(hidden)]
-pub fn parse<'input, T, A>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
+pub fn parse<'input, T, A, P>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, P>,
+    P: ParserMarker,
 {
-    parse_with_request::<T, A>(input, CaptureRequest::Default)
+    parse_with_request::<T, A, P>(input, CaptureRequest::Default)
 }
 
 /// Runs the generated root parser with the explicit span-capture request.
+///
+/// `P` selects which generated parser of `T` runs, exactly as for [`parse`].
 #[doc(hidden)]
-pub fn parse_spanned<'input, T, A>(
+pub fn parse_spanned<'input, T, A, P>(
     input: &mut Input<'input, A>,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, P>,
+    P: ParserMarker,
 {
-    parse_with_request::<T, A>(input, CaptureRequest::Spanned)
+    parse_with_request::<T, A, P>(input, CaptureRequest::Spanned)
 }
 
 /// Runs the generated root parser with one generated caller FOLLOW.
 ///
 /// Document framing uses this seam to keep its separator outside the authored
-/// root while preserving ordinary transactional parse behavior.
+/// root while preserving ordinary transactional parse behavior. Framing belongs
+/// to the default parser, so this seam drives only the [`RecursiveDescent`]
+/// impl of `T`; a root whose only impl carries another marker does not satisfy
+/// its bound.
 #[cfg(feature = "explorer")]
 pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
     input: &mut Input<'input, A>,
@@ -1631,28 +1677,30 @@ pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
 where
     T: GeneratedParse<'input, A>,
 {
-    parse_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
+    parse_with_request_and_follow::<T, A, RecursiveDescent>(input, CaptureRequest::Spanned, follow)
 }
 
 /// Runs a root parser transactionally under one capture request.
-fn parse_with_request<'input, T, A>(
+fn parse_with_request<'input, T, A, P>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, P>,
+    P: ParserMarker,
 {
-    parse_with_request_and_follow::<T, A>(input, request, T::root_follow())
+    parse_with_request_and_follow::<T, A, P>(input, request, T::root_follow())
 }
 
 /// Runs a root parser transactionally under an explicit caller FOLLOW.
-fn parse_with_request_and_follow<'input, T, A>(
+fn parse_with_request_and_follow<'input, T, A, P>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
     follow: &FollowSet,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, P>,
+    P: ParserMarker,
 {
     if !std::ptr::eq(input.grammar(), T::grammar()) {
         return Err(ParseError::grammar_mismatch(input));
@@ -1872,6 +1920,29 @@ mod tests {
         assert!(!retained[3].is_captured());
     }
 
+    /// Test-only grammar-local input that names its parser like a generated `Input` does.
+    struct GrammarInput<'input>(Input<'input, ()>);
+
+    impl<'input> GeneratedInput for GrammarInput<'input> {
+        type Inner = Input<'input, ()>;
+        type Parser = RecursiveDescent;
+
+        fn __recursa_inner(&mut self) -> &mut Self::Inner {
+            &mut self.0
+        }
+    }
+
+    #[test]
+    fn generated_input_selects_the_parse_facade_through_its_parser_marker() {
+        fn assert_marker<I: GeneratedInput<Parser = RecursiveDescent>>() {}
+        assert_marker::<GrammarInput<'_>>();
+
+        let lexed = one_word("word");
+        let mut input = GrammarInput(lexed.input(&GRAMMAR));
+        let parsed = <OptionalToken<'_> as Parse<GrammarInput<'_>>>::parse(&mut input).unwrap();
+        assert_eq!(parsed.root().value().text.as_str(), "word");
+    }
+
     #[test]
     fn root_capture_policy_and_request_cover_all_six_combinations() {
         macro_rules! assert_case {
@@ -1879,9 +1950,9 @@ mod tests {
                 let lexed = one_word("word");
                 let mut input = lexed.input(&GRAMMAR);
                 let parsed = if $spanned {
-                    parse_spanned::<$token<'_>, _>(&mut input).unwrap()
+                    parse_spanned::<$token<'_>, _, _>(&mut input).unwrap()
                 } else {
-                    parse::<$token<'_>, _>(&mut input).unwrap()
+                    parse::<$token<'_>, _, _>(&mut input).unwrap()
                 };
                 assert_eq!(parsed.source().is_some(), $captured);
                 assert_eq!(parsed.root().span().is_some(), $captured);
@@ -1910,7 +1981,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+        let error = parse_spanned::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::InvalidTokenSpan);
         assert_eq!(error.code(), "RCA4103");
@@ -1933,7 +2004,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
         assert_eq!(error.code(), "RCA4001");
@@ -1956,7 +2027,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
         assert_eq!(error.code(), "RCA4000");
@@ -1968,7 +2039,7 @@ mod tests {
         let lexed = one_word("word");
         let mut input = lexed.input(&OTHER_GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::GrammarMismatch);
         assert_eq!(error.code(), "RCA4104");
@@ -2008,8 +2079,8 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        assert!(parse::<FailsAfterOccurrence, _>(&mut input).is_err());
-        let parsed = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap();
+        assert!(parse::<FailsAfterOccurrence, _, _>(&mut input).is_err());
+        let parsed = parse_spanned::<OptionalToken<'_>, _, _>(&mut input).unwrap();
 
         assert_eq!(parsed.root().value().text.as_str(), "a");
         assert_eq!(parsed.root().span(), Some(Span::new(0, 1).unwrap()));

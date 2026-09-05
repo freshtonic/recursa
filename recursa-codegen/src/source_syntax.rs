@@ -165,6 +165,116 @@ fn compiler_owned_cfg(name: &str) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+/// Generation-time recognition strategy of one parser over the grammar.
+///
+/// The style changes only the bodies behind the generated-parse protocol;
+/// grammar types, lexing, framing and derived traits are identical across
+/// styles.
+pub(crate) enum ParserStyle {
+    /// One generated Rust function per Node, the default and today's only renderer.
+    RecursiveDescent,
+    /// One grammar-wide LALR(1) automaton with a start state per grammar type.
+    TableDriven,
+}
+
+impl ParserStyle {
+    /// Resolves an authored style identifier, rejecting anything outside the closed set.
+    fn parse_ident(ident: &syn::Ident) -> syn::Result<Self> {
+        if ident == "recursive_descent" {
+            Ok(Self::RecursiveDescent)
+        } else if ident == "table_driven" {
+            Ok(Self::TableDriven)
+        } else {
+            Err(syn::Error::new(
+                ident.span(),
+                format!(
+                    "unsupported parser style `{ident}`; expected `recursive_descent` or `table_driven`"
+                ),
+            ))
+        }
+    }
+
+    /// Returns the authored spelling, used in generation identity and diagnostics.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::RecursiveDescent => "recursive_descent",
+            Self::TableDriven => "table_driven",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+/// One parser a generation emits over the grammar.
+pub(crate) struct ParserDeclaration {
+    /// Author-chosen name under `parsers(...)`; `None` for the single `parser_style` parser.
+    pub(crate) name: Option<syn::Ident>,
+    /// Recognition strategy of this parser.
+    pub(crate) style: ParserStyle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+/// The parsers one generation emits, in authored order.
+///
+/// The first declaration is the default parser and owns the unqualified
+/// generated surface. The value is never empty: an omitted configuration is
+/// the implicit default, one unnamed recursive-descent parser.
+pub(crate) struct ParserDeclarations(Vec<ParserDeclaration>);
+
+impl Default for ParserDeclarations {
+    fn default() -> Self {
+        Self::single(ParserStyle::RecursiveDescent)
+    }
+}
+
+impl ParserDeclarations {
+    /// Declares the one unnamed parser selected by `parser_style`.
+    fn single(style: ParserStyle) -> Self {
+        Self(vec![ParserDeclaration { name: None, style }])
+    }
+
+    /// Declares the named parsers of `parsers(...)`, rejecting an empty list and repeated names.
+    fn named(parsers: Vec<ParserDeclaration>, span: Span) -> syn::Result<Self> {
+        if parsers.is_empty() {
+            return Err(syn::Error::new(
+                span,
+                "parsers requires at least one named parser",
+            ));
+        }
+        for (index, parser) in parsers.iter().enumerate() {
+            let name = parser.name.as_ref().expect("named parsers carry names");
+            if parsers[..index]
+                .iter()
+                .any(|earlier| earlier.name.as_ref() == Some(name))
+            {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!("duplicate parser name `{name}`"),
+                ));
+            }
+        }
+        Ok(Self(parsers))
+    }
+
+    /// Returns the parser that owns the unqualified generated surface.
+    pub(crate) fn default_parser(&self) -> &ParserDeclaration {
+        &self.0[0]
+    }
+
+    /// Iterates the declared parsers in authored order, default first.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &ParserDeclaration> {
+        self.0.iter()
+    }
+
+    /// Reports whether this is the implicit default of an omitted configuration.
+    ///
+    /// An explicit `parser_style = recursive_descent` states the same fact, so
+    /// generation identity treats the two alike.
+    pub(crate) fn is_implicit_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Parsed root `grammar!` configuration before path and capability resolution.
 pub(crate) struct GrammarConfigSyntax {
@@ -190,6 +300,8 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) pretty: PrettyDefaults,
     /// Optional generated exact-source document framing declaration.
     pub(crate) framing: Option<FramingSyntax>,
+    /// Parsers this generation emits; the first is the default parser.
+    pub(crate) parsers: ParserDeclarations,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -420,7 +532,7 @@ pub(crate) fn capture_override(metas: &[Meta]) -> syn::Result<Option<CaptureMode
 
 #[cfg(test)]
 mod capture_tests {
-    use super::{CaptureMode, GrammarConfigSyntax, capture_override, path_text};
+    use super::{CaptureMode, GrammarConfigSyntax, ParserStyle, capture_override, path_text};
 
     #[test]
     fn framing_requires_a_complete_island_variant_payload_transition() {
@@ -544,6 +656,121 @@ mod capture_tests {
             "unsupported Pretty setting `tab_width`"
         );
     }
+    #[test]
+    fn parser_style_accepts_exactly_the_two_styles_and_defaults_to_recursive_descent() {
+        let omitted = syn::parse_str::<GrammarConfigSyntax>("module = crate").expect("omitted");
+        assert!(omitted.parsers.is_implicit_default());
+        assert_eq!(
+            omitted.parsers.default_parser().style,
+            ParserStyle::RecursiveDescent
+        );
+        assert_eq!(omitted.parsers.default_parser().name, None);
+
+        let explicit = syn::parse_str::<GrammarConfigSyntax>(
+            "module = crate, parser_style = recursive_descent",
+        )
+        .expect("explicit recursive descent");
+        assert_eq!(explicit.parsers, omitted.parsers);
+        assert!(explicit.parsers.is_implicit_default());
+
+        let table =
+            syn::parse_str::<GrammarConfigSyntax>("module = crate, parser_style = table_driven")
+                .expect("table driven");
+        assert!(!table.parsers.is_implicit_default());
+        assert_eq!(
+            table.parsers.default_parser().style,
+            ParserStyle::TableDriven
+        );
+        assert_eq!(table.parsers.iter().count(), 1);
+
+        let error = syn::parse_str::<GrammarConfigSyntax>("module = crate, parser_style = lalr")
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported parser style `lalr`; expected `recursive_descent` or `table_driven`"
+        );
+        let error = syn::parse_str::<GrammarConfigSyntax>(
+            "module = crate, parser_style = table_driven, parser_style = table_driven",
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "duplicate parser_style setting");
+    }
+
+    #[test]
+    fn named_parsers_keep_authored_order_and_the_first_is_the_default() {
+        let config = syn::parse_str::<GrammarConfigSyntax>(
+            "module = crate, parsers(rd = recursive_descent, lr = table_driven)",
+        )
+        .expect("named parsers");
+        assert!(!config.parsers.is_implicit_default());
+        let declared = config
+            .parsers
+            .iter()
+            .map(|parser| (parser.name.as_ref().map(ToString::to_string), parser.style))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declared,
+            vec![
+                (Some("rd".to_string()), ParserStyle::RecursiveDescent),
+                (Some("lr".to_string()), ParserStyle::TableDriven),
+            ]
+        );
+        assert_eq!(
+            config.parsers.default_parser().style,
+            ParserStyle::RecursiveDescent
+        );
+        assert_eq!(
+            config
+                .parsers
+                .default_parser()
+                .name
+                .as_ref()
+                .map(ToString::to_string),
+            Some("rd".to_string())
+        );
+
+        let single = syn::parse_str::<GrammarConfigSyntax>(
+            "module = crate, parsers(rd = recursive_descent)",
+        )
+        .expect("one named parser");
+        assert!(
+            !single.parsers.is_implicit_default(),
+            "a named parser is a distinct fact from the implicit default"
+        );
+    }
+
+    #[test]
+    fn invalid_parser_configurations_are_rejected() {
+        for (source, message) in [
+            (
+                "module = crate, parser_style = table_driven, parsers(lr = table_driven)",
+                "parser_style and parsers are mutually exclusive",
+            ),
+            (
+                "module = crate, parsers(lr = table_driven), parser_style = table_driven",
+                "parser_style and parsers are mutually exclusive",
+            ),
+            (
+                "module = crate, parsers()",
+                "parsers requires at least one named parser",
+            ),
+            (
+                "module = crate, parsers(lr = table_driven, lr = recursive_descent)",
+                "duplicate parser name `lr`",
+            ),
+            (
+                "module = crate, parsers(lr = table_driven), parsers(rd = recursive_descent)",
+                "duplicate parsers setting",
+            ),
+            (
+                "module = crate, parsers(lr = glr)",
+                "unsupported parser style `glr`; expected `recursive_descent` or `table_driven`",
+            ),
+        ] {
+            let error = syn::parse_str::<GrammarConfigSyntax>(source).unwrap_err();
+            assert_eq!(error.to_string(), message, "{source}");
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -567,6 +794,8 @@ impl Parse for GrammarConfigSyntax {
         let mut diagrams = false;
         let mut pretty = None;
         let mut framing = None;
+        let mut parser_style = None;
+        let mut parsers = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "derives" {
@@ -593,6 +822,17 @@ impl Parse for GrammarConfigSyntax {
                 let content;
                 syn::parenthesized!(content in input);
                 framing = Some(content.parse()?);
+            } else if key == "parsers" {
+                reject_duplicate(&parsers, key.span(), "parsers")?;
+                let content;
+                syn::parenthesized!(content in input);
+                let declared =
+                    syn::punctuated::Punctuated::<ParserDeclaration, Token![,]>::parse_terminated(
+                        &content,
+                    )?
+                    .into_iter()
+                    .collect();
+                parsers = Some(ParserDeclarations::named(declared, key.span())?);
             } else {
                 input.parse::<Token![=]>()?;
                 if key == "module" {
@@ -622,6 +862,10 @@ impl Parse for GrammarConfigSyntax {
                 } else if key == "spans" {
                     reject_duplicate(&spans, key.span(), "spans")?;
                     spans = Some(CaptureMode::parse(input.parse()?)?);
+                } else if key == "parser_style" {
+                    reject_duplicate(&parser_style, key.span(), "parser_style")?;
+                    let value: syn::Ident = input.parse()?;
+                    parser_style = Some((ParserStyle::parse_ident(&value)?, key.span()));
                 } else {
                     return Err(syn::Error::new(
                         key.span(),
@@ -634,6 +878,17 @@ impl Parse for GrammarConfigSyntax {
             }
         }
         let facade_explicit = facade.is_some();
+        let parsers = match (parser_style, parsers) {
+            (Some((_, span)), Some(_)) => {
+                return Err(syn::Error::new(
+                    span,
+                    "parser_style and parsers are mutually exclusive",
+                ));
+            }
+            (Some((style, _)), None) => ParserDeclarations::single(style),
+            (None, Some(parsers)) => parsers,
+            (None, None) => ParserDeclarations::default(),
+        };
         Ok(Self {
             module: module.ok_or_else(|| input.error("grammar configuration requires module"))?,
             facade: facade.unwrap_or_else(|| syn::Ident::new("recursa", Span::call_site())),
@@ -647,6 +902,19 @@ impl Parse for GrammarConfigSyntax {
             diagrams,
             pretty: pretty.unwrap_or_default(),
             framing,
+            parsers,
+        })
+    }
+}
+
+impl Parse for ParserDeclaration {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let style: syn::Ident = input.parse()?;
+        Ok(Self {
+            name: Some(name),
+            style: ParserStyle::parse_ident(&style)?,
         })
     }
 }

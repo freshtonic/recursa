@@ -94,9 +94,9 @@ pub mod __private {
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
-        NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode, Repeated,
-        RepeatedIter, ViewCursor, parse, parse_seal::Sealed as ParseSealed, parse_spanned,
-        pretty_view,
+        NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode,
+        ParserMarker, RecursiveDescent, Repeated, RepeatedIter, ViewCursor, parse,
+        parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     pub use logos;

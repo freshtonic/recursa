@@ -5,6 +5,8 @@
 
 use super::*;
 
+use crate::source_syntax::ParserDeclarations;
+
 #[cfg(test)]
 std::thread_local! {
     /// Per-test observation of complete emission-plan validation passes.
@@ -93,6 +95,8 @@ pub(super) struct EmissionPlan {
     pub(super) instrumentation: EmissionInstrumentation,
     /// Independent identities used to detect capability-plan drift.
     pub(super) plan_families: EmissionPlanFamilies,
+    /// Parsers this generation emits, default first; selects the renderer.
+    pub(super) parsers: ParserDeclarations,
 }
 
 /// Opaque proof that an immutable emission plan passed its complete invariant check.
@@ -1000,9 +1004,26 @@ impl EmissionPlan {
             ";frozen_dispatch_sequences={frozen_dispatch_sequences};frozen_dispatch_nodes={};emitter_dispatch_decisions=0;frozen_parse_identity={frozen_parse_identity:016x}",
             instrumentation.frozen_dispatch_nodes_consumed,
         ));
+        // The implicit default contributes nothing, so the canonical facts of a
+        // grammar that names no parser are the same as before parser styles existed.
+        let parsers = resolved.build_inputs.parsers.clone();
+        if !parsers.is_implicit_default() {
+            canonical.push_str(";parsers=");
+            for parser in parsers.iter() {
+                canonical.push_str(&format!(
+                    "{}:{},",
+                    parser
+                        .name
+                        .as_ref()
+                        .map_or_else(String::new, ToString::to_string),
+                    parser.style.as_str()
+                ));
+            }
+        }
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             identity,
+            parsers,
             facade,
             module_anchor,
             grammar_name: lowered.grammar.name.clone(),
