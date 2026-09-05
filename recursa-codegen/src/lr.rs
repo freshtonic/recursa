@@ -245,30 +245,37 @@ mod tests {
         grammar
     }
 
+    /// Appends a fixed token type named `name` over one new kind named `kind`.
+    fn push_token(
+        grammar: &mut GrammarDescription,
+        location: crate::LocationId,
+        name: &str,
+        kind: &str,
+    ) -> TypeId {
+        let declaration = grammar.push_declaration(Declaration::new(name, location));
+        let kind = grammar.push_kind(KindDescription::new(kind, declaration));
+        let atom = grammar.push_atom(AtomDescription::new(
+            name,
+            declaration,
+            AtomExpression::Kind(kind),
+        ));
+        grammar.push_type(TypeDescription::new(
+            name,
+            declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ))
+    }
+
     /// A normalized Pratt grammar: `Expr` with a `Number` atom and an infix `Expr::Add` over
     /// `PLUS` with the given binding powers.
     fn pratt_grammar(lbp: u8, rbp: u8) -> GrammarDescription {
         let mut grammar = GrammarDescription::new("pratt", 4, 1, TextEquivalence::Sensitive);
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
-        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
-            let declaration = grammar.push_declaration(Declaration::new(name, location));
-            let kind = grammar.push_kind(KindDescription::new(kind, declaration));
-            let atom = grammar.push_atom(AtomDescription::new(
-                name,
-                declaration,
-                AtomExpression::Kind(kind),
-            ));
-            grammar.push_type(TypeDescription::new(
-                name,
-                declaration,
-                TypeShape::Token {
-                    atom,
-                    text_predicate: None,
-                },
-            ))
-        };
-        let number = token(&mut grammar, "Number", "NUMBER");
-        let plus = token(&mut grammar, "Plus", "PLUS");
+        let number = push_token(&mut grammar, location, "Number", "NUMBER");
+        let plus = push_token(&mut grammar, location, "Plus", "PLUS");
         let expr_declaration = grammar.push_declaration(Declaration::new("Expr", location));
         let atom_declaration =
             grammar.push_declaration(Declaration::new("Expr::Number", location));
@@ -384,25 +391,8 @@ mod tests {
         let mut grammar = pratt_grammar(10, 11);
         let expr = TypeId::new(2);
         let location = crate::LocationId::new(0);
-        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
-            let declaration = grammar.push_declaration(Declaration::new(name, location));
-            let kind = grammar.push_kind(KindDescription::new(kind, declaration));
-            let atom = grammar.push_atom(AtomDescription::new(
-                name,
-                declaration,
-                AtomExpression::Kind(kind),
-            ));
-            grammar.push_type(TypeDescription::new(
-                name,
-                declaration,
-                TypeShape::Token {
-                    atom,
-                    text_predicate: None,
-                },
-            ))
-        };
-        let open = token(&mut grammar, "Open", "LBRACKET");
-        let close = token(&mut grammar, "Close", "RBRACKET");
+        let open = push_token(&mut grammar, location, "Open", "LBRACKET");
+        let close = push_token(&mut grammar, location, "Close", "RBRACKET");
         let index_declaration =
             grammar.push_declaration(Declaration::new("Expr::Index", location));
         let unit = TypeId::new(grammar.types.len() as u32);
@@ -451,25 +441,8 @@ mod tests {
         let mut grammar = pratt_grammar(10, 11);
         let expr = TypeId::new(2);
         let location = crate::LocationId::new(0);
-        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
-            let declaration = grammar.push_declaration(Declaration::new(name, location));
-            let kind = grammar.push_kind(KindDescription::new(kind, declaration));
-            let atom = grammar.push_atom(AtomDescription::new(
-                name,
-                declaration,
-                AtomExpression::Kind(kind),
-            ));
-            grammar.push_type(TypeDescription::new(
-                name,
-                declaration,
-                TypeShape::Token {
-                    atom,
-                    text_predicate: None,
-                },
-            ))
-        };
-        let between = token(&mut grammar, "Between", "BETWEEN");
-        let and = token(&mut grammar, "And", "AND");
+        let between = push_token(&mut grammar, location, "Between", "BETWEEN");
+        let and = push_token(&mut grammar, location, "And", "AND");
         let declaration = grammar.push_declaration(Declaration::new("Expr::Between", location));
         let sites = vec![
             grammar.push_site(ParseSite::new(expr, between, declaration, ContainerShape::Direct)),

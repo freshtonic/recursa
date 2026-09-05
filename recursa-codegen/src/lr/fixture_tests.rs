@@ -3,11 +3,11 @@
 use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
-use super::precedence::BindingPowerPrecedence;
 use super::grammar::{
     Associativity, LrGrammar, NonterminalOrigin, RuleAction, Symbol, TerminalId,
 };
 use super::lowering::{TypeRoles, lower};
+use super::precedence::BindingPowerPrecedence;
 use super::report::{automaton_dump, conflict_diagnostics};
 use super::LrAnalysis;
 use super::tables::{LrTables, simulate};

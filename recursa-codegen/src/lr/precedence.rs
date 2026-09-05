@@ -396,6 +396,58 @@ mod tests {
     }
 
     #[test]
+    fn a_prefix_rule_at_the_token_level_shifts_and_a_postfix_rule_meets_no_shift() {
+        // Prefix `-` at bp 10 against infix `+` at lbp 10: the operand binds `+` (10 >= 10),
+        // so the tie shifts and `- id + id` is `-(id + id)`. Postfix `!` at bp 10: once `!`
+        // is shifted the rule is complete on its own, so no tie ever arises; `id + id !`
+        // reduces `+` first (left-associative tie against `!` at 10) as `parse_bp(11)` stops.
+        let mut grammar = TextbookGrammar::new(&["id", "-", "+", "!"]);
+        grammar.rule("E", "id");
+        grammar.pratt_rule("E", "- E", PrattPosition::Prefix { bp: 10 });
+        grammar.pratt_rule("E", "E + E", PrattPosition::Infix { lbp: 10, rbp: 11 });
+        grammar.pratt_rule("E", "E !", PrattPosition::Postfix { bp: 10 });
+        grammar.start("E");
+        let grammar = grammar.finish();
+        let (_, automaton) = build(&grammar);
+        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        let ties: Vec<(String, String, Resolution)> = automaton
+            .resolved_conflicts()
+            .iter()
+            .map(|resolved| {
+                (
+                    grammar.render_rule(resolved.reduce),
+                    grammar.terminal_name(resolved.lookahead).to_owned(),
+                    resolved.resolution,
+                )
+            })
+            .collect();
+        assert!(
+            ties.contains(&("E -> - E".to_owned(), "+".to_owned(), Resolution::Shift)),
+            "{ties:?}"
+        );
+        assert!(
+            ties.contains(&("E -> E + E".to_owned(), "!".to_owned(), Resolution::Reduce)),
+            "{ties:?}"
+        );
+        assert!(
+            !ties.iter().any(|(rule, _, _)| rule == "E -> E !"),
+            "a complete postfix rule never competes with a shift: {ties:?}"
+        );
+        assert_eq!(
+            reductions(&grammar, &automaton, "- id + id"),
+            ["E -> id", "E -> id", "E -> E + E", "E -> - E"]
+        );
+        assert_eq!(
+            reductions(&grammar, &automaton, "id + id !"),
+            ["E -> id", "E -> id", "E -> E + E", "E -> E !"]
+        );
+        assert_eq!(
+            reductions(&grammar, &automaton, "id ! + id"),
+            ["E -> id", "E -> E !", "E -> id", "E -> E + E"]
+        );
+    }
+
+    #[test]
     fn a_terminal_that_introduces_no_operator_leaves_the_conflict() {
         let mut grammar = TextbookGrammar::new(&["id", "+", "x"]);
         grammar.rule("E", "id");
