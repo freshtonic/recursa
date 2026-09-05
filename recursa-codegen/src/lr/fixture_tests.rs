@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
+use super::precedence::BindingPowerPrecedence;
 use super::grammar::{Associativity, LrGrammar, RuleAction, Symbol, TerminalId};
 use super::lowering::{TypeRoles, lower};
 use super::report::{automaton_dump, conflict_diagnostics};
@@ -286,7 +287,7 @@ fn construction_is_deterministic_across_builds() {
 #[test]
 fn the_whole_analysis_runs_from_one_entry_point() {
     let lowered = lowered_fixture("json");
-    let analysis = LrAnalysis::from_lowered(&lowered, &NoPrecedence, AutomatonOptions::default())
+    let analysis = LrAnalysis::from_lowered(&lowered, AutomatonOptions::default())
         .expect("json has no text predicates");
     assert!(analysis.diagnostics.is_empty());
     assert_eq!(analysis.tables, LrTables::pack(&analysis.grammar, &analysis.automaton));
@@ -338,4 +339,108 @@ fn cskw_admission_sets_lower_to_one_rule_per_member_kind_yielding_the_token() {
         matches!(grammar.rule(start.rule).rhs[0], Symbol::Nonterminal(id) if id == column_name)
     });
     assert!(start.is_some(), "content tokens have a start state");
+}
+
+/// Lowers the table-driven Pratt generation fixture: the textbook expression grammar as a
+/// `#[pratt]` enum with an exclusion site.
+fn pratt_fixture() -> (LoweredGrammar, LrGrammar) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/generation/table-driven-pratt");
+    let lowered = lowered_tree(&fixture, "src/grammar.rs");
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the Pratt fixture lowers");
+    (lowered, grammar)
+}
+
+/// Simulates a parse of `source` from the fixture's `Expr` start state and returns the
+/// reductions of `Expr` rules, in order; token spellings are single characters or `in`.
+fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Automaton, source: &str) -> Vec<String> {
+    let tables = LrTables::pack(grammar, automaton);
+    let start = automaton
+        .start_state(type_named(lowered, "grammar::Expr"))
+        .expect("Expr has a start state");
+    let input: Vec<TerminalId> = source
+        .split_whitespace()
+        .map(|word| match word {
+            "+" => "PLUS",
+            "-" => "MINUS",
+            "*" => "STAR",
+            "^" => "CARET",
+            "!" => "BANG",
+            "in" => "IN",
+            _ => "IntegerText",
+        })
+        .map(|name| terminal(grammar, name))
+        .collect();
+    let trace = simulate(grammar, &tables, start.index() as u32, &input)
+        .unwrap_or_else(|error| panic!("{source} does not parse: {error:?}"));
+    assert_eq!(trace.consumed, input.len());
+    trace
+        .reductions
+        .into_iter()
+        .filter(|rule| rule.starts_with("grammar::Expr ->"))
+        .collect()
+}
+
+#[test]
+fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixture() {
+    let (lowered, grammar) = pratt_fixture();
+    let naive = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+    assert!(!naive.conflicts().is_empty(), "the naive lowering conflicts on every operator");
+
+    let precedence = BindingPowerPrecedence::new(&grammar)
+        .expect("every binding power of the fixture has a precedence equivalent");
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{}",
+        automaton_dump(&grammar, &automaton)
+    );
+    assert_eq!(
+        automaton.resolved_conflicts().len(),
+        naive.conflicts().len(),
+        "precedence settles exactly the conflicts the naive lowering reports"
+    );
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(dump.contains("resolved by precedence (reduce)."), "{dump}");
+    assert!(dump.contains("resolved by precedence (shift)."), "{dump}");
+    assert!(dump.ends_with("No conflicts.\n"), "{dump}");
+
+    let integer = "grammar::Expr -> grammar::Integer";
+    let subtract = "grammar::Expr -> grammar::Expr MINUS grammar::Expr";
+    let power = "grammar::Expr -> grammar::Expr CARET grammar::Expr";
+    let multiply = "grammar::Expr -> grammar::Expr STAR grammar::Expr";
+    let add = "grammar::Expr -> grammar::Expr PLUS grammar::Expr";
+    let negate = "grammar::Expr -> MINUS grammar::Expr";
+    let factorial = "grammar::Expr -> grammar::Expr BANG";
+    let membership = "grammar::Expr -> grammar::Expr IN grammar::Expr";
+    // `rbp = lbp + 1` is left-associative: `1 - 2 - 3` reduces `1 - 2` before the second `-`.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "1 - 2 - 3"),
+        [integer, integer, subtract, integer, subtract]
+    );
+    // `rbp = lbp` is right-associative: `2 ^ 3 ^ 2` shifts the second `^` before reducing.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "2 ^ 3 ^ 2"),
+        [integer, integer, integer, power, power]
+    );
+    // A prefix operator reduces before a lower-binding infix and shifts a higher-binding one.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "- 1 * 2"),
+        [integer, negate, integer, multiply]
+    );
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "- 2 ^ 2"),
+        [integer, integer, power, negate]
+    );
+    // A postfix operator binds tighter than every infix operator.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "1 + 2 !"),
+        [integer, integer, factorial, add]
+    );
+    // The lowest level: `1 + 2 in 3` is `(1 + 2) in 3`.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "1 + 2 in 3"),
+        [integer, integer, add, integer, membership]
+    );
 }
