@@ -43,6 +43,11 @@ impl<T> Vec1<T> {
         self.values.append(values);
     }
 
+    /// Releases the values as a plain vector, which is never empty.
+    pub fn into_vec(self) -> Vec<T> {
+        self.values
+    }
+
     /// Returns the value whose presence establishes the invariant.
     pub fn first(&self) -> &T {
         &self.values[0]

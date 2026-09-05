@@ -383,7 +383,7 @@ fn render_generation(
     plan.validate_for_rendering()?;
     let rendering = plan;
     let plan = rendering.emission_plan();
-    let root_tokens = render_root(plan, lr);
+    let root_tokens = render_root(plan, lr)?;
     rendering
         .validate_rendered_rust(&root_tokens)
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
@@ -1043,9 +1043,9 @@ fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> Tri
 pub(super) fn render_root(
     plan: &EmissionPlan,
     lr: Option<&TableDrivenRendering>,
-) -> proc_macro2::TokenStream {
+) -> Result<proc_macro2::TokenStream, String> {
     let parser_marker = parser_marker(plan, lr.is_some());
-    let lr_items = lr.map(|lr| render_root_items(plan, lr));
+    let lr_items = lr.map(|lr| render_root_items(plan, lr)).transpose()?;
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
@@ -1236,7 +1236,7 @@ pub(super) fn render_root(
         }
     });
 
-    quote! {
+    Ok(quote! {
         #[doc(hidden)]
         pub(crate) struct __RecursaGenerationAnchor;
         const _: fn() = || {
@@ -1797,7 +1797,7 @@ pub(super) fn render_root(
                 compile_error!("error[RCA9002]: selected Generation has no body for this Node");
             };
         }
-    }
+    })
 }
 /// Renders one Node file from its frozen parse, capability, and loader plans.
 ///
