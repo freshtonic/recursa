@@ -394,7 +394,7 @@ fn render_generation(
     let mut nodes = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let name = format!("node-{index}.rs");
-        let tokens = render_node(plan, node, index, &mut instrumentation, lr);
+        let tokens = render_node(plan, node, index, &mut instrumentation, lr)?;
         rendering
             .validate_rendered_rust(&tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
@@ -1812,7 +1812,7 @@ pub(super) fn render_node(
     node_index: usize,
     instrumentation: &mut RenderInstrumentation,
     lr: Option<&TableDrivenRendering>,
-) -> proc_macro2::TokenStream {
+) -> Result<proc_macro2::TokenStream, String> {
     let parser_argument = parser_marker_argument(plan, lr.is_some());
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -1841,11 +1841,10 @@ pub(super) fn render_node(
         .parse_applications
         .iter()
         .map(|application| match lr {
-            Some(lr) => render_node_application(plan, node, application, lr)
-                .expect("the table-driven plan was checked for renderable shapes"),
-            None => render_node_parse_application(plan, node, application, instrumentation),
+            Some(lr) => render_node_application(plan, node, application, lr),
+            None => Ok(render_node_parse_application(plan, node, application, instrumentation)),
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, String>>()?;
     let token_bindings = if plan.nodes[..node_index]
         .iter()
         .any(|candidate| candidate.module == node.module)
@@ -1875,7 +1874,7 @@ pub(super) fn render_node(
         }
     });
 
-    quote! {
+    Ok(quote! {
         __recursa_generation_handshake!(#generation);
 
         #(#token_bindings)*
@@ -1931,5 +1930,5 @@ pub(super) fn render_node(
                 #facade::__private::parse_spanned(&mut input.inner)
             }
         }
-    }
+    })
 }

@@ -18,6 +18,15 @@
 //! Only what the tracer ticket (#113) needs is rendered: sequences, enum alternatives, fixed
 //! tokens and content tokens. Containers (#114), Pratt (#115) and named parsers (#116) fail
 //! generation with a message naming the ticket.
+//!
+//! Deviations from the section 8 sketch, all deliberate: a type's start state and accept rule
+//! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`, so the
+//! trait shared with recursive descent stays untouched; there is no `VALUE_SLOT`, because the
+//! value stack is typed at each pop by the constructed field; the `start_states` table that
+//! the analysis packs is not rendered, since every type carries its own start facts; the end
+//! marker terminal travels with the tables; and the reduce dispatcher takes one `Reduction`
+//! context (stack, popped frames, parse context) rather than separate stack, span and builder
+//! parameters, which is where #118 adds the occurrence stack.
 
 use std::collections::{BTreeMap, HashMap};
 
