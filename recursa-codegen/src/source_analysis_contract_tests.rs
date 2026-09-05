@@ -498,6 +498,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::invalid_admission_graphs_and_keyword_metadata_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3132"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "invalid_lookahead_filters_have_structured_diagnostics",
+        command: "cargo test -p recursa-codegen source_model::tests::invalid_lookahead_filters_have_structured_diagnostics --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
@@ -540,6 +547,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/lr.rs",
         test_name: "text_predicates_are_rejected_with_rca0403",
         command: "cargo test -p recursa-codegen lr::tests::text_predicates_are_rejected_with_rca0403 --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA0404"],
+        producer_source: "src/lr/report.rs",
+        test_source: "src/lr/lookahead.rs",
+        test_name: "an_ambiguous_substitution_reports_rca0404_naming_node_and_field",
+        command: "cargo test -p recursa-codegen lookahead::tests::an_ambiguous_substitution_reports_rca0404_naming_node_and_field --locked",
     },
     ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],

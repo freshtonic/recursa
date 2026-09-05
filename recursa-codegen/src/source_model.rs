@@ -126,6 +126,25 @@ pub(crate) struct SourceModel {
     pub(crate) token_uses: Vec<TokenUse>,
     /// Authored `#[greedy(...)]` acceptances in source order.
     pub(crate) greedy: Vec<GreedyDeclaration>,
+    /// Compiled `lookahead { ... }` declarations in canonical source order.
+    pub(crate) lookahead_filters: Vec<LookaheadFilter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One compiled lookahead filter: a word-shaped fixed token that a table-driven parser's token
+/// feed reads as the merged kind `name` when the next record is one of `triggers`.
+///
+/// The merged kind is not a token definition: `#[tok(name)]` stays unresolved, so grammar nodes
+/// keep writing the underlying token and only LR lowering substitutes the merged kind.
+pub(crate) struct LookaheadFilter {
+    /// The authored merged kind name, such as `NOT_LA`.
+    pub(crate) name: String,
+    /// Locates the merged kind's declaration, which orders the merged kinds.
+    pub(crate) site: SourceSite,
+    /// The fixed token definition the filter merges.
+    pub(crate) token: TokenDefinitionId,
+    /// The fixed token definitions that trigger the merge, in authored order without duplicates.
+    pub(crate) triggers: Vec<TokenDefinitionId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1049,6 +1068,8 @@ pub(crate) enum SourceModelDiagnosticKind {
     ObsoletePostLexHook,
     /// Identifies an obsolete authored parser postcondition.
     ObsoleteParserPostcondition,
+    /// A `lookahead { ... }` declaration names an unknown, duplicate or non-word-shaped token.
+    InvalidLookaheadFilter,
 }
 
 impl SourceModelDiagnosticKind {
@@ -1113,6 +1134,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         input.resolved.configuration.syntax.text_equivalence,
         &mut diagnostics,
     );
+    tokens.compile_lookahead_filters(&mut diagnostics);
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
         cfg: input.cfg,
@@ -5033,6 +5055,7 @@ impl SourceModelBuilder<'_> {
                     lexer_records: self.tokens.lexer_records,
                     token_uses: self.tokens.uses,
                     greedy: self.greedy,
+                    lookahead_filters: self.tokens.lookahead_filters,
                 },
             });
         SourceModelReport {
@@ -5717,6 +5740,10 @@ struct TokenCatalog {
     pending_admissions: Vec<PendingAdmissionDefinition>,
     /// Indexes canonical compiled admission membership by authored name.
     named_admissions: BTreeMap<String, Vec<TokenDefinitionId>>,
+    /// Preserves lookahead filter declarations until every fixed token is known.
+    pending_lookaheads: Vec<PendingLookaheadDefinition>,
+    /// Compiled lookahead filters in authored order.
+    lookahead_filters: Vec<LookaheadFilter>,
 }
 
 /// Carries the central content definition retained from authored source structure.
@@ -5744,6 +5771,17 @@ struct PendingAdmissionDefinition {
     site: SourceSite,
     /// Preserves the union-and-subtraction expression for graph evaluation.
     expression: PendingAdmissionExpression,
+}
+
+#[derive(Clone)]
+/// Carries one lookahead filter declaration after source locations are retained.
+struct PendingLookaheadDefinition {
+    /// Preserves the authored merged kind name and its declaration site.
+    merged: AdmissionReference,
+    /// Names the token the filter merges.
+    token: AdmissionReference,
+    /// Names the triggers in authored order.
+    triggers: Vec<AdmissionReference>,
 }
 
 #[derive(Clone)]
@@ -6106,6 +6144,112 @@ impl TokenCatalog {
             diagnostics,
         );
         self.named_admissions = compiler.compile();
+    }
+
+    /// Validates `lookahead { ... }` declarations against the fixed-token definitions.
+    ///
+    /// Every failure is [`SourceModelDiagnosticKind::InvalidLookaheadFilter`]: a merged name that
+    /// is declared twice or names a token definition, a merged token or trigger that is not a
+    /// fixed token, a merged token that is not word-shaped or is merged by an earlier filter,
+    /// and a trigger listed twice. A filter with any failure is dropped.
+    fn compile_lookahead_filters(&mut self, diagnostics: &mut Vec<SourceModelDiagnostic>) {
+        let pending = std::mem::take(&mut self.pending_lookaheads);
+        let mut declared = BTreeMap::<String, SourceSite>::new();
+        let mut merged_tokens = BTreeMap::<TokenDefinitionId, String>::new();
+        let mut compiled = Vec::new();
+        for filter in pending {
+            let mut failures = Vec::new();
+            let name = &filter.merged.name;
+            if let Some(previous) = declared.get(name) {
+                failures.push((
+                    vec![previous.clone(), filter.merged.site.clone()],
+                    format!("lookahead filter `{name}` has more than one declaration"),
+                ));
+            } else {
+                declared.insert(name.clone(), filter.merged.site.clone());
+            }
+            if self.fixed_by_name.contains_key(name) || self.content_by_name.contains_key(name) {
+                failures.push((
+                    vec![filter.merged.site.clone()],
+                    format!("lookahead filter `{name}` has the name of a token definition"),
+                ));
+            }
+            let token = self.fixed_by_name.get(&filter.token.name).copied();
+            match token {
+                None => failures.push((
+                    vec![filter.token.site.clone()],
+                    format!(
+                        "lookahead filter `{name}` merges `{}`, which is not a fixed token",
+                        filter.token.name
+                    ),
+                )),
+                Some(token) => {
+                    let TokenDefinitionKind::Fixed(fixed) = &self.definitions[token.index()].kind
+                    else {
+                        unreachable!("`fixed_by_name` indexes fixed definitions only")
+                    };
+                    if !is_word_shaped(&fixed.spelling) {
+                        failures.push((
+                            vec![filter.token.site.clone()],
+                            format!(
+                                "lookahead filter `{name}` merges `{}`, which is not word-shaped",
+                                filter.token.name
+                            ),
+                        ));
+                    }
+                    if let Some(earlier) = merged_tokens.get(&token) {
+                        failures.push((
+                            vec![filter.token.site.clone()],
+                            format!(
+                                "lookahead filter `{name}` merges `{}`, which lookahead filter \
+                                 `{earlier}` already merges",
+                                filter.token.name
+                            ),
+                        ));
+                    }
+                }
+            }
+            let mut triggers = Vec::new();
+            for trigger in &filter.triggers {
+                match self.fixed_by_name.get(&trigger.name).copied() {
+                    None => failures.push((
+                        vec![trigger.site.clone()],
+                        format!(
+                            "lookahead filter `{name}` names trigger `{}`, which is not a fixed \
+                             token",
+                            trigger.name
+                        ),
+                    )),
+                    Some(id) if triggers.contains(&id) => failures.push((
+                        vec![trigger.site.clone()],
+                        format!(
+                            "lookahead filter `{name}` names trigger `{}` more than once",
+                            trigger.name
+                        ),
+                    )),
+                    Some(id) => triggers.push(id),
+                }
+            }
+            if !failures.is_empty() {
+                diagnostics.extend(failures.into_iter().map(|(sites, message)| {
+                    SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidLookaheadFilter,
+                        sites,
+                        message,
+                    }
+                }));
+                continue;
+            }
+            let token = token.expect("a filter without failures resolved its token");
+            merged_tokens.insert(token, name.clone());
+            compiled.push(LookaheadFilter {
+                name: name.clone(),
+                site: filter.merged.site,
+                token,
+                triggers,
+            });
+        }
+        self.lookahead_filters = compiled;
     }
 
     /// Selects one deterministic source-model definition for each emitted fixed-token kind.
@@ -6474,6 +6618,17 @@ impl TokenCatalog {
                 .into_iter()
                 .map(|admission| pending_admission(resolved, origin, admission)),
         );
+        self.pending_lookaheads.extend(syntax.lookaheads.into_iter().map(|lookahead| {
+            let reference = |ident: syn::Ident| AdmissionReference {
+                name: ident.unraw().to_string(),
+                site: source_site(resolved, origin, span_range(ident.span())),
+            };
+            PendingLookaheadDefinition {
+                merged: reference(lookahead.merged),
+                token: reference(lookahead.token),
+                triggers: lookahead.triggers.into_iter().map(reference).collect(),
+            }
+        }));
         for content in syntax.content {
             if let Some(callback) = content.obsolete_callback {
                 diagnostics.push(SourceModelDiagnostic {
@@ -7930,6 +8085,19 @@ struct CentralTokensSyntax {
     flags: Vec<syn::Ident>,
     /// Supplies named admission expressions.
     admissions: Vec<CentralAdmissionSyntax>,
+    /// Supplies `MERGED = TOKEN before { TRIGGER, ... }` lookahead filter declarations.
+    lookaheads: Vec<CentralLookaheadSyntax>,
+}
+
+#[derive(Clone)]
+/// Carries one parsed `MERGED = TOKEN before { TRIGGER, ... }` lookahead filter declaration.
+struct CentralLookaheadSyntax {
+    /// Preserves the authored merged kind name.
+    merged: syn::Ident,
+    /// Preserves the authored name of the token the filter merges.
+    token: syn::Ident,
+    /// Preserves the authored trigger names in order.
+    triggers: Vec<syn::Ident>,
 }
 
 /// Carries the central non token lexer record syntax retained from authored source structure.
@@ -8332,6 +8500,7 @@ impl Parse for CentralTokensSyntax {
         let mut categories = Vec::new();
         let mut flags = Vec::new();
         let mut admissions = Vec::new();
+        let mut lookaheads = Vec::new();
         while !input.is_empty() {
             let section = syn::Ident::parse_any(input)?;
             if input.peek(Token![=]) {
@@ -8391,6 +8560,37 @@ impl Parse for CentralTokensSyntax {
                             body.parse::<Token![,]>()?;
                         } else if !body.is_empty() {
                             return Err(body.error("expected `,` after admission declaration"));
+                        }
+                    }
+                } else if section == "lookahead" {
+                    while !body.is_empty() {
+                        let merged = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=]>()?;
+                        let token = syn::Ident::parse_any(&body)?;
+                        let before = syn::Ident::parse_any(&body)?;
+                        if before != "before" {
+                            return Err(syn::Error::new(
+                                before.span(),
+                                "expected `before` after the merged token name",
+                            ));
+                        }
+                        let set;
+                        syn::braced!(set in body);
+                        let triggers =
+                            syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(
+                                &set,
+                            )?
+                            .into_iter()
+                            .collect();
+                        lookaheads.push(CentralLookaheadSyntax {
+                            merged,
+                            token,
+                            triggers,
+                        });
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error("expected `,` after lookahead filter declaration"));
                         }
                     }
                 } else if section == "matchers" || section == "ignore" || section == "trivia" {
@@ -8475,6 +8675,7 @@ impl Parse for CentralTokensSyntax {
             categories,
             flags,
             admissions,
+            lookaheads,
         })
     }
 }
@@ -9081,6 +9282,15 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
     for token_use in &mut tokens.uses {
         token_use.definition = definition_remap[token_use.definition.index()];
     }
+    for filter in &mut tokens.lookahead_filters {
+        filter.token = definition_remap[filter.token.index()];
+        for trigger in &mut filter.triggers {
+            *trigger = definition_remap[trigger.index()];
+        }
+    }
+    tokens
+        .lookahead_filters
+        .sort_by_key(|filter| canonical_source_order_key(&filter.site));
 
     tokens
         .uses
@@ -10409,6 +10619,115 @@ recursa::tokens! {
             let report = model(source);
             assert!(report.source_modeled.is_none(), "{kind:?} was non-blocking");
             assert_code(&report, kind, code);
+        }
+    }
+
+    #[test]
+    fn lookahead_filters_compile_to_fixed_definitions_in_authored_order() {
+        let model = completed(model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords {
+        NOT => "not",
+        BETWEEN => "between",
+        IN => "in",
+        LIKE => "like",
+        NULLS => "nulls",
+        FIRST => "first",
+    }
+    lookahead {
+        NOT_LA = NOT before { BETWEEN, IN, LIKE },
+        NULLS_LA = NULLS before { FIRST },
+    }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+        ));
+        let by_name = |name: &str| {
+            model
+                .token_definitions
+                .iter()
+                .find(|definition| definition.name == name)
+                .unwrap_or_else(|| panic!("no token definition named {name}"))
+                .id
+        };
+        assert_eq!(model.lookahead_filters.len(), 2);
+        assert_eq!(model.lookahead_filters[0].name, "NOT_LA");
+        assert_eq!(model.lookahead_filters[0].token, by_name("NOT"));
+        assert_eq!(
+            model.lookahead_filters[0].triggers,
+            [by_name("BETWEEN"), by_name("IN"), by_name("LIKE")]
+        );
+        assert_eq!(model.lookahead_filters[1].name, "NULLS_LA");
+        assert_eq!(model.lookahead_filters[1].token, by_name("NULLS"));
+        assert_eq!(model.lookahead_filters[1].triggers, [by_name("FIRST")]);
+        // A merged kind is not a token definition: `#[tok(NOT_LA)]` stays unresolved.
+        assert!(model
+            .token_definitions
+            .iter()
+            .all(|definition| definition.name != "NOT_LA"));
+    }
+
+    #[test]
+    fn invalid_lookahead_filters_have_structured_diagnostics() {
+        let prelude = r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { NOT => "not", BETWEEN => "between", IN => "in" }
+    punctuation { PLUS => "+" }
+"#;
+        let cases = [
+            (
+                "lookahead { NOT_LA = MISSING before { BETWEEN } }",
+                "lookahead filter `NOT_LA` merges `MISSING`, which is not a fixed token",
+            ),
+            (
+                "lookahead { NOT_LA = NOT before { BETWEEN, MISSING } }",
+                "lookahead filter `NOT_LA` names trigger `MISSING`, which is not a fixed token",
+            ),
+            (
+                "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LA = NOT before { IN } }",
+                "lookahead filter `NOT_LA` has more than one declaration",
+            ),
+            (
+                "lookahead { BETWEEN = NOT before { IN } }",
+                "lookahead filter `BETWEEN` has the name of a token definition",
+            ),
+            (
+                "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT before { IN } }",
+                "lookahead filter `NOT_LB` merges `NOT`, which lookahead filter `NOT_LA` already merges",
+            ),
+            (
+                "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT_LA before { IN } }",
+                "lookahead filter `NOT_LB` merges `NOT_LA`, which is not a fixed token",
+            ),
+            (
+                "lookahead { NOT_LA = NOT before { BETWEEN, BETWEEN } }",
+                "lookahead filter `NOT_LA` names trigger `BETWEEN` more than once",
+            ),
+            (
+                "lookahead { PLUS_LA = PLUS before { BETWEEN } }",
+                "lookahead filter `PLUS_LA` merges `PLUS`, which is not word-shaped",
+            ),
+        ];
+        for (block, message) in cases {
+            let source = format!("{prelude}{block}\n}}\n#[derive(recursa::Node)] struct Root;\n");
+            let report = model(&source);
+            assert!(report.source_modeled.is_none(), "{block} was non-blocking");
+            assert_code(
+                &report,
+                SourceModelDiagnosticKind::InvalidLookaheadFilter,
+                "RCA3132",
+            );
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == message),
+                "{block}: expected {message:?} in {:?}",
+                report.diagnostics
+            );
         }
     }
 

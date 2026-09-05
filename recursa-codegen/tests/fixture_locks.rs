@@ -16,6 +16,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "compound-nodes/Cargo.core.lock",
         "compound-nodes/Cargo.lock",
         "lexing/Cargo.lock",
+        "lookahead/Cargo.core.lock",
         "one-node/Cargo.core.lock",
         "one-node/Cargo.lock",
         "pratt/Cargo.core.lock",

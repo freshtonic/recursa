@@ -759,6 +759,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::ObsoleteParserPostcondition => "RCA3128",
         SourceModelDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
+        SourceModelDiagnosticKind::InvalidLookaheadFilter => "RCA3132",
     }
 }
 

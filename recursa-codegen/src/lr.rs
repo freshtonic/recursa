@@ -16,6 +16,8 @@
 pub mod automaton;
 /// The LR grammar model the lowering produces and the automaton consumes.
 pub mod grammar;
+/// Lookahead-filter substitution over lowered rules.
+pub mod lookahead;
 /// Lowering from the normalized grammar to LR rules.
 pub mod lowering;
 /// Shortest symbol paths from the start states, for diagnostics and the dump.
@@ -36,7 +38,7 @@ pub use automaton::{
 };
 pub use grammar::{
     Associativity, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin, Rule, RuleAction,
-    RuleId, RulePrecedence, StartRule, Symbol, TerminalId,
+    RuleId, RulePrecedence, StartRule, Symbol, TerminalFilter, TerminalId,
 };
 pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
