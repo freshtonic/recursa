@@ -1,11 +1,12 @@
-//! Lowering of the source-analysis fixtures and the manual pg-sql construction run.
+//! Lowering of the source-analysis fixtures; the pg-sql run is the `lr_pg_sql` integration test.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
 use super::grammar::{Associativity, LrGrammar, RuleAction, Symbol, TerminalId};
 use super::lowering::{TypeRoles, lower};
 use super::report::{automaton_dump, conflict_diagnostics};
+use super::LrAnalysis;
 use super::tables::{LrTables, simulate};
 use crate::materialization::LoweredGrammar;
 use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
@@ -281,138 +282,20 @@ fn construction_is_deterministic_across_builds() {
     assert_eq!(format!("{grammar:?}"), format!("{again:?}"));
 }
 
-/// Where the pg-sql checkout lives: `PG_SQL_MANIFEST_DIR`, else the sibling `pg-sql` directory.
-fn pg_sql_manifest_dir() -> PathBuf {
-    std::env::var_os("PG_SQL_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("recursa-codegen is in the workspace root")
-                .parent()
-                .expect("the workspace has a parent")
-                .join("pg-sql")
-        })
-}
 
-/// Manual: lowers the pg-sql grammar, builds its LALR(1) automaton and prints the sizes and
-/// the complete conflict list. The full dump and conflict report are written beside the target
-/// directory. Run with:
-///
-/// ```sh
-/// cargo test -p recursa-codegen --lib --locked \
-///   lr::fixture_tests::pg_sql_grammar_constructs_and_reports_its_conflicts -- \
-///   --ignored --exact --nocapture
-/// ```
 #[test]
-#[ignore = "manual representative-scale run over the pg-sql grammar; see docs/agents/testing.md"]
-fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
-    let worker = std::thread::Builder::new()
-        .stack_size(512 << 20)
-        .spawn(|| {
-            let manifest_dir = pg_sql_manifest_dir();
-            let started = std::time::Instant::now();
-            let lowered = lowered_tree(&manifest_dir, "src/lib.rs");
-            println!(
-                "source analysis: {} kinds, {} types, {} sites in {:.1?}",
-                lowered.grammar.kinds.len(),
-                lowered.grammar.types.len(),
-                lowered.grammar.sites.len(),
-                started.elapsed()
-            );
-            let roles = TypeRoles::from_lowered(&lowered);
-            let grammar = match lower(&lowered.grammar, &roles) {
-                Ok(grammar) => grammar,
-                Err(diagnostics) => {
-                    for diagnostic in diagnostics {
-                        println!("{}", diagnostic.render());
-                    }
-                    panic!("pg-sql did not lower");
-                }
-            };
-            println!(
-                "lr grammar: {} terminals, {} nonterminals, {} rules, {} start rules",
-                grammar.terminal_count(),
-                grammar.nonterminal_count(),
-                grammar.rules().len(),
-                grammar.starts().len()
-            );
-            let started = std::time::Instant::now();
-            let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-            println!(
-                "automaton: {} states in {:.1?}; merge check {:?}",
-                automaton.states().len(),
-                started.elapsed(),
-                automaton.merge_check()
-            );
-            let tables = LrTables::pack(&grammar, &automaton);
-            let encoded = tables.encode();
-            println!(
-                "tables: pact {} table {} check {} defact {} pgoto {} defgoto {} r1 {} r2 {} value_pops {} start_states {} = {} cells, {} encoded bytes",
-                tables.pact.len(),
-                tables.table.len(),
-                tables.check.len(),
-                tables.defact.len(),
-                tables.pgoto.len(),
-                tables.defgoto.len(),
-                tables.r1.len(),
-                tables.r2.len(),
-                tables.value_pops.len(),
-                tables.start_states.len(),
-                tables.cell_count(),
-                [
-                    &encoded.pact, &encoded.table, &encoded.check, &encoded.defact,
-                    &encoded.pgoto, &encoded.defgoto, &encoded.r1, &encoded.r2,
-                    &encoded.value_pops, &encoded.start_states,
-                ]
-                .iter()
-                .map(|table| table.text.len())
-                .sum::<usize>()
-            );
-            let default_only = tables.pact.iter().filter(|base| **base == super::tables::PACT_NINF).count();
-            println!(
-                "states acting without a lookahead: {default_only} of {} ({:.1}%)",
-                tables.pact.len(),
-                100.0 * default_only as f64 / tables.pact.len() as f64
-            );
-
-            let conflicts = automaton.conflicts();
-            let shift_reduce = conflicts
-                .iter()
-                .filter(|conflict| matches!(conflict.kind, ConflictKind::ShiftReduce { .. }))
-                .count();
-            let reduce_reduce = conflicts.len() - shift_reduce;
-            let artefacts = conflicts.iter().filter(|conflict| conflict.merge_artefact).count();
-            let states_with_conflicts = conflicts
-                .iter()
-                .map(|conflict| conflict.state)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len();
-            println!(
-                "conflicts: {} total ({shift_reduce} shift/reduce, {reduce_reduce} reduce/reduce, {artefacts} merge artefacts) in {states_with_conflicts} states",
-                conflicts.len()
-            );
-
-            let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("target")
-                .join("lr-pg-sql");
-            std::fs::create_dir_all(&out_dir).unwrap();
-            std::fs::write(out_dir.join("automaton.txt"), automaton_dump(&grammar, &automaton)).unwrap();
-            let mut report = String::new();
-            for diagnostic in conflict_diagnostics(&grammar, &automaton) {
-                report.push_str(&diagnostic.render());
-                report.push('\n');
-            }
-            std::fs::write(out_dir.join("conflicts.txt"), &report).unwrap();
-            println!("wrote {}", out_dir.display());
-            let _ = Symbol::Terminal(TerminalId::new(0));
-        })
-        .expect("spawn the construction thread");
-    worker.join().expect("the construction thread completes");
+fn the_whole_analysis_runs_from_one_entry_point() {
+    let lowered = lowered_fixture("json");
+    let analysis = LrAnalysis::from_lowered(&lowered, &NoPrecedence, AutomatonOptions::default())
+        .expect("json has no text predicates");
+    assert!(analysis.diagnostics.is_empty());
+    assert_eq!(analysis.tables, LrTables::pack(&analysis.grammar, &analysis.automaton));
+    assert!(analysis.dump().starts_with("Grammar\n\n"));
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-analysis/json");
+    let from_source = LrAnalysis::analyze_source(&fixture, Path::new("grammar.rs"), AutomatonOptions::default())
+        .expect("the public entry point reaches the same analysis");
+    assert_eq!(from_source.dump(), analysis.dump());
 }
-
 
 #[test]
 fn cskw_admission_sets_lower_to_one_rule_per_member_kind_yielding_the_token() {
