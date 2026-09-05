@@ -336,6 +336,22 @@ impl LrGrammar {
         id
     }
 
+    /// Replaces every rule with `rules`, in the given order, before any start rule exists.
+    ///
+    /// The lookahead-filter pass uses it to substitute merged terminals and to insert a twin
+    /// rule directly after its original, so the rules of one nonterminal stay contiguous for the
+    /// reduce dispatcher. The new order is the rule numbering from then on.
+    pub fn replace_rules(&mut self, rules: Vec<Rule>) {
+        assert!(self.starts.is_empty(), "rules are replaced before the start rules exist");
+        self.rules.clear();
+        for group in &mut self.rules_by_lhs {
+            group.clear();
+        }
+        for rule in rules {
+            self.add_rule(rule);
+        }
+    }
+
     /// Adds the synthetic start nonterminal and rule `S'(type) -> target` for one grammar type.
     pub fn add_start(&mut self, type_id: TypeId, target: NonterminalId) -> RuleId {
         let name = format!("$accept({})", self.nonterminal(target).name);

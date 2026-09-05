@@ -549,6 +549,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen lr::tests::text_predicates_are_rejected_with_rca0403 --locked",
     },
     ProducerEvidence {
+        codes: &["RCA0404"],
+        producer_source: "src/lr/report.rs",
+        test_source: "src/lr/lookahead.rs",
+        test_name: "an_ambiguous_substitution_reports_rca0404_naming_node_and_field",
+        command: "cargo test -p recursa-codegen lookahead::tests::an_ambiguous_substitution_reports_rca0404_naming_node_and_field --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],
         producer_source: "src/build_diagnostic.rs",
         test_source: "src/source_analysis_contract_tests.rs",
