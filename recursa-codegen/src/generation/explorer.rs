@@ -483,6 +483,20 @@ pub(super) fn explorer_token_plans(
                         )),
                     )
                 }
+                // A merged kind is never lexed, so the explorer never sees one in a token
+                // stream; it is planned as the keyword it spells so the kind table stays dense.
+                TokenKindIdentity::Merged(merged) => (
+                    ExplorerTokenKindPlan::Fixed,
+                    Some(fixed_pretty_spelling(
+                        &merged.spelling,
+                        lowered.grammar.text_equivalence,
+                    )),
+                    ExplorerHighlightClassPlan::Keyword,
+                    ExplorerDisplayPlan::Fixed(fixed_pretty_spelling(
+                        &merged.spelling,
+                        lowered.grammar.text_equivalence,
+                    )),
+                ),
                 TokenKindIdentity::ContentBase(_) => (
                     ExplorerTokenKindPlan::Content,
                     None,
@@ -1096,6 +1110,7 @@ pub(super) fn planned_kind_variants(
                     || format!("Content{}", kind.id.index()),
                     |target| target.name.clone(),
                 ),
+            TokenKindIdentity::Merged(merged) => merged.name.clone(),
         };
         let mut candidate = candidate;
         if !used.insert(candidate.clone()) {

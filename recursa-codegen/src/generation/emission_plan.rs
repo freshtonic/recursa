@@ -398,6 +398,7 @@ impl EmissionPlan {
             .iter()
             .map(|kind| match &kind.identity {
                 TokenKindIdentity::Fixed(text) => Some(text.clone()),
+                TokenKindIdentity::Merged(merged) => Some(merged.spelling.clone()),
                 TokenKindIdentity::ContentBase(_) => None,
             })
             .collect::<Vec<_>>();

@@ -15,6 +15,8 @@
 pub mod automaton;
 /// The LR grammar model the lowering produces and the automaton consumes.
 pub mod grammar;
+/// Lookahead-filter substitution over lowered rules.
+pub mod lookahead;
 /// Lowering from the normalized grammar to LR rules.
 pub mod lowering;
 /// Bison-style automaton dump and conflict diagnostics.

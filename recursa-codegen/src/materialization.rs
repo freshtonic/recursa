@@ -3027,6 +3027,34 @@ impl Materializer {
         let mut fixed_types = BTreeMap::new();
         let mut fixed_kinds_by_spelling = BTreeMap::new();
         for kind_plan in &self.lexical_plan().token_kinds {
+            // A merged kind has no token definition; its evidence is the `lookahead` declaration.
+            if let crate::lexical::TokenKindIdentity::Merged(merged) = &kind_plan.identity {
+                let filter = self
+                    .source_model()
+                    .lookahead_filters
+                    .iter()
+                    .find(|filter| filter.name == merged.name)
+                    .expect("every merged kind has a lookahead filter declaration");
+                let site = &filter.site;
+                let location =
+                    grammar.push_location(Location::new(site.source, site.range.clone()));
+                let name = kind_label(&kind_plan.identity);
+                let declaration = grammar.push_declaration(Declaration::new(&name, location));
+                let kind = grammar.push_kind(
+                    KindDescription::new(&name, declaration).with_authored(filter.name.clone()),
+                );
+                assert_eq!(
+                    kind, kind_plan.id,
+                    "semantic analysis KindId must equal the lexical KindId"
+                );
+                let atom = grammar.push_atom(AtomDescription::new(
+                    &name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                kind_atoms.push(atom);
+                continue;
+            }
             let source_definition = self
                 .lexical_plan()
                 .lowering_map
@@ -3082,6 +3110,16 @@ impl Materializer {
                 grammar.push_balanced_delimiter(*open, *close);
             }
         }
+        grammar.lookahead_filters = self
+            .lexical_plan()
+            .lookahead_filters
+            .iter()
+            .map(|filter| crate::LookaheadFilter {
+                merged: filter.merged,
+                token: filter.token,
+                triggers: filter.triggers.clone(),
+            })
+            .collect();
         let mut content_types = BTreeMap::new();
         for target in &self.lexical_plan().parser_targets {
             let source_definition =
