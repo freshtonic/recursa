@@ -141,7 +141,11 @@ token feed produces it. Grammar nodes keep writing `#[tok(NOT, BETWEEN)]`.
 Lowering substitutes the merged kind at every rule position where the
 next symbol can begin with a trigger. A position where the next symbol can
 begin with both a trigger and a non-trigger is a hard error naming the
-node and field. The declaration is inert under recursive descent. Fact:
+node and field. A token that ends its rule is decided by the FOLLOW of the
+rule's nonterminal instead; when that FOLLOW holds both triggers and
+non-triggers the rule is emitted twice, once with each kind, which is
+conflict-free because the automaton chooses between the twins by the
+terminal it shifts. The declaration is inert under recursive descent. Fact:
 of pg-sql's 528 decision tables, 377 walk deeper than one token and 137
 exhaust `max_lookahead = 5`; that is an LL fact, mostly shared prefixes
 that LR resolves by deferring the reduction, and the true filter set is
