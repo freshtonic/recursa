@@ -1516,7 +1516,7 @@ where
         });
     }
 
-    let parsed = crate::parsed::parse_spanned::<T, A>(input)
+    let parsed = crate::parsed::parse_spanned::<T, A, crate::parsed::RecursiveDescent>(input)
         .map_err(|error| parse_failure_from_error(source, error))?;
 
     if let Some(record) = input.peek(0) {
