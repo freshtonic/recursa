@@ -201,6 +201,16 @@ pub enum NonterminalOrigin {
     Start(TypeId),
     /// A helper the container lowering invented around a symbol.
     Helper,
+    /// A distinct Pratt language: the grammar type minus the LED variants a
+    /// `#[parse(pratt(exclude(...)))]` site names, or the fixed-token attachment around one of
+    /// its operands, cloned once per distinct exclusion set the way gram.y has `b_expr` beside
+    /// `a_expr`. Its rules build the original type.
+    Exclusion {
+        /// The Pratt type, or the attachment sequence around one of its operands, cloned.
+        type_id: TypeId,
+        /// The excluded LED variants, as normalized declarations in ascending order.
+        excluded: Vec<DeclId>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

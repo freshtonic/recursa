@@ -4,7 +4,9 @@ use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
 use super::precedence::BindingPowerPrecedence;
-use super::grammar::{Associativity, LrGrammar, RuleAction, Symbol, TerminalId};
+use super::grammar::{
+    Associativity, LrGrammar, NonterminalOrigin, RuleAction, Symbol, TerminalId,
+};
 use super::lowering::{TypeRoles, lower};
 use super::report::{automaton_dump, conflict_diagnostics};
 use super::LrAnalysis;
@@ -368,6 +370,9 @@ fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Au
             "^" => "CARET",
             "!" => "BANG",
             "in" => "IN",
+            "position" => "POSITION",
+            "(" => "LPAREN",
+            ")" => "RPAREN",
             _ => "IntegerText",
         })
         .map(|name| terminal(grammar, name))
@@ -378,7 +383,7 @@ fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Au
     trace
         .reductions
         .into_iter()
-        .filter(|rule| rule.starts_with("grammar::Expr ->"))
+        .filter(|rule| rule.starts_with("grammar::Expr"))
         .collect()
 }
 
@@ -442,5 +447,114 @@ fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixt
     assert_eq!(
         expr_reductions(&lowered, &grammar, &automaton, "1 + 2 in 3"),
         [integer, integer, add, integer, membership]
+    );
+}
+
+#[test]
+fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators() {
+    let (lowered, grammar) = pratt_fixture();
+    let expr = type_named(&lowered, "grammar::Expr");
+    let excluded = lowered
+        .grammar
+        .declarations
+        .iter()
+        .position(|declaration| declaration.name == "grammar::Expr::In")
+        .map(|index| crate::DeclId::new(index as u32))
+        .expect("the In variant is declared");
+    let clone = grammar
+        .nonterminal_by_name("grammar::Expr[excl In]")
+        .expect("the needle's exclusion set clones Expr");
+    assert_eq!(
+        grammar.nonterminal(clone).origin,
+        NonterminalOrigin::Exclusion {
+            type_id: expr,
+            excluded: vec![excluded],
+        }
+    );
+    assert!(grammar.nonterminal(clone).carries_value);
+    let rules: Vec<String> = grammar
+        .rules_of(clone)
+        .iter()
+        .map(|rule| grammar.render_rule(*rule))
+        .collect();
+    // Atoms keep the full language (the parenthesised operand stays the original attachment,
+    // as gram.y's `b_expr: '(' a_expr ')'`), prefix and infix operands carry the exclusion,
+    // and the excluded `In` rule is gone.
+    assert_eq!(
+        rules,
+        [
+            "grammar::Expr[excl In] -> grammar::Integer",
+            "grammar::Expr[excl In] -> grammar::Name",
+            "grammar::Expr[excl In] -> grammar::Position",
+            "grammar::Expr[excl In] -> grammar::Expr::__recursa_attachment",
+            "grammar::Expr[excl In] -> MINUS grammar::Expr[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] BANG",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] CARET grammar::Expr[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] STAR grammar::Expr[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] MINUS grammar::Expr[excl In]",
+        ]
+    );
+    let original: Vec<(u32, Option<(u8, Associativity)>)> = grammar
+        .rules_of(grammar.nonterminal_by_name("grammar::Expr").unwrap())
+        .iter()
+        .filter(|rule| !grammar.render_rule(**rule).contains(" IN "))
+        .map(|rule| {
+            let rule = grammar.rule(*rule);
+            (rule.value_pops, rule.precedence.map(|p| (p.level, p.associativity)))
+        })
+        .collect();
+    let cloned: Vec<(u32, Option<(u8, Associativity)>)> = grammar
+        .rules_of(clone)
+        .iter()
+        .map(|rule| {
+            let rule = grammar.rule(*rule);
+            assert!(
+                matches!(rule.action, RuleAction::Construct { type_id, variant: Some(_) } if type_id == expr),
+                "a clone rule builds the original type"
+            );
+            (rule.value_pops, rule.precedence.map(|p| (p.level, p.associativity)))
+        })
+        .collect();
+    assert_eq!(cloned, original, "clone rules keep the value pops and binding powers");
+    let position = grammar.nonterminal_by_name("grammar::Position").unwrap();
+    assert_eq!(
+        grammar.render_rule(grammar.rules_of(position)[0]),
+        "grammar::Position -> POSITION LPAREN grammar::Expr[excl In] IN grammar::Expr RPAREN"
+    );
+    assert_eq!(
+        grammar
+            .nonterminals()
+            .iter()
+            .filter(|nonterminal| nonterminal.name.contains("[excl"))
+            .count(),
+        1,
+        "one exclusion set, one clone"
+    );
+
+    let precedence = BindingPowerPrecedence::new(&grammar).expect("the clone keeps the levels");
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    assert!(automaton.conflicts().is_empty(), "{}", automaton_dump(&grammar, &automaton));
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(
+        dump.contains("grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]"),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("grammar::Position -> POSITION LPAREN . grammar::Expr[excl In] IN grammar::Expr RPAREN"),
+        "{dump}"
+    );
+    // The needle stops at `in`; the haystack takes the rest.
+    assert_eq!(
+        expr_reductions(&lowered, &grammar, &automaton, "position ( 1 + 2 in 3 in 4 )"),
+        [
+            "grammar::Expr[excl In] -> grammar::Integer",
+            "grammar::Expr[excl In] -> grammar::Integer",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]",
+            "grammar::Expr -> grammar::Integer",
+            "grammar::Expr -> grammar::Integer",
+            "grammar::Expr -> grammar::Expr IN grammar::Expr",
+            "grammar::Expr -> grammar::Position",
+        ]
     );
 }

@@ -7,20 +7,37 @@
 //! Containers become shared helper nonterminals in the simplest correct form: nullable
 //! optionals and left-recursive lists (ticket #114 refines them). Pratt enums become plain
 //! alternatives with the implicit left operand prepended to infix and postfix rules, and their
-//! binding powers are recorded on the rules for ticket #115. Every parse entry type gets a
-//! synthetic start rule. A text predicate other than `Any` is `RCA0403`.
+//! binding powers are recorded on the rules for the precedence resolver; a pair with no
+//! precedence equivalent is `RCA0402`. A `#[parse(pratt(exclude(...)))]` site names a distinct
+//! language, so the Pratt nonterminal is cloned once per distinct exclusion set (`Expr[excl
+//! In]`) without the excluded rules, the way gram.y has `b_expr` beside `a_expr`. Every parse
+//! entry type gets a synthetic start rule. A text predicate other than `Any` is `RCA0403`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use super::grammar::{
     LrGrammar, NonterminalId, NonterminalOrigin, Rule, RuleAction, RulePrecedence, Symbol,
     TerminalId, UnrepresentableBindingPowers,
 };
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
+use crate::materialization::{
+    MaterializedElement, MaterializedFieldLowering, MaterializedNodeBody, MaterializedPrattVariant,
+    MaterializedSemanticFieldProjection,
+};
 use crate::{
-    ContainerShape, GrammarDescription, KindSet, PrattPosition, PrattVariant,
+    ContainerShape, DeclId, GrammarDescription, KindSet, PrattPosition, PrattVariant,
     RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
 };
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A distinct Pratt language a site selects: a Pratt type minus some of its LED variants. Two
+/// sites with equal sets share one clone.
+pub struct PrattExclusion {
+    /// The Pratt type restricted.
+    pub type_id: TypeId,
+    /// The excluded LED variants, as normalized declarations in ascending order, deduplicated.
+    pub excluded: Vec<DeclId>,
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// The facts about normalized types that the normalized grammar alone does not state: which
@@ -35,6 +52,12 @@ pub struct TypeRoles {
     pub presence_sites: BTreeSet<SiteId>,
     /// Types that get a start rule: node applications and content tokens.
     pub start_types: Vec<TypeId>,
+    /// Sites that restrict their Pratt target with `#[parse(pratt(exclude(...)))]`, keyed by the
+    /// site the authored field lowers to (the outer site when fixed tokens are attached).
+    pub pratt_exclusions: BTreeMap<SiteId, PrattExclusion>,
+    /// Fixed-token attachment sequences around one semantic site; a Pratt operand behind one
+    /// carries its exclusion set through it.
+    pub attachment_units: BTreeSet<TypeId>,
 }
 
 impl TypeRoles {
@@ -67,13 +90,123 @@ impl TypeRoles {
             .collect();
         start_types.sort_unstable();
         start_types.dedup();
+        let attachment_units: BTreeSet<TypeId> =
+            map.attachments.iter().map(|unit| unit.unit).collect();
         Self {
+            pratt_exclusions: pratt_exclusions(lowered),
             content_tokens,
             fixed_sequences,
             presence_sites,
             start_types,
+            attachment_units,
         }
     }
+}
+
+/// Reads every `#[parse(pratt(exclude(...)))]` filter off the materialized fields and resolves
+/// it to the site it lowers to and the normalized declarations of the excluded LED variants.
+/// A name that is not a LED variant of the target is dropped here; the recursive-descent
+/// planner reports it.
+fn pratt_exclusions(
+    lowered: &crate::materialization::LoweredGrammar,
+) -> BTreeMap<SiteId, PrattExclusion> {
+    let map = &lowered.lowering_map;
+    let type_of_application: HashMap<_, _> = map
+        .applications
+        .iter()
+        .map(|correlation| (correlation.application, correlation.lowered))
+        .collect();
+    let application_of_type: HashMap<_, _> = map
+        .applications
+        .iter()
+        .map(|correlation| (correlation.lowered, correlation.application))
+        .collect();
+    let unit_semantic_site: HashMap<TypeId, SiteId> = map
+        .attachments
+        .iter()
+        .map(|unit| (unit.unit, unit.sites[unit.semantic_index]))
+        .collect();
+    let mut exclusions = BTreeMap::new();
+    for application in &lowered.applications {
+        for group in application.body.element_groups() {
+            for element in group.elements {
+                let MaterializedElement::SemanticField {
+                    field,
+                    projection:
+                        MaterializedSemanticFieldProjection::Direct {
+                            pratt_extensions: Some(filter),
+                            ..
+                        },
+                    ..
+                } = element
+                else {
+                    continue;
+                };
+                let Some(site) = map.fields.iter().find_map(|correlation| {
+                    match correlation.lowered {
+                        MaterializedFieldLowering::ParseSite(site)
+                            if correlation.application == application.id
+                                && correlation.field == *field =>
+                        {
+                            Some(site)
+                        }
+                        _ => None,
+                    }
+                }) else {
+                    continue;
+                };
+                let mut target = lowered.grammar.sites[site.index()].target;
+                if let Some(semantic) = unit_semantic_site.get(&target) {
+                    target = lowered.grammar.sites[semantic.index()].target;
+                }
+                let Some(target_application) = application_of_type.get(&target) else {
+                    continue;
+                };
+                let Some(MaterializedNodeBody::Pratt(variants)) = lowered
+                    .applications
+                    .iter()
+                    .find(|candidate| candidate.id == *target_application)
+                    .map(|candidate| &candidate.body)
+                else {
+                    continue;
+                };
+                debug_assert_eq!(type_of_application.get(target_application), Some(&target));
+                let mut excluded: Vec<DeclId> = filter
+                    .excluded
+                    .iter()
+                    .filter_map(|name| {
+                        variants.iter().find_map(|variant| match variant {
+                            MaterializedPrattVariant::Led(led) if led.common.name == *name => {
+                                Some(led.common.resolved_variant)
+                            }
+                            _ => None,
+                        })
+                    })
+                    .filter_map(|resolved| {
+                        map.variants
+                            .iter()
+                            .find(|correlation| {
+                                correlation.application == *target_application
+                                    && correlation.variant == resolved
+                            })
+                            .map(|correlation| correlation.lowered)
+                    })
+                    .collect();
+                excluded.sort_unstable();
+                excluded.dedup();
+                if !excluded.is_empty() {
+                    exclusions.insert(
+                        site,
+                        PrattExclusion {
+                            type_id: target,
+                            excluded,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    exclusions
 }
 
 /// Lowers a normalized grammar to an LR grammar, or reports every text predicate (`RCA0403`)
@@ -85,6 +218,7 @@ pub fn lower(grammar: &GrammarDescription, roles: &TypeRoles) -> Result<LrGramma
     }
     let mut lowering = Lowering::new(grammar, roles);
     lowering.lower_types();
+    lowering.lower_clones();
     if !lowering.diagnostics.is_empty() {
         return Err(lowering.diagnostics);
     }
@@ -206,6 +340,12 @@ struct Lowering<'a> {
     names: BTreeSet<String>,
     /// `RCA0402` diagnostics collected while lowering Pratt variants.
     diagnostics: Vec<LrDiagnostic>,
+    /// The clone of each distinct Pratt exclusion, created on first reference.
+    clones: BTreeMap<PrattExclusion, NonterminalId>,
+    /// The clone of each attachment sequence around a Pratt operand under an exclusion.
+    attachment_clones: BTreeMap<(TypeId, PrattExclusion), NonterminalId>,
+    /// Clones whose rules are still to be emitted, in creation order.
+    pending_clones: VecDeque<(PrattExclusion, NonterminalId)>,
 }
 
 impl<'a> Lowering<'a> {
@@ -255,6 +395,9 @@ impl<'a> Lowering<'a> {
             helpers: HashMap::new(),
             names,
             diagnostics: Vec::new(),
+            clones: BTreeMap::new(),
+            attachment_clones: BTreeMap::new(),
+            pending_clones: VecDeque::new(),
         }
     }
 
@@ -311,20 +454,128 @@ impl<'a> Lowering<'a> {
                 }
                 TypeShape::Pratt { variants } => {
                     for variant in variants {
-                        let mut rhs = Vec::new();
-                        if matches!(
-                            variant.position,
-                            PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
-                        ) {
-                            rhs.push(Symbol::Nonterminal(lhs));
-                        }
-                        rhs.extend(self.sites_symbols(&variant.sites));
                         let precedence = self.variant_precedence(&variant);
-                        self.add_construct(lhs, rhs, Some(variant.declaration), type_id, precedence);
+                        self.add_pratt_rule(lhs, type_id, &variant, precedence, None);
                     }
                 }
             }
         }
+    }
+
+    /// Adds the rule of one Pratt variant to `lhs`: the implicit left operand for an infix or
+    /// postfix variant, then its sites. Under an exclusion the operands of a prefix, infix or
+    /// postfix variant refer to the clone; an atom's operands keep the full language, the way
+    /// gram.y's `b_expr` has `'(' a_expr ')'`.
+    fn add_pratt_rule(
+        &mut self,
+        lhs: NonterminalId,
+        type_id: TypeId,
+        variant: &PrattVariant,
+        precedence: Option<RulePrecedence>,
+        exclusion: Option<&PrattExclusion>,
+    ) {
+        let mut rhs = Vec::new();
+        if matches!(
+            variant.position,
+            PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+        ) {
+            rhs.push(Symbol::Nonterminal(lhs));
+        }
+        let operand_exclusion = match variant.position {
+            PrattPosition::Atom => None,
+            _ => exclusion,
+        };
+        for site in &variant.sites {
+            rhs.push(self.site_symbol_under(*site, operand_exclusion));
+        }
+        self.add_construct(lhs, rhs, Some(variant.declaration), type_id, precedence);
+    }
+
+    /// Emits the rules of every clone created so far, including the clones those rules create.
+    fn lower_clones(&mut self) {
+        while let Some((exclusion, lhs)) = self.pending_clones.pop_front() {
+            let TypeShape::Pratt { variants } =
+                self.grammar.types[exclusion.type_id.index()].shape.clone()
+            else {
+                unreachable!("only Pratt types are cloned");
+            };
+            for variant in variants {
+                if exclusion.excluded.contains(&variant.declaration) {
+                    continue;
+                }
+                // The base lowering already reported an unrepresentable pair as `RCA0402`.
+                let precedence = RulePrecedence::from_position(variant.position)
+                    .ok()
+                    .flatten();
+                self.add_pratt_rule(lhs, exclusion.type_id, &variant, precedence, Some(&exclusion));
+            }
+        }
+    }
+
+    /// Returns the clone of `exclusion`, creating it on first reference; its rules are emitted
+    /// by [`Self::lower_clones`].
+    fn pratt_clone(&mut self, exclusion: &PrattExclusion) -> NonterminalId {
+        if let Some(clone) = self.clones.get(exclusion) {
+            return *clone;
+        }
+        let name = self.unique_name(self.exclusion_name(
+            &self.grammar.types[exclusion.type_id.index()].name,
+            exclusion,
+        ));
+        let clone = self.lr.add_nonterminal(
+            name,
+            NonterminalOrigin::Exclusion {
+                type_id: exclusion.type_id,
+                excluded: exclusion.excluded.clone(),
+            },
+            true,
+        );
+        self.clones.insert(exclusion.clone(), clone);
+        self.pending_clones.push_back((exclusion.clone(), clone));
+        clone
+    }
+
+    /// Returns the clone of the attachment sequence `unit` whose semantic site carries
+    /// `exclusion`, creating it and its rule on first reference.
+    fn attachment_clone(&mut self, unit: TypeId, exclusion: &PrattExclusion) -> NonterminalId {
+        if let Some(clone) = self.attachment_clones.get(&(unit, exclusion.clone())) {
+            return *clone;
+        }
+        let description = &self.grammar.types[unit.index()];
+        let TypeShape::Sequence { sites } = description.shape.clone() else {
+            unreachable!("attachment units are sequences");
+        };
+        let name = self.unique_name(self.exclusion_name(&description.name, exclusion));
+        let clone = self.lr.add_nonterminal(
+            name,
+            NonterminalOrigin::Exclusion {
+                type_id: unit,
+                excluded: exclusion.excluded.clone(),
+            },
+            true,
+        );
+        self.attachment_clones
+            .insert((unit, exclusion.clone()), clone);
+        let rhs: Vec<Symbol> = sites
+            .iter()
+            .map(|site| self.site_symbol_under(*site, Some(exclusion)))
+            .collect();
+        self.add_construct(clone, rhs, None, unit, None);
+        clone
+    }
+
+    /// Names a clone `Type[excl A,B]` after the excluded variants' authored names.
+    fn exclusion_name(&self, base: &str, exclusion: &PrattExclusion) -> String {
+        let owner = format!("{}::", self.grammar.types[exclusion.type_id.index()].name);
+        let excluded: Vec<&str> = exclusion
+            .excluded
+            .iter()
+            .map(|declaration| {
+                let name = self.grammar.declarations[declaration.index()].name.as_str();
+                name.strip_prefix(&owner).unwrap_or(name)
+            })
+            .collect();
+        format!("{base}[excl {}]", excluded.join(","))
     }
 
     /// Derives a Pratt variant's rule precedence, reporting `RCA0402` naming the variant when
@@ -391,10 +642,40 @@ impl<'a> Lowering<'a> {
 
     /// Lowers one site: its target symbol wrapped in helpers for its container shape.
     fn site_symbol(&mut self, site_id: SiteId) -> Symbol {
+        self.site_symbol_under(site_id, None)
+    }
+
+    /// Lowers one site under an exclusion context: the site's own exclusion set wins, else the
+    /// context applies when the site is a Pratt operand of the restricted type, directly or
+    /// through an attachment sequence; any other target lowers as usual.
+    fn site_symbol_under(&mut self, site_id: SiteId, context: Option<&PrattExclusion>) -> Symbol {
         let site = self.grammar.sites[site_id.index()].clone();
-        let target = self.type_symbols[site.target.index()];
+        let exclusion = self.roles.pratt_exclusions.get(&site_id).cloned();
+        let exclusion = exclusion.as_ref().or(context);
+        let target = match exclusion {
+            Some(exclusion) if site.target == exclusion.type_id => {
+                Symbol::Nonterminal(self.pratt_clone(exclusion))
+            }
+            Some(exclusion) if self.wraps_operand_of(site.target, exclusion.type_id) => {
+                Symbol::Nonterminal(self.attachment_clone(site.target, exclusion))
+            }
+            _ => self.type_symbols[site.target.index()],
+        };
         let presence = self.roles.presence_sites.contains(&site_id);
         self.container_symbol(target, &site.container, presence)
+    }
+
+    /// Reports whether `unit` is an attachment sequence whose semantic site targets `pratt`.
+    fn wraps_operand_of(&self, unit: TypeId, pratt: TypeId) -> bool {
+        if !self.roles.attachment_units.contains(&unit) {
+            return false;
+        }
+        match &self.grammar.types[unit.index()].shape {
+            TypeShape::Sequence { sites } => sites
+                .iter()
+                .any(|site| self.grammar.sites[site.index()].target == pratt),
+            _ => false,
+        }
     }
 
     /// Wraps a symbol in the helper nonterminals a container shape needs.
