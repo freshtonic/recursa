@@ -24,6 +24,16 @@ fn main() {
         "position(x in y) + 1",
         "position((a in b) in c)",
         "-position(a in b)!",
+        "a between b + c and d * e",
+        "a between b and c in d",
+        "-a between b and c!",
+        "a between b between c and d and e",
+        "position(a between b and c in d in e)",
+        "a from b + c for d! in e",
+        "a from b for c from d for e",
+        "a[b!]",
+        "-a[b][c]!",
+        "position(a[b] from c for d in e)",
         "1 2",
     ] {
         let lexed = grammar::lex(source);
@@ -37,7 +47,23 @@ fn main() {
         );
     }
 
-    for source in ["", "1 +", "(1 + 2", "!1", "- * 2", "position(a in)", "position(a)", "in 1"] {
+    for source in [
+        "",
+        "1 +",
+        "(1 + 2",
+        "!1",
+        "- * 2",
+        "position(a in)",
+        "position(a)",
+        "in 1",
+        "a between b",
+        "a between b in c and d",
+        "position(a between b in c and d in e)",
+        "a from b in c for d",
+        "a[b + c]",
+        "a[b in c]",
+        "a[",
+    ] {
         let lexed = grammar::lex(source);
         let mut input = lexed.input();
         let error = grammar::Expr::parse(&mut input).expect_err("failing input fails");
