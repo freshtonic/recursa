@@ -46,6 +46,23 @@ pub struct GrammarDescription {
     pub sites: Vec<ParseSite>,
     /// Dense grammar types indexed by [`TypeId`].
     pub types: Vec<TypeDescription>,
+    /// Lookahead filters in declaration order; a merged kind is a kind no lexer produces.
+    pub lookahead_filters: Vec<LookaheadFilter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One `lookahead { MERGED = TOKEN before { TRIGGER, ... } }` declaration over token kinds.
+///
+/// Only a table-driven parser's token feed produces `merged`, when a `token` record is followed
+/// by a `triggers` record; LR lowering substitutes `merged` for `token` at every rule position a
+/// trigger can follow. Recursive descent ignores the declaration.
+pub struct LookaheadFilter {
+    /// The merged kind, which exists in the kind table but has no lexical rule.
+    pub merged: KindId,
+    /// The lexed kind the filter merges.
+    pub token: KindId,
+    /// The lexed kinds that trigger the merge, in authored order without duplicates.
+    pub triggers: Vec<KindId>,
 }
 
 impl GrammarDescription {
@@ -71,6 +88,7 @@ impl GrammarDescription {
             text_predicates: Vec::new(),
             sites: Vec::new(),
             types: Vec::new(),
+            lookahead_filters: Vec::new(),
         }
     }
 
