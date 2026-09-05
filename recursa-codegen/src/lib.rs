@@ -28,6 +28,8 @@ mod kind_set;
 mod lexical;
 /// Correlation-preserving lowering into the normalized grammar.
 mod lowering;
+/// LR lowering, LALR(1) construction and tables for the table-driven parser style.
+pub mod lr;
 /// Closed generic application and container materialization.
 mod materialization;
 /// Canonical proof provenance for semantic facts and diagnostics.

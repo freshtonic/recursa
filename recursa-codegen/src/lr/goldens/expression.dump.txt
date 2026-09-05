@@ -1,0 +1,138 @@
+Grammar
+
+    0 $accept(E) -> E
+    1 E -> E + T
+    2 E -> T
+    3 T -> T * F
+    4 T -> F
+    5 F -> ( E )
+    6 F -> id
+
+State 0
+
+    0 $accept(E) -> . E
+    1 E -> . E + T
+    2 E -> . T
+    3 T -> . T * F
+    4 T -> . F
+    5 F -> . ( E )
+    6 F -> . id
+
+    (           shift, and go to state 1
+    id          shift, and go to state 2
+
+    E           go to state 3
+    T           go to state 4
+    F           go to state 5
+
+
+State 1
+
+    1 E -> . E + T
+    2 E -> . T
+    3 T -> . T * F
+    4 T -> . F
+    5 F -> . ( E )
+    5 F -> ( . E )
+    6 F -> . id
+
+    (           shift, and go to state 1
+    id          shift, and go to state 2
+
+    E           go to state 6
+    T           go to state 4
+    F           go to state 5
+
+
+State 2
+
+    6 F -> id .
+
+    $default    reduce using rule 6 (F -> id)
+
+
+State 3
+
+    0 $accept(E) -> E .
+    1 E -> E . + T
+
+    +           shift, and go to state 7
+    $default    accept
+
+
+State 4
+
+    2 E -> T .
+    3 T -> T . * F
+
+    *           shift, and go to state 8
+    $default    reduce using rule 2 (E -> T)
+
+
+State 5
+
+    4 T -> F .
+
+    $default    reduce using rule 4 (T -> F)
+
+
+State 6
+
+    1 E -> E . + T
+    5 F -> ( E . )
+
+    +           shift, and go to state 7
+    )           shift, and go to state 9
+
+
+State 7
+
+    1 E -> E + . T
+    3 T -> . T * F
+    4 T -> . F
+    5 F -> . ( E )
+    6 F -> . id
+
+    (           shift, and go to state 1
+    id          shift, and go to state 2
+
+    T           go to state 10
+    F           go to state 5
+
+
+State 8
+
+    3 T -> T * . F
+    5 F -> . ( E )
+    6 F -> . id
+
+    (           shift, and go to state 1
+    id          shift, and go to state 2
+
+    F           go to state 11
+
+
+State 9
+
+    5 F -> ( E ) .
+
+    $default    reduce using rule 5 (F -> ( E ))
+
+
+State 10
+
+    1 E -> E + T .
+    3 T -> T . * F
+
+    *           shift, and go to state 8
+    $default    reduce using rule 1 (E -> E + T)
+
+
+State 11
+
+    3 T -> T * F .
+
+    $default    reduce using rule 3 (T -> T * F)
+
+
+No conflicts.
