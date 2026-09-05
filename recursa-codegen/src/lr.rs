@@ -248,7 +248,7 @@ mod tests {
     /// A normalized Pratt grammar: `Expr` with a `Number` atom and an infix `Expr::Add` over
     /// `PLUS` with the given binding powers.
     fn pratt_grammar(lbp: u8, rbp: u8) -> GrammarDescription {
-        let mut grammar = GrammarDescription::new("pratt", 2, 1, TextEquivalence::Sensitive);
+        let mut grammar = GrammarDescription::new("pratt", 4, 1, TextEquivalence::Sensitive);
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
         let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
             let declaration = grammar.push_declaration(Declaration::new(name, location));
@@ -335,9 +335,10 @@ mod tests {
                 if !excluded.is_empty() {
                     roles.pratt_exclusions.insert(
                         site,
-                        crate::lr::lowering::PrattExclusion {
+                        crate::lr::lowering::PrattRestriction {
                             type_id: expr,
                             excluded: excluded.iter().map(|id| crate::DeclId::new(*id)).collect(),
+                            min_bp: 0,
                         },
                     );
                 }
@@ -374,6 +375,230 @@ mod tests {
             .map(|rule| lowered.render_rule(*rule))
             .collect();
         assert_eq!(rules, ["Expr[excl Add] -> Number"]);
+    }
+
+    /// The Pratt grammar plus a postfix `Expr::Index` whose operand follows `[` in a fixed-token
+    /// attachment, closed by `]` when `closing`, with minimum binding power `min_bp`, the way a
+    /// postfix tail operand inherits its `bp`.
+    fn pratt_grammar_with_index_operand(min_bp: u8, closing: bool) -> (GrammarDescription, TypeRoles) {
+        let mut grammar = pratt_grammar(10, 11);
+        let expr = TypeId::new(2);
+        let location = crate::LocationId::new(0);
+        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
+            let declaration = grammar.push_declaration(Declaration::new(name, location));
+            let kind = grammar.push_kind(KindDescription::new(kind, declaration));
+            let atom = grammar.push_atom(AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let open = token(&mut grammar, "Open", "LBRACKET");
+        let close = token(&mut grammar, "Close", "RBRACKET");
+        let index_declaration =
+            grammar.push_declaration(Declaration::new("Expr::Index", location));
+        let unit = TypeId::new(grammar.types.len() as u32);
+        let mut sites = vec![
+            grammar.push_site(ParseSite::new(unit, open, index_declaration, ContainerShape::Direct)),
+            grammar.push_site(
+                ParseSite::new(unit, expr, index_declaration, ContainerShape::Direct)
+                    .with_min_bp(min_bp),
+            ),
+        ];
+        if closing {
+            sites.push(grammar.push_site(ParseSite::new(
+                unit,
+                close,
+                index_declaration,
+                ContainerShape::Direct,
+            )));
+        }
+        grammar.push_type(TypeDescription::new(
+            "Expr::__recursa_attachment",
+            index_declaration,
+            TypeShape::Sequence { sites },
+        ));
+        let operand = grammar.push_site(ParseSite::new(
+            expr,
+            unit,
+            index_declaration,
+            ContainerShape::Direct,
+        ));
+        let TypeShape::Pratt { variants } = &mut grammar.types[expr.index()].shape else {
+            panic!("Expr is the Pratt type");
+        };
+        variants.push(PrattVariant {
+            declaration: index_declaration,
+            position: PrattPosition::Postfix { bp: min_bp },
+            sites: vec![operand],
+        });
+        let mut roles = TypeRoles::default();
+        roles.attachment_units.insert(unit);
+        (grammar, roles)
+    }
+
+    /// The Pratt grammar plus a postfix `Expr::Between` written with bare operands:
+    /// `Expr -> Expr BETWEEN Expr AND Expr`, both operands at minimum binding power `min_bp`.
+    fn pratt_grammar_with_bare_between(min_bp: u8) -> GrammarDescription {
+        let mut grammar = pratt_grammar(10, 11);
+        let expr = TypeId::new(2);
+        let location = crate::LocationId::new(0);
+        let token = |grammar: &mut GrammarDescription, name: &str, kind: &str| {
+            let declaration = grammar.push_declaration(Declaration::new(name, location));
+            let kind = grammar.push_kind(KindDescription::new(kind, declaration));
+            let atom = grammar.push_atom(AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let between = token(&mut grammar, "Between", "BETWEEN");
+        let and = token(&mut grammar, "And", "AND");
+        let declaration = grammar.push_declaration(Declaration::new("Expr::Between", location));
+        let sites = vec![
+            grammar.push_site(ParseSite::new(expr, between, declaration, ContainerShape::Direct)),
+            grammar.push_site(
+                ParseSite::new(expr, expr, declaration, ContainerShape::Direct).with_min_bp(min_bp),
+            ),
+            grammar.push_site(ParseSite::new(expr, and, declaration, ContainerShape::Direct)),
+            grammar.push_site(
+                ParseSite::new(expr, expr, declaration, ContainerShape::Direct).with_min_bp(min_bp),
+            ),
+        ];
+        let TypeShape::Pratt { variants } = &mut grammar.types[expr.index()].shape else {
+            panic!("Expr is the Pratt type");
+        };
+        variants.push(PrattVariant {
+            declaration,
+            position: PrattPosition::Postfix { bp: min_bp },
+            sites,
+        });
+        grammar
+    }
+
+    /// Renders every rule of the nonterminal named `name`.
+    fn rules_named(grammar: &crate::lr::LrGrammar, name: &str) -> Vec<String> {
+        let nonterminal = grammar
+            .nonterminal_by_name(name)
+            .unwrap_or_else(|| panic!("no nonterminal named {name}"));
+        grammar
+            .rules_of(nonterminal)
+            .iter()
+            .map(|rule| grammar.render_rule(*rule))
+            .collect()
+    }
+
+    #[test]
+    fn a_bare_operand_followed_by_more_syntax_lowers_to_its_minimum_binding_power_clone() {
+        // `Expr -> Expr BETWEEN Expr AND Expr`: the middle operand is parsed with `parse_bp(6)`,
+        // so it lowers to `Expr[min 6]`, the type minus every LED variant below 6; the last
+        // operand is bare, so the rule's own precedence decides where it stops.
+        let grammar = lower(&pratt_grammar_with_bare_between(6), &TypeRoles::default())
+            .expect("a bare interleaved operand lowers");
+        assert_eq!(
+            rules_named(&grammar, "Expr"),
+            [
+                "Expr -> Number",
+                "Expr -> Expr Plus Expr",
+                "Expr -> Expr Between Expr[min 6] And Expr",
+            ]
+        );
+        assert_eq!(
+            rules_named(&grammar, "Expr[min 6]"),
+            [
+                "Expr[min 6] -> Number",
+                "Expr[min 6] -> Expr[min 6] Plus Expr",
+                "Expr[min 6] -> Expr[min 6] Between Expr[min 6] And Expr",
+            ]
+        );
+        let clone = grammar.nonterminal_by_name("Expr[min 6]").unwrap();
+        assert_eq!(
+            grammar.nonterminal(clone).origin,
+            crate::lr::NonterminalOrigin::Restriction {
+                type_id: TypeId::new(2),
+                excluded: Vec::new(),
+                min_bp: 6,
+            }
+        );
+        // The clone's rules compare their precedence with the base type's tokens.
+        let expr = grammar.nonterminal_by_name("Expr").unwrap();
+        for rule in grammar.rules_of(clone) {
+            if let Some(precedence) = grammar.rule(*rule).precedence {
+                assert_eq!(precedence.owner, expr);
+            }
+        }
+        // A minimum of 20 keeps the atom and `between` itself (its bp is the minimum), not `+`.
+        let grammar = lower(&pratt_grammar_with_bare_between(20), &TypeRoles::default()).unwrap();
+        assert_eq!(
+            rules_named(&grammar, "Expr[min 20]"),
+            [
+                "Expr[min 20] -> Number",
+                "Expr[min 20] -> Expr[min 20] Between Expr[min 20] And Expr",
+            ]
+        );
+        // Without a minimum both operands are the full language in both styles.
+        let grammar = lower(&pratt_grammar_with_bare_between(0), &TypeRoles::default()).unwrap();
+        assert_eq!(
+            grammar.render_rule(crate::lr::RuleId::new(2)),
+            "Expr -> Expr Between Expr And Expr"
+        );
+        assert!(grammar.nonterminal_by_name("Expr[min 0]").is_none());
+    }
+
+    #[test]
+    fn a_delimited_operand_lowers_to_its_minimum_binding_power_clone_inside_the_attachment() {
+        // `a[b]` at postfix bp 50: recursive descent parses `b` with `parse_bp(50)`, so only
+        // the postfix operators at 50 or above may extend it; the attachment's operand is the
+        // same clone, and the attachment inherits the variant's precedence for its own reduce.
+        let (grammar, roles) = pratt_grammar_with_index_operand(50, true);
+        let lowered = lower(&grammar, &roles).expect("a closed delimited operand lowers");
+        assert_eq!(
+            rules_named(&lowered, "Expr::__recursa_attachment"),
+            ["Expr::__recursa_attachment -> Open Expr[min 50] Close"]
+        );
+        assert_eq!(
+            rules_named(&lowered, "Expr[min 50]"),
+            [
+                "Expr[min 50] -> Number",
+                "Expr[min 50] -> Expr[min 50] Expr::__recursa_attachment",
+            ]
+        );
+        let unit = lowered.nonterminal_by_name("Expr::__recursa_attachment").unwrap();
+        let rule = lowered.rule(lowered.rules_of(unit)[0]);
+        assert_eq!(
+            rule.precedence.map(|p| (p.level, p.owner)),
+            Some((50, lowered.nonterminal_by_name("Expr").unwrap()))
+        );
+        // An open attachment (`[` before the operand, nothing after) lowers the same way.
+        let (grammar, roles) = pratt_grammar_with_index_operand(50, false);
+        let lowered = lower(&grammar, &roles).expect("an open attachment lowers");
+        assert_eq!(
+            rules_named(&lowered, "Expr::__recursa_attachment"),
+            ["Expr::__recursa_attachment -> Open Expr[min 50]"]
+        );
+        // Without a minimum the delimited operand is the full language in both styles.
+        let (grammar, roles) = pratt_grammar_with_index_operand(0, true);
+        let lowered = lower(&grammar, &roles).expect("an unrestricted delimited operand lowers");
+        assert_eq!(
+            rules_named(&lowered, "Expr::__recursa_attachment"),
+            ["Expr::__recursa_attachment -> Open Expr Close"]
+        );
     }
 
     #[test]

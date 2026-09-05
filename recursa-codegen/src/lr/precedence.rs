@@ -14,37 +14,49 @@
 //! `lbp` reaches its `bp`. A terminal that introduces no operator of that nonterminal has no
 //! precedence, so the conflict stays a conflict and is reported as `RCA0400`.
 //!
+//! Bison declares one precedence per token; here it is read off the rules, and a terminal may
+//! introduce several operators of one nonterminal at different levels (`/` starts both `a / b`
+//! and `a / ANY (...)` in pg-sql, which recursive descent tells apart with a second token). The
+//! resolver then takes the verdict every level agrees on, and leaves the conflict when the
+//! levels straddle the rule's, because no one-token decision reproduces the Pratt parse there.
+//!
 //! The token precedences are read per nonterminal, so an exclusion clone (`Expr[excl In]`) and
-//! a second Pratt type that reuses a token keep their own levels.
+//! a second Pratt type that reuses a token keep their own levels. A fixed-token attachment
+//! around an operand (`Plus -> + Expr` for `Expr -> Expr Plus`) carries its variant's
+//! precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s tokens;
+//! that is what gives an interleaved shape's middle operand its minimum binding power.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::automaton::{ConflictResolver, Item, Resolution, TerminalSet, first_sets};
-use super::grammar::{Associativity, LrGrammar, NonterminalId, RuleId, Symbol, TerminalId};
+use super::grammar::{
+    Associativity, LrGrammar, NonterminalId, RuleId, RulePrecedence, Symbol, TerminalId,
+};
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT};
 use crate::PrattPosition;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// The token precedences of a lowered grammar: for each nonterminal, the level every terminal
+/// The token precedences of a lowered grammar: for each nonterminal, the levels every terminal
 /// introduces as an infix or postfix operator.
 pub struct BindingPowerPrecedence {
-    /// The level of `(nonterminal, terminal)`: the `lbp` of the infix or the `bp` of the postfix
-    /// rule of `nonterminal` whose tail starts with `terminal`, directly or through the FIRST
-    /// set of a leading nonterminal such as an operator admission set.
-    tokens: BTreeMap<(NonterminalId, TerminalId), u8>,
+    /// The levels of `(nonterminal, terminal)`: the `lbp` of each infix and the `bp` of each
+    /// postfix rule of `nonterminal` whose tail starts with `terminal`, directly or through the
+    /// FIRST set of a leading nonterminal such as an operator admission set. Usually one level;
+    /// several, in ascending order, when the terminal starts operators that recursive descent
+    /// tells apart with a second token.
+    tokens: BTreeMap<(NonterminalId, TerminalId), Vec<u8>>,
 }
 
 impl BindingPowerPrecedence {
-    /// Reads the token precedences off `grammar`, or reports `RCA0402` for every binding-power
-    /// combination the precedence model cannot reproduce: a terminal that introduces operators
-    /// of one nonterminal at two levels (bison gives a token one precedence), and an infix rule
-    /// with `rbp = lbp - 1` beside an operator of the same nonterminal at exactly that level
-    /// (the Pratt loop lets the right operand bind that operator, rule precedence reduces first).
+    /// Reads the token precedences off `grammar`, or reports `RCA0402` for an infix rule with
+    /// `rbp = lbp - 1` beside an operator of the same nonterminal at exactly that level: the
+    /// Pratt loop lets the right operand bind that operator, rule precedence reduces first.
     pub fn new(grammar: &LrGrammar) -> Result<Self, Vec<LrDiagnostic>> {
         let nullable = grammar.nullable_nonterminals();
         let first = first_sets(grammar, &nullable);
-        let mut tokens: BTreeMap<(NonterminalId, TerminalId), (u8, RuleId)> = BTreeMap::new();
+        let mut tokens: BTreeMap<(NonterminalId, TerminalId), BTreeMap<u8, RuleId>> =
+            BTreeMap::new();
         let mut diagnostics = Vec::new();
         for (index, rule) in grammar.rules().iter().enumerate() {
             let id = RuleId::new(index as u32);
@@ -57,36 +69,18 @@ impl BindingPowerPrecedence {
             ) {
                 continue;
             }
-            debug_assert_eq!(
-                rule.rhs.first(),
-                Some(&Symbol::Nonterminal(rule.lhs)),
-                "an infix or postfix rule starts with its implicit left operand"
-            );
+            // Only the Pratt rule itself, which starts with its implicit left operand,
+            // introduces the operator; an attachment around an operand carries the precedence
+            // for its own reduce and introduces nothing.
+            if rule.rhs.first() != Some(&Symbol::Nonterminal(rule.lhs)) {
+                continue;
+            }
             for terminal in sequence_first(grammar, &first, &nullable, &rule.rhs[1..]) {
-                match tokens.get(&(rule.lhs, terminal)) {
-                    Some(&(level, other)) if level != precedence.level => {
-                        diagnostics.push(LrDiagnostic {
-                            code: NO_PRECEDENCE_EQUIVALENT,
-                            message: format!(
-                                "terminal `{}` introduces operators of `{}` at binding powers \
-                                 {level} (`{}`) and {} (`{}`); the table-driven parser style \
-                                 gives a token one precedence",
-                                grammar.terminal_name(terminal),
-                                grammar.nonterminal(rule.lhs).name,
-                                grammar.render_rule(other),
-                                precedence.level,
-                                grammar.render_rule(id),
-                            ),
-                            items: Vec::new(),
-                            actions: Vec::new(),
-                            notes: Vec::new(),
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        tokens.insert((rule.lhs, terminal), (precedence.level, id));
-                    }
-                }
+                tokens
+                    .entry((precedence.owner, terminal))
+                    .or_default()
+                    .entry(precedence.level)
+                    .or_insert(id);
             }
         }
         for (index, rule) in grammar.rules().iter().enumerate() {
@@ -99,10 +93,18 @@ impl BindingPowerPrecedence {
             if rbp.checked_add(1) != Some(lbp) {
                 continue;
             }
+            // Only a bare right operand relies on precedence; an operand inside an attachment
+            // or a clone parses with its own minimum binding power and is exact.
+            let owner = precedence.owner;
+            if rule.rhs.last() != Some(&Symbol::Nonterminal(owner)) {
+                continue;
+            }
             let clash = tokens
-                .range((rule.lhs, TerminalId::new(0))..=(rule.lhs, grammar.end_marker()))
-                .find(|(_, (level, _))| *level == rbp);
-            if let Some(((_, terminal), (_, other))) = clash {
+                .range((owner, TerminalId::new(0))..=(owner, grammar.end_marker()))
+                .find_map(|((_, terminal), levels)| {
+                    levels.get(&rbp).map(|other| (terminal, other))
+                });
+            if let Some((terminal, other)) = clash {
                 diagnostics.push(LrDiagnostic {
                     code: NO_PRECEDENCE_EQUIVALENT,
                     message: format!(
@@ -126,15 +128,33 @@ impl BindingPowerPrecedence {
         Ok(Self {
             tokens: tokens
                 .into_iter()
-                .map(|(key, (level, _))| (key, level))
+                .map(|(key, levels)| (key, levels.into_keys().collect()))
                 .collect(),
         })
     }
 
-    /// The precedence `terminal` has after a rule of `nonterminal`: the level of the infix or
-    /// postfix operator it introduces there, if any.
-    pub fn token_precedence(&self, nonterminal: NonterminalId, terminal: TerminalId) -> Option<u8> {
-        self.tokens.get(&(nonterminal, terminal)).copied()
+    /// The precedences `terminal` has after a rule of `nonterminal`: the levels of the infix
+    /// and postfix operators it introduces there; empty when it introduces none.
+    pub fn token_precedence(&self, nonterminal: NonterminalId, terminal: TerminalId) -> &[u8] {
+        self.tokens
+            .get(&(nonterminal, terminal))
+            .map_or(&[], |levels| levels.as_slice())
+    }
+}
+
+/// Bison's verdict for one rule level against one token level.
+fn verdict(rule: &RulePrecedence, token: u8) -> Resolution {
+    match rule.level.cmp(&token) {
+        Ordering::Greater => Resolution::Reduce,
+        Ordering::Less => Resolution::Shift,
+        Ordering::Equal => match rule.associativity {
+            Associativity::Left => Resolution::Reduce,
+            // `rbp = lbp` or `lbp - 1`: the right operand binds the operator first.
+            Associativity::Right => Resolution::Shift,
+            // A prefix operand binds every operator whose `lbp` reaches its `bp`; a postfix
+            // rule is complete once its operator is shifted and never meets a shift.
+            Associativity::None => Resolution::Shift,
+        },
     }
 }
 
@@ -148,19 +168,12 @@ impl ConflictResolver for BindingPowerPrecedence {
     ) -> Option<Resolution> {
         let rule = grammar.rule(reduce);
         let precedence = rule.precedence?;
-        let token = self.token_precedence(rule.lhs, lookahead)?;
-        Some(match precedence.level.cmp(&token) {
-            Ordering::Greater => Resolution::Reduce,
-            Ordering::Less => Resolution::Shift,
-            Ordering::Equal => match precedence.associativity {
-                Associativity::Left => Resolution::Reduce,
-                // `rbp = lbp` or `lbp - 1`: the right operand binds the operator first.
-                Associativity::Right => Resolution::Shift,
-                // A prefix operand binds every operator whose `lbp` reaches its `bp`; a postfix
-                // rule is complete once its operator is shifted and never meets a shift.
-                Associativity::None => Resolution::Shift,
-            },
-        })
+        let mut verdicts = self
+            .token_precedence(precedence.owner, lookahead)
+            .iter()
+            .map(|token| verdict(&precedence, *token));
+        let first = verdicts.next()?;
+        verdicts.all(|other| other == first).then_some(first)
     }
 }
 
@@ -238,7 +251,10 @@ mod tests {
         let grammar = grammar.finish();
         let (precedence, automaton) = build(&grammar);
         assert!(automaton.conflicts().is_empty());
-        assert_eq!(precedence.token_precedence(grammar.nonterminal_by_name("E").unwrap(), terminal(&grammar, "^")), Some(30));
+        assert_eq!(
+            precedence.token_precedence(grammar.nonterminal_by_name("E").unwrap(), terminal(&grammar, "^")),
+            [30]
+        );
         assert_eq!(
             reductions(&grammar, &automaton, "id ^ id ^ id"),
             ["E -> id", "E -> id", "E -> id", "E -> E ^ E", "E -> E ^ E"]
@@ -271,21 +287,45 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_introducing_operators_at_two_levels_is_rca0402() {
-        let mut grammar = TextbookGrammar::new(&["id", "+", "x"]);
+    fn a_terminal_introducing_operators_at_two_levels_resolves_only_when_they_agree() {
+        // `+` starts an infix at 10 and a postfix `+ x` at 20, as `/` starts `a / b` and
+        // `a / ANY (...)` in pg-sql. Against `*` (15) and `+` itself (10, where the infix
+        // reduces and the postfix shifts) the levels straddle the rule, so the conflict stays;
+        // against `^` (25) and `&` (5) every level gives the same verdict.
+        let mut grammar = TextbookGrammar::new(&["id", "+", "x", "*", "^", "&"]);
         grammar.rule("E", "id");
         grammar.pratt_rule("E", "E + E", PrattPosition::Infix { lbp: 10, rbp: 11 });
         grammar.pratt_rule("E", "E + x", PrattPosition::Postfix { bp: 20 });
+        grammar.pratt_rule("E", "E * E", PrattPosition::Infix { lbp: 15, rbp: 16 });
+        grammar.pratt_rule("E", "E ^ E", PrattPosition::Infix { lbp: 25, rbp: 26 });
+        grammar.pratt_rule("E", "E & E", PrattPosition::Infix { lbp: 5, rbp: 6 });
         grammar.start("E");
         let grammar = grammar.finish();
-        let error = BindingPowerPrecedence::new(&grammar).unwrap_err();
-        assert_eq!(error.len(), 1);
-        assert_eq!(error[0].code, "RCA0402");
-        assert_eq!(
-            error[0].message,
-            "terminal `+` introduces operators of `E` at binding powers 10 (`E -> E + E`) and \
-             20 (`E -> E + x`); the table-driven parser style gives a token one precedence"
-        );
+        let (precedence, automaton) = build(&grammar);
+        let expr = grammar.nonterminal_by_name("E").unwrap();
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10, 20]);
+        let plus = terminal(&grammar, "+");
+        let unresolved: Vec<String> = automaton
+            .conflicts()
+            .iter()
+            .map(|conflict| {
+                assert_eq!(conflict.lookahead, plus);
+                let ConflictKind::ShiftReduce { reduce, .. } = conflict.kind else {
+                    panic!("only shift/reduce conflicts remain");
+                };
+                grammar.render_rule(reduce)
+            })
+            .collect();
+        assert_eq!(unresolved, ["E -> E + E", "E -> E * E"]);
+        let settled: Vec<(String, Resolution)> = automaton
+            .resolved_conflicts()
+            .iter()
+            .filter(|resolved| resolved.lookahead == plus)
+            .map(|resolved| (grammar.render_rule(resolved.reduce), resolved.resolution))
+            .collect();
+        assert!(settled.contains(&("E -> E ^ E".to_owned(), Resolution::Reduce)), "{settled:?}");
+        assert!(settled.contains(&("E -> E & E".to_owned(), Resolution::Shift)), "{settled:?}");
+        assert!(!settled.iter().any(|(rule, _)| rule == "E -> E * E"), "{settled:?}");
     }
 
     #[test]
@@ -301,10 +341,10 @@ mod tests {
         let grammar = grammar.finish();
         let (precedence, automaton) = build(&grammar);
         let expr = grammar.nonterminal_by_name("E").unwrap();
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), Some(10));
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "-")), Some(10));
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "*")), Some(20));
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "id")), None);
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10]);
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "-")), [10]);
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "*")), [20]);
+        assert!(precedence.token_precedence(expr, terminal(&grammar, "id")).is_empty());
         assert!(automaton.conflicts().is_empty());
         assert_eq!(
             reductions(&grammar, &automaton, "- id - id * id"),
@@ -316,6 +356,41 @@ mod tests {
                 "E -> id",
                 "E -> E * E",
                 "E -> E Op E"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_operator_attachment_reduces_with_its_variants_precedence() {
+        // pg-sql attaches the operator token to the operand field, so an infix variant lowers to
+        // `E -> E Plus` with `Plus -> + E`; the attachment's reduce meets the next operator's
+        // shift and must decide it with the variant's binding powers against E's tokens.
+        let mut grammar = TextbookGrammar::new(&["id", "+", "*"]);
+        grammar.rule("E", "id");
+        grammar.pratt_rule("E", "E Plus", PrattPosition::Infix { lbp: 10, rbp: 11 });
+        grammar.pratt_rule("E", "E Star", PrattPosition::Infix { lbp: 20, rbp: 21 });
+        grammar.attachment_rule("Plus", "+ E", "E", PrattPosition::Infix { lbp: 10, rbp: 11 });
+        grammar.attachment_rule("Star", "* E", "E", PrattPosition::Infix { lbp: 20, rbp: 21 });
+        grammar.start("E");
+        let grammar = grammar.finish();
+        let (precedence, automaton) = build(&grammar);
+        let expr = grammar.nonterminal_by_name("E").unwrap();
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10]);
+        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "*")), [20]);
+        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert_eq!(
+            reductions(&grammar, &automaton, "id + id * id + id"),
+            [
+                "E -> id",
+                "E -> id",
+                "E -> id",
+                "Star -> * E",
+                "E -> E Star",
+                "Plus -> + E",
+                "E -> E Plus",
+                "E -> id",
+                "Plus -> + E",
+                "E -> E Plus"
             ]
         );
     }
