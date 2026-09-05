@@ -382,17 +382,22 @@ fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_m
 
 #[test]
 fn the_renderer_selection_point_routes_table_driven_and_refuses_named_parsers() {
-    // The Pratt fixture reaches the table-driven renderer, which refuses Pratt nodes until
-    // binding-power precedence lands (#115); the refusal is an emission failure like any other
-    // renderer invariant, and the recursive-descent default renders as before.
+    // The Pratt fixture reaches the table-driven renderer, whose analysis lowers the binding
+    // powers to precedence and then reports the fixture's genuine conflict, the optional
+    // `ESCAPE` clause after a `LIKE` operand (a container, #114); the refusal is an emission
+    // failure like any other renderer invariant, and the recursive-descent default renders as
+    // before. The Pratt fixtures that render table-driven are the `generated_pratt_table_driven`
+    // integration test's.
     let (_package, analyzed, plan) =
         joined_pratt_plan_with_setting("parser_style = table_driven,");
     let detail = match render_by_parser_style(&plan, &analyzed.lowered) {
-        Ok(_) => panic!("the Pratt fixture cannot render table-driven before #115"),
+        Ok(_) => panic!("the optional ESCAPE clause is a shift/reduce conflict"),
         Err(detail) => detail,
     };
     assert!(
-        detail.starts_with("table-driven generation does not render Pratt nodes yet"),
+        detail.starts_with("the table-driven parser cannot be generated: ")
+            && detail.contains("error[RCA0400]: shift/reduce conflict")
+            && detail.contains("on lookahead `ESCAPE`"),
         "{detail}"
     );
     let error = failure(Path::new("grammar.rs"), &detail);

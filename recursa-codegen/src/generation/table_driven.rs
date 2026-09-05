@@ -15,9 +15,10 @@
 //! constructed field, so a mismatch cannot be written by hand. Fixed tokens never reach the
 //! value stack: a field whose type is a fixed token is constructed as a unit value.
 //!
-//! Only what the tracer ticket (#113) needs is rendered: sequences, enum alternatives, fixed
-//! tokens and content tokens. Containers (#114), Pratt (#115) and named parsers (#116) fail
-//! generation with a message naming the ticket.
+//! Sequences, enum alternatives, Pratt variants, fixed tokens and content tokens are rendered.
+//! A Pratt variant's reduce pops its operands like any other children and boxes them at
+//! construction; the implicit left operand of an infix or postfix variant is the first pop.
+//! Containers (#114) and named parsers (#116) fail generation with a message naming the ticket.
 //!
 //! Deviations from the section 8 sketch, all deliberate: a type's start state and accept rule
 //! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`, so the
@@ -28,6 +29,7 @@
 //! context (stack, popped frames, parse context) rather than separate stack, span and builder
 //! parameters, which is where #118 adds the occurrence stack.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use super::*;
@@ -38,7 +40,7 @@ use super::parsing::{
 };
 use crate::lr::tables::EncodedTable;
 use crate::lr::{
-    AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, NoPrecedence, Rule, RuleAction,
+    AutomatonOptions, EncodedLrTables, LrAnalysis, LrDiagnostic, Rule, RuleAction,
     Symbol,
 };
 use crate::{KindId, TypeId};
@@ -62,6 +64,10 @@ struct DispatchArm {
     last: u32,
     /// Where the block's rules are reduced.
     target: DispatchTarget,
+    /// The index of `first` in the target application's own rule list: an application's rules
+    /// need not be one block (an exclusion clone's rules come later, and a cloned attachment
+    /// can split them), so each block carries its own base.
+    local_first: u32,
 }
 
 /// The table facts one grammar type's parse impl needs.
@@ -128,16 +134,7 @@ impl TableDrivenRendering {
                     .to_owned(),
             );
         }
-        for description in &lowered.grammar.types {
-            if matches!(description.shape, TypeShape::Pratt { .. }) {
-                return Err(format!(
-                    "table-driven generation does not render Pratt nodes yet (`{}` needs \
-                     binding-power precedence, #115)",
-                    description.name
-                ));
-            }
-        }
-        let analysis = LrAnalysis::from_lowered(lowered, &NoPrecedence, AutomatonOptions::default())
+        let analysis = LrAnalysis::from_lowered(lowered, AutomatonOptions::default())
             .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
         if !analysis.diagnostics.is_empty() {
             return Err(render_diagnostics(&analysis.diagnostics));
@@ -182,6 +179,7 @@ impl TableDrivenRendering {
         }
         for (index, rule) in grammar.rules().iter().enumerate() {
             let index = index as u32;
+            let mut local_first = 0;
             let target = match &rule.action {
                 RuleAction::Accept { .. } | RuleAction::FixedSequence { .. } => None,
                 RuleAction::Token { type_id } => {
@@ -193,11 +191,12 @@ impl TableDrivenRendering {
                 }
                 RuleAction::Construct { type_id, .. } => match application_by_type.get(type_id) {
                     Some(application) => {
-                        applications
+                        let rules = &mut applications
                             .get_mut(application)
                             .expect("every application was indexed")
-                            .rules
-                            .push(rule.clone());
+                            .rules;
+                        local_first = rules.len() as u32;
+                        rules.push(rule.clone());
                         Some(DispatchTarget::Application(*application))
                     }
                     None if rule.value_pops <= 1 => None,
@@ -233,6 +232,7 @@ impl TableDrivenRendering {
                     first: index,
                     last: index,
                     target,
+                    local_first,
                 }),
             }
         }
@@ -330,12 +330,12 @@ pub(super) fn render_root_items(plan: &EmissionPlan, lr: &TableDrivenRendering) 
         .map(|application| (application.application, &application.ty))
         .collect();
     let arms = lr.arms.iter().map(|arm| {
-        let (first, last) = (arm.first, arm.last);
+        let (first, last, local_first) = (arm.first, arm.last, arm.local_first);
         match arm.target {
             DispatchTarget::Application(application) => {
                 let ty = application_types[&application];
                 quote! {
-                    #first..=#last => <#ty>::__recursa_reduce_lr(rule - #first, reduction),
+                    #first..=#last => <#ty>::__recursa_reduce_lr(rule - #first + #local_first, reduction),
                 }
             }
             DispatchTarget::Token(token) => {
@@ -472,16 +472,51 @@ fn render_reduce_arm(
     let RuleAction::Construct { variant, .. } = &rule.action else {
         return Ok(quote!(#index => {},));
     };
-    let (variant_ident, style, elements): (Option<&Ident>, ResolvedFieldStyle, &[ElementParsePlan]) =
-        match (&application.body, variant) {
-            (NodeBodyPlan::Struct { style, elements }, None) => (None, *style, elements),
+    let (variant_ident, style, elements): (
+        Option<&Ident>,
+        ResolvedFieldStyle,
+        Cow<'_, [ElementParsePlan]>,
+    ) = match (&application.body, variant) {
+            (NodeBodyPlan::Struct { style, elements }, None) => {
+                (None, *style, Cow::Borrowed(elements.as_slice()))
+            }
             (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
                 let resolved = plan_variant(lr, application, *declaration)?;
                 let variant = variants
                     .iter()
                     .find(|variant| variant.resolved_variant == resolved)
                     .ok_or_else(|| format!("`{}` has no plan for one of its alternatives", node.ident))?;
-                (Some(&variant.ident), variant.style, &variant.elements)
+                (Some(&variant.ident), variant.style, Cow::Borrowed(variant.elements.as_slice()))
+            }
+            (NodeBodyPlan::Pratt(pratt), Some(declaration)) => {
+                let resolved = plan_variant(lr, application, *declaration)?;
+                if let Some(nud) = pratt
+                    .nud
+                    .iter()
+                    .find(|nud| nud.variant.resolved_variant == resolved)
+                {
+                    (
+                        Some(&nud.variant.ident),
+                        nud.variant.style,
+                        Cow::Borrowed(nud.variant.elements.as_slice()),
+                    )
+                } else if let Some(led) = pratt
+                    .led
+                    .iter()
+                    .find(|led| led.variant.resolved_variant == resolved)
+                {
+                    // The lowered rule starts with the implicit left operand, which the plan
+                    // keeps apart from the tail; put it back in front so that pops line up.
+                    let mut elements = Vec::with_capacity(led.variant.elements.len() + 1);
+                    elements.push(led.lhs.clone());
+                    elements.extend(led.variant.elements.iter().cloned());
+                    (Some(&led.variant.ident), led.variant.style, Cow::Owned(elements))
+                } else {
+                    return Err(format!(
+                        "`{}` has no Pratt plan for one of its variants",
+                        node.ident
+                    ));
+                }
             }
             _ => {
                 return Err(format!(

@@ -542,6 +542,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen lr::tests::lalr_merge_artefacts_report_rca0401_with_an_rca0405_note --locked",
     },
     ProducerEvidence {
+        codes: &["RCA0402"],
+        producer_source: "src/lr/lowering.rs",
+        test_source: "src/lr.rs",
+        test_name: "unrepresentable_binding_powers_are_rejected_with_rca0402",
+        command: "cargo test -p recursa-codegen lr::tests::unrepresentable_binding_powers_are_rejected_with_rca0402 --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA0403"],
         producer_source: "src/lr/lowering.rs",
         test_source: "src/lr.rs",

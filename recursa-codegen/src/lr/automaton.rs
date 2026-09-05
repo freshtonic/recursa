@@ -4,9 +4,10 @@
 //!
 //! The construction is the one bison uses: LR(0) states from every start rule, then lookaheads
 //! by DeRemer and Pennello's `reads`, `includes` and `lookback` relations over the digraph
-//! algorithm. Conflicts are resolved through a [`ConflictResolver`] seam so that ticket #115 can
-//! plug in binding-power precedence; without a resolution a shift/reduce conflict keeps the shift
-//! and a reduce/reduce conflict keeps the lowest rule, as bison does, and both are reported.
+//! algorithm. Shift/reduce conflicts go through a [`ConflictResolver`] seam, which binding-power
+//! precedence implements; a resolved conflict is recorded, not reported. Without a resolution a
+//! shift/reduce conflict keeps the shift and a reduce/reduce conflict keeps the lowest rule, as
+//! bison does, and both are reported.
 //!
 //! Prefix acceptance shapes two details. The synthetic start rule `S'(T) -> T` has the end marker
 //! as its only lookahead, and the end marker means "no other action applies" at runtime; the
@@ -292,7 +293,24 @@ pub enum Resolution {
     Error,
 }
 
-/// The precedence seam: ticket #115 implements it over binding powers, this ticket has none.
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One shift/reduce conflict a [`ConflictResolver`] settled. It is not a conflict: the tables
+/// carry the resolution and the dump records it the way bison's `.output` does.
+pub struct ResolvedConflict {
+    /// The state in which the actions competed.
+    pub state: StateId,
+    /// The lookahead on which they competed.
+    pub lookahead: TerminalId,
+    /// The shift target that competed.
+    pub shift: StateId,
+    /// The rule that competed.
+    pub reduce: RuleId,
+    /// The resolver's verdict.
+    pub resolution: Resolution,
+}
+
+/// The precedence seam: [`BindingPowerPrecedence`](super::precedence::BindingPowerPrecedence)
+/// implements it over Pratt binding powers; [`NoPrecedence`] reports every conflict.
 pub trait ConflictResolver {
     /// Resolves a shift/reduce conflict between `reduce` and the shift items on `lookahead`,
     /// or returns `None` to report the conflict.
@@ -367,6 +385,8 @@ pub struct Automaton {
     start_states: Vec<(TypeId, StateId)>,
     /// Conflicts in ascending (state, lookahead) order.
     conflicts: Vec<Conflict>,
+    /// Shift/reduce conflicts the resolver settled, in ascending (state, lookahead, rule) order.
+    resolved: Vec<ResolvedConflict>,
     /// What the merge-artefact check did.
     merge_check: MergeArtefactCheck,
 }
@@ -388,6 +408,7 @@ impl Automaton {
 
         let mut states = Vec::with_capacity(lr0.states.len());
         let mut conflicts = Vec::new();
+        let mut resolved = Vec::new();
         for (index, built) in lr0.states.iter().enumerate() {
             let id = StateId::new(index as u32);
             let reductions: Vec<Reduction> = built
@@ -399,9 +420,10 @@ impl Automaton {
                     lookaheads: lookaheads[&(id, item.rule)].clone(),
                 })
                 .collect();
-            let (actions, state_conflicts) =
+            let (actions, state_conflicts, state_resolved) =
                 resolve_actions(grammar, resolver, id, built, &reductions);
             conflicts.extend(state_conflicts);
+            resolved.extend(state_resolved);
             let default_reduction = choose_default_reduction(grammar, &actions);
             states.push(State {
                 id,
@@ -427,6 +449,7 @@ impl Automaton {
             states,
             start_states,
             conflicts,
+            resolved,
             merge_check,
         }
     }
@@ -447,6 +470,12 @@ impl Automaton {
     /// Returns every start state with its grammar type, in start-rule order.
     pub fn start_states(&self) -> &[(TypeId, StateId)] {
         &self.start_states
+    }
+
+    /// Returns the shift/reduce conflicts the resolver settled, in ascending (state, lookahead,
+    /// rule) order; none of them counts as a conflict.
+    pub fn resolved_conflicts(&self) -> &[ResolvedConflict] {
+        &self.resolved
     }
 
     /// Returns the conflicts in ascending (state, lookahead) order.
@@ -742,14 +771,14 @@ fn digraph(relation: &[Vec<u32>], init: &[TerminalSet]) -> Vec<TerminalSet> {
     result
 }
 
-/// Resolves the actions of one state and records its conflicts.
+/// Resolves the actions of one state and records its conflicts and its resolved conflicts.
 fn resolve_actions(
     grammar: &LrGrammar,
     resolver: &dyn ConflictResolver,
     id: StateId,
     state: &Lr0State,
     reductions: &[Reduction],
-) -> (BTreeMap<TerminalId, Action>, Vec<Conflict>) {
+) -> (BTreeMap<TerminalId, Action>, Vec<Conflict>, Vec<ResolvedConflict>) {
     let mut actions: BTreeMap<TerminalId, Action> = BTreeMap::new();
     for (symbol, target) in &state.transitions {
         if let Symbol::Terminal(terminal) = symbol {
@@ -757,6 +786,7 @@ fn resolve_actions(
         }
     }
     let mut conflicts: BTreeMap<TerminalId, Conflict> = BTreeMap::new();
+    let mut resolved: Vec<ResolvedConflict> = Vec::new();
     for reduction in reductions {
         for lookahead in reduction.lookaheads.iter() {
             match actions.get(&lookahead).copied() {
@@ -773,12 +803,23 @@ fn resolve_actions(
                         .copied()
                         .collect();
                     match resolver.resolve(grammar, reduction.rule, lookahead, &shift_items) {
-                        Some(Resolution::Shift) => {}
-                        Some(Resolution::Reduce) => {
-                            actions.insert(lookahead, Action::Reduce(reduction.rule));
-                        }
-                        Some(Resolution::Error) => {
-                            actions.insert(lookahead, Action::Error);
+                        Some(resolution) => {
+                            match resolution {
+                                Resolution::Shift => {}
+                                Resolution::Reduce => {
+                                    actions.insert(lookahead, Action::Reduce(reduction.rule));
+                                }
+                                Resolution::Error => {
+                                    actions.insert(lookahead, Action::Error);
+                                }
+                            }
+                            resolved.push(ResolvedConflict {
+                                state: id,
+                                lookahead,
+                                shift,
+                                reduce: reduction.rule,
+                                resolution,
+                            });
                         }
                         None => {
                             conflicts.entry(lookahead).or_insert(Conflict {
@@ -816,7 +857,8 @@ fn resolve_actions(
             }
         }
     }
-    (actions, conflicts.into_values().collect())
+    resolved.sort_by_key(|conflict| (conflict.lookahead, conflict.reduce));
+    (actions, conflicts.into_values().collect(), resolved)
 }
 
 /// Chooses the default reduction: the reduce whose lookahead holds the end marker if any, else
@@ -985,7 +1027,7 @@ impl CanonicalLr1 {
 }
 
 /// Computes FIRST of every nonterminal.
-fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
+pub(super) fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
     let width = grammar.terminal_count();
     let mut first = vec![TerminalSet::empty(width); grammar.nonterminal_count()];
     let mut changed = true;
