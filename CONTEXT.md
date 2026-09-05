@@ -257,6 +257,38 @@ _Avoid_: Backtracking optional, speculative parse
 The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.
 _Avoid_: Generated parse body, analysis facts
 
+**Parser style**:
+The generation-time choice of recognition strategy for a parser over one grammar: recursive descent or table-driven. It changes only the behavior behind the Parse capability; grammar types, lexing results, document framing, and derived traits are identical across styles.
+_Avoid_: Construction backend, parse mode flag, second grammar
+
+**Table-driven parser**:
+A parser style that recognizes an LALR(1) language with one grammar-wide automaton and a start state per grammar type, so every grammar type keeps its Parse capability as an entry point without composing other types' parsing.
+_Avoid_: Explicit-stack recursive descent, GLR parser, per-type automaton
+
+**Named parser**:
+One of several parsers a single generation emits over one grammar, each with its own parser style and its own grammar-local input type that selects it. The first declared parser is the default parser and owns the unqualified entry points.
+_Avoid_: Second grammar invocation, parser_name macro argument
+
+**Lookahead filter**:
+A token-grammar declaration that a fixed token immediately followed by a member of a closed trigger set is a distinct merged token kind. Only a table-driven parser's token feed produces it, and lowering substitutes it into rules at every position where the trigger can follow.
+_Avoid_: Multi-token lookahead, scanner mode, lexer callback
+
+**Reduce action**:
+The generated construction step for one rule of a table-driven parser: it takes the rule's semantic values from the value stack and yields the constructed grammar value. Fixed tokens carry no value and never reach the value stack.
+_Avoid_: Parse body, semantic callback, bison action
+
+**Value stack**:
+The table-driven parser's runtime stack of semantic values only, kept apart from the automaton's state stack and from occurrence provenance.
+_Avoid_: Symbol stack, union stack
+
+**Prefix acceptance**:
+A table-driven root parse accepts once the root type is reduced and the lookahead has no shift action; a shiftable lookahead always shifts. This equals the greedy boundary of a recursive-descent root parse.
+_Avoid_: End-of-input accept, longest-match search
+
+**Binding-power precedence**:
+The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct extender exclusion set becomes its own lowered expression type.
+_Avoid_: Runtime Pratt loop, precedence climbing
+
 **Parse capability**:
 The sealed facade contract that gives a generated grammar type its safe grammar-bound input entry while keeping recursive FOLLOW-aware operations private.
 _Avoid_: Manual parser trait, parse plan
