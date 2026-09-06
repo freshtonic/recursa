@@ -2220,7 +2220,10 @@ impl Materializer {
         }
     }
 
-    /// Validates one exact Pratt operand without admitting other semantic fields.
+    /// Validates the one exact `Box<Self>` operand of a prefix variant, which must be its last
+    /// semantic field; content-token fields before it are the operator, gram.y's
+    /// `qual_Op a_expr %prec Op` (pg-sql's user-defined operator class). No other semantic
+    /// field is admitted.
     fn validate_single_pratt_operand(
         &mut self,
         variant: ResolvedVariantId,
@@ -2232,23 +2235,56 @@ impl Materializer {
             .iter()
             .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
             .collect::<Vec<_>>();
-        if semantic.len() != 1 {
+        let content_token = |element: &MaterializedElement| {
+            matches!(
+                element,
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct {
+                        ty: ClosedType::ContentToken(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        };
+        let operands = semantic
+            .iter()
+            .filter(|element| !content_token(element))
+            .count();
+        if operands != 1 {
             let (source, range) = self.resolved_variant_site(variant);
             self.push_diagnostic(
                 source,
                 Some(range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
                 format!(
-                    "a Pratt {role} requires exactly one Box<Self> operand; found {} semantic fields",
-                    semantic.len(),
+                    "a Pratt {role} requires exactly one Box<Self> operand beside its \
+                     content-token operator fields; found {operands} other semantic fields",
                 ),
             );
             return false;
         }
-        if exact_pratt_self_operand(semantic[0], current_application) {
+        let operand = semantic
+            .last()
+            .copied()
+            .expect("one operand was counted");
+        if content_token(operand) {
+            let (source, range) = self.resolved_variant_site(variant);
+            self.push_diagnostic(
+                source,
+                Some(range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                format!(
+                    "the Box<Self> operand of a Pratt {role} must be its last semantic field; \
+                     a content-token operator follows it",
+                ),
+            );
+            return false;
+        }
+        if exact_pratt_self_operand(operand, current_application) {
             return true;
         }
-        let MaterializedElement::SemanticField { field, .. } = semantic[0] else {
+        let MaterializedElement::SemanticField { field, .. } = operand else {
             unreachable!("Pratt operand selection contains only semantic fields")
         };
         let resolved_field = self.resolved_field(*field).clone();
@@ -6148,6 +6184,103 @@ enum Expr {
             .map(|site| site.min_bp)
             .collect();
         assert_eq!(minimums, [7, 6]);
+    }
+
+    #[test]
+    fn a_prefix_variant_admits_a_content_token_operator_before_its_operand() {
+        // gram.y's `qual_Op a_expr %prec Op`: the operator is pg-sql's user-defined operator
+        // class, a content token, and the variant keeps its binding power.
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::operators }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(prefix, bp = 8)]
+    Custom(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>),
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "operators::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("materialized Expr is Pratt")
+        };
+        let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
+            panic!("Custom is a nud variant")
+        };
+        assert_eq!(prefix.position, MaterializedPrattNudPosition::Prefix { bp: 8 });
+        let types: Vec<bool> = prefix
+            .body
+            .iter()
+            .filter_map(|element| match element {
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                    ..
+                } => Some(matches!(ty, ClosedType::ContentToken(_))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(types, [true, false]);
+        // The operand site, and only it, carries the prefix binding power as its minimum.
+        let minimums: Vec<u8> = lowered.grammar.sites.iter().map(|site| site.min_bp).collect();
+        assert_eq!(minimums.iter().filter(|minimum| **minimum == 8).count(), 1, "{minimums:?}");
+        assert_eq!(minimums.last(), Some(&8), "{minimums:?}");
+    }
+
+    #[test]
+    fn rejects_prefix_variants_whose_operator_field_has_the_wrong_shape() {
+        for (invalid_variant, expected) in [
+            (
+                r#"#[parse(prefix, bp = 1)] After(Box<Self>, #[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                "must be its last semantic field",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Node(Leaf, Box<Self>)"#,
+                "found 2 other semantic fields",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Two(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>, Box<Self>)"#,
+                "found 2 other semantic fields",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Only(#[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                "found 0 other semantic fields",
+            ),
+        ] {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {{
+    #[tok("ATOM")]
+    Atom,
+    {invalid_variant},
+}}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+                        && diagnostic.message.contains(expected)
+                }),
+                "`{invalid_variant}`: {:?}",
+                report.diagnostics
+            );
+        }
     }
 
     #[test]
