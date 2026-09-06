@@ -1,7 +1,8 @@
-//! End-to-end proof of the lookahead filter (#116): the `NOT BETWEEN` fixture generates with
-//! `parsers(rd = recursive_descent, lr = table_driven)` (#119) and its `lookahead` declaration,
-//! and everything the `lr` parser's consumer observes equals what the `rd` parser of the same
-//! generation produces. A generation with the recursive-descent parser alone prints what `rd`
+//! End-to-end proof of the lookahead filter (#116) and its twin inside a rule (#121): the
+//! `NOT BETWEEN` fixture, with gram.y's `NOT a_expr | NOT_LA a_expr` shape beside it, generates
+//! with `parsers(rd = recursive_descent, lr = table_driven)` (#119) and its `lookahead`
+//! declaration, and everything the `lr` parser's consumer observes equals what the `rd` parser
+//! of the same generation produces. A generation with the recursive-descent parser alone prints what `rd`
 //! printed, with and without the declaration. The declaration is inert under recursive descent
 //! down to the generated node sources, which are byte-identical; only the root differs, by the
 //! merged `TokenKind` variant.
@@ -39,18 +40,30 @@ fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filt
     assert!(table_root.contains("NOT_LA"), "the merged kind is a TokenKind variant");
 
     // `NOT` before a trigger is a test; a bare `NOT` opens a negated condition.
-    assert!(table_stdout.contains("ok \"a not between 1 and 2;\" => Rule { cond: NotBetween(NotBetween { subject: Subject { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } }, low: Number { text: __RecursaContentToken1 { text: ContentText(\"1\") } }, high: Number { text: __RecursaContentToken1 { text: ContentText(\"2\") } } }) } cursor=7 eof=true kinds=[NameText not between NumberText and NumberText ;]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"a not b;\" => Rule { cond: AndNot(AndNot { operand: Operand { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } }, inner: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"b\") } } } }) } cursor=4 eof=true kinds=[NameText not NameText ;]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"a not not b;\" => Rule { cond: AndNot(AndNot { operand: Operand { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } }, inner: Not { mark: NotMark, inner: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"b\") } } } } }) } cursor=5 eof=true kinds=[NameText not not NameText ;]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"not a not in (3);\" => Rule { cond: Not { mark: NotMark, inner: NotIn(NotIn { subject: Subject { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } }, member: Number { text: __RecursaContentToken1 { text: ContentText(\"3\") } } }) } } cursor=8 eof=true kinds=[not NameText not in ( NumberText ) ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("ok \"a not between 1 and 2;\" => Rule { cond: NotBetween(NotBetween { subject: Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, low: Number { text: __RecursaContentToken2 { text: ContentText(\"1\") } }, high: Number { text: __RecursaContentToken2 { text: ContentText(\"2\") } } }) } cursor=7 eof=true kinds=[NameText not between NumberText and NumberText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("ok \"a not b;\" => Rule { cond: AndNot(AndNot { operand: Operand { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, inner: Name { name: Name { text: __RecursaContentToken1 { text: ContentText(\"b\") } } } }) } cursor=4 eof=true kinds=[NameText not NameText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("ok \"a not not b;\" => Rule { cond: AndNot(AndNot { operand: Operand { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, inner: Not { mark: NotMark, inner: Name { name: Name { text: __RecursaContentToken1 { text: ContentText(\"b\") } } } } }) } cursor=5 eof=true kinds=[NameText not not NameText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("ok \"not a not in (3);\" => Rule { cond: Not { mark: NotMark, inner: NotIn(NotIn { subject: Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, member: Number { text: __RecursaContentToken2 { text: ContentText(\"3\") } } }) } } cursor=8 eof=true kinds=[not NameText not in ( NumberText ) ;]\n"), "{table_stdout}");
+    // gram.y's `a_expr` shape (#121): prefix `NOT` is twinned with `NOT_LA`, so `not` before a
+    // trigger read as a name (`like`, `between`) is a negation, `NOT a NOT LIKE b` is
+    // `NOT (a NOT LIKE b)`, and a merged token keeps its lexed kind and span.
+    assert!(table_stdout.contains("expr ok \"not a not like b;\" => ExprRule { expr: Not(NotLike(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"a\"), kind: NameText } }), Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"b\"), kind: NameText } }))) } cursor=6 eof=true kinds=[not NameText not like NameText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr ok \"a not between 1 and 2;\" => ExprRule { expr: NotBetween(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"a\"), kind: NameText } }), Number(Number { text: __RecursaContentToken2 { text: ContentText(\"1\") } }), Number(Number { text: __RecursaContentToken2 { text: ContentText(\"2\") } })) } cursor=7 eof=true kinds=[NameText not between NumberText and NumberText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr ok \"not not a;\" => ExprRule { expr: Not(Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"a\"), kind: NameText } }))) } cursor=4 eof=true kinds=[not not NameText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr ok \"not like like b;\" => ExprRule { expr: Not(Like(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"like\"), kind: LIKE } }), Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"b\"), kind: NameText } }))) } cursor=5 eof=true kinds=[not like like NameText ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr ok \"not between;\" => ExprRule { expr: Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"between\"), kind: BETWEEN } })) } cursor=3 eof=true kinds=[not between ;]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr elements \"not between;\" => [expr:SemanticField@0..11 semi:FixedToken@11..12]\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr pretty \"not between;\" => \"not between;\"\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr entry Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"between\"), kind: BETWEEN } })) cursor=2\n"), "{table_stdout}");
+    assert!(table_stdout.contains("expr err \"not in;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 6 } found=Some(\"fixed:in\") cursor=0 leaked=0\n"), "{table_stdout}");
     // The merged kind exists, displays as the token it merges and is never lexed.
     assert!(table_stdout.contains("merged kind NOT_LA displays as not like not\n"), "{table_stdout}");
     assert!(table_stdout.contains("lexed [NOT, NameText, BETWEEN, NameText, IN, LIKE]\n"), "{table_stdout}");
     // A root parse stops where recursive descent stops when tokens follow the root.
     assert!(table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:between\") cursor=11\n"), "{table_stdout}");
     // Every grammar type is an entry point.
-    assert!(table_stdout.contains("entry NotIn { subject: Subject { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } }, member: Number { text: __RecursaContentToken1 { text: ContentText(\"1\") } } } cursor=6\n"), "{table_stdout}");
-    assert!(table_stdout.contains("entry Subject { name: Name { text: __RecursaContentToken0 { text: ContentText(\"a\") } } } cursor=1\n"), "{table_stdout}");
+    assert!(table_stdout.contains("entry NotIn { subject: Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, member: Number { text: __RecursaContentToken2 { text: ContentText(\"1\") } } } cursor=6\n"), "{table_stdout}");
+    assert!(table_stdout.contains("entry Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } } cursor=1\n"), "{table_stdout}");
     assert!(table_stdout.contains("entry NotMark cursor=1\n"), "{table_stdout}");
     // Failures name the lexed token, restore the cursor and drop every partial value.
     assert!(table_stdout.contains("err \"a between not 1 and 2;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 13 } found=Some(\"fixed:not\") cursor=0 leaked=0\n"), "{table_stdout}");

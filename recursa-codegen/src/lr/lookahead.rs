@@ -11,36 +11,42 @@
 //!
 //! For every rule `A -> α TOKEN β` let `next` be the terminals that can follow `TOKEN`:
 //! `FIRST(β)`, plus `FOLLOW(A)` when `β` is nullable, where FOLLOW is seeded with `$end` for
-//! every grammar type that gets a start state. Then:
+//! every grammar type that gets a start state. The decision is the same at every position of
+//! the rule, whether `TOKEN` ends it or not:
 //!
 //! - `next` holds no trigger: the position keeps `TOKEN`.
 //! - `next` holds only triggers: the position becomes `MERGED`.
-//! - `next` holds both and `β` is not empty: the position is ambiguous, `RCA0404`, naming the
-//!   node and field the position belongs to. A rule like `NOT expr` where `expr` can begin with
-//!   `BETWEEN` and with a name would need the feed to look past the trigger.
-//! - `next` holds both and `β` is empty (`TOKEN` ends the rule): the rule is emitted twice, once
-//!   with `TOKEN` and once with `MERGED`, the twin directly after the original so a type's rules
-//!   stay contiguous for the reduce dispatcher. The twins are conflict-free by construction: the
+//! - `next` holds both: the position is twinned. The rule is emitted twice, once with `TOKEN`
+//!   and once with `MERGED` at that position, as gram.y writes `NOT a_expr | NOT_LA a_expr` by
+//!   hand beside `a_expr NOT_LA LIKE a_expr`. The twins are conflict-free by construction: the
 //!   automaton chooses between them by the terminal it shifts, never by a lookahead, and every
-//!   state the twins lead to has the same items as the original's. What FOLLOW cannot tell
-//!   apart is decided at run time by the feed, which is exactly what the declaration promises.
-//!   Because every grammar type is an entry point, `$end` is in the FOLLOW of every type
-//!   nonterminal, so a rule of a type that ends in `TOKEN` gets its twin whenever a trigger can
-//!   follow the type at all.
+//!   state a twin leads to has the items of the state the original leads to, so what FOLLOW or
+//!   FIRST cannot tell apart is decided at run time by the feed, which is exactly what the
+//!   declaration promises. Because every grammar type is an entry point, `$end` is in the
+//!   FOLLOW of every type nonterminal, so a rule of a type that ends in `TOKEN` gets its twin
+//!   whenever a trigger can follow the type at all.
+//!
+//! A twin is a clone of its original: same action, value pops, precedence, fold and tail
+//! decision, so the reduce dispatcher and the renderer treat it as one more rule of the same
+//! type, and it needs no site provenance of its own. Twins follow their original directly so a
+//! type's rules stay contiguous. A rule with `k` twinned positions is emitted once per
+//! combination, `2^k` rules: the original (every position `TOKEN`) first, then the combinations
+//! in binary order with the leftmost twinned position as the low bit, so that a rule with one
+//! twinned position is `original, twin` and the order is a function of the rule alone.
+//!
+//! No position is ambiguous, so the pass has no diagnostic: whichever kind the feed produces,
+//! one twin shifts it. A grammar that needs more than the trigger to choose (`a NOT like`
+//! where `like` may also be a name after that `NOT`) surfaces as an ordinary conflict of the
+//! automaton on `MERGED`, the conflict its unfiltered form has on `TOKEN`; the filter neither
+//! creates nor hides it. `RCA0404`, which named such a position before a twin could stand
+//! inside a rule, is retired.
 //!
 //! A grammar without a `lookahead` block leaves this pass without touching a rule, which keeps
 //! the LR grammar of such a grammar identical to what it was before the pass existed.
 
-use std::collections::HashMap;
-
 use super::automaton::TerminalSet;
-use super::{LrGrammar, NonterminalId, Rule, RuleAction, Symbol, TerminalFilter, TerminalId};
-use super::report::{LOOKAHEAD_AMBIGUITY, LrDiagnostic};
-use crate::{GrammarDescription, SiteId};
-
-/// Rule provenance the lowering records: the parse site of every position of a site-derived
-/// rule, keyed by rule index, so an ambiguous position can name its node and field.
-pub(super) type RuleSites = HashMap<usize, Vec<SiteId>>;
+use super::{LrGrammar, NonterminalId, Rule, Symbol, TerminalFilter, TerminalId};
+use crate::GrammarDescription;
 
 /// One filter over LR terminals.
 struct Filter {
@@ -48,33 +54,21 @@ struct Filter {
     merged: TerminalId,
     /// The triggers.
     triggers: TerminalSet,
-    /// The merged kind's name, for diagnostics.
-    name: String,
-}
-
-/// What the pass decided for one filtered position.
-enum Decision {
-    /// Keep the token.
-    Keep,
-    /// Substitute the merged terminal.
-    Merge,
-    /// Emit the rule with both terminals.
-    Twin,
 }
 
 /// Applies every lookahead filter of `description` to the rules of `grammar`.
 ///
-/// `sites` is the lowering's rule provenance and `start_nonterminals` names the nonterminals
-/// that receive a start rule, whose FOLLOW is seeded with the end marker. Every ambiguous
-/// position is one `RCA0404` diagnostic; when any exists the grammar is left unchanged.
+/// `start_nonterminals` names the nonterminals that receive a start rule, whose FOLLOW is
+/// seeded with the end marker. The rule list is replaced by the substituted rules with every
+/// twin directly after its original; the grammar's terminal filters are recorded for the
+/// packed tables.
 pub(super) fn apply(
     grammar: &mut LrGrammar,
     description: &GrammarDescription,
-    sites: &RuleSites,
     start_nonterminals: &[NonterminalId],
-) -> Result<(), Vec<LrDiagnostic>> {
+) {
     if description.lookahead_filters.is_empty() {
-        return Ok(());
+        return;
     }
     let width = grammar.terminal_count();
     let mut filter_of: Vec<Option<usize>> = vec![None; width];
@@ -88,10 +82,6 @@ pub(super) fn apply(
         filters.push(Filter {
             merged: TerminalId::new(u32::from(filter.merged.get())),
             triggers,
-            name: description.kinds[filter.merged.index()]
-                .authored
-                .clone()
-                .unwrap_or_else(|| description.kinds[filter.merged.index()].name.clone()),
         });
     }
 
@@ -99,11 +89,11 @@ pub(super) fn apply(
     let first = first_sets(grammar, &nullable);
     let follow = follow_sets(grammar, &nullable, &first, start_nonterminals);
 
-    let mut diagnostics = Vec::new();
-    let mut rules = Vec::new();
-    for (index, rule) in grammar.rules().iter().enumerate() {
+    let mut rules = Vec::with_capacity(grammar.rules().len());
+    for rule in grammar.rules() {
         let mut substituted = rule.clone();
-        let mut twin = None;
+        // The twinned positions of the rule, in rule order, each with its merged terminal.
+        let mut twinned: Vec<(usize, TerminalId)> = Vec::new();
         for (position, symbol) in rule.rhs.iter().enumerate() {
             let Symbol::Terminal(terminal) = symbol else {
                 continue;
@@ -111,46 +101,20 @@ pub(super) fn apply(
             let Some(filter) = filter_of[terminal.index()].map(|index| &filters[index]) else {
                 continue;
             };
-            let rest = &rule.rhs[position + 1..];
-            let (next, rest_nullable) = first_of_sequence(rest, &nullable, &first, width);
-            let mut next = next;
+            let (mut next, rest_nullable) =
+                first_of_sequence(&rule.rhs[position + 1..], &nullable, &first, width);
             if rest_nullable {
                 next.union_assign(&follow[rule.lhs.index()]);
             }
             let has_trigger = next.intersects(&filter.triggers);
             let has_other = next.iter().any(|candidate| !filter.triggers.contains(candidate));
-            let decision = match (has_trigger, has_other, rest.is_empty()) {
-                (false, _, _) => Decision::Keep,
-                (true, false, _) => Decision::Merge,
-                (true, true, true) => Decision::Twin,
-                (true, true, false) => {
-                    diagnostics.push(ambiguity(
-                        grammar,
-                        description,
-                        sites,
-                        index,
-                        position,
-                        filter,
-                        &next,
-                    ));
-                    Decision::Keep
-                }
-            };
-            match decision {
-                Decision::Keep => {}
-                Decision::Merge => substituted.rhs[position] = Symbol::Terminal(filter.merged),
-                Decision::Twin => {
-                    let mut merged = substituted.clone();
-                    merged.rhs[position] = Symbol::Terminal(filter.merged);
-                    twin = Some(merged);
-                }
+            match (has_trigger, has_other) {
+                (false, _) => {}
+                (true, false) => substituted.rhs[position] = Symbol::Terminal(filter.merged),
+                (true, true) => twinned.push((position, filter.merged)),
             }
         }
-        rules.push(substituted);
-        rules.extend(twin);
-    }
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
+        rules.extend(twins(&substituted, &twinned));
     }
     grammar.replace_rules(rules);
     grammar.set_filters(
@@ -168,108 +132,23 @@ pub(super) fn apply(
             })
             .collect(),
     );
-    Ok(())
 }
 
-/// Builds the `RCA0404` diagnostic for one ambiguous position.
-fn ambiguity(
-    grammar: &LrGrammar,
-    description: &GrammarDescription,
-    sites: &RuleSites,
-    rule_index: usize,
-    position: usize,
-    filter: &Filter,
-    next: &TerminalSet,
-) -> LrDiagnostic {
-    let rule = &grammar.rules()[rule_index];
-    let Symbol::Terminal(token) = rule.rhs[position] else {
-        unreachable!("only terminal positions are filtered")
-    };
-    let mut triggers = Vec::new();
-    let mut others = Vec::new();
-    for terminal in next.iter() {
-        let name = format!("`{}`", grammar.terminal_name(terminal));
-        if filter.triggers.contains(terminal) {
-            triggers.push(name);
-        } else {
-            others.push(name);
-        }
-    }
-    let place = position_name(grammar, description, sites, rule_index, position, rule);
-    LrDiagnostic {
-        code: LOOKAHEAD_AMBIGUITY,
-        message: format!(
-            "ambiguous lookahead-filter substitution of `{}` in {place}: what follows it can \
-             begin with trigger {} and with {}, so the feed's `{}` cannot be predicted; split the \
-             rule so that the trigger and non-trigger cases are separate positions",
-            grammar.terminal_name(token),
-            triggers.join(", "),
-            others.join(", "),
-            filter.name,
-        ),
-        path: String::new(),
-        items: vec![grammar.render_rule(super::RuleId::new(rule_index as u32))],
-        actions: Vec::new(),
-        notes: Vec::new(),
-    }
-}
-
-/// Names the node and field a rule position belongs to, falling back to the rule's type and
-/// variant when the lowering recorded no site for it.
-fn position_name(
-    grammar: &LrGrammar,
-    description: &GrammarDescription,
-    sites: &RuleSites,
-    rule_index: usize,
-    position: usize,
-    rule: &Rule,
-) -> String {
-    // A `#[tok(...)]` group is attached to the field that follows it, so the field named is the
-    // first field site at or after the position; a token that ends its rule names the node.
-    let authored = sites.get(&rule_index).and_then(|sites| {
-        sites[position.min(sites.len())..]
-            .iter()
-            .map(|site| description.sites[site.index()].declaration)
-            .filter_map(|declaration| description.declarations[declaration.index()].authored.as_ref())
-            .find(|authored| {
-                matches!(authored.role, crate::AuthoredRole::Field | crate::AuthoredRole::Presence)
-            })
-            .or_else(|| {
-                sites.get(position).and_then(|site| {
-                    let declaration = description.sites[site.index()].declaration;
-                    description.declarations[declaration.index()].authored.as_ref()
-                })
-            })
-    });
-    if let Some(authored) = authored {
-        let node = &authored.node;
-        return match (&authored.variant, &authored.field) {
-            (Some(variant), Some(field)) => {
-                format!("node `{node}`, variant `{variant}`, field `{field}`")
+/// The rule and its twins: one rule per combination of the `twinned` positions, the original
+/// first and the combinations in binary order with the leftmost position as the low bit. A rule
+/// with no twinned position is itself alone.
+fn twins(rule: &Rule, twinned: &[(usize, TerminalId)]) -> Vec<Rule> {
+    (0..1usize << twinned.len())
+        .map(|combination| {
+            let mut twin = rule.clone();
+            for (bit, (position, merged)) in twinned.iter().enumerate() {
+                if combination & (1 << bit) != 0 {
+                    twin.rhs[*position] = Symbol::Terminal(*merged);
+                }
             }
-            (Some(variant), None) => format!("node `{node}`, variant `{variant}`"),
-            (None, Some(field)) => format!("node `{node}`, field `{field}`"),
-            (None, None) => format!("node `{node}`"),
-        };
-    }
-    match &rule.action {
-        RuleAction::Construct {
-            type_id,
-            variant: Some(variant),
-            ..
-        } => format!(
-            "node `{}`, variant `{}`",
-            description.types[type_id.index()].name,
-            description.declarations[variant.index()].name
-        ),
-        RuleAction::Construct { type_id, .. }
-        | RuleAction::FixedSequence { type_id }
-        | RuleAction::Token { type_id }
-        | RuleAction::Accept { type_id } => {
-            format!("node `{}`", description.types[type_id.index()].name)
-        }
-        _ => format!("rule `{}`", grammar.nonterminal(rule.lhs).name),
-    }
+            twin
+        })
+        .collect()
 }
 
 /// FIRST of a symbol sequence and whether the whole sequence is nullable.
@@ -348,11 +227,14 @@ fn follow_sets(
 #[cfg(test)]
 mod tests {
     //! The lookahead-filter tests: the normalized grammar carries the declaration, the
-    //! PostgreSQL `NOT BETWEEN` shape conflicts without the filter and not with it, an ambiguous
-    //! position is `RCA0404`, and a token at the end of a rule follows the FOLLOW rule.
+    //! PostgreSQL `NOT BETWEEN` shape conflicts without the filter and not with it, a token
+    //! inside a rule and at its end is twinned when what follows it mixes triggers and others
+    //! (gram.y's `NOT a_expr | NOT_LA a_expr`, as a Pratt prefix and as a plain field), several
+    //! twinned positions multiply out, and the packed tables carry the filter.
 
     use super::super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
-    use super::super::{LrGrammar, TerminalId};
+    use super::super::precedence::BindingPowerPrecedence;
+    use super::super::{LrGrammar, RuleId, TerminalId};
     use super::super::lowering::{TypeRoles, lower};
     use super::super::report::LrDiagnostic;
     use super::super::tables::{LrTables, simulate};
@@ -375,7 +257,7 @@ mod tests {
         }
     }
 
-    /// A small grammar over the fixture's tokens, for the ambiguous and end-of-rule shapes.
+    /// A small grammar over the fixture's tokens, for the inside-a-rule and end-of-rule shapes.
     fn small_grammar(nodes: &str) -> String {
         let tokens_start = FIXTURE.find("recursa::tokens! {").expect("the fixture declares tokens");
         let tokens_end = FIXTURE.find("#[derive(recursa::Node, Debug, Clone)]").expect("the fixture has nodes");
@@ -426,6 +308,30 @@ mod tests {
             .iter()
             .map(|rule| grammar.render_rule(*rule))
             .collect()
+    }
+
+    /// The index of the one rule rendering as `text`.
+    fn rule_index(grammar: &LrGrammar, text: &str) -> usize {
+        let indexes: Vec<usize> = (0..grammar.rules().len())
+            .filter(|index| grammar.render_rule(RuleId::new(*index as u32)) == text)
+            .collect();
+        assert_eq!(indexes.len(), 1, "one rule renders as `{text}`: {indexes:?}");
+        indexes[0]
+    }
+
+    /// Asserts that the rule rendering as `twin` directly follows the one rendering as
+    /// `original` and is its clone but for the right-hand side.
+    fn assert_twin_follows(grammar: &LrGrammar, original: &str, twin: &str) {
+        let index = rule_index(grammar, original);
+        assert_eq!(rule_index(grammar, twin), index + 1, "`{twin}` directly follows `{original}`");
+        let (original, twin) = (&grammar.rules()[index], &grammar.rules()[index + 1]);
+        assert_eq!(original.lhs, twin.lhs);
+        assert_eq!(original.rhs.len(), twin.rhs.len());
+        assert_eq!(original.value_pops, twin.value_pops);
+        assert_eq!(original.precedence, twin.precedence);
+        assert_eq!(original.action, twin.action);
+        assert_eq!(original.fold, twin.fold);
+        assert_eq!(original.tail, twin.tail);
     }
 
     /// Finds a terminal by name.
@@ -484,7 +390,8 @@ mod tests {
 
         let (_, with) = lr(&not_between_grammar(true));
         let with = with.expect("the fixture lowers with the filter");
-        let automaton = Automaton::build(&with, &NoPrecedence, AutomatonOptions::default());
+        let precedence = BindingPowerPrecedence::new(&with).expect("the fixture's binding powers have precedence equivalents");
+        let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
         assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
         assert_eq!(rules_of(&with, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Subject NOT_LA BETWEEN grammar::Number AND grammar::Number"]);
         assert_eq!(rules_of(&with, "grammar::NotIn"), ["grammar::NotIn -> grammar::Subject NOT_LA IN LPAREN grammar::Number RPAREN"]);
@@ -512,7 +419,55 @@ mod tests {
     }
 
     #[test]
-    fn an_ambiguous_substitution_reports_rca0404_naming_node_and_field() {
+    fn a_pratt_prefix_whose_operand_can_begin_with_a_trigger_is_twinned() {
+        // gram.y's `NOT a_expr | NOT_LA a_expr`: the operand of prefix `NOT` can begin with
+        // `like` or `between` as a name, so the prefix rule is emitted with both kinds, and the
+        // tests keep the merged kind alone.
+        let (_, with) = lr(&not_between_grammar(true));
+        let with = with.expect("the fixture lowers with the filter");
+        let rendered: Vec<String> = (0..with.rules().len())
+            .map(|index| with.render_rule(RuleId::new(index as u32)))
+            .collect();
+        let original = rendered
+            .iter()
+            .find(|rule| rule.starts_with("grammar::Expr::") && rule.ends_with(" -> NOT grammar::Expr[min 10]"))
+            .unwrap_or_else(|| panic!("the prefix operand attachment keeps `NOT`: {rendered:#?}"));
+        let twin = original.replace("-> NOT ", "-> NOT_LA ");
+        assert_twin_follows(&with, original, &twin);
+        let tests: Vec<&String> = rendered
+            .iter()
+            .filter(|rule| rule.starts_with("grammar::Expr::") && rule.contains("-> NOT"))
+            .collect();
+        assert_eq!(tests.len(), 5, "the twins and the three tests: {tests:#?}");
+        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA LIKE grammar::Expr[min 20]")), "{tests:#?}");
+        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA BETWEEN grammar::Expr[min 20]")), "{tests:#?}");
+        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA IN LPAREN grammar::Expr[min 20] RPAREN")), "{tests:#?}");
+        assert!(!rendered.iter().any(|rule| rule.contains("grammar::Expr[min 10] -> NOT ")), "the clone's prefix is the attachment's: {rendered:#?}");
+
+        // The automaton is conflict-free under binding-power precedence, and the tables parse
+        // every reading of `NOT`: `not a not like b;`, `not like like b;`, `not between;`.
+        let precedence = BindingPowerPrecedence::new(&with).expect("the fixture's binding powers have precedence equivalents");
+        let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
+        assert!(automaton.conflicts().is_empty(), "{:#?}", automaton.conflicts());
+        let tables = LrTables::pack(&with, &automaton);
+        let expr_rule = with.starts().iter().find(|start| with.nonterminal(with.rule(start.rule).lhs).name == "$accept(grammar::ExprRule)").expect("ExprRule has a start rule");
+        let start = automaton.start_state(expr_rule.type_id).expect("start state").index() as u32;
+        let word = |spelling: &str| terminal(&with, spelling);
+        let name = word("NameText");
+        let trace = simulate(&with, &tables, start, &[word("NOT"), name, word("NOT_LA"), word("LIKE"), name, word("SEMI")]).expect("`not a not like b;` parses");
+        assert_eq!(trace.consumed, 6);
+        assert_eq!(trace.reductions.iter().filter(|rule| rule.contains("-> NOT grammar::Expr[min 10]")).count(), 1, "{:#?}", trace.reductions);
+        let trace = simulate(&with, &tables, start, &[word("NOT_LA"), word("LIKE"), word("LIKE"), name, word("SEMI")]).expect("`not like like b;` parses");
+        assert_eq!(trace.consumed, 5);
+        assert_eq!(trace.reductions.iter().filter(|rule| rule.contains("-> NOT_LA grammar::Expr[min 10]")).count(), 1, "{:#?}", trace.reductions);
+        let trace = simulate(&with, &tables, start, &[word("NOT_LA"), word("BETWEEN"), word("SEMI")]).expect("`not between;` parses");
+        assert_eq!(trace.consumed, 3);
+        let trace = simulate(&with, &tables, start, &[word("NOT"), word("NOT"), name, word("SEMI")]).expect("`not not a;` parses");
+        assert_eq!(trace.consumed, 4);
+    }
+
+    #[test]
+    fn a_token_inside_a_rule_is_twinned_when_what_follows_mixes_triggers_and_others() {
         let source = small_grammar(
             r#"
 #[derive(recursa::Node)]
@@ -528,20 +483,63 @@ pub enum Thing<'input> {
 }
 "#,
         );
-        let (_, result) = lr(&source);
-        let diagnostics = result.expect_err("`NOT Thing` is ambiguous: `Thing` begins with `BETWEEN` and with a name");
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        let diagnostic = &diagnostics[0];
-        assert_eq!(diagnostic.code, "RCA0404");
-        assert_eq!(
-            diagnostic.message,
-            "ambiguous lookahead-filter substitution of `NOT` in node `Wrap`, field `inner`: what \
-             follows it can begin with trigger `BETWEEN` and with `NameText`, so the feed's \
-             `NOT_LA` cannot be predicted; split the rule so that the trigger and non-trigger \
-             cases are separate positions"
+        let (lowered, result) = lr(&source);
+        let grammar = result.expect("`NOT Thing` twins: `Thing` begins with `BETWEEN` and with a name");
+        assert_eq!(rules_of(&grammar, "Wrap"), ["Wrap -> NOT Thing", "Wrap -> NOT_LA Thing"]);
+        assert_twin_follows(&grammar, "Wrap -> NOT Thing", "Wrap -> NOT_LA Thing");
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        let tables = LrTables::pack(&grammar, &automaton);
+        let wrap = lowered.grammar.types.iter().position(|description| description.name == "Wrap").expect("Wrap");
+        let start = automaton.start_state(crate::TypeId::new(wrap as u32)).expect("start").index() as u32;
+        let trace = simulate(&grammar, &tables, start, &[terminal(&grammar, "NOT_LA"), terminal(&grammar, "BETWEEN")]).expect("`not between` parses");
+        assert_eq!(trace.consumed, 2);
+        assert_eq!(trace.reductions.last().map(String::as_str), Some("Wrap -> NOT_LA Thing"), "{:?}", trace.reductions);
+        let trace = simulate(&grammar, &tables, start, &[terminal(&grammar, "NOT"), terminal(&grammar, "NameText")]).expect("`not a` parses");
+        assert_eq!(trace.consumed, 2);
+        assert_eq!(trace.reductions.last().map(String::as_str), Some("Wrap -> NOT Thing"), "{:?}", trace.reductions);
+    }
+
+    #[test]
+    fn a_rule_with_two_twinned_positions_is_emitted_once_per_combination() {
+        let source = small_grammar(
+            r#"
+#[derive(recursa::Node)]
+pub struct Twice<'input> {
+    #[tok(NOT)]
+    pub first: Thing<'input>,
+    #[tok(NOT)]
+    pub second: Thing<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum Thing<'input> {
+    Between { mark: BetweenMark },
+    Name { name: Name<'input> },
+}
+"#,
         );
-        assert_eq!(diagnostic.items, ["Wrap -> NOT Thing"]);
-        assert!(diagnostic.render().starts_with("error[RCA0404]: "));
+        let (lowered, result) = lr(&source);
+        let grammar = result.expect("lowers");
+        // The original first, then the combinations with the leftmost position as the low bit.
+        assert_eq!(
+            rules_of(&grammar, "Twice"),
+            [
+                "Twice -> NOT Thing NOT Thing",
+                "Twice -> NOT_LA Thing NOT Thing",
+                "Twice -> NOT Thing NOT_LA Thing",
+                "Twice -> NOT_LA Thing NOT_LA Thing",
+            ]
+        );
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        let tables = LrTables::pack(&grammar, &automaton);
+        let twice = lowered.grammar.types.iter().position(|description| description.name == "Twice").expect("Twice");
+        let start = automaton.start_state(crate::TypeId::new(twice as u32)).expect("start").index() as u32;
+        let word = |spelling: &str| terminal(&grammar, spelling);
+        let trace = simulate(&grammar, &tables, start, &[word("NOT"), word("NameText"), word("NOT_LA"), word("BETWEEN")]).expect("`not a not between` parses");
+        assert_eq!(trace.consumed, 4);
+        assert_eq!(trace.reductions.last().map(String::as_str), Some("Twice -> NOT Thing NOT_LA Thing"), "{:?}", trace.reductions);
     }
 
     #[test]
@@ -580,7 +578,7 @@ pub struct Other<'input> {
 "#,
         );
         let (lowered, result) = lr(&source);
-        let grammar = result.expect("end-of-rule positions never fail");
+        let grammar = result.expect("lowers");
         // `Negated` is followed by `BETWEEN` (a trigger) and by a name or `$end`: both twins.
         assert_eq!(
             rules_of(&grammar, "Negated"),

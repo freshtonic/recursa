@@ -563,13 +563,6 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen lr::tests::capture_overrides_are_rejected_with_rca0406 --locked",
     },
     ProducerEvidence {
-        codes: &["RCA0404"],
-        producer_source: "src/lr/report.rs",
-        test_source: "src/lr/lookahead.rs",
-        test_name: "an_ambiguous_substitution_reports_rca0404_naming_node_and_field",
-        command: "cargo test -p recursa-codegen lookahead::tests::an_ambiguous_substitution_reports_rca0404_naming_node_and_field --locked",
-    },
-    ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],
         producer_source: "src/build_diagnostic.rs",
         test_source: "src/source_analysis_contract_tests.rs",
@@ -858,7 +851,7 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
             })
             .map(|spec| spec.code.as_str())
             .collect::<Vec<_>>(),
-        ["RCA3117"],
+        ["RCA0404", "RCA3117"],
         "retired diagnostic assignments remain reserved and cannot be reused",
     );
     assert!(
