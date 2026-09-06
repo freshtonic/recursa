@@ -307,6 +307,7 @@ pub fn lower(
         &start_nonterminals,
     )?;
     lowering.lower_starts();
+    super::declared_precedence::apply(&mut lowering.lr, grammar);
     Ok(lowering.lr)
 }
 

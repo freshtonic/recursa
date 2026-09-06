@@ -1230,6 +1230,26 @@ impl Materializer {
         }
     }
 
+    /// Attaches the `#[parse(prec = NAME)]` override of the Node or variant `owner` to its
+    /// declaration, if it has one. Only a Node's and a variant's declaration carry the
+    /// override: it is a property of the rules lowered from that item, which the lowering
+    /// reads off the type's and the alternative's declaration.
+    fn with_precedence_override(
+        &self,
+        owner: crate::source_model::PrecedenceOwner,
+        declaration: Declaration,
+    ) -> Declaration {
+        match self
+            .source_model()
+            .precedence_overrides
+            .iter()
+            .find(|override_| override_.owner == owner)
+        {
+            Some(override_) => declaration.with_precedence(override_.level),
+            None => declaration,
+        }
+    }
+
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
         self.lexical_plan()
             .lowering_map
@@ -3120,6 +3140,25 @@ impl Materializer {
                 triggers: filter.triggers.clone(),
             })
             .collect();
+        grammar.precedence = self
+            .source_model()
+            .precedence
+            .iter()
+            .map(|level| {
+                let mut kinds = Vec::new();
+                for definition in &level.tokens {
+                    let kind = self.kind_for_definition(*definition);
+                    if !kinds.contains(&kind) {
+                        kinds.push(kind);
+                    }
+                }
+                crate::PrecedenceLevel {
+                    associativity: level.associativity,
+                    binding_power: level.binding_power,
+                    kinds,
+                }
+            })
+            .collect();
         let mut content_types = BTreeMap::new();
         for target in &self.lexical_plan().parser_targets {
             let source_definition =
@@ -3244,10 +3283,10 @@ impl Materializer {
         for application in &self.applications {
             let node = &self.resolved().nodes[application.node.index()];
             let location = grammar.push_location(Location::new(node.source, node.range.clone()));
-            declarations.push(
-                grammar
-                    .push_declaration(Declaration::new(application.display_name.clone(), location)),
-            );
+            declarations.push(grammar.push_declaration(self.with_precedence_override(
+                crate::source_model::PrecedenceOwner::Type(application.node),
+                Declaration::new(application.display_name.clone(), location),
+            )));
         }
         for application in &self.applications {
             let owner = TypeId::new(
@@ -3294,9 +3333,12 @@ impl Materializer {
                                 source_variant.site.source,
                                 source_variant.site.range.clone(),
                             ));
-                            let declaration = grammar.push_declaration(Declaration::new(
-                                format!("{}::{}", application.display_name, variant.name),
-                                location,
+                            let declaration = grammar.push_declaration(self.with_precedence_override(
+                                crate::source_model::PrecedenceOwner::Variant(variant.resolved_variant),
+                                Declaration::new(
+                                    format!("{}::{}", application.display_name, variant.name),
+                                    location,
+                                ),
                             ));
                             variants.push(VariantAlternativeCorrelation {
                                 application: application.id,
@@ -3346,9 +3388,12 @@ impl Materializer {
                                 source_variant.common.site.source,
                                 source_variant.common.site.range.clone(),
                             ));
-                            let declaration = grammar.push_declaration(Declaration::new(
-                                format!("{}::{}", application.display_name, common.name),
-                                location,
+                            let declaration = grammar.push_declaration(self.with_precedence_override(
+                                crate::source_model::PrecedenceOwner::Variant(common.resolved_variant),
+                                Declaration::new(
+                                    format!("{}::{}", application.display_name, common.name),
+                                    location,
+                                ),
                             ));
                             variants.push(VariantAlternativeCorrelation {
                                 application: application.id,

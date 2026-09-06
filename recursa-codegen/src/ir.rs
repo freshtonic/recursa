@@ -9,7 +9,10 @@
 
 use std::ops::Range;
 
-use crate::{AtomId, DeclId, KindId, LocationId, SiteId, SourceId, TextPredicateId, TypeId};
+use crate::{
+    AtomId, DeclId, KindId, LocationId, PrecedenceLevelId, SiteId, SourceId, TextPredicateId,
+    TypeId,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A complete normalized grammar ready for source-independent analysis.
@@ -48,6 +51,39 @@ pub struct GrammarDescription {
     pub types: Vec<TypeDescription>,
     /// Lookahead filters in declaration order; a merged kind is a kind no lexer produces.
     pub lookahead_filters: Vec<LookaheadFilter>,
+    /// The `precedence { ... }` declaration: levels from lowest to highest binding power,
+    /// indexed by [`PrecedenceLevelId`]; empty without one.
+    pub precedence: Vec<PrecedenceLevel>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The associativity of one level of the `precedence { ... }` declaration, bison's `%left`,
+/// `%right` and `%nonassoc`.
+pub enum PrecedenceAssociativity {
+    /// `left`: on a tie the reduce wins.
+    Left,
+    /// `right`: on a tie the shift wins.
+    Right,
+    /// `nonassoc`: a tie is a syntax error.
+    NonAssociative,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One level of the `precedence { ... }` declaration over token kinds.
+///
+/// Only the table-driven lowering reads it: every kind at the level, as a lookahead, has the
+/// level's binding power and associativity, and a rule outside the Pratt hierarchy takes the
+/// level of its last such terminal, or of the level its declaration's
+/// [`precedence`](Declaration::precedence) override names. Recursive descent ignores the
+/// declaration.
+pub struct PrecedenceLevel {
+    /// The level's associativity.
+    pub associativity: PrecedenceAssociativity,
+    /// The level's binding power on the Pratt scale, strictly above the previous level's.
+    pub binding_power: u8,
+    /// The token kinds at this level, in authored order without duplicates; empty for a level
+    /// of precedence-only names, which only an override can name.
+    pub kinds: Vec<KindId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,6 +125,7 @@ impl GrammarDescription {
             sites: Vec::new(),
             types: Vec::new(),
             lookahead_filters: Vec::new(),
+            precedence: Vec::new(),
         }
     }
 
@@ -205,6 +242,9 @@ pub struct Declaration {
     pub location: LocationId,
     /// Accepted greedy FOLLOW overlap declared by `#[greedy(...)]` at this declaration.
     pub greedy: Option<GreedyAcceptance>,
+    /// The `precedence` level a `#[parse(prec = NAME)]` at this declaration names, bison's
+    /// `%prec`: the rules lowered from the declaration take that level's precedence.
+    pub precedence: Option<PrecedenceLevelId>,
     /// The authored item this declaration was materialized from, for diagnostics.
     pub authored: Option<AuthoredSite>,
 }
@@ -216,8 +256,16 @@ impl Declaration {
             name: name.into(),
             location,
             greedy: None,
+            precedence: None,
             authored: None,
         }
+    }
+
+    /// Records the `precedence` level a `#[parse(prec = NAME)]` at this declaration names.
+    #[must_use]
+    pub fn with_precedence(mut self, level: PrecedenceLevelId) -> Self {
+        self.precedence = Some(level);
+        self
     }
 
     /// Records the authored item that diagnostics should point at for this declaration.

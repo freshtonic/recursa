@@ -26,7 +26,7 @@
 //! precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s tokens;
 //! that is what gives an interleaved shape's middle operand its minimum binding power.
 //!
-//! The `precedence` declaration ([`declared_precedence`](super::declared_precedence)) is the
+//! The `precedence` declaration ([`declared_precedence`](crate::lr::declared_precedence)) is the
 //! second source, consulted only where the Pratt levels say nothing: a Pratt rule against a
 //! lookahead that introduces no operator of its owner (`a LIKE b . ESCAPE`), and a rule whose
 //! own precedence is declared (`ColId -> BETWEEN .` before a window frame, or an alternative
