@@ -686,6 +686,10 @@ pub(super) struct PrattParsePlan {
     pub(super) led: Vec<PrattLedParsePlan>,
     /// Predictive selector for the initial expression branch.
     pub(super) nud_dispatch: PredictiveDispatchPlan,
+    /// Whether some site excludes an atom or prefix variant of this Node
+    /// (`#[parse(pratt(exclude(...)))]`), so that the nud selection consults the exclusion
+    /// slice; a grammar without such a site renders the selection without that check.
+    pub(super) nud_exclusions: bool,
     /// Optional selector for expression extenders.
     pub(super) led_dispatch: Option<PredictiveDispatchPlan>,
     /// Expected evidence reported when no prefix branch matches.
@@ -971,8 +975,9 @@ pub(super) enum SemanticParseProjection {
         child_capture: PlannedCapturePolicy,
         /// Minimum binding power when parsing a Pratt child.
         pratt_min_bp: Option<u8>,
-        /// LED ordinals excluded at this authored field boundary.
-        pratt_excluded_led: Vec<usize>,
+        /// Variant ordinals excluded at this authored field boundary: LED ordinals, then NUD
+        /// ordinals offset by the LED count (see `planned_pratt_exclusions`).
+        pratt_excluded: Vec<usize>,
         /// Canonical repetition separator spelling, if any.
         separator: Option<String>,
         /// Pretty spacing declared by the repetition separator, if any.
@@ -2377,6 +2382,7 @@ pub(super) fn structural_body(
                 nud,
                 led,
                 nud_dispatch: empty_declaration_dispatch(),
+                nud_exclusions: false,
                 led_dispatch: None,
                 nud_failure: PlannedFollow::Caller,
                 nud_selection_follow: ExpectedSet::empty(kind_count),
@@ -2653,7 +2659,7 @@ pub(super) fn declaration_elements(
                             capture: PlannedCapturePolicy::Inherited,
                             child_capture: PlannedCapturePolicy::Inherited,
                             pratt_min_bp: None,
-                            pratt_excluded_led: Vec::new(),
+                            pratt_excluded: Vec::new(),
                             separator: separator_behavior
                                 .as_ref()
                                 .map(|(spelling, _)| spelling.clone()),
@@ -3592,6 +3598,17 @@ pub(super) fn plan_pratt_node(
         nud,
         led,
         nud_dispatch,
+        nud_exclusions: lowered.grammar.sites.iter().any(|site| {
+            site.pratt_excluded.iter().any(|excluded| {
+                semantic_variants.iter().any(|variant| {
+                    variant.declaration == *excluded
+                        && matches!(
+                            variant.position,
+                            PrattPosition::Atom | PrattPosition::Prefix { .. }
+                        )
+                })
+            })
+        }),
         led_dispatch,
         nud_failure,
         nud_selection_follow,
@@ -3762,7 +3779,7 @@ pub(super) fn plan_pratt_lhs(
                 capture: field_override.unwrap_or(variant_capture),
                 child_capture: field_override.unwrap_or(variant_capture),
                 pratt_min_bp: None,
-                pratt_excluded_led: Vec::new(),
+                pratt_excluded: Vec::new(),
                 separator: None,
                 separator_spacing: None,
                 attachment: None,
@@ -4090,10 +4107,7 @@ pub(super) fn plan_elements(
                 field,
                 projection:
                     MaterializedSemanticFieldProjection::Direct {
-                        ty,
-                        separator,
-                        pratt_extensions,
-                        ..
+                        ty, separator, ..
                     },
                 attachment,
                 pretty,
@@ -4158,12 +4172,17 @@ pub(super) fn plan_elements(
                 {
                     let (active, inactive) =
                         lookups.pratt_extenders_at_min_bp(owner, min_bp)?;
+                    // An optional operand is attached behind a fixed token of its own
+                    // (`#[tok(ESCAPE, this)] Option<Box<Self>>`, materialization rejects a
+                    // bare one), so the token decides its presence and the operand parses
+                    // inside the attachment with the same follow adaptation as a required one.
                     match &mut container {
-                        PlannedContainer::Direct { child_follow, .. } => {
+                        PlannedContainer::Direct { child_follow, .. }
+                        | PlannedContainer::Optional { child_follow, .. } => {
                             *child_follow =
                                 pratt_operand_follow(child_follow, &active, &inactive);
                         }
-                        PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => {
+                        PlannedContainer::Repeated { .. } => {
                             return Err(format!(
                                 "Pratt operand field `{field_name}` is not a direct frozen container"
                             ));
@@ -4192,12 +4211,8 @@ pub(super) fn plan_elements(
                     })
                     .transpose()?;
                 let terminal_application = closed_terminal_application(ty);
-                let pratt_excluded_led = planned_pratt_exclusions(
-                    lowered,
-                    terminal_application,
-                    pratt_extensions.as_ref(),
-                    &field_name,
-                )?;
+                let pratt_excluded =
+                    planned_pratt_exclusions(lowered, terminal_application, *site, &field_name)?;
                 let terminal_node = terminal_application.and_then(|application| {
                     lowered
                         .applications
@@ -4277,7 +4292,7 @@ pub(super) fn plan_elements(
                             capture,
                             child_capture,
                             pratt_min_bp,
-                            pratt_excluded_led,
+                            pratt_excluded,
                             separator: separator_behavior
                                 .as_ref()
                                 .map(|(spelling, _)| spelling.clone()),
@@ -4843,16 +4858,24 @@ pub(super) fn closed_terminal_application(
     }
 }
 
-/// Resolves authored Pratt extension exclusions to the target application's LED ordinals.
+/// Reads the site's resolved `#[parse(pratt(exclude(...)))]` variants
+/// ([`crate::ParseSite::pratt_excluded`], the one resolution, made by materialization's
+/// `resolve_pratt_exclusions`) as the ordinals the
+/// generated exclusion slice carries: an infix or postfix variant's ordinal among the LED
+/// variants, and an atom or prefix variant's ordinal among the NUD variants offset by the LED
+/// count, so that the LED loop's check is unchanged by NUD exclusions. Only the position of an
+/// already-resolved declaration is decided here; which name denotes which variant is not
+/// decided a second time, so the two parsers cannot disagree on the excluded set.
 fn planned_pratt_exclusions(
     lowered: &crate::materialization::LoweredGrammar,
     terminal_application: Option<MaterializedApplicationId>,
-    filter: Option<&crate::source_model::PrattExtensionFilter>,
+    site: SiteId,
     field_name: &str,
 ) -> Result<Vec<usize>, String> {
-    let Some(filter) = filter else {
+    let excluded = &lowered.grammar.sites[site.index()].pratt_excluded;
+    if excluded.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     let application_id = terminal_application.ok_or_else(|| {
         format!("field `{field_name}` applies a Pratt restriction to a non-generated terminal")
     })?;
@@ -4869,27 +4892,44 @@ fn planned_pratt_exclusions(
             application.display_name,
         ));
     };
-    filter
-        .excluded
+    let led_count = variants
         .iter()
-        .map(|excluded| {
+        .filter(|variant| matches!(variant, MaterializedPrattVariant::Led(_)))
+        .count();
+    // The declaration of a materialized variant, as the lowering map correlates it.
+    let declaration_of = |resolved| {
+        lowered
+            .lowering_map
+            .variants
+            .iter()
+            .find(|correlation| {
+                correlation.application == application_id && correlation.variant == resolved
+            })
+            .map(|correlation| correlation.lowered)
+    };
+    excluded
+        .iter()
+        .map(|declaration| {
             let mut led_index = 0;
+            let mut nud_index = 0;
             for variant in variants {
                 match variant {
-                    MaterializedPrattVariant::Nud(nud) if nud.common.name == *excluded => {
-                        return Err(format!(
-                            "field `{field_name}` cannot exclude Pratt NUD variant `{excluded}`; only extensions may be excluded"
-                        ));
+                    MaterializedPrattVariant::Nud(nud) => {
+                        if declaration_of(nud.common.resolved_variant) == Some(*declaration) {
+                            return Ok(led_count + nud_index);
+                        }
+                        nud_index += 1;
                     }
-                    MaterializedPrattVariant::Nud(_) => {}
-                    MaterializedPrattVariant::Led(led) if led.common.name == *excluded => {
-                        return Ok(led_index);
+                    MaterializedPrattVariant::Led(led) => {
+                        if declaration_of(led.common.resolved_variant) == Some(*declaration) {
+                            return Ok(led_index);
+                        }
+                        led_index += 1;
                     }
-                    MaterializedPrattVariant::Led(_) => led_index += 1,
                 }
             }
             Err(format!(
-                "field `{field_name}` excludes unknown Pratt extension `{excluded}` from `{}`",
+                "field `{field_name}` excludes a Pratt variant that `{}` does not materialize",
                 application.display_name,
             ))
         })
@@ -5354,14 +5394,14 @@ fn render_runtime_variant_selection(
         capture,
         child_capture,
         pratt_min_bp: None,
-        pratt_excluded_led,
+        pratt_excluded,
         attachment: None,
         ..
     } = projection.as_ref()
     else {
         return None;
     };
-    if !pratt_excluded_led.is_empty() {
+    if !pratt_excluded.is_empty() {
         return None;
     }
     let PlannedContainer::Direct {
@@ -5674,7 +5714,27 @@ pub(super) fn render_pratt_parse(
                 unreachable!("validated Pratt NUD plan contains only atom or prefix branches")
             }
         };
-        nud_branches.push(quote!((Some(#index), _) => #selected));
+        // An excluded atom or prefix variant is not in the operand's language: the site's
+        // FIRST set already leaves it to the caller's other alternatives, and selecting it
+        // here fails at the token that decided it, the one the table-driven clone without
+        // the rule has no action on. The slice carries NUD ordinals after the LED ordinals;
+        // a grammar without such an exclusion renders the arm as before.
+        if pratt.nud_exclusions {
+            let encoded = pratt.led.len() + index;
+            nud_branches.push(quote! {
+                (Some(#index), __recursa_selected_depth) => {
+                    if __recursa_pratt_excluded.contains(&#encoded) {
+                        return Err(context.unexpected_at(
+                            __recursa_selected_depth.saturating_sub(1),
+                            &#nud_failure_value,
+                        ));
+                    }
+                    #selected
+                }
+            });
+        } else {
+            nud_branches.push(quote!((Some(#index), _) => #selected));
+        }
     }
 
     if pratt.led.is_empty() {
@@ -6120,7 +6180,7 @@ fn render_element_parse(
                     capture,
                     child_capture,
                     pratt_min_bp,
-                    pratt_excluded_led,
+                    pratt_excluded,
                     attachment,
                     ..
                 } => render_semantic_parse(
@@ -6136,7 +6196,7 @@ fn render_element_parse(
                     *child_capture,
                     pratt_owner,
                     *pratt_min_bp,
-                    pratt_excluded_led,
+                    pratt_excluded,
                     attachment.as_deref(),
                 ),
             };
@@ -6422,7 +6482,7 @@ pub(super) fn render_semantic_parse(
     child_capture: PlannedCapturePolicy,
     pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
-    pratt_excluded_led: &[usize],
+    pratt_excluded: &[usize],
     attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
@@ -6440,8 +6500,8 @@ pub(super) fn render_semantic_parse(
             let (failure_definition, failure_value) =
                 render_follow_value(plan, &failure_name, required_failure);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
-            let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
-            let direct_child = if !pratt_excluded_led.is_empty() {
+            let authored_exclusions = quote!(&[#(#pratt_excluded),*]);
+            let direct_child = if !pratt_excluded.is_empty() {
                 let min_bp = pratt_min_bp.unwrap_or(0);
                 quote! {
                     context.parse_generated(&#follow_value, #child_capture, |context| {
@@ -6480,12 +6540,12 @@ pub(super) fn render_semantic_parse(
                         &child_capture,
                         pratt_owner,
                         pratt_min_bp,
-                        pratt_excluded_led,
+                        pratt_excluded,
                     )
                 },
             );
             let plain_child = attachment.is_none()
-                && pratt_excluded_led.is_empty()
+                && pratt_excluded.is_empty()
                 && !(pratt_owner.is_some() && pratt_min_bp.is_some());
             if plain_child {
                 // The runtime owns the element transaction: start cursor, the
@@ -6551,8 +6611,8 @@ pub(super) fn render_semantic_parse(
                 render_follow_value(plan, &follow_name, child_follow);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
             let absent = render_absent_value(wrappers);
-            let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
-            let direct_child = if pratt_excluded_led.is_empty() {
+            let authored_exclusions = quote!(&[#(#pratt_excluded),*]);
+            let direct_child = if pratt_excluded.is_empty() {
                 quote!(context.parse_node::<#terminal>(
                     &#follow_value,
                     #child_capture,
@@ -6577,7 +6637,7 @@ pub(super) fn render_semantic_parse(
                         &child_capture,
                         pratt_owner,
                         pratt_min_bp,
-                        pratt_excluded_led,
+                        pratt_excluded,
                     )
                 },
             );
@@ -6634,7 +6694,7 @@ pub(super) fn render_semantic_parse(
             after_separator_failure.as_deref(),
             capture,
             child_capture,
-            pratt_excluded_led,
+            pratt_excluded,
             attachment,
         ),
     }
@@ -6658,7 +6718,7 @@ pub(super) fn render_attachment_child(
     child_capture: &proc_macro2::TokenStream,
     pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
-    pratt_excluded_led: &[usize],
+    pratt_excluded: &[usize],
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let facade = &plan.facade;
     let PlannedContainer::Direct {
@@ -6676,8 +6736,8 @@ pub(super) fn render_attachment_child(
         expected_static(node_index, unique_index, "attachment_semantic_failure");
     let (semantic_failure_definition, semantic_failure_value) =
         render_follow_value(plan, &semantic_failure_name, required_failure);
-    let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
-    let semantic_parse = if !pratt_excluded_led.is_empty() {
+    let authored_exclusions = quote!(&[#(#pratt_excluded),*]);
+    let semantic_parse = if !pratt_excluded.is_empty() {
         let min_bp = pratt_min_bp.unwrap_or(0);
         quote! {
             context.parse_generated(&#semantic_follow_value, #child_capture, |context| {
@@ -6800,7 +6860,7 @@ pub(super) fn render_repeated_parse(
     after_separator_failure: Option<&PlannedFollow>,
     capture: proc_macro2::TokenStream,
     child_capture: proc_macro2::TokenStream,
-    pratt_excluded_led: &[usize],
+    pratt_excluded: &[usize],
     attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
@@ -6832,8 +6892,8 @@ pub(super) fn render_repeated_parse(
         || (quote!(), quote!()),
         |failure| render_follow_value(plan, &after_separator_name, failure),
     );
-    let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
-    let direct_child = if pratt_excluded_led.is_empty() {
+    let authored_exclusions = quote!(&[#(#pratt_excluded),*]);
+    let direct_child = if pratt_excluded.is_empty() {
         quote!(context.parse_node::<#terminal>(
             &#child_follow_value,
             #child_capture,
@@ -6858,7 +6918,7 @@ pub(super) fn render_repeated_parse(
                 &child_capture,
                 None,
                 None,
-                pratt_excluded_led,
+                pratt_excluded,
             )
         },
     );

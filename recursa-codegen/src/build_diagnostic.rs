@@ -133,7 +133,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
         1..=405 => DiagnosticEvidenceSchema::AnalysisWitness,
-        1001..=3211 => DiagnosticEvidenceSchema::SourceFacts,
+        1001..=3212 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
 }
@@ -155,7 +155,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
         1..=405 => DiagnosticRemedySchema::ResolveAnalysisConflict,
-        1001..=3211 => DiagnosticRemedySchema::CorrectAuthoredInput,
+        1001..=3212 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }
 }
@@ -300,6 +300,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3209", Lowering, Error),
     diagnostic_spec!("RCA3210", Lowering, Error),
     diagnostic_spec!("RCA3211", Lowering, Error),
+    diagnostic_spec!("RCA3212", Lowering, Error),
     diagnostic_spec!("RCA3207", Lowering, Error),
     diagnostic_spec!("RCA3208", Lowering, Error),
     // M3-owned internal failures. RCA9001-RCA9005 retain their distinct M4

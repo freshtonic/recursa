@@ -322,7 +322,7 @@ The private sequence type materialized for a fixed-token presence with required 
 _Avoid_: Presence wrapper, optional keyword node
 
 **Binding-power precedence**:
-The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct extender exclusion set becomes its own lowered expression type.
+The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct variant exclusion set (extenders, atoms or prefix variants) becomes its own lowered expression type.
 _Avoid_: Runtime Pratt loop, precedence climbing
 
 **Declared precedence**:

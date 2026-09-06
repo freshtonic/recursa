@@ -4,14 +4,15 @@ use std::path::Path;
 
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
 use super::grammar::{
-    Associativity, ElementValue, LrGrammar, NonterminalOrigin, OptionalContent, RuleAction, Symbol,
-    TerminalId,
+    Associativity, ElementValue, LrGrammar, NonterminalId, NonterminalOrigin, OptionalContent,
+    PrecedenceOrigin, RuleAction, RuleId, Symbol, TerminalId,
 };
-use super::lowering::{TypeRoles, lower};
+use super::lowering::{PrattRestriction, TypeRoles, lower};
 use super::precedence::BindingPowerPrecedence;
 use super::report::{automaton_dump, conflict_diagnostics};
 use super::LrAnalysis;
 use super::tables::{LrTables, simulate};
+use crate::PrattPosition;
 use crate::materialization::LoweredGrammar;
 use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
 
@@ -666,6 +667,170 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             "grammar::Expr -> grammar::Position",
         ]
     );
+}
+
+/// Lowers the Pratt shapes fixture (`tests/fixtures/generation/pratt-shapes`).
+fn pratt_shapes_fixture() -> (LoweredGrammar, LrGrammar) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/generation/pratt-shapes");
+    let lowered = lowered_tree(&fixture, "src/grammar.rs");
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the Pratt shapes fixture lowers");
+    (lowered, grammar)
+}
+
+/// The attachment nonterminal whose one rule is `-> {rhs}`.
+fn attachment_with_rule(grammar: &LrGrammar, rhs: &str) -> NonterminalId {
+    let suffix = format!(" -> {rhs}");
+    let mut found = grammar
+        .rules()
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| matches!(rule.action, RuleAction::Attachment { .. }))
+        .filter(|(index, _)| grammar.render_rule(RuleId::new(*index as u32)).ends_with(&suffix))
+        .map(|(_, rule)| rule.lhs);
+    let id = found.next().unwrap_or_else(|| panic!("no attachment rule `{rhs}`"));
+    assert!(found.next().is_none(), "several attachment rules `{rhs}`");
+    id
+}
+
+#[test]
+fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_variant() {
+    let (_, grammar) = pratt_shapes_fixture();
+    let expr = grammar.nonterminal_by_name("grammar::Expr").unwrap();
+    let name = |id: NonterminalId| grammar.nonterminal(id).name.clone();
+    // The operand attachments carry the operand minimum (`rbp` for the infix variant, `bp`
+    // for the postfix one), the optional escape operand's included.
+    let like = name(attachment_with_rule(&grammar, "LIKE grammar::Expr[min 7]"));
+    let escape_like = name(attachment_with_rule(&grammar, "ESCAPE grammar::Expr[min 7]"));
+    let not_like = name(attachment_with_rule(&grammar, "NOT LIKE grammar::Expr[min 6]"));
+    let escape_not_like = name(attachment_with_rule(&grammar, "ESCAPE grammar::Expr[min 6]"));
+    // The optional operand is inlined into its variant's rule as one alternative without and
+    // one with the attachment, never a helper with an epsilon reduce.
+    let rules = rules_of(&grammar, "grammar::Expr");
+    for expected in [
+        format!("grammar::Expr -> grammar::Expr {like}"),
+        format!("grammar::Expr -> grammar::Expr {like} {escape_like}"),
+        format!("grammar::Expr -> grammar::Expr {not_like}"),
+        format!("grammar::Expr -> grammar::Expr {not_like} {escape_not_like}"),
+    ] {
+        assert!(rules.contains(&expected), "missing `{expected}` in {rules:?}");
+    }
+    assert!(!rules.iter().any(|rule| rule.contains("opt(")), "{rules:?}");
+    // The attachments inherit the variant's precedence for their own reduce and introduce
+    // `ESCAPE` one level above it, so that `a like b . escape` shifts as `%nonassoc ESCAPE`
+    // above `%nonassoc LIKE` does in gram.y; the required operand's attachment introduces
+    // nothing.
+    let precedence_of = |name: &str| {
+        let attachment = grammar.nonterminal_by_name(name).expect("an attachment");
+        grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited")
+    };
+    let escape = precedence_of(&escape_like);
+    assert_eq!((escape.level, escape.owner, escape.attaches_at), (6, expr, Some(7)));
+    let escape = precedence_of(&escape_not_like);
+    assert_eq!((escape.level, escape.attaches_at), (6, Some(7)));
+    let operand = precedence_of(&like);
+    assert_eq!((operand.level, operand.attaches_at), (6, None));
+    let precedence = BindingPowerPrecedence::new(&grammar).expect("representable binding powers");
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "ESCAPE")), [7]);
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "LIKE")), [6]);
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "NOT")), [6]);
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(automaton.conflicts().is_empty(), "{dump}");
+    assert!(
+        automaton
+            .resolved_conflicts()
+            .iter()
+            .any(|conflict| grammar.terminal_name(conflict.lookahead) == "ESCAPE"),
+        "{dump}"
+    );
+}
+
+#[test]
+fn an_exclusion_of_atoms_clones_the_pratt_nonterminal_without_them() {
+    let (lowered, grammar) = pratt_shapes_fixture();
+    let roles = TypeRoles::from_lowered(&lowered);
+    let expr = type_named(&lowered, "grammar::Expr");
+    let declaration = |name: &str| {
+        crate::DeclId::new(
+            lowered
+                .grammar
+                .declarations
+                .iter()
+                .position(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("{name} is declared")) as u32,
+        )
+    };
+    // The roles read the resolved exclusions off the sites: atoms, an extender, both.
+    let mut restrictions: Vec<&PrattRestriction> = roles.pratt_exclusions.values().collect();
+    restrictions.sort();
+    let mut index_elem = vec![declaration("grammar::Expr::Subquery"), declaration("grammar::Expr::And")];
+    index_elem.sort_unstable();
+    assert_eq!(
+        restrictions,
+        [
+            &PrattRestriction { type_id: expr, excluded: vec![declaration("grammar::Expr::Default")], min_bp: 0 },
+            &PrattRestriction { type_id: expr, excluded: index_elem, min_bp: 0 },
+        ]
+    );
+    // The clone drops the excluded atom's rule and keeps every other, extenders included; the
+    // `c_expr` clone drops the parenthesised query and `and`, and carries the exclusion into
+    // its operands.
+    let default = rules_of(&grammar, "grammar::Expr[excl Default]");
+    assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Name".to_owned()), "{default:?}");
+    assert!(!default.iter().any(|rule| rule.ends_with("-> DEFAULT")), "{default:?}");
+    assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Expr[excl Default] AND grammar::Expr[excl Default]".to_owned()), "{default:?}");
+    let full = rules_of(&grammar, "grammar::Expr");
+    assert_eq!(default.len(), full.len() - 1);
+    let index = rules_of(&grammar, "grammar::Expr[excl Subquery,And]");
+    assert_eq!(index.len(), full.len() - 2);
+    assert!(!index.iter().any(|rule| rule.contains(" AND ")), "{index:?}");
+    assert!(index.contains(&"grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]".to_owned()), "{index:?}");
+    let subquery = attachment_with_rule(&grammar, "LPAREN SELECT grammar::Expr RPAREN");
+    assert!(full.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)));
+    assert!(!index.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)), "{index:?}");
+}
+
+#[test]
+fn a_content_token_operator_lowers_before_the_operand_with_the_variant_binding_power() {
+    let (_, grammar) = pratt_shapes_fixture();
+    let expr = grammar.nonterminal_by_name("grammar::Expr").unwrap();
+    let rules = rules_of(&grammar, "grammar::Expr");
+    // gram.y's `qual_Op a_expr %prec Op`: the content token is its own value-carrying
+    // nonterminal, the prefix rule takes `bp` as its precedence and the infix rule of the same
+    // class introduces the token at its level.
+    let prefix = "grammar::Expr -> OperatorText grammar::Expr";
+    let infix = "grammar::Expr -> grammar::Expr OperatorText grammar::Expr";
+    assert!(rules.contains(&prefix.to_owned()), "{rules:?}");
+    assert!(rules.contains(&infix.to_owned()), "{rules:?}");
+    let precedence_of = |rendered: &str| {
+        grammar
+            .rules_of(expr)
+            .iter()
+            .find(|rule| grammar.render_rule(**rule) == rendered)
+            .and_then(|rule| grammar.rule(*rule).precedence)
+            .expect("the rule carries a precedence")
+    };
+    assert_eq!(
+        (precedence_of(prefix).origin, precedence_of(prefix).level),
+        (
+            PrecedenceOrigin::Pratt {
+                position: PrattPosition::Prefix { bp: 8 }
+            },
+            8
+        )
+    );
+    assert_eq!(
+        precedence_of(infix).origin,
+        PrecedenceOrigin::Pratt {
+            position: PrattPosition::Infix { lbp: 8, rbp: 9 }
+        }
+    );
+    let precedence = BindingPowerPrecedence::new(&grammar).expect("representable binding powers");
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "OperatorText")), [8]);
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    assert!(automaton.conflicts().is_empty(), "{}", automaton_dump(&grammar, &automaton));
 }
 
 /// Lowers the container fixture grammar and builds its automaton.

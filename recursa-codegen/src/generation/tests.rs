@@ -158,25 +158,30 @@ fn greedy_fixture_excluding(name: &str) -> String {
 }
 
 #[test]
-fn the_planner_rejects_an_exclusion_that_names_no_led_variant() {
-    // `project_pratt_exclusions` drops an exclusion name it cannot resolve to a led variant
-    // rather than reporting it, because it runs before every application is known to be
-    // Pratt (#126). Emission is what keeps a misspelled name from silently widening the
-    // site's active extenders, so the build must still fail here.
+fn source_analysis_rejects_an_exclusion_that_names_no_variant() {
+    // A misspelled exclusion must never widen a site's language in silence. Since #122 an
+    // exclusion may name a variant of any Pratt position, so materialization resolves the
+    // name itself and rejects one that resolves to nothing, before emission is reached.
+    let package = tempfile::tempdir().expect("temporary exclusion fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        greedy_fixture_excluding("Factorail"),
+    )
+    .expect("write exclusion fixture");
+    let error = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .err()
+    .expect("an unresolvable exclusion reaches emission");
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one unresolvable exclusion must produce one diagnostic")
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA3212");
+    assert_eq!(diagnostic.stage(), DiagnosticStage::Lowering);
     assert_eq!(
-        emission_plan_join_error(greedy_fixture_excluding("Factorail"), |_| {}),
-        "field `expr` excludes unknown Pratt extension `Factorail` from `grammar::Expr`",
-    );
-}
-
-#[test]
-fn the_planner_rejects_an_exclusion_that_names_a_nud_variant() {
-    // A NUD resolves to a variant of the target but never to a led one, so materialization
-    // drops it exactly as it drops a misspelling; emission names why it cannot be excluded.
-    assert_eq!(
-        emission_plan_join_error(greedy_fixture_excluding("Integer"), |_| {}),
-        "field `expr` cannot exclude Pratt NUD variant `Integer`; only extensions may be \
-         excluded",
+        diagnostic.primary().message(),
+        "`expr` excludes `Factorail`, which is not a variant of Pratt Node `grammar::Expr`",
     );
 }
 

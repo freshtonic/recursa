@@ -146,9 +146,11 @@ conflict is a hard build error.
 **Pratt.** Each `#[pratt]` enum lowers to ordinary rules and its binding
 powers to rule precedence and associativity: the level is `lbp`,
 `rbp = lbp + 1` is left-associative, `rbp = lbp` or `lbp - 1` is
-right-associative, prefix and postfix use `bp` as the rule's precedence,
-and interleaved shapes (`BETWEEN a AND b`) become one rule with an
-explicit precedence. Precedence decides where a bare last operand
+right-associative, prefix and postfix use `bp` as the rule's precedence
+(a content-token operator, gram.y's `qual_Op a_expr %prec Op`, lowers to
+its own nonterminal before the operand and changes nothing else), and
+interleaved shapes (`BETWEEN a AND b`) become one rule with an explicit
+precedence. Precedence decides where a bare last operand
 stops. Every other operand (the middle of `BETWEEN a AND b`, the inside
 of `a[b]`, anything behind a fixed-token attachment such as pg-sql's
 `#[tok(BETWEEN, this)] Box<Self>`) is parsed by the Pratt loop with a
@@ -156,7 +158,14 @@ minimum binding power, and lowers to the clone of that minimum,
 `Expr[min 8]`: the type minus every LED rule below the minimum, its own
 operands unrestricted. A fixed-token attachment around an operand also
 inherits its variant's precedence, so its own reduce against the next
-operator is decided as the variant's would be. A combination with no
+operator is decided as the variant's would be. An attached optional
+operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`, gram.y's
+`a_expr LIKE a_expr ESCAPE a_expr`) is inlined into its variant's rule as
+one alternative without and one with the attachment (never a nullable
+helper, whose epsilon reduce would have no precedence), its operand takes
+the minimum like every other, and its attachment introduces the leading
+token one level above the variant, so that `a LIKE b . ESCAPE` shifts as
+`%nonassoc ESCAPE` just above `%nonassoc LIKE` decides it. A combination with no
 precedence equivalent is a hard error naming the variant (`RCA0402`): an
 infix `rbp` other than `lbp + 1`, `lbp` or `lbp - 1`, or an `rbp = lbp -
 1` beside an operator at that level. A token's precedence is read off the
@@ -170,10 +179,13 @@ the Pratt parse. `#[parse(pratt(exclude(...)))]` on a field
 names a distinct language, so the lowering clones the expression
 nonterminal once per distinct exclusion set (`Expr[excl In]`, or
 `Expr[excl In, min 8]` with a minimum), the way gram.y has `a_expr`
-and `b_expr`; inside the clone the prefix, infix and postfix operands
-carry the exclusion (through a cloned fixed-token attachment when one
-wraps them) and an atom's operands keep the full language, as
-`b_expr: '(' a_expr ')'` does. A resolved conflict is recorded in the
+and `b_expr`; the clone drops the excluded rules whatever their position,
+an atom's (`Expr[excl Default]` before `DEFAULT`, the parenthesised query
+in a `c_expr` position) as well as an extender's, so its FIRST set is the
+narrowed one the recursive-descent site computes; inside the clone the
+prefix, infix and postfix operands carry the exclusion (through a cloned
+fixed-token attachment when one wraps them) and an atom's operands keep
+the full language, as `b_expr: '(' a_expr ')'` does. A resolved conflict is recorded in the
 automaton dump (`Conflict between rule N and token T resolved by
 precedence (shift)`), as in bison's `.output`, and is not a conflict.
 The Pratt loop, `select_pratt` and `RCA4102` do not exist
