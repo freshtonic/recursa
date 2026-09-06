@@ -1722,10 +1722,13 @@ impl ParserMarker for RecursiveDescent {}
 
 /// Marker for the table-driven parser style.
 ///
-/// A generation whose default parser is `table_driven` renders its
-/// [`GeneratedParse`] impls against this marker and names it as the
-/// [`GeneratedInput::Parser`] of its grammar-local input, so the same blanket
-/// [`Parse`] facade selects the LALR(1) loop in [`crate::lr`].
+/// A generation's table-driven parser renders its [`GeneratedParse`] impls
+/// against this marker and names it as the [`GeneratedInput::Parser`] of the
+/// grammar-local input that selects it (the root `Input` when it is the
+/// default parser, `parsers::<name>::Input` otherwise), so the same blanket
+/// [`Parse`] facade selects the LALR(1) loop in [`crate::lr`]. One generation
+/// carries at most one parser per style, so the two style markers are the
+/// only markers.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct TableDriven;

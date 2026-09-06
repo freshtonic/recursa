@@ -266,7 +266,7 @@ A parser style that recognizes an LALR(1) language with one grammar-wide automat
 _Avoid_: Explicit-stack recursive descent, GLR parser, per-type automaton
 
 **Named parser**:
-One of several parsers a single generation emits over one grammar, each with its own parser style and its own grammar-local input type that selects it. The first declared parser is the default parser and owns the unqualified entry points.
+One of several parsers a single generation emits over one grammar, each with its own parser style, declared at most once per style, and its own grammar-local input type that selects it through the Parse capability. The first declared parser is the default parser and owns the unqualified entry points, document framing and the explorer adapter.
 _Avoid_: Second grammar invocation, parser_name macro argument
 
 **Lookahead filter**:
