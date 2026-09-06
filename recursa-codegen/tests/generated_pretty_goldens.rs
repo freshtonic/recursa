@@ -10,16 +10,31 @@ use syn::punctuated::Punctuated;
 use syn::{GenericArgument, Item, PathArguments, Type};
 
 struct Golden {
+    /// Fixture directory, relative to the crate manifest, holding `grammar.rs`.
+    fixtures: &'static str,
     fixture: &'static str,
     module: &'static str,
     root: &'static str,
     source: &'static str,
     expected: &'static str,
     fingerprint: &'static str,
+    /// Extra statements run in the golden's `main`, after the round trip.
+    ///
+    /// Parsed input always carries the authored grouping, so a golden that
+    /// needs to observe grouping Pretty synthesized itself builds the value
+    /// here instead of reading it back out of a parse.
+    repair: &'static str,
 }
+
+/// Directory holding the six representative source-analysis grammars.
+const SOURCE_ANALYSIS_FIXTURES: &str = "tests/fixtures/source-analysis";
+
+/// Directory holding grammars authored only as Pretty goldens.
+const PRETTY_GOLDEN_FIXTURES: &str = "tests/fixtures/pretty-goldens";
 
 const GOLDENS: &[Golden] = &[
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "toy",
         module: "toy",
         root: "IdentHolder",
@@ -30,8 +45,10 @@ fn fingerprint(value: &toy::IdentHolder<'_>) -> String {
     format!("ident:{}", value.ident.text())
 }
 "#,
+        repair: "",
     },
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "json",
         module: "json",
         root: "Value",
@@ -60,8 +77,10 @@ fn fingerprint(value: &json::Value<'_>) -> String {
     }
 }
 "#,
+        repair: "",
     },
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "sql",
         module: "sql",
         root: "Statement",
@@ -85,8 +104,10 @@ fn fingerprint(value: &sql::Statement<'_>) -> String {
     }
 }
 "#,
+        repair: "",
     },
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "optq",
         module: "optq",
         root: "Stmt",
@@ -101,8 +122,10 @@ fn fingerprint(value: &optq::Stmt<'_>) -> String {
     }
 }
 "#,
+        repair: "",
     },
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "cskw",
         module: "cskw",
         root: "Stmt",
@@ -122,8 +145,10 @@ fn fingerprint(value: &cskw::Stmt<'_>) -> String {
     }
 }
 "#,
+        repair: "",
     },
     Golden {
+        fixtures: SOURCE_ANALYSIS_FIXTURES,
         fixture: "arith",
         module: "arith",
         root: "Expr",
@@ -143,11 +168,68 @@ fn fingerprint(value: &arith::Expr<'_>) -> String {
     }
 }
 "#,
+        repair: "",
+    },
+    Golden {
+        fixtures: PRETTY_GOLDEN_FIXTURES,
+        fixture: "selcyc",
+        module: "selcyc",
+        root: "Expr",
+        source: "(1+2)*([select 3,4])",
+        expected: "(1 + 2) * ([select 3, 4])",
+        fingerprint: r#"
+fn query(value: &selcyc::Query<'_>) -> String {
+    match value {
+        selcyc::Query::Select(select) => format!(
+            "select({})",
+            select.targets.iter().map(fingerprint).collect::<Vec<_>>().join(","),
+        ),
+        selcyc::Query::Parens(parens) => format!("parens({})", query(&parens.query)),
+    }
+}
+
+fn content(value: &selcyc::ParenContent<'_>) -> String {
+    match value {
+        selcyc::ParenContent::Exprs(exprs) => format!(
+            "exprs({})",
+            exprs.iter().map(fingerprint).collect::<Vec<_>>().join(","),
+        ),
+        selcyc::ParenContent::Query(inner) => format!("query({})", query(inner)),
+    }
+}
+
+fn fingerprint(value: &selcyc::Expr<'_>) -> String {
+    match value {
+        selcyc::Expr::IntLit(atom) => format!("int:{}", atom.value.text()),
+        selcyc::Expr::Paren(paren) => format!("paren({})", content(&paren.content)),
+        selcyc::Expr::Add(left, right) => format!("add({},{})", fingerprint(left), fingerprint(right)),
+        selcyc::Expr::Mul(left, right) => format!("mul({},{})", fingerprint(left), fingerprint(right)),
+    }
+}
+
+fn int(text: &'static str) -> selcyc::Expr<'static> {
+    selcyc::Expr::IntLit(selcyc::IntAtom { value: selcyc::IntLit::new(text) })
+}
+"#,
+        repair: r#"
+    // The witnessless `ParenContent::Query` cycle must not cost the atom its
+    // grouping: an addition under a multiplication has no authored parentheses,
+    // so Pretty has to synthesize the ones `ParenContent::Exprs` witnesses.
+    let repaired = selcyc::Expr::Mul(
+        Box::new(selcyc::Expr::Add(Box::new(int("1")), Box::new(int("2")))),
+        Box::new(int("3")),
+    );
+    let rendered = repaired.render();
+    assert_eq!(rendered, "(1 + 2) * 3", "Pretty repairs precedence with the atom's parentheses");
+    // Reparsing the repair yields the authored `Paren` node the synthesized
+    // delimiters spell, so the fixed point, not node equality, is the check.
+    assert_eq!(parse(&rendered).render(), rendered, "repaired grouping is idempotent");
+"#,
     },
 ];
 
 #[test]
-fn all_six_representative_grammars_have_semantic_pretty_goldens() {
+fn every_representative_grammar_has_semantic_pretty_goldens() {
     let selected = std::env::var("RECURSA_PRETTY_GOLDEN").ok();
     for golden in GOLDENS {
         if selected
@@ -176,7 +258,7 @@ fn scaffold(golden: &Golden) -> TempDir {
         .expect("codegen belongs to the workspace");
     let source = fs::read_to_string(
         manifest_dir
-            .join("tests/fixtures/source-analysis")
+            .join(golden.fixtures)
             .join(golden.fixture)
             .join("grammar.rs"),
     )
@@ -281,6 +363,7 @@ fn main() {{
         meaning,
         "parse/format/parse preserves AST meaning",
     );
+    {repair}
 }}
 "#,
         crate_name = golden.fixture.replace('-', "_"),
@@ -289,6 +372,7 @@ fn main() {{
         source = golden.source,
         expected = golden.expected,
         fingerprint = golden.fingerprint,
+        repair = golden.repair,
     )
 }
 
