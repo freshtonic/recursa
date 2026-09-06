@@ -1331,8 +1331,23 @@ struct PrettyPrattGroupingProof {
     empty: bool,
     /// Distinct authored derivations containing exactly one owning Pratt value, capped at two.
     witnesses: Vec<PrettyPrattGroupingBounds>,
-    /// Whether a non-owner helper cycle made the finite proof inconclusive.
-    cyclic: bool,
+    /// Declarations whose re-entry left this witness list possibly incomplete.
+    cyclic: BTreeSet<PrettyPrattGroupingCycle>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Names the declaration whose re-entry left a grouping proof provisional.
+///
+/// A witness list is exact only once every recorded declaration is discharged.
+/// One is discharged when its own frame closes with no witness at all: the cut
+/// that produced that emptiness assumed the same emptiness, so the empty set is
+/// a fixed point of the declaration's own witness equation, and witnesses are
+/// the least fixed point because each stands for a finite derivation.
+enum PrettyPrattGroupingCycle {
+    /// A helper Node re-entered while its own proof was still being derived.
+    Node(usize),
+    /// A type alias re-entered while its own proof was still being derived.
+    TypeAlias(usize),
 }
 
 impl PrettyPrattGroupingProof {
@@ -3701,7 +3716,7 @@ impl SourceModelBuilder<'_> {
         let [witness] = proof.witnesses.as_slice() else {
             return None;
         };
-        (!proof.cyclic
+        (proof.cyclic.is_empty()
             && if witness.delegated {
                 witness.before == 1 && witness.after == 1
             } else {
@@ -3768,7 +3783,7 @@ impl SourceModelBuilder<'_> {
             // subtree behind it cannot hide one either; only witness-capable
             // contexts propagate cyclic incompleteness into the proof.
             if context_is_transparent || context_is_enclosure {
-                proof.cyclic |= nested.cyclic;
+                proof.cyclic.extend(nested.cyclic.iter().copied());
             }
             for witness in nested.witnesses {
                 let witness_is_transparent = witness.before == 0 && witness.after == 0;
@@ -3992,7 +4007,7 @@ impl SourceModelBuilder<'_> {
                     GrammarElement::FixedToken { .. }
                     | GrammarElement::OptionalFixedTokenGroup { .. } => false,
                 };
-                !proof.cyclic && proof.empty && attachment_is_empty
+                proof.cyclic.is_empty() && proof.empty && attachment_is_empty
             }
             GrammarElement::FixedToken { .. }
             | GrammarElement::SemanticField {
@@ -4027,7 +4042,7 @@ impl SourceModelBuilder<'_> {
                     PrettyPrattGroupingProof {
                         empty: false,
                         witnesses: vec![PrettyPrattGroupingBounds::default()],
-                        cyclic: false,
+                        cyclic: BTreeSet::new(),
                     }
                 }
                 SemanticTarget::Node(candidate) => {
@@ -4052,18 +4067,20 @@ impl SourceModelBuilder<'_> {
                         CatalogType::Option | CatalogType::Vec => PrettyPrattGroupingProof {
                             empty: true,
                             witnesses: Vec::new(),
-                            cyclic: false,
+                            cyclic: BTreeSet::new(),
                         },
                     }
                 }
                 SemanticTarget::TypeAlias(alias) => {
                     if !analysis.active_aliases.insert(alias.index()) {
                         return PrettyPrattGroupingProof {
-                            cyclic: true,
+                            cyclic: BTreeSet::from([PrettyPrattGroupingCycle::TypeAlias(
+                                alias.index(),
+                            )]),
                             ..PrettyPrattGroupingProof::default()
                         };
                     }
-                    let proof = self
+                    let mut proof = self
                         .resolved
                         .type_aliases
                         .get(alias.index())
@@ -4073,6 +4090,10 @@ impl SourceModelBuilder<'_> {
                             self.pretty_pratt_grouping_type(owner, ty, analysis)
                         });
                     analysis.active_aliases.remove(&alias.index());
+                    Self::discharge_witnessless_grouping_cycle(
+                        &mut proof,
+                        PrettyPrattGroupingCycle::TypeAlias(alias.index()),
+                    );
                     proof
                 }
                 SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => {
@@ -4103,7 +4124,7 @@ impl SourceModelBuilder<'_> {
         }
         if !analysis.active_nodes.insert(node.index()) {
             return PrettyPrattGroupingProof {
-                cyclic: true,
+                cyclic: BTreeSet::from([PrettyPrattGroupingCycle::Node(node.index())]),
                 ..PrettyPrattGroupingProof::default()
             };
         }
@@ -4121,7 +4142,7 @@ impl SourceModelBuilder<'_> {
                         let variant =
                             self.pretty_pratt_grouping_elements(owner, &variant.elements, analysis);
                         proof.empty |= variant.empty;
-                        proof.cyclic |= variant.cyclic;
+                        proof.cyclic.extend(variant.cyclic.iter().copied());
                         for witness in variant.witnesses {
                             proof.push_witness(witness);
                         }
@@ -4131,13 +4152,35 @@ impl SourceModelBuilder<'_> {
                 NodeBody::Pratt(_) => PrettyPrattGroupingProof::default(),
             });
         analysis.active_nodes.remove(&node.index());
+        Self::discharge_witnessless_grouping_cycle(
+            &mut proof,
+            PrettyPrattGroupingCycle::Node(node.index()),
+        );
         for witness in &mut proof.witnesses {
             witness.delegated = true;
         }
-        if !proof.cyclic {
+        if proof.cyclic.is_empty() {
             analysis.memo.insert(key, proof.clone());
         }
         proof
+    }
+
+    /// Retires a closed declaration's own cycle mark once it proves witnessless.
+    ///
+    /// The proof was derived with the declaration's re-entry contributing no
+    /// witness. An empty result therefore satisfies the declaration's own
+    /// witness equation, and since a witness stands for a finite derivation the
+    /// least such solution is the true one: no unrolling of this cycle can add a
+    /// witness the proof missed. A declaration that did find a witness keeps its
+    /// mark, because unrolling can wrap that witness in the cycle's own fixed
+    /// syntax and so supply a second, distinct grouping.
+    fn discharge_witnessless_grouping_cycle(
+        proof: &mut PrettyPrattGroupingProof,
+        cycle: PrettyPrattGroupingCycle,
+    ) {
+        if proof.witnesses.is_empty() {
+            proof.cyclic.remove(&cycle);
+        }
     }
 
     /// Validates pretty element boundaries.
@@ -13682,6 +13725,205 @@ enum Expr<'input> {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant() {
+        // Mirrors gram.y's `select_with_parens: '(' select_no_parens ')' |
+        // '(' select_with_parens ')'`: `C::Query` re-enters `Q` through a
+        // plain enclosure, so the cycle carries no owning `Expr` of its own.
+        // The sibling `C::Exprs` still supplies the one grouping witness, and
+        // the cycle cannot hide a second one, so RCA3101 must stay silent.
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { SELECT => "select" }
+    punctuation {
+        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
+        COMMA => ",", PLUS => "+"
+    }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Simple<'input> {
+    #[sep(COMMA)]
+    targets: recursa::Vec1<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+struct Paren<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum Q<'input> {
+    Simple(Simple<'input>),
+    Paren(Paren<'input>),
+}
+
+#[derive(recursa::Node)]
+enum C<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Query(Box<Q<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: C<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_rejects_an_atom_whose_every_variant_is_cyclic() {
+        // `C` reaches no owning `Expr` at all: both of its variants lead into
+        // the `Q`/`Paren` cycle. Discharging a witnessless cycle must not
+        // invent a grouping path, so RCA3101 still fires.
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { SELECT => "select", STAR => "star" }
+    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(SELECT, STAR)]
+struct Simple;
+
+#[derive(recursa::Node)]
+struct Paren<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum Q<'input> {
+    Simple(Simple),
+    Paren(Paren<'input>),
+}
+
+#[derive(recursa::Node)]
+enum C<'input> {
+    Query(Box<Q<'input>>),
+    Nested(Box<Paren<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: C<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("cannot repair precedence")
+        }));
+    }
+
+    #[test]
+    fn pretty_pratt_rejects_a_cycle_that_unrolls_a_second_grouping_witness() {
+        // `Q` owns a transparent witness through `Q::Direct`, so unrolling the
+        // `Q -> Paren -> Q` enclosure cycle yields a second, wider grouping
+        // (`[ ( expr ) ]` beside `[ expr ]`). The cycle is therefore not
+        // witnessless and must keep the proof inconclusive.
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    punctuation {
+        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
+        COMMA => ",", PLUS => "+"
+    }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct Paren<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum Q<'input> {
+    Direct(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Paren(Paren<'input>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    content: Q<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("cannot repair precedence")
+        }));
     }
 
     #[test]
