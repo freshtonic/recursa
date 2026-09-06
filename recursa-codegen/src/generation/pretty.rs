@@ -20,6 +20,8 @@ mod tests {
     focused_case!(authored_pretty_authority_rejects_emitted_declaration_corruption);
     focused_case!(pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path_segment);
     focused_case!(pretty_pratt_grouping_follows_a_unique_authored_helper_path);
+    focused_case!(pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant);
+    focused_case!(pretty_pratt_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context);
     focused_case!(pretty_pratt_variants_are_typechecked_in_isolated_helpers);
     focused_case!(every_typed_pretty_pratt_decision_is_part_of_family_authority);
     focused_case!(recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds);
@@ -196,8 +198,8 @@ struct PrettyPrattGroupingProof {
     empty: bool,
     /// Authored single-owner paths, capped at two to distinguish ambiguity.
     witnesses: Vec<PrettyPrattGroupingWitness>,
-    /// Whether a non-owner helper cycle made the finite proof inconclusive.
-    cyclic: bool,
+    /// Helper Nodes whose re-entry left this witness list possibly incomplete.
+    cyclic: BTreeSet<NodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -252,7 +254,7 @@ impl<'a> PrettyPrattGroupingAnalyzer<'a> {
     ) -> Option<PrettyPrattGroupingWitness> {
         let proof = self.elements(owner, elements);
         matches!(proof.witnesses.as_slice(), [witness]
-        if !proof.cyclic
+        if proof.cyclic.is_empty()
             && if witness.delegated {
                 witness.grouping.before.len() == 1 && witness.grouping.after.len() == 1
             } else {
@@ -314,14 +316,23 @@ impl<'a> PrettyPrattGroupingAnalyzer<'a> {
                         self.node(owner, terminal)
                     }
                 });
-            proof.cyclic |= nested.cyclic;
+            let mut context_before = fixed_before.clone();
+            context_before.extend(attached_before.iter().cloned());
+            let mut context_after = attached_after.clone();
+            context_after.extend(fixed_after.iter().cloned());
+            let context_is_transparent = context_before.is_empty() && context_after.is_empty();
+            let context_is_enclosure = !context_before.is_empty() && !context_after.is_empty();
+            // A half-open fixed context (required syntax on exactly one side)
+            // can never contribute a witness, so an under-enumerated cyclic
+            // subtree behind it cannot hide one either; only witness-capable
+            // contexts propagate cyclic incompleteness into the proof. The
+            // source model applies the same rule, and the two must agree.
+            if context_is_transparent || context_is_enclosure {
+                proof.cyclic.extend(nested.cyclic.iter().copied());
+            }
             for witness in nested.witnesses.drain(..) {
-                let mut context_before = fixed_before.clone();
-                context_before.extend(attached_before.iter().cloned());
-                let mut context_after = attached_after.clone();
-                context_after.extend(fixed_after.iter().cloned());
-                let context_is_transparent = context_before.is_empty() && context_after.is_empty();
-                let context_is_enclosure = !context_before.is_empty() && !context_after.is_empty();
+                let mut context_before = context_before.clone();
+                let context_after = context_after.clone();
                 let witness_is_transparent =
                     witness.grouping.before.is_empty() && witness.grouping.after.is_empty();
                 if context_is_transparent || (context_is_enclosure && witness_is_transparent) {
@@ -452,7 +463,7 @@ impl<'a> PrettyPrattGroupingAnalyzer<'a> {
                             return false;
                         }
                         let proof = self.node(owner, terminal);
-                        !proof.cyclic && proof.empty
+                        proof.cyclic.is_empty() && proof.empty
                     }))
             }
             PrettyPrattGroupingElement::Fixed(_) | PrettyPrattGroupingElement::Opaque => false,
@@ -466,7 +477,7 @@ impl<'a> PrettyPrattGroupingAnalyzer<'a> {
         }
         if !self.active.insert(node) {
             return PrettyPrattGroupingProof {
-                cyclic: true,
+                cyclic: BTreeSet::from([node]),
                 ..PrettyPrattGroupingProof::default()
             };
         }
@@ -475,17 +486,23 @@ impl<'a> PrettyPrattGroupingAnalyzer<'a> {
             for elements in variants {
                 let variant = self.elements(owner, elements);
                 proof.empty |= variant.empty;
-                proof.cyclic |= variant.cyclic;
+                proof.cyclic.extend(variant.cyclic.iter().copied());
                 for witness in variant.witnesses {
                     proof.push_witness(witness);
                 }
             }
         }
         self.active.remove(&node);
+        // Mirrors the source model: a helper that closes its own frame without a
+        // witness has the empty witness set as a fixed point of its own witness
+        // equation, so no unrolling of the cycle it closes can add one.
+        if proof.witnesses.is_empty() {
+            proof.cyclic.remove(&node);
+        }
         for witness in &mut proof.witnesses {
             witness.delegated = true;
         }
-        if !proof.cyclic {
+        if proof.cyclic.is_empty() {
             self.memo.insert((owner, node), proof.clone());
         }
         proof
