@@ -24,7 +24,11 @@
 //! a second Pratt type that reuses a token keep their own levels. A fixed-token attachment
 //! around an operand (`Plus -> + Expr` for `Expr -> Expr Plus`) carries its variant's
 //! precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s tokens;
-//! that is what gives an interleaved shape's middle operand its minimum binding power.
+//! that is what gives an interleaved shape's middle operand its minimum binding power. The
+//! attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`) also
+//! introduces its leading token, at the level the lowering recorded on it (the variant's level
+//! plus one), so that the token shifts against the variant's own reduce as gram.y's
+//! `%nonassoc ESCAPE` just above `LIKE` does.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -67,6 +71,19 @@ impl BindingPowerPrecedence {
                 precedence.position,
                 PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
             ) {
+                continue;
+            }
+            // The attachment around an optional operand introduces its leading token at the
+            // level the lowering recorded, the variant's level plus one, so that the token
+            // shifts against the variant's own reduce (`a LIKE b . ESCAPE`).
+            if let Some(level) = precedence.attaches_at {
+                for terminal in sequence_first(grammar, &first, &nullable, &rule.rhs) {
+                    tokens
+                        .entry((precedence.owner, terminal))
+                        .or_default()
+                        .entry(level)
+                        .or_insert(id);
+                }
                 continue;
             }
             // Only the Pratt rule itself, which starts with its implicit left operand,

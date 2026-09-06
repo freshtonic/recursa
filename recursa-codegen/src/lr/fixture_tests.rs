@@ -669,6 +669,69 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
 }
 
 /// Lowers the container fixture grammar and builds its automaton.
+/// Lowers the Pratt shapes fixture (`tests/fixtures/generation/pratt-shapes`).
+fn pratt_shapes_fixture() -> (LoweredGrammar, LrGrammar) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/generation/pratt-shapes");
+    let lowered = lowered_tree(&fixture, "src/grammar.rs");
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the Pratt shapes fixture lowers");
+    (lowered, grammar)
+}
+
+#[test]
+fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_variant() {
+    let (_, grammar) = pratt_shapes_fixture();
+    let expr = grammar.nonterminal_by_name("grammar::Expr").unwrap();
+    let rules = rules_of(&grammar, "grammar::Expr");
+    // The optional operand is inlined into its variant's rule as one alternative without and
+    // one with the attachment; the attachments carry the operand minimum (`rbp` for the infix
+    // variant, `bp` for the postfix one), never a helper with an epsilon reduce.
+    let like = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#12";
+    let not_like = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#14";
+    assert!(rules.contains(&like.to_owned()), "{rules:?}");
+    assert!(rules.contains(&format!("{like} grammar::Expr::__recursa_attachment#13")), "{rules:?}");
+    assert!(rules.contains(&not_like.to_owned()), "{rules:?}");
+    assert!(rules.contains(&format!("{not_like} grammar::Expr::__recursa_attachment#15")), "{rules:?}");
+    assert!(!rules.iter().any(|rule| rule.contains("opt(")), "{rules:?}");
+    assert_eq!(
+        rules_of(&grammar, "grammar::Expr::__recursa_attachment#13"),
+        ["grammar::Expr::__recursa_attachment#13 -> ESCAPE grammar::Expr[min 7]"]
+    );
+    assert_eq!(
+        rules_of(&grammar, "grammar::Expr::__recursa_attachment#15"),
+        ["grammar::Expr::__recursa_attachment#15 -> ESCAPE grammar::Expr[min 6]"]
+    );
+    // The attachments inherit the variant's precedence for their own reduce and introduce
+    // `ESCAPE` one level above it, so that `a like b . escape` shifts as `%nonassoc ESCAPE`
+    // above `%nonassoc LIKE` does in gram.y; the required operand's attachment introduces
+    // nothing.
+    let precedence_of = |name: &str| {
+        let attachment = grammar.nonterminal_by_name(name).expect("an attachment");
+        grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited")
+    };
+    let escape_like = precedence_of("grammar::Expr::__recursa_attachment#13");
+    assert_eq!((escape_like.level, escape_like.owner, escape_like.attaches_at), (6, expr, Some(7)));
+    let escape_not_like = precedence_of("grammar::Expr::__recursa_attachment#15");
+    assert_eq!((escape_not_like.level, escape_not_like.attaches_at), (6, Some(7)));
+    let like_operand = precedence_of("grammar::Expr::__recursa_attachment#12");
+    assert_eq!((like_operand.level, like_operand.attaches_at), (6, None));
+    let precedence = BindingPowerPrecedence::new(&grammar).expect("representable binding powers");
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "ESCAPE")), [7]);
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "LIKE")), [6]);
+    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "NOT")), [6]);
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(automaton.conflicts().is_empty(), "{dump}");
+    assert!(
+        automaton
+            .resolved_conflicts()
+            .iter()
+            .any(|conflict| grammar.terminal_name(conflict.lookahead) == "ESCAPE"),
+        "{dump}"
+    );
+}
+
 fn containers() -> (LoweredGrammar, LrGrammar, Automaton) {
     let lowered = lowered_containers();
     let roles = TypeRoles::from_lowered(&lowered);

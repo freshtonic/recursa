@@ -2207,6 +2207,9 @@ impl Materializer {
                     current_application,
                     &mut elements,
                 )?;
+                if !self.validate_optional_pratt_operands(current_application, &elements) {
+                    return None;
+                }
                 Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
                     common,
                     position: MaterializedPrattLedPosition::Postfix { bp },
@@ -2258,7 +2261,8 @@ impl Materializer {
         false
     }
 
-    /// Validates exactly one recursive infix rhs while admitting ordinary semantic tail fields.
+    /// Validates exactly one required recursive infix rhs while admitting ordinary semantic
+    /// tail fields and attached optional operands (`#[tok(X, this)] Option<Box<Self>>`).
     fn validate_single_pratt_rhs(
         &mut self,
         variant: ResolvedVariantId,
@@ -2275,7 +2279,8 @@ impl Materializer {
                 else {
                     return false;
                 };
-                is_recursive_pratt_operand(ty, current_application.application)
+                !matches!(ty, ClosedType::Optional(_))
+                    && is_recursive_pratt_operand(ty, current_application.application)
             })
             .collect::<Vec<_>>();
         if recursive.len() != 1 {
@@ -2292,7 +2297,7 @@ impl Materializer {
             return false;
         }
         if exact_pratt_self_operand(recursive[0], current_application) {
-            return true;
+            return self.validate_optional_pratt_operands(current_application, elements);
         }
         let MaterializedElement::SemanticField { field, .. } = recursive[0] else {
             unreachable!("recursive Pratt rhs selection contains only semantic fields")
@@ -2306,6 +2311,63 @@ impl Materializer {
                 .to_owned(),
         );
         false
+    }
+
+    /// Validates every optional recursive operand of a led tail: it is exactly
+    /// `Option<Box<Self>>` and it follows a fixed token of its own
+    /// (`#[tok(ESCAPE, this)] Option<Box<Self>>`), which decides its presence the way gram.y's
+    /// `a_expr LIKE a_expr ESCAPE a_expr` does. A bare optional operand would decide its
+    /// presence by the operand language's FIRST set, which every extender's operand shares.
+    fn validate_optional_pratt_operands(
+        &mut self,
+        current_application: &MaterializedNodeUse,
+        elements: &[MaterializedElement],
+    ) -> bool {
+        for element in elements {
+            let MaterializedElement::SemanticField {
+                field,
+                projection:
+                    MaterializedSemanticFieldProjection::Direct {
+                        ty,
+                        trace,
+                        separator,
+                        ..
+                    },
+                attachment,
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let ClosedType::Optional(inner) = ty else {
+                continue;
+            };
+            if !is_recursive_pratt_operand(ty, current_application.application) {
+                continue;
+            }
+            let exact =
+                exact_pratt_self_parts(inner, trace, separator.as_ref(), current_application);
+            let attached = attachment.as_ref().is_some_and(|attachment| {
+                matches!(
+                    attachment.before.first(),
+                    Some(MaterializedAttachedFixedSyntax::Required(_))
+                )
+            });
+            if exact && attached {
+                continue;
+            }
+            let resolved_field = self.resolved_field(*field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "an optional Pratt operand must be an authored Option<Box<Self>> attached \
+                 behind a fixed token (`#[tok(X, this)] Option<Box<Self>>`)"
+                    .to_owned(),
+            );
+            return false;
+        }
+        true
     }
 
     /// Derives the resolved variant site while materializing grammar applications and container shapes.
@@ -6021,6 +6083,74 @@ enum Expr<'input> {
     }
 
     #[test]
+    fn led_tails_admit_an_optional_operand_attached_behind_a_fixed_token() {
+        // gram.y's `a_expr LIKE a_expr ESCAPE a_expr`: the escape operand is optional and its
+        // own token decides its presence, on an infix rhs and on a postfix tail alike.
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::like }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(infix, lbp = 6, rbp = 7)]
+    Like(Box<Self>, #[tok("LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
+    #[parse(postfix, bp = 6)]
+    NotLike(Box<Self>, #[tok("NOT", "LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "like::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("materialized Expr is Pratt")
+        };
+        for (index, position) in [
+            (1, MaterializedPrattLedPosition::Infix { lbp: 6, rbp: 7 }),
+            (2, MaterializedPrattLedPosition::Postfix { bp: 6 }),
+        ] {
+            let MaterializedPrattVariant::Led(led) = &variants[index] else {
+                panic!("variant {index} is a led variant")
+            };
+            assert_eq!(led.position, position);
+            let semantic: Vec<&MaterializedElement> = led
+                .tail
+                .iter()
+                .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+                .collect();
+            assert_eq!(semantic.len(), 2);
+            let MaterializedElement::SemanticField {
+                projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                attachment: Some(attachment),
+                ..
+            } = semantic[1]
+            else {
+                panic!("the escape operand is an attached direct field")
+            };
+            assert!(matches!(ty, ClosedType::Optional(_)));
+            assert!(matches!(
+                attachment.before.as_slice(),
+                [crate::materialization::MaterializedAttachedFixedSyntax::Required(_)]
+            ));
+        }
+        // Both optional operands project to a site that carries the operand minimum.
+        let minimums: Vec<u8> = lowered
+            .grammar
+            .sites
+            .iter()
+            .filter(|site| matches!(site.container, ContainerShape::Optional(_)))
+            .map(|site| site.min_bp)
+            .collect();
+        assert_eq!(minimums, [7, 6]);
+    }
+
+    #[test]
     fn rejects_zero_multiple_and_non_exact_recursive_infix_rhs_fields() {
         for (invalid_variant, expected) in [
             (
@@ -6033,7 +6163,23 @@ enum Expr<'input> {
             ),
             (
                 r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(Box<Self>, Leaf, Option<Box<Self>>)"#,
-                "must be an authored Box<Self>",
+                "found 0 recursive semantic fields",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] BareOptional(Box<Self>, Box<Self>, Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] TrailingOptional(Box<Self>, Box<Self>, #[tok(this, "LEAF")] Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(postfix, bp = 1)] PostfixBareOptional(Box<Self>, #[tok("LEAF", this)] Box<Self>, Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(postfix, bp = 1)] PostfixOptionalNode(Box<Self>, #[tok("LEAF", this)] Box<Self>, #[tok("LEAF", this)] Option<Box<Expr>>)"#,
+                "attached behind a fixed token",
             ),
         ] {
             let source = format!(
