@@ -152,6 +152,85 @@ precedence resolves. Facts: pg-sql has one `#[pratt]` enum, `Expr`, with
 116 variants; every infix variant has `rbp = lbp + 1`; exactly one
 exclusion site exists, the `b_expr` restriction inside `POSITION`.
 
+**Declared precedence (#120).** A keyword that appears in no Pratt rule
+has no precedence read off the rules, so every shift/reduce decision
+gram.y settles with a `%nonassoc` or `%left` line on a keyword stayed a
+conflict: `a LIKE b . ESCAPE`, `x IS JSON . VALUE`, `NESTED . PATH`,
+`BETWEEN` as a column name before a window frame, `SET SESSION .
+CHARACTERISTICS`, and `c_expr: select_with_parens %prec UMINUS`. Bison's
+token-precedence facility exists as data in the token grammar, a
+`precedence` block beside `admissions` and `lookahead`, listing levels
+from lowest to highest, each `left`, `right` or `nonassoc` over token
+names as `#[greedy(...)]` spells them (fixed tokens by definition name,
+content tokens by type name), exactly the shape of gram.y's table:
+
+```text
+precedence {
+    nonassoc(bp = 5)  { BETWEEN, IN, LIKE, ILIKE, SIMILAR, NOT_LA },
+    nonassoc(bp = 6)  { ESCAPE },
+    nonassoc(bp = 7)  { UNBOUNDED, NESTED },
+    nonassoc(bp = 8)  { IdentText, PARTITION, RANGE, ROWS, ..., VALUE, WITH, WITHOUT, PATH },
+    left(bp = 10)     { PLUS, MINUS },
+    right(bp = 12)    { UMINUS },
+    left(bp = 20)     { DOT },
+}
+```
+
+*The order between levels and binding powers.* Every level carries a
+binding power on the Pratt scale, `bp = N`, strictly ascending down the
+block; that is the whole total order. A Pratt rule's level is its `lbp`
+or `bp` as before, a declared token's is its level's `bp`, and the
+resolver compares the two directly: a higher rule reduces, a higher
+token shifts, and a tie goes to the reducing rule's associativity as in
+bison (`left` reduces, `right` shifts, `nonassoc` is an error action,
+which the tables carry and the dump records as `resolved by precedence
+(an error)`). The declaration is consulted only where the Pratt levels
+say nothing: a Pratt rule against a lookahead that introduces no
+operator of its owner nonterminal (`a LIKE b . ESCAPE`), and a rule
+whose own precedence is declared. A Pratt rule against a Pratt operator
+of its owner is decided by binding powers exactly as before, whatever
+the block says about that token, so no resolution the Pratt lowering
+makes changes; the block's `bp` for an operator token is the reference
+point for the keywords around it. pg-sql's `Expr` scale (1, 2, 5, 6, 8,
+9, 10, 11, 12, 13, 15, 18, 20) leaves the integers gram.y needs (`ESCAPE`
+at 6 meets only postfix rules, an irrelevant tie; the `IDENT` group at
+7); where a scale is dense the Pratt binding powers are renumbered,
+which changes no parse. The alternative, Pratt variants naming a
+declared level, was rejected: it rewrites every operator variant and
+changes the Pratt surface for nothing the `bp` does not give.
+
+*Rule precedence.* A rule with no Pratt precedence takes the level of
+its last terminal that has one, as bison does, in every rule the
+lowering emits (admission-set members, inlined alternatives, helpers,
+attachments without a Pratt precedence). A Node or variant may override
+that with `#[parse(prec = NAME)]`, bison's `%prec`: every rule lowered
+from it (an enum's alternative, a Pratt atom, a struct's construction)
+takes the named level. The attribute is not accepted on a prefix, infix
+or postfix Pratt variant, whose binding powers are its precedence. A
+name in the block that is no token is a *precedence-only name*, bison's
+`UMINUS`, declared by the block alone; it must be used by at least one
+`#[parse(prec = NAME)]`, so a misspelt token is still an error. A token
+in two levels, a level out of order, a missing or non-`u8` `bp`, and an
+unknown associativity are rejected where the token grammar is parsed
+(`RCA3101`, the token-grammar configuration error); an unused precedence-only
+name, a second `precedence` block, an override that names no level or
+sits on an operator variant, and a malformed override are `RCA3133`.
+Reduce/reduce conflicts are never resolved by precedence, as in bison.
+The declaration is inert under recursive descent: the generated sources
+and the generation identity are byte-identical with and without it.
+Facts: gram.y's block has 23 levels; `IDENT` is among them, so the
+block accepts content-token names; the pg-sql families of the issue
+resolve as shift in every case. The twin fixture's two parsers print the
+same line for every input but six, where the declaration decides the
+keyword and recursive descent reads on to the token that decides it:
+three it accepts and the declaration rejects (`SELECT a LIKE b ESCAPE`,
+`COLUMNS (NESTED PATH)`, `SET SESSION characteristics = 1`), two the
+declaration accepts and it rejects (`SELECT a IS JSON VALUE value`,
+`ROWS BETWEEN + 1 PRECEDING`), and one both accept with different trees
+(`SELECT a IS JSON VALUE`, where the declaration shifts `VALUE` into the
+type and recursive descent leaves it to the caller as the bare label).
+The declared outcome is PostgreSQL's in all six.
+
 **Lookahead filter.** LALR(1) reads one token. PostgreSQL closes the gap
 with a filter between scanner and parser (`NOT` before `BETWEEN`, `IN`,
 `LIKE`, `ILIKE`, `SIMILAR` becomes `NOT_LA`, and five more). Recursa does
@@ -320,6 +399,9 @@ registry:
 A conflict report carries the state's items, the conflicting lookahead,
 the competing actions, and the shortest path from the start state to the
 conflict state. Bison-style counterexample derivations are not in v1.
+The `precedence` declaration's own errors are source-model diagnostics
+(`RCA3133`, beside the lookahead filter's `RCA3132`), so they reach the
+author under either parser style.
 
 ## 8. The generated shape
 
