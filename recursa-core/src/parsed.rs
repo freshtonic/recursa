@@ -921,7 +921,7 @@ pub enum CapturePolicy {
 
 /// Capture mode selected by the public root entry point.
 #[derive(Clone, Copy)]
-enum CaptureRequest {
+pub(crate) enum CaptureRequest {
     /// Use only captures required by the grammar plan.
     Default,
     /// Request optional captures for public occurrence views.
