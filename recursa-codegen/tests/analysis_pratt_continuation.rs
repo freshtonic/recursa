@@ -4,6 +4,10 @@
 //! not a caller-FOLLOW overlap there; and the extenders that follow a led variant's tail
 //! are reported where the generated parser consults them, so an exact `#[greedy(...)]`
 //! is expressible for every kind that could raise `RCA4102` at run time (#109).
+//!
+//! These cases carry the exclusions as resolved declarations, because `analyze` runs after
+//! materialization has resolved the authored names. An exclusion naming no led variant is
+//! refused at the emission-planning seam instead; `generation::tests` pins that.
 
 use recursa_codegen::{
     AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, DeclId, Declaration,
@@ -88,8 +92,7 @@ impl Builder {
 
     fn accept(&mut self, site: SiteId, acceptance: GreedyAcceptance) {
         let declaration = self.grammar.sites[site.index()].declaration;
-        let current = self.grammar.declarations[declaration.index()].clone();
-        self.grammar.declarations[declaration.index()] = current.with_greedy(acceptance);
+        self.grammar.declarations[declaration.index()].greedy = Some(acceptance);
     }
 
     fn exclude(&mut self, site: SiteId, variants: &[DeclId]) {
@@ -171,6 +174,20 @@ fn pratt_overlaps(report: &recursa_codegen::AnalysisReport) -> Vec<(SiteId, Vec<
             )
         })
         .collect()
+}
+
+/// Returns the use site a diagnostic's remedy names, when it names one.
+fn remedy_site(diagnostic: &recursa_codegen::Diagnostic) -> Option<SiteId> {
+    match diagnostic.conflict_remedy {
+        Some(
+            ConflictRemedy::MakeSiteRequired { site }
+            | ConflictRemedy::ReviewNullableFollow { site }
+            | ConflictRemedy::ReviewPrattFollow { site, .. }
+            | ConflictRemedy::RemoveGreedy { site, .. }
+            | ConflictRemedy::DeclareGreedy { site, .. },
+        ) => Some(site),
+        _ => None,
+    }
 }
 
 #[test]
@@ -356,7 +373,15 @@ fn a_led_tail_continuation_is_reported_at_the_operand_that_inherits_it() {
         "`ESCAPE` is not an extender, so the optional clause itself does not overlap:\n{}",
         report.canonical_diagnostics(),
     );
-    let _ = sites.like_escape;
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| remedy_site(diagnostic) != Some(sites.like_escape)),
+        "the continuation is reported at the operand that inherits it, not at the optional \
+         container site `Expr::Like::3` that holds the clause:\n{}",
+        report.canonical_diagnostics(),
+    );
 }
 
 #[test]
