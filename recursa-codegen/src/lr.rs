@@ -50,7 +50,7 @@ pub use grammar::{
     OptionalContent, Rule, RuleAction, RuleId, RulePrecedence, SiteForm, StartRule, Symbol,
     TerminalFilter, TerminalId, UnrepresentableBindingPowers,
 };
-pub use helpers::{CopiedBuild, HelperCopy, HelperSite, HelperSplit, build_with_helper_copies};
+pub use helpers::{CopiedBuild, HelperSite, HelperSplit, SiteClassCopy, build_with_helper_copies};
 pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
 pub use precedence::BindingPowerPrecedence;

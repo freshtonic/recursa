@@ -20,7 +20,7 @@
 //! original helper; every other class gets a copy named `opt(X)@site` after its first site. A
 //! copy's rules are the original's with self-references redirected, and its reduce actions,
 //! folds and tail decisions are the original's. The automaton is rebuilt after each round until
-//! a round copies nothing or [`MAX_ROUNDS`] is reached, whichever comes first; a copy owns one
+//! a round copies nothing or [`MAX_ROUNDS`](crate::lr::helpers::MAX_ROUNDS) is reached, whichever comes first; a copy owns one
 //! class, so a helper is split again only when a copy of an enclosing helper gave it new sites.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,7 +45,7 @@ pub struct HelperSite {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One copy of a helper and the co-occurrence class of use sites it now owns.
-pub struct HelperCopy {
+pub struct SiteClassCopy {
     /// The copy.
     pub copy: NonterminalId,
     /// The sites rewritten to the copy, in rule order.
@@ -58,7 +58,7 @@ pub struct HelperSplit {
     /// The helper that was shared; it keeps the class of its first site.
     pub original: NonterminalId,
     /// The copies for the other classes, in class order.
-    pub copies: Vec<HelperCopy>,
+    pub copies: Vec<SiteClassCopy>,
 }
 
 /// The outcome of [`build_with_helper_copies`].
@@ -243,7 +243,7 @@ fn copy_helper(
             grammar.rules_mut()[site.rule.index()].rhs[site.position as usize] =
                 Symbol::Nonterminal(copy);
         }
-        copies.push(HelperCopy {
+        copies.push(SiteClassCopy {
             copy,
             sites: class.clone(),
         });
