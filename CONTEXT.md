@@ -245,6 +245,10 @@ _Avoid_: Arbitrary punctuation pair, runtime delimiter heuristic
 A frozen predictive selection strategy for an otherwise unbounded shared opener prefix. Analysis proves the enclosed language balanced for one delimiter pair and freezes the residual post-close trie; generated parsing only counts that pair's nesting and executes the frozen residual decision.
 _Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
 
+**Selection prefix**:
+The shortest matched token prefix at which a frozen enum dispatch leaves one outer declaration. The trie commits there, and the selected declaration's own parser owns every later token; only an exhausted one-token alternative keeps a caller-FOLLOW leaf.
+_Avoid_: Complete-route validation, deep trie walk
+
 **Optional viability decision**:
 A frozen predictive consume-or-skip strategy for one optional parse site. Analysis compares one occurrence plus the owning sequence tail against that tail alone, retaining exact token-text partitions and an explicit caller-FOLLOW fallback; generated parsing only executes the frozen decision.
 _Avoid_: Trial parsing, first-token optional commitment

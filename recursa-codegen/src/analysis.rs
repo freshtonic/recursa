@@ -9275,7 +9275,10 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
     /// Rationale: path-local Pratt cutoff, root-kind exclusion, caller terminals, and recursive
     /// discrimination must share one memoized state so the frozen trie cannot mix proof phases.
     /// Invariants: residual labels are canonical and productive, exact edge cells are disjoint,
-    /// excluded root kinds never reappear, and every child is interned before its parent identity.
+    /// excluded root kinds never reappear, every child is interned before its parent identity,
+    /// and a matched prefix that only one outer declaration can still derive is a leaf: the
+    /// trie decides where the declarations part and never walks into the language that the
+    /// selected declaration's own parser owns.
     /// Phases: normalizes and memo-checks, applies path and depth cutoffs, partitions transitions,
     /// recursively freezes children, then interns and memoizes the completed dispatch node.
     fn freeze(
@@ -9300,8 +9303,17 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
             .first()
             .map(|first| first.declaration)
             .filter(|declaration| states.iter().all(|state| state.declaration == *declaration));
+        // A matched prefix that only one declaration can still derive has decided the
+        // dispatch. Walking on would re-validate that declaration's own language with a
+        // frontier that omits its open continuations, so for `FuncCall { Qualified, Named }`
+        // the walk passed the dot-or-paren decision and rejected `f(a + b)` at `+` before the
+        // selected variant's parser ran (#127). A derivation that crossed a Pratt NUD or
+        // still has grammar left commits here; an exhausted state keeps the caller-FOLLOW
+        // leaf it always had.
         if matched_prefix
-            && states.iter().all(|state| state.crossed_pratt)
+            && states
+                .iter()
+                .any(|state| state.crossed_pratt || !state.state.0.is_empty())
             && let Some(declaration) = unique_declaration
         {
             let frozen = FrozenCompactDispatchState {
@@ -16632,9 +16644,9 @@ mod decision_product_tests {
     #[derive(Clone, Copy)]
     /// Selects whether the unique CASE route passes through a Pratt or ordinary enum type.
     enum UniqueCaseExpressionShape {
-        /// Exercises the declaration-unique Pratt cutoff.
+        /// Reaches the unique declaration through a Pratt NUD.
         Pratt,
-        /// Preserves complete-route validation as a scope control.
+        /// Reaches the unique declaration through ordinary enum alternatives.
         OrdinaryEnum,
     }
 
@@ -16876,25 +16888,21 @@ mod decision_product_tests {
     }
 
     #[test]
-    fn balanced_dispatch_preserves_a_unique_ordinary_enum_route() {
-        let ordinary_narrow =
-            unique_case_dispatch_expansion_work(1, UniqueCaseExpressionShape::OrdinaryEnum);
-        let ordinary_wide =
-            unique_case_dispatch_expansion_work(12, UniqueCaseExpressionShape::OrdinaryEnum);
-        assert!(
-            ordinary_wide.projected_components > ordinary_narrow.projected_components,
-            "ordinary enum selection must retain complete-route validation below CASE; narrow={ordinary_narrow:?} wide={ordinary_wide:?}",
-        );
-    }
-
-    #[test]
-    fn balanced_dispatch_stops_expanding_a_pratt_route_after_its_declaration_is_unique() {
-        let narrow = unique_case_dispatch_expansion_work(1, UniqueCaseExpressionShape::Pratt);
-        let wide = unique_case_dispatch_expansion_work(12, UniqueCaseExpressionShape::Pratt);
-        assert_eq!(
-            wide, narrow,
-            "FIRST-language expansion below CASE must stop once only Choice::Expr remains; narrow={narrow:?} wide={wide:?}",
-        );
+    fn balanced_dispatch_stops_expanding_a_route_after_its_declaration_is_unique() {
+        // The walk stops where the declarations part whether the unique route is reached
+        // through a Pratt NUD or through ordinary enum alternatives: below CASE only
+        // `Choice::Expr` remains, and its own parser validates the CASE body (#127).
+        for shape in [
+            UniqueCaseExpressionShape::Pratt,
+            UniqueCaseExpressionShape::OrdinaryEnum,
+        ] {
+            let narrow = unique_case_dispatch_expansion_work(1, shape);
+            let wide = unique_case_dispatch_expansion_work(12, shape);
+            assert_eq!(
+                wide, narrow,
+                "FIRST-language expansion below CASE must stop once only Choice::Expr remains; narrow={narrow:?} wide={wide:?}",
+            );
+        }
     }
 
     #[test]
@@ -16994,7 +17002,7 @@ mod decision_product_tests {
     }
 
     #[test]
-    fn compact_dispatch_keeps_an_ordinary_sibling_of_a_crossed_pratt_derivation_live() {
+    fn compact_dispatch_commits_to_a_unique_declaration_before_its_nested_alternatives_part() {
         let mut grammar = GrammarDescription::new(
             "mixed-path-pratt-provenance",
             4,
@@ -17093,7 +17101,7 @@ mod decision_product_tests {
                 "Mixed",
                 mixed_declaration,
                 TypeShape::Enum {
-                    alternatives: vec![mixed_pratt, mixed_ordinary],
+                    alternatives: vec![mixed_pratt.clone(), mixed_ordinary.clone()],
                 },
             )),
             mixed,
@@ -17121,6 +17129,7 @@ mod decision_product_tests {
                 "Choice::Other::value",
             )],
         };
+        let mixed_choice_declaration = mixed_choice.declaration;
         let alternatives = vec![mixed_choice, other_choice];
         assert_eq!(
             grammar.push_type(crate::TypeDescription::new(
@@ -17140,17 +17149,34 @@ mod decision_product_tests {
             .collect::<Vec<_>>();
         let resolution = first_sequences
             .compact_enum_dispatch(&alternatives)
-            .expect("two-token mixed paths are bounded");
+            .expect("HEAD and OTHER part at the first token");
+        assert_eq!(resolution.required_lookahead, 1);
         let head = resolution
             .root
             .edges
             .iter()
             .find(|edge| edge.kinds.contains(head_kind))
             .expect("mixed route retains its HEAD entry");
-        assert!(
-            head.next.terminal.is_none(),
-            "the crossed Pratt derivation cannot hide its ordinary sibling",
-        );
+        // After HEAD only `Choice::Mixed` remains, so the outer dispatch commits there even
+        // though one of its derivations crossed a Pratt NUD and the other did not (#127).
+        let terminal = head.next.terminal.expect("HEAD commits to Choice::Mixed");
+        assert_eq!(terminal.declaration, mixed_choice_declaration);
+        assert_eq!(terminal.mode, CompactDispatchTerminalMode::Immediate);
+        assert!(head.next.edges.is_empty());
+
+        // The ordinary sibling stays live where it is decided: in `Mixed`'s own dispatch.
+        let mixed_alternatives = [
+            (mixed_pratt.declaration, mixed_pratt.sites.as_slice()),
+            (mixed_ordinary.declaration, mixed_ordinary.sites.as_slice()),
+        ];
+        let mixed_resolution = first_sequences
+            .compact_enum_dispatch(&mixed_alternatives)
+            .expect("the tails part at the second token");
+        assert_eq!(mixed_resolution.required_lookahead, 2);
+        let [head] = mixed_resolution.root.edges.as_ref() else {
+            panic!("both Mixed alternatives begin with HEAD");
+        };
+        assert!(head.next.terminal.is_none());
         assert!(
             head.next
                 .edges
@@ -17163,6 +17189,314 @@ mod decision_product_tests {
                 .iter()
                 .any(|edge| edge.kinds.contains(ordinary_tail_kind)),
         );
+    }
+
+    /// Builds the `FuncCall { Qualified, Named }` shape from issue #127.
+    ///
+    /// Both variants end in the same call tail `( args )`, whose arguments are Pratt
+    /// expressions, and part on the token after the first identifier: a dot or an open
+    /// paren. Returns the grammar with the `FuncCall` alternatives and the kinds needed to
+    /// walk its dispatch trie.
+    fn shared_suffix_call_grammar() -> (GrammarDescription, Vec<crate::Alternative>, [KindId; 4]) {
+        let mut grammar =
+            GrammarDescription::new("shared-suffix-call", 7, 4, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let (ident, ident_kind) = compact_test_token(&mut grammar, &mut next_byte, "IDENT");
+        let (dot, dot_kind) = compact_test_token(&mut grammar, &mut next_byte, "DOT");
+        let (lparen, lparen_kind) = compact_test_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (rparen, _) = compact_test_token(&mut grammar, &mut next_byte, "RPAREN");
+        let (plus, plus_kind) = compact_test_token(&mut grammar, &mut next_byte, "PLUS");
+        let (comma, _) = compact_test_token(&mut grammar, &mut next_byte, "COMMA");
+        let (arrow, _) = compact_test_token(&mut grammar, &mut next_byte, "ARROW");
+
+        let expr = grammar.next_type_id();
+        let expr_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Name");
+        let atom_site =
+            compact_test_site(&mut grammar, &mut next_byte, expr, ident, "Expr::Name::0");
+        let add_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Add");
+        let add_operator =
+            compact_test_site(&mut grammar, &mut next_byte, expr, plus, "Expr::Add::1");
+        let add_rhs_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Add::2");
+        let add_rhs = grammar.push_site(
+            crate::ParseSite::new(
+                expr,
+                expr,
+                add_rhs_declaration,
+                crate::ContainerShape::boxed(crate::ContainerShape::Direct),
+            )
+            .with_min_bp(11),
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expr_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: atom_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![atom_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: add_declaration,
+                            position: PrattPosition::Infix { lbp: 10, rbp: 11 },
+                            sites: vec![add_operator, add_rhs],
+                        },
+                    ],
+                },
+            )),
+            expr,
+        );
+
+        // An argument is either a named `IDENT => expr` or a bare expression, so the state
+        // after `IDENT ( IDENT` mixes a derivation that crossed the Pratt atom with one that
+        // did not, exactly as pg-sql's `FuncArg` does.
+        let arg = grammar.next_type_id();
+        let arg_declaration = test_declaration(&mut grammar, &mut next_byte, "Arg");
+        let named_arg_declaration = test_declaration(&mut grammar, &mut next_byte, "Arg::Named");
+        let named_arg_sites = vec![
+            compact_test_site(&mut grammar, &mut next_byte, arg, ident, "Arg::Named::0"),
+            compact_test_site(&mut grammar, &mut next_byte, arg, arrow, "Arg::Named::1"),
+            compact_test_site(&mut grammar, &mut next_byte, arg, expr, "Arg::Named::2"),
+        ];
+        let positional_arg_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Arg::Positional");
+        let positional_arg_sites = vec![compact_test_site(
+            &mut grammar,
+            &mut next_byte,
+            arg,
+            expr,
+            "Arg::Positional::0",
+        )];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Arg",
+                arg_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: named_arg_declaration,
+                            sites: named_arg_sites,
+                        },
+                        crate::Alternative {
+                            declaration: positional_arg_declaration,
+                            sites: positional_arg_sites,
+                        },
+                    ],
+                },
+            )),
+            arg,
+        );
+
+        let tail = grammar.next_type_id();
+        let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail");
+        let tail_open = compact_test_site(&mut grammar, &mut next_byte, tail, lparen, "Tail::open");
+        let tail_args_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail::args");
+        let tail_args = grammar.push_site(crate::ParseSite::new(
+            tail,
+            arg,
+            tail_args_declaration,
+            crate::ContainerShape::repeated_with_separator(
+                crate::ContainerShape::Direct,
+                crate::RepetitionCardinality::ZeroOrMore,
+                Some(crate::RepeatSeparator::new(comma, false)),
+            ),
+        ));
+        let tail_close =
+            compact_test_site(&mut grammar, &mut next_byte, tail, rparen, "Tail::close");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Tail",
+                tail_declaration,
+                TypeShape::Sequence {
+                    sites: vec![tail_open, tail_args, tail_close],
+                },
+            )),
+            tail,
+        );
+
+        let part = grammar.next_type_id();
+        let part_declaration = test_declaration(&mut grammar, &mut next_byte, "NamePart");
+        let part_dot = compact_test_site(&mut grammar, &mut next_byte, part, dot, "NamePart::dot");
+        let part_name =
+            compact_test_site(&mut grammar, &mut next_byte, part, ident, "NamePart::name");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "NamePart",
+                part_declaration,
+                TypeShape::Sequence {
+                    sites: vec![part_dot, part_name],
+                },
+            )),
+            part,
+        );
+
+        let qualified_name = grammar.next_type_id();
+        let qualified_name_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "QualifiedName");
+        let qualified_first = compact_test_site(
+            &mut grammar,
+            &mut next_byte,
+            qualified_name,
+            ident,
+            "QualifiedName::first",
+        );
+        let qualified_parts_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "QualifiedName::parts");
+        let qualified_parts = grammar.push_site(crate::ParseSite::new(
+            qualified_name,
+            part,
+            qualified_parts_declaration,
+            crate::ContainerShape::repeated_with_separator(
+                crate::ContainerShape::Direct,
+                crate::RepetitionCardinality::OneOrMore,
+                None,
+            ),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "QualifiedName",
+                qualified_name_declaration,
+                TypeShape::Sequence {
+                    sites: vec![qualified_first, qualified_parts],
+                },
+            )),
+            qualified_name,
+        );
+
+        let qualified = grammar.next_type_id();
+        let qualified_declaration = test_declaration(&mut grammar, &mut next_byte, "Qualified");
+        let qualified_sites = vec![
+            compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                qualified,
+                qualified_name,
+                "Qualified::name",
+            ),
+            compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                qualified,
+                tail,
+                "Qualified::tail",
+            ),
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Qualified",
+                qualified_declaration,
+                TypeShape::Sequence {
+                    sites: qualified_sites,
+                },
+            )),
+            qualified,
+        );
+
+        let named = grammar.next_type_id();
+        let named_declaration = test_declaration(&mut grammar, &mut next_byte, "Named");
+        let named_sites = vec![
+            compact_test_site(&mut grammar, &mut next_byte, named, ident, "Named::name"),
+            compact_test_site(&mut grammar, &mut next_byte, named, tail, "Named::tail"),
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Named",
+                named_declaration,
+                TypeShape::Sequence { sites: named_sites },
+            )),
+            named,
+        );
+
+        let call = grammar.next_type_id();
+        let call_declaration = test_declaration(&mut grammar, &mut next_byte, "FuncCall");
+        let alternatives = vec![
+            crate::Alternative {
+                declaration: test_declaration(&mut grammar, &mut next_byte, "FuncCall::Qualified"),
+                sites: vec![compact_test_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    call,
+                    qualified,
+                    "FuncCall::Qualified::0",
+                )],
+            },
+            crate::Alternative {
+                declaration: test_declaration(&mut grammar, &mut next_byte, "FuncCall::Named"),
+                sites: vec![compact_test_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    call,
+                    named,
+                    "FuncCall::Named::0",
+                )],
+            },
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "FuncCall",
+                call_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            call,
+        );
+        grammar.entry_types = vec![call];
+        (
+            grammar,
+            alternatives,
+            [ident_kind, dot_kind, lparen_kind, plus_kind],
+        )
+    }
+
+    #[test]
+    fn compact_dispatch_commits_where_shared_suffix_variants_part() {
+        let (grammar, alternatives, [ident_kind, dot_kind, lparen_kind, _]) =
+            shared_suffix_call_grammar();
+        let first_sequences = FirstSequenceAnalysis::for_grammar(&grammar);
+        let borrowed = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        let resolution = first_sequences
+            .compact_enum_dispatch(&borrowed)
+            .expect("the variants part on the second token");
+        assert_eq!(resolution.required_lookahead, 2);
+        let [head] = resolution.root.edges.as_ref() else {
+            panic!("both variants begin with one identifier");
+        };
+        assert!(head.kinds.contains(ident_kind));
+        assert!(
+            head.next.terminal.is_none(),
+            "the first token decides nothing"
+        );
+        let mut routes = head
+            .next
+            .edges
+            .iter()
+            .map(|edge| {
+                let terminal = edge.next.terminal.expect("the second token commits");
+                assert_eq!(terminal.mode, CompactDispatchTerminalMode::Immediate);
+                assert!(
+                    edge.next.edges.is_empty(),
+                    "the walk must not continue into the shared call tail",
+                );
+                (
+                    edge.kinds.clone(),
+                    grammar.declarations[terminal.declaration.index()]
+                        .name
+                        .clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        routes.sort_by(|left, right| left.1.cmp(&right.1));
+        assert_eq!(routes.len(), 2);
+        assert!(routes[0].0.contains(lparen_kind));
+        assert_eq!(routes[0].1, "FuncCall::Named");
+        assert!(routes[1].0.contains(dot_kind));
+        assert_eq!(routes[1].1, "FuncCall::Qualified");
     }
 
     #[test]
