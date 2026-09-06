@@ -8,10 +8,68 @@
 //! lowering records each terminal's level on the [`LrGrammar`]. This module assigns rule
 //! precedence the way bison does: a rule with no Pratt precedence and no `#[parse(prec =
 //! ...)]` override takes the level of its last terminal that has one. The resolver in
-//! [`precedence`](super::precedence) then compares a reducing rule's level with the
+//! [`precedence`](crate::lr::precedence) then compares a reducing rule's level with the
 //! lookahead's declared level whenever the Pratt levels do not decide.
 
-use super::grammar::{LrGrammar, Symbol};
+use super::grammar::{
+    Associativity, DeclaredPrecedence, LrGrammar, RuleAction, Symbol, TerminalId,
+};
+use crate::{GrammarDescription, PrecedenceAssociativity, PrecedenceLevelId};
+
+/// Applies the `precedence` declaration of `description` to the lowered `grammar`: records
+/// every declared kind's level on its terminal, gives the rules of each Node or variant with a
+/// `#[parse(prec = NAME)]` override that level, and then assigns every remaining rule the
+/// precedence of its last declared terminal. Runs once, after every rule is emitted, so that
+/// the twins a lookahead filter emits and the start rules are covered.
+pub fn apply(grammar: &mut LrGrammar, description: &GrammarDescription) {
+    if description.precedence.is_empty() {
+        return;
+    }
+    let level = |id: PrecedenceLevelId| {
+        let level = &description.precedence[id.index()];
+        DeclaredPrecedence {
+            binding_power: level.binding_power,
+            associativity: match level.associativity {
+                PrecedenceAssociativity::Left => Associativity::Left,
+                PrecedenceAssociativity::Right => Associativity::Right,
+                PrecedenceAssociativity::NonAssociative => Associativity::NonAssociative,
+            },
+        }
+    };
+    for (index, _) in description.precedence.iter().enumerate() {
+        let id = PrecedenceLevelId::new(index as u32);
+        for kind in &description.precedence[index].kinds {
+            grammar.declare_precedence(TerminalId::new(u32::from(kind.get())), level(id));
+        }
+    }
+    // A variant's override wins over its Node's; a rule that already carries a Pratt
+    // precedence keeps it, which the model guarantees by rejecting the attribute on operator
+    // variants.
+    let override_of = |rule: &super::grammar::Rule| -> Option<PrecedenceLevelId> {
+        let (type_id, variant) = match rule.action {
+            RuleAction::Construct {
+                type_id, variant, ..
+            } => (type_id, variant),
+            RuleAction::Token { type_id } => (type_id, None),
+            _ => return None,
+        };
+        variant
+            .and_then(|declaration| description.declarations[declaration.index()].precedence)
+            .or_else(|| {
+                let declaration = description.types[type_id.index()].declaration;
+                description.declarations[declaration.index()].precedence
+            })
+    };
+    for rule in grammar.rules_mut() {
+        if rule.precedence.is_some() {
+            continue;
+        }
+        if let Some(id) = override_of(rule) {
+            rule.precedence = Some(level(id).rule_precedence(rule.lhs));
+        }
+    }
+    assign_rule_precedence(grammar);
+}
 
 /// Gives every rule that still has no precedence the declared precedence of its last terminal
 /// with one, in the rule's own left-hand side. Rules that already carry a Pratt precedence or
