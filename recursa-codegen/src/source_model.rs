@@ -128,6 +128,55 @@ pub(crate) struct SourceModel {
     pub(crate) greedy: Vec<GreedyDeclaration>,
     /// Compiled `lookahead { ... }` declarations in canonical source order.
     pub(crate) lookahead_filters: Vec<LookaheadFilter>,
+    /// The compiled `precedence { ... }` declaration: its levels from lowest to highest binding
+    /// power, empty without one.
+    pub(crate) precedence: Vec<PrecedenceLevel>,
+    /// Every `#[parse(prec = NAME)]` override, resolved to a level of `precedence`.
+    pub(crate) precedence_overrides: Vec<PrecedenceOverride>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One level of the `precedence { ... }` declaration, bison's `%left`, `%right` or
+/// `%nonassoc` line with the binding power that places it on the Pratt scale.
+///
+/// Only the table-driven lowering reads it; recursive descent ignores the declaration.
+pub(crate) struct PrecedenceLevel {
+    /// The level's associativity.
+    pub(crate) associativity: crate::PrecedenceAssociativity,
+    /// The level's binding power, strictly above the previous level's.
+    pub(crate) binding_power: u8,
+    /// Locates the level's declaration.
+    pub(crate) site: SourceSite,
+    /// The token definitions at this level, in authored order: fixed tokens by definition
+    /// name and content tokens by type name, as `#[greedy(...)]` spells them.
+    pub(crate) tokens: Vec<TokenDefinitionId>,
+    /// Names at this level that are no token: precedence-only names such as bison's
+    /// `UMINUS`, each used by at least one `#[parse(prec = NAME)]`.
+    pub(crate) names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One `#[parse(prec = NAME)]` attribute, bison's `%prec`: the rules lowered from its owner
+/// take the named level's precedence instead of their last declared terminal's.
+pub(crate) struct PrecedenceOverride {
+    /// The Node or variant that carries the attribute.
+    pub(crate) owner: PrecedenceOwner,
+    /// The named level, an index into [`SourceModel::precedence`]. It is the same index the
+    /// materialized [`GrammarDescription::precedence`](crate::GrammarDescription::precedence)
+    /// uses, which is why it carries that vector's id type: materialization maps the two
+    /// vectors one to one, in order, keeping precedence-only levels in place.
+    pub(crate) level: crate::PrecedenceLevelId,
+    /// Locates the authored attribute.
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The authored item that carries one `#[parse(prec = NAME)]` attribute.
+pub(crate) enum PrecedenceOwner {
+    /// A Node; the override covers every rule of the Node, including all its variants.
+    Type(NodeId),
+    /// A variant of an enum or a `#[pratt]` atom; the override covers the variant's rules.
+    Variant(ResolvedVariantId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1070,6 +1119,10 @@ pub(crate) enum SourceModelDiagnosticKind {
     ObsoleteParserPostcondition,
     /// A `lookahead { ... }` declaration names an unknown, duplicate or non-word-shaped token.
     InvalidLookaheadFilter,
+    /// A `precedence { ... }` declaration names an unknown token or is declared twice, or a
+    /// `#[parse(prec = NAME)]` is malformed, names no declared level, or sits on a Pratt
+    /// operator variant whose binding powers already are its precedence.
+    InvalidPrecedenceDeclaration,
 }
 
 impl SourceModelDiagnosticKind {
@@ -1151,6 +1204,9 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         pretty_content_definitions: Vec::new(),
         pending_greedy: Vec::new(),
         greedy: Vec::new(),
+        pending_precedence_overrides: Vec::new(),
+        precedence: Vec::new(),
+        precedence_overrides: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
@@ -1195,6 +1251,22 @@ struct SourceModelBuilder<'cfg> {
     pending_greedy: Vec<PendingGreedy>,
     /// Resolved `#[greedy(...)]` acceptances.
     greedy: Vec<GreedyDeclaration>,
+    /// Authored `#[parse(prec = NAME)]` attributes awaiting the compiled declaration.
+    pending_precedence_overrides: Vec<PendingPrecedenceOverride>,
+    /// The compiled `precedence { ... }` declaration.
+    precedence: Vec<PrecedenceLevel>,
+    /// Resolved `#[parse(prec = NAME)]` overrides.
+    precedence_overrides: Vec<PrecedenceOverride>,
+}
+
+/// One `#[parse(prec = NAME)]` attribute whose name awaits the compiled declaration.
+struct PendingPrecedenceOverride {
+    /// The authored item that carries the attribute.
+    owner: PrecedenceOwner,
+    /// The level name as authored.
+    name: String,
+    /// Locates the authored attribute.
+    site: SourceSite,
 }
 
 #[derive(Clone, Copy)]
@@ -5042,6 +5114,7 @@ impl SourceModelBuilder<'_> {
             self.pretty_boundary_analysis.borrow().soft_node_evaluations;
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         self.resolve_greedy();
+        self.resolve_precedence();
         let source_modeled = self
             .diagnostics
             .iter()
@@ -5056,6 +5129,8 @@ impl SourceModelBuilder<'_> {
                     token_uses: self.tokens.uses,
                     greedy: self.greedy,
                     lookahead_filters: self.tokens.lookahead_filters,
+                    precedence: self.precedence,
+                    precedence_overrides: self.precedence_overrides,
                 },
             });
         SourceModelReport {
@@ -5250,6 +5325,12 @@ impl SourceModelBuilder<'_> {
                                             fields: variant.fields.clone(),
                                         },
                                     );
+                                    self.lower_precedence_override(
+                                        origin,
+                                        &variant.metas,
+                                        PrecedenceOwner::Variant(variant.id),
+                                        !matches!(position, SourcePrattPosition::Atom),
+                                    );
                                     SourcePrattVariant {
                                         common: Variant {
                                             resolved_variant: variant.id,
@@ -5309,6 +5390,12 @@ impl SourceModelBuilder<'_> {
                                             fields: variant.fields.clone(),
                                         },
                                     );
+                                    self.lower_precedence_override(
+                                        origin,
+                                        &variant.metas,
+                                        PrecedenceOwner::Variant(variant.id),
+                                        false,
+                                    );
                                     Variant {
                                         resolved_variant: variant.id,
                                         name: variant.ident.clone(),
@@ -5341,6 +5428,12 @@ impl SourceModelBuilder<'_> {
             );
             let pretty = self.lower_pretty_hints(origin, configured, node.range);
             self.lower_greedy(origin, configured, GreedyOwner::Type(node.id));
+            self.lower_precedence_override(
+                origin,
+                configured,
+                PrecedenceOwner::Type(node.id),
+                false,
+            );
             self.nodes.push(Node {
                 resolved_node: node.id,
                 name: node.ident,
@@ -5491,6 +5584,183 @@ impl SourceModelBuilder<'_> {
                 site,
             });
         }
+    }
+
+    /// Records one authored `#[parse(prec = NAME)]` attribute, bison's `%prec`, for a Node or
+    /// variant.
+    ///
+    /// The name is resolved against the compiled `precedence { ... }` declaration in
+    /// [`Self::resolve_precedence`]. Malformed syntax, a repeated attribute, or an attribute on
+    /// a Pratt operator variant (`operator`), whose binding powers already are its precedence,
+    /// is `RCA3133`.
+    fn lower_precedence_override(
+        &mut self,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        owner: PrecedenceOwner,
+        operator: bool,
+    ) {
+        let override_metas = metas
+            .iter()
+            .filter(|meta| is_precedence_override_meta(meta))
+            .collect::<Vec<_>>();
+        let Some(meta) = override_metas.first() else {
+            return;
+        };
+        let site = self.site(origin, span_range(meta.span()));
+        if override_metas.len() > 1 {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidPrecedenceDeclaration,
+                sites: override_metas
+                    .iter()
+                    .map(|meta| self.site(origin, span_range(meta.span())))
+                    .collect(),
+                message: "a Node or variant accepts at most one #[parse(prec = NAME)]".to_owned(),
+            });
+            return;
+        }
+        if operator {
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                    site,
+                    "#[parse(prec = NAME)] is not accepted on a prefix, infix or postfix Pratt \
+                     variant, whose binding powers are its precedence",
+                ));
+            return;
+        }
+        let Meta::List(list) = meta else {
+            unreachable!("`is_precedence_override_meta` matches list attributes only")
+        };
+        let parser = |input: ParseStream<'_>| -> syn::Result<syn::Ident> {
+            let prec = syn::Ident::parse_any(input)?;
+            debug_assert_eq!(prec, "prec");
+            input.parse::<Token![=]>()?;
+            let name = syn::Ident::parse_any(input)?;
+            if !input.is_empty() {
+                return Err(input.error("unexpected tokens after the precedence level name"));
+            }
+            Ok(name)
+        };
+        match parser.parse2(list.tokens.clone()) {
+            Ok(name) => self.pending_precedence_overrides.push(PendingPrecedenceOverride {
+                owner,
+                name: name.unraw().to_string(),
+                site,
+            }),
+            Err(error) => self
+                .diagnostics
+                .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                    self.site(origin, span_range(error.span())),
+                    format!("#[parse(prec = NAME)] names one declared precedence level: {error}"),
+                )),
+        }
+    }
+
+    /// Compiles the `precedence { ... }` declaration against the completed, normalized token
+    /// catalog and resolves every `#[parse(prec = NAME)]` against it.
+    ///
+    /// A name resolves the way `#[greedy(...)]` spells kinds: a fixed token by its definition
+    /// identifier, a content token by its type name. A name that is no token is a
+    /// precedence-only name, bison's `UMINUS`, and must be used by at least one override so a
+    /// misspelt token is still an error. A second block, an unused precedence-only name, and an
+    /// override naming no level are `RCA3133`.
+    fn resolve_precedence(&mut self) {
+        let mut blocks = std::mem::take(&mut self.tokens.pending_precedence).into_iter();
+        let overrides = std::mem::take(&mut self.pending_precedence_overrides);
+        let Some(block) = blocks.next() else {
+            for pending in overrides {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                        pending.site,
+                        format!(
+                            "#[parse(prec = {})] needs a `precedence {{ ... }}` declaration, and \
+                             the grammar has none",
+                            pending.name
+                        ),
+                    ));
+            }
+            return;
+        };
+        for extra in blocks {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidPrecedenceDeclaration,
+                sites: vec![block.site.clone(), extra.site],
+                message: "a grammar declares at most one `precedence { ... }` block".to_owned(),
+            });
+        }
+        let mut levels = Vec::new();
+        let mut level_of_name = BTreeMap::<String, crate::PrecedenceLevelId>::new();
+        for (index, level) in block.levels.into_iter().enumerate() {
+            let mut tokens = Vec::new();
+            let mut names = Vec::new();
+            for reference in level.names {
+                let matches = self
+                    .tokens
+                    .definitions
+                    .iter()
+                    .filter(|definition| {
+                        definition.name == reference.name
+                            && !matches!(definition.kind, TokenDefinitionKind::LexicalBase(_))
+                    })
+                    .map(|definition| definition.id)
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    names.push(reference.name.clone());
+                } else {
+                    tokens.extend(matches);
+                }
+                let level = u32::try_from(index)
+                    .expect("a precedence block declares fewer than u32 levels");
+                level_of_name.insert(reference.name, crate::PrecedenceLevelId::new(level));
+            }
+            tokens.dedup();
+            levels.push(PrecedenceLevel {
+                associativity: level.associativity,
+                binding_power: level.binding_power,
+                site: level.site,
+                tokens,
+                names,
+            });
+        }
+        let mut used = BTreeSet::<String>::new();
+        for pending in overrides {
+            match level_of_name.get(&pending.name) {
+                Some(level) => {
+                    used.insert(pending.name);
+                    self.precedence_overrides.push(PrecedenceOverride {
+                        owner: pending.owner,
+                        level: *level,
+                        site: pending.site,
+                    });
+                }
+                None => self
+                    .diagnostics
+                    .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                        pending.site,
+                        format!(
+                            "#[parse(prec = {})] names no level of the `precedence {{ ... }}` \
+                             declaration",
+                            pending.name
+                        ),
+                    )),
+            }
+        }
+        for level in &levels {
+            for name in &level.names {
+                if !used.contains(name) {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                            level.site.clone(),
+                            format!(
+                                "`{name}` in the precedence declaration is not a fixed token or \
+                                 a content token type; a precedence-only name must be used by a \
+                                 `#[parse(prec = {name})]`"
+                            ),
+                        ));
+                }
+            }
+        }
+        self.precedence = levels;
     }
 
     /// Converts resolved fields and positional tokens into source-model elements.
@@ -5744,6 +6014,31 @@ struct TokenCatalog {
     pending_lookaheads: Vec<PendingLookaheadDefinition>,
     /// Compiled lookahead filters in authored order.
     lookahead_filters: Vec<LookaheadFilter>,
+    /// Preserves every `precedence { ... }` block until the token catalog is complete; only
+    /// one is allowed.
+    pending_precedence: Vec<PendingPrecedenceDeclaration>,
+}
+
+#[derive(Clone)]
+/// One `precedence { ... }` block awaiting the completed token catalog.
+struct PendingPrecedenceDeclaration {
+    /// Locates the block's `precedence` keyword.
+    site: SourceSite,
+    /// The levels from lowest to highest binding power.
+    levels: Vec<PendingPrecedenceLevel>,
+}
+
+#[derive(Clone)]
+/// One level of a pending `precedence { ... }` block.
+struct PendingPrecedenceLevel {
+    /// The level's associativity.
+    associativity: crate::PrecedenceAssociativity,
+    /// The level's binding power.
+    binding_power: u8,
+    /// Locates the level's associativity keyword.
+    site: SourceSite,
+    /// The names at this level, in authored order.
+    names: Vec<AdmissionReference>,
 }
 
 /// Carries the central content definition retained from authored source structure.
@@ -6629,6 +6924,29 @@ impl TokenCatalog {
                 triggers: lookahead.triggers.into_iter().map(reference).collect(),
             }
         }));
+        self.pending_precedence
+            .extend(syntax.precedence.into_iter().map(|declaration| {
+                PendingPrecedenceDeclaration {
+                    site: source_site(resolved, origin, span_range(declaration.keyword.span())),
+                    levels: declaration
+                        .levels
+                        .into_iter()
+                        .map(|level| PendingPrecedenceLevel {
+                            associativity: level.associativity,
+                            binding_power: level.binding_power,
+                            site: source_site(resolved, origin, span_range(level.span)),
+                            names: level
+                                .names
+                                .into_iter()
+                                .map(|ident| AdmissionReference {
+                                    name: ident.unraw().to_string(),
+                                    site: source_site(resolved, origin, span_range(ident.span())),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                }
+            }));
         for content in syntax.content {
             if let Some(callback) = content.obsolete_callback {
                 diagnostics.push(SourceModelDiagnostic {
@@ -7515,7 +7833,7 @@ impl SourcePrattPosition {
     ) -> Self {
         let parse_metas = metas
             .iter()
-            .filter(|meta| meta.path().is_ident("parse"))
+            .filter(|meta| meta.path().is_ident("parse") && !is_precedence_override_meta(meta))
             .collect::<Vec<_>>();
         if parse_metas.is_empty() {
             return Self::Atom;
@@ -7718,6 +8036,20 @@ fn is_pratt_role_meta(meta: &Meta) -> bool {
         list.tokens.clone().into_iter().next(),
         Some(proc_macro2::TokenTree::Ident(role))
             if role == "prefix" || role == "infix" || role == "postfix"
+    )
+}
+
+/// Reports whether an attribute is a `#[parse(prec = NAME)]` precedence override.
+fn is_precedence_override_meta(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    if !list.path.is_ident("parse") {
+        return false;
+    }
+    matches!(
+        list.tokens.clone().into_iter().next(),
+        Some(proc_macro2::TokenTree::Ident(keyword)) if keyword == "prec"
     )
 }
 
@@ -8087,6 +8419,32 @@ struct CentralTokensSyntax {
     admissions: Vec<CentralAdmissionSyntax>,
     /// Supplies `MERGED = TOKEN before { TRIGGER, ... }` lookahead filter declarations.
     lookaheads: Vec<CentralLookaheadSyntax>,
+    /// Supplies every `precedence { ... }` block, in authored order.
+    precedence: Vec<CentralPrecedenceSyntax>,
+}
+
+#[derive(Clone)]
+/// Carries one parsed `precedence { ... }` block: bison's precedence table, levels from
+/// lowest to highest.
+struct CentralPrecedenceSyntax {
+    /// Preserves the `precedence` keyword, which locates the block.
+    keyword: syn::Ident,
+    /// Preserves the levels in authored order.
+    levels: Vec<CentralPrecedenceLevelSyntax>,
+}
+
+#[derive(Clone)]
+/// Carries one parsed level `left(bp = N) { A, B }`, `right(bp = N) { ... }` or
+/// `nonassoc(bp = N) { ... }`.
+struct CentralPrecedenceLevelSyntax {
+    /// The parsed associativity keyword.
+    associativity: crate::PrecedenceAssociativity,
+    /// The parsed binding power.
+    binding_power: u8,
+    /// Locates the level, from its associativity keyword.
+    span: proc_macro2::Span,
+    /// Preserves the authored names in order.
+    names: Vec<syn::Ident>,
 }
 
 #[derive(Clone)]
@@ -8501,6 +8859,7 @@ impl Parse for CentralTokensSyntax {
         let mut flags = Vec::new();
         let mut admissions = Vec::new();
         let mut lookaheads = Vec::new();
+        let mut precedence = Vec::new();
         while !input.is_empty() {
             let section = syn::Ident::parse_any(input)?;
             if input.peek(Token![=]) {
@@ -8562,6 +8921,8 @@ impl Parse for CentralTokensSyntax {
                             return Err(body.error("expected `,` after admission declaration"));
                         }
                     }
+                } else if section == "precedence" {
+                    precedence.push(parse_precedence_block(section, &body)?);
                 } else if section == "lookahead" {
                     while !body.is_empty() {
                         let merged = syn::Ident::parse_any(&body)?;
@@ -8676,8 +9037,104 @@ impl Parse for CentralTokensSyntax {
             flags,
             admissions,
             lookaheads,
+            precedence,
         })
     }
+}
+
+/// Parses the body of one `precedence { ... }` block: levels `left(bp = N) { A, B }`,
+/// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from lowest to highest binding power,
+/// comma-separated. The shape checks that need no token catalog are made here: the
+/// associativity keyword, `bp` as a `u8`, strictly ascending binding powers, at least one name
+/// per level, and a name listed at most once in the block.
+fn parse_precedence_block(
+    keyword: syn::Ident,
+    body: ParseStream<'_>,
+) -> syn::Result<CentralPrecedenceSyntax> {
+    let mut levels: Vec<CentralPrecedenceLevelSyntax> = Vec::new();
+    let mut seen = BTreeMap::<String, ()>::new();
+    while !body.is_empty() {
+        let associativity_ident = syn::Ident::parse_any(body)?;
+        let associativity = match associativity_ident.to_string().as_str() {
+            "left" => crate::PrecedenceAssociativity::Left,
+            "right" => crate::PrecedenceAssociativity::Right,
+            "nonassoc" => crate::PrecedenceAssociativity::NonAssociative,
+            _ => {
+                return Err(syn::Error::new(
+                    associativity_ident.span(),
+                    "a precedence level must be left, right, or nonassoc",
+                ));
+            }
+        };
+        let options;
+        syn::parenthesized!(options in body);
+        let key = syn::Ident::parse_any(&options)?;
+        if key != "bp" {
+            return Err(syn::Error::new(
+                key.span(),
+                "a precedence level takes exactly `bp = N`, its binding power",
+            ));
+        }
+        options.parse::<Token![=]>()?;
+        let literal: syn::LitInt = options.parse()?;
+        let binding_power = literal.base10_parse::<u8>().map_err(|_| {
+            syn::Error::new(
+                literal.span(),
+                "a precedence level's binding power must be a u8 from 0 to 255",
+            )
+        })?;
+        if !options.is_empty() {
+            return Err(options.error("a precedence level takes exactly `bp = N`"));
+        }
+        if let Some(previous) = levels.last() {
+            if binding_power <= previous.binding_power {
+                return Err(syn::Error::new(
+                    literal.span(),
+                    format!(
+                        "precedence levels are declared from lowest to highest binding power; \
+                         bp = {binding_power} does not exceed the previous level's bp = {}",
+                        previous.binding_power
+                    ),
+                ));
+            }
+        }
+        let members;
+        syn::braced!(members in body);
+        let mut names = Vec::new();
+        while !members.is_empty() {
+            let name = syn::Ident::parse_any(&members)?;
+            if seen.insert(name.unraw().to_string(), ()).is_some() {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!("`{name}` appears more than once in the precedence declaration"),
+                ));
+            }
+            names.push(name);
+            if members.peek(Token![,]) {
+                members.parse::<Token![,]>()?;
+            } else if !members.is_empty() {
+                return Err(members.error("expected `,` between precedence level names"));
+            }
+        }
+        if names.is_empty() {
+            return Err(syn::Error::new(
+                associativity_ident.span(),
+                "a precedence level must name at least one token",
+            ));
+        }
+        levels.push(CentralPrecedenceLevelSyntax {
+            associativity,
+            binding_power,
+            span: associativity_ident.span(),
+            names,
+        });
+        if body.peek(Token![,]) {
+            body.parse::<Token![,]>()?;
+        } else if !body.is_empty() {
+            return Err(body.error("expected `,` after a precedence level"));
+        }
+    }
+    Ok(CentralPrecedenceSyntax { keyword, levels })
 }
 
 /// Parses the optional `in CATEGORY + flag` keyword metadata tail.
@@ -10729,6 +11186,243 @@ recursa::tokens! {
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn a_precedence_declaration_compiles_its_levels_and_overrides() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { LIKE => "like", ESCAPE => "escape", SELECT => "select", LOCAL => "local" }
+    punctuation { LPAREN => "(", RPAREN => ")", DOT => ".", PLUS => "+" }
+    precedence {
+        nonassoc(bp = 5) { LIKE, LOCAL },
+        nonassoc(bp = 6) { ESCAPE },
+        nonassoc(bp = 7) { NameText, ESCAPE_ONLY },
+        left(bp = 10) { PLUS },
+        right(bp = 18) { UMINUS },
+        left(bp = 20) { DOT },
+    }
+}
+#[derive(recursa::Node)]
+struct Name {
+    #[lex(pattern = r"[a-z]+")]
+    text: NameText,
+}
+#[derive(recursa::Node)]
+#[parse(prec = ESCAPE_ONLY)]
+struct Scope {
+    #[tok(LOCAL)]
+    name: Name,
+}
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    Name(Name),
+    #[parse(prec = UMINUS)]
+    Sub(#[tok(LPAREN, SELECT, this, RPAREN)] Name),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Expr>, Box<Expr>),
+}
+#[derive(recursa::Node)]
+enum Stmt {
+    #[parse(prec = LIKE)]
+    Scoped(Scope),
+    Bare(Expr),
+}
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        let by_name = |name: &str| {
+            model
+                .token_definitions
+                .iter()
+                .find(|definition| definition.name == name)
+                .unwrap_or_else(|| panic!("no token definition named {name}"))
+                .id
+        };
+        let levels: Vec<(crate::PrecedenceAssociativity, u8, Vec<String>, Vec<String>)> = model
+            .precedence
+            .iter()
+            .map(|level| {
+                (
+                    level.associativity,
+                    level.binding_power,
+                    level
+                        .tokens
+                        .iter()
+                        .map(|id| model.token_definitions[id.index()].name.clone())
+                        .collect(),
+                    level.names.clone(),
+                )
+            })
+            .collect();
+        use crate::PrecedenceAssociativity::{Left, NonAssociative, Right};
+        assert_eq!(
+            levels,
+            [
+                (NonAssociative, 5, vec!["LIKE".to_owned(), "LOCAL".to_owned()], vec![]),
+                (NonAssociative, 6, vec!["ESCAPE".to_owned()], vec![]),
+                (NonAssociative, 7, vec!["NameText".to_owned()], vec!["ESCAPE_ONLY".to_owned()]),
+                (Left, 10, vec!["PLUS".to_owned()], vec![]),
+                (Right, 18, vec![], vec!["UMINUS".to_owned()]),
+                (Left, 20, vec!["DOT".to_owned()], vec![]),
+            ]
+        );
+        assert_eq!(model.precedence[0].tokens[0], by_name("LIKE"));
+        let mut overrides: Vec<(usize, bool)> = model
+            .precedence_overrides
+            .iter()
+            .map(|override_| {
+                (
+                    override_.level.index(),
+                    matches!(override_.owner, super::PrecedenceOwner::Type(_)),
+                )
+            })
+            .collect();
+        overrides.sort_unstable();
+        // `Scope` names level 2 (`ESCAPE_ONLY`), `Expr::Sub` level 4 (`UMINUS`) and
+        // `Stmt::Scoped` level 0 (`LIKE`, a token, which an override may name too).
+        assert_eq!(overrides, [(0, false), (2, true), (4, false)]);
+    }
+
+    #[test]
+    fn invalid_precedence_declarations_have_structured_diagnostics() {
+        let prelude = r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { LIKE => "like", ESCAPE => "escape" }
+    punctuation { PLUS => "+" }
+"#;
+        let cases = [
+            (
+                "precedence { nonassoc(bp = 5) { LIKE, MISSING } }",
+                "#[derive(recursa::Node)] struct Root;",
+                "`MISSING` in the precedence declaration is not a fixed token or a content \
+                 token type; a precedence-only name must be used by a `#[parse(prec = MISSING)]`",
+            ),
+            (
+                "precedence { nonassoc(bp = 5) { LIKE } } precedence { left(bp = 6) { PLUS } }",
+                "#[derive(recursa::Node)] struct Root;",
+                "a grammar declares at most one `precedence { ... }` block",
+            ),
+            (
+                "precedence { nonassoc(bp = 5) { LIKE } }",
+                "#[derive(recursa::Node)] #[parse(prec = ESCAPE)] struct Root;",
+                "#[parse(prec = ESCAPE)] names no level of the `precedence { ... }` declaration",
+            ),
+            (
+                "",
+                "#[derive(recursa::Node)] #[parse(prec = LIKE)] struct Root;",
+                "#[parse(prec = LIKE)] needs a `precedence { ... }` declaration, and the grammar \
+                 has none",
+            ),
+            (
+                "precedence { nonassoc(bp = 5) { LIKE } }",
+                "#[derive(recursa::Node)] #[parse(prec = LIKE)] #[parse(prec = LIKE)] struct Root;",
+                "a Node or variant accepts at most one #[parse(prec = NAME)]",
+            ),
+            (
+                "precedence { nonassoc(bp = 5) { LIKE } }",
+                "#[derive(recursa::Node)] #[parse(prec = LIKE, other)] struct Root;",
+                "#[parse(prec = NAME)] names one declared precedence level: unexpected tokens \
+                 after the precedence level name",
+            ),
+            (
+                "precedence { left(bp = 10) { PLUS } }",
+                "#[derive(recursa::Node)] #[pratt] enum Root { \
+                     Atom(#[tok(LIKE)] ()), \
+                     #[parse(infix, lbp = 10, rbp = 11)] #[parse(prec = PLUS)] #[tok(PLUS)] \
+                     Add(Box<Root>, Box<Root>) }",
+                "#[parse(prec = NAME)] is not accepted on a prefix, infix or postfix Pratt \
+                 variant, whose binding powers are its precedence",
+            ),
+        ];
+        for (block, node, message) in cases {
+            let source = format!("{prelude}{block}\n}}\n{node}\n");
+            let report = model(&source);
+            assert!(report.source_modeled.is_none(), "{block} / {node} was non-blocking");
+            assert_code(
+                &report,
+                SourceModelDiagnosticKind::InvalidPrecedenceDeclaration,
+                "RCA3133",
+            );
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == message),
+                "{block} / {node}: expected {message:?} in {:?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_precedence_block_is_rejected_where_the_token_grammar_is_parsed() {
+        let cases = [
+            (
+                "precedence { left(bp = 1) { A }, sideways(bp = 2) { B } }",
+                "a precedence level must be left, right, or nonassoc",
+            ),
+            (
+                "precedence { left { A } }",
+                "expected parentheses",
+            ),
+            (
+                "precedence { left(lbp = 1) { A } }",
+                "a precedence level takes exactly `bp = N`, its binding power",
+            ),
+            (
+                "precedence { left(bp = 300) { A } }",
+                "a precedence level's binding power must be a u8 from 0 to 255",
+            ),
+            (
+                "precedence { left(bp = 2) { A }, left(bp = 2) { B } }",
+                "precedence levels are declared from lowest to highest binding power; bp = 2 \
+                 does not exceed the previous level's bp = 2",
+            ),
+            (
+                "precedence { left(bp = 1) { A, B }, right(bp = 2) { A } }",
+                "`A` appears more than once in the precedence declaration",
+            ),
+            (
+                "precedence { left(bp = 1) { } }",
+                "a precedence level must name at least one token",
+            ),
+            (
+                "precedence { left(bp = 1) { A } right(bp = 2) { B } }",
+                "expected `,` after a precedence level",
+            ),
+        ];
+        for (block, message) in cases {
+            let error = syn::parse_str::<CentralTokensSyntax>(block)
+                .err()
+                .unwrap_or_else(|| panic!("{block} was accepted"));
+            assert_eq!(error.to_string(), message, "{block}");
+        }
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { A => "a" }
+    precedence { left(bp = 1) { A, A } }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                    && diagnostic.message == "`A` appears more than once in the precedence declaration"
+            }),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]
