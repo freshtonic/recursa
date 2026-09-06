@@ -879,8 +879,18 @@ impl<'a> Lowering<'a> {
                     .ok()
                     .flatten();
                 for site in &variant.sites {
-                    let unit = self.grammar.sites[site.index()].target;
+                    let site = &self.grammar.sites[site.index()];
+                    let unit = site.target;
                     if self.wraps_operand_of(unit, type_id) {
+                        // The attachment around an optional operand introduces its leading
+                        // token at the variant's level plus one, so that the token shifts
+                        // against the variant's own reduce (`a LIKE b . ESCAPE`).
+                        let optional =
+                            matches!(strip_boxes(&site.container).1, ContainerShape::Optional(_));
+                        let precedence = precedence.map(|precedence| RulePrecedence {
+                            attaches_at: optional.then(|| precedence.level.saturating_add(1)),
+                            ..precedence
+                        });
                         self.operand_attachments.insert(
                             unit,
                             OperandAttachment {
@@ -1514,7 +1524,11 @@ impl<'a> Lowering<'a> {
                     };
                 }
                 let (inner_boxes, inner_shape) = strip_boxes(inner);
-                let inline = self.inline_choice(target);
+                // The attachment around an optional Pratt operand is always inlined: the
+                // variant's own reduce competes with the shift of the attachment's token, and
+                // an epsilon reduce of a helper has no precedence to settle that with.
+                let inline =
+                    self.inline_choice(target) || self.operand_attachments.contains_key(&target);
                 match inner_shape {
                     ContainerShape::Direct | ContainerShape::Boxed(_) => {
                         SiteLowering::ValuedOptional {

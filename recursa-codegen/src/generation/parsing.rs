@@ -4150,12 +4150,17 @@ pub(super) fn plan_elements(
                 {
                     let (active, inactive) =
                         lookups.pratt_extenders_at_min_bp(owner, min_bp)?;
+                    // An optional operand is attached behind a fixed token of its own
+                    // (`#[tok(ESCAPE, this)] Option<Box<Self>>`, materialization rejects a
+                    // bare one), so the token decides its presence and the operand parses
+                    // inside the attachment with the same follow adaptation as a required one.
                     match &mut container {
-                        PlannedContainer::Direct { child_follow, .. } => {
+                        PlannedContainer::Direct { child_follow, .. }
+                        | PlannedContainer::Optional { child_follow, .. } => {
                             *child_follow =
                                 pratt_operand_follow(child_follow, &active, &inactive);
                         }
-                        PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => {
+                        PlannedContainer::Repeated { .. } => {
                             return Err(format!(
                                 "Pratt operand field `{field_name}` is not a direct frozen container"
                             ));

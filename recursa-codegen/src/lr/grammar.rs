@@ -95,6 +95,11 @@ pub struct RulePrecedence {
     /// own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion clone) that
     /// owns the operand for a fixed-token attachment around one.
     pub owner: NonterminalId,
+    /// For the attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`),
+    /// the level at which its leading token attaches to the variant: the variant's level plus
+    /// one, so that the token shifts against the variant's own reduce, as gram.y's
+    /// `%nonassoc ESCAPE` just above `LIKE` decides it. `None` on every other rule.
+    pub attaches_at: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,6 +127,7 @@ impl RulePrecedence {
                 level: bp,
                 associativity: Associativity::None,
                 owner,
+                attaches_at: None,
             })),
             PrattPosition::Infix { lbp, rbp } => {
                 let associativity = if u16::from(rbp) == u16::from(lbp) + 1 {
@@ -136,6 +142,7 @@ impl RulePrecedence {
                     level: lbp,
                     associativity,
                     owner,
+                    attaches_at: None,
                 }))
             }
         }

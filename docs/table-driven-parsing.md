@@ -126,7 +126,14 @@ minimum binding power, and lowers to the clone of that minimum,
 `Expr[min 8]`: the type minus every LED rule below the minimum, its own
 operands unrestricted. A fixed-token attachment around an operand also
 inherits its variant's precedence, so its own reduce against the next
-operator is decided as the variant's would be. A combination with no
+operator is decided as the variant's would be. An attached optional
+operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`, gram.y's
+`a_expr LIKE a_expr ESCAPE a_expr`) is inlined into its variant's rule as
+one alternative without and one with the attachment (never a nullable
+helper, whose epsilon reduce would have no precedence), its operand takes
+the minimum like every other, and its attachment introduces the leading
+token one level above the variant, so that `a LIKE b . ESCAPE` shifts as
+`%nonassoc ESCAPE` just above `%nonassoc LIKE` decides it. A combination with no
 precedence equivalent is a hard error naming the variant (`RCA0402`): an
 infix `rbp` other than `lbp + 1`, `lbp` or `lbp - 1`, or an `rbp = lbp -
 1` beside an operator at that level. A token's precedence is read off the
