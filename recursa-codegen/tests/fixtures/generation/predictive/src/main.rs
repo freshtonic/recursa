@@ -49,21 +49,28 @@ fn main() {
         _ => panic!("READ selected the wrong frozen branch"),
     }
 
+    // `Print` is longer than one token, so its end is decided by its last symbol rather
+    // than by caller FOLLOW (the tail decision): the dispatch commits at PRINT instead of
+    // walking the alternative to its end, and the unused suffix stays in the input.
     let extra = grammar::lex("PRINT message trailing");
     let mut input = extra.input();
-    let error = match grammar::Stmt::parse(&mut input) {
-        Err(error) => error,
-        Ok(_) => panic!("caller-FOLLOW guard accepted a non-EOF suffix"),
-    };
-    assert_eq!(error.span(), recursa::Span::new(14, 22).unwrap());
+    let parsed = grammar::Stmt::parse(&mut input).expect("the dispatch commits at PRINT");
+    match parsed.root().value() {
+        grammar::Stmt::Print(node) => assert_eq!(node.rest.text(), "message"),
+        _ => panic!("PRINT selected the wrong frozen branch"),
+    }
+    assert!(
+        !input.is_eof(),
+        "the suffix the selected alternative cannot use is left to the caller"
+    );
     assert_eq!(
-        error.found(),
-        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":priority=None")
+        parsed.root().span(),
+        Some(recursa::Span::new(0, 13).unwrap())
     );
     assert_eq!(
         input.cursor(),
-        0,
-        "failed nullable dispatch is transactional"
+        2,
+        "PRINT and message are consumed, trailing is not"
     );
 
     let malformed = grammar::lex("CREATE unknown");

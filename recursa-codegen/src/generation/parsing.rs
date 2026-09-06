@@ -337,7 +337,7 @@ mod tests {
     focused_case!(grammar_wide_expected_set_pool_is_canonical);
     focused_case!(stale_grammar_wide_expected_set_pool_fails_before_rendering);
     focused_case!(balanced_root_failure_belongs_to_grammar_wide_expected_set_pool);
-    focused_case!(overlapping_rectangles_preserve_full_ordinary_routes);
+    focused_case!(overlapping_rectangles_commit_unique_routes_at_their_first_token);
     focused_case!(corrupted_joined_dispatch_fails_before_publication_with_rca9105);
     focused_case!(corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication);
     focused_case!(corrupted_real_plan_family_content_fails_before_publication);
