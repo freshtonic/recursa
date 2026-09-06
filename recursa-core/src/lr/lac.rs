@@ -42,6 +42,11 @@ pub struct ErrorSite {
     pub origin: usize,
     /// The cursor of the token the automaton could not act on.
     pub failing: usize,
+    /// Whether reaching the accept rule counts as continuing the parse. It does for an error
+    /// the automaton raised, where the accepted prefix would have ended the parse before the
+    /// token; it does not for a token rejected after acceptance, whose expected set is what
+    /// could have been shifted instead, as recursive descent's dispatch names it.
+    pub accepts: bool,
 }
 
 /// Computes the expected set of a failed parse by lookahead correction.
@@ -62,7 +67,7 @@ pub fn expected_set<A>(
     let mut expected = Vec::new();
     let mut scratch = Scratch::over(&stack);
     for terminal in 0..=end_marker {
-        if terminal == end_marker || !scratch.continues(decoded, terminal, site.accept_rule) {
+        if terminal == end_marker || !scratch.continues(decoded, terminal, &site) {
             continue;
         }
         let index = terminal as usize;
@@ -140,15 +145,15 @@ impl<'base> Scratch<'base> {
         }
     }
 
-    /// Reports whether `terminal` can continue the parse from the base stack: it is shifted or
-    /// accepted after some reductions, rather than rejected.
-    fn continues(&mut self, decoded: &DecodedTables, terminal: u32, accept_rule: u32) -> bool {
+    /// Reports whether `terminal` can continue the parse from the base stack: it is shifted, or
+    /// accepted when the site counts acceptance, after some reductions, rather than rejected.
+    fn continues(&mut self, decoded: &DecodedTables, terminal: u32, site: &ErrorSite) -> bool {
         self.base_len = self.base.len();
         self.top.clear();
         for _ in 0..EXPLORATION_BUDGET {
             match decoded.action(self.state(), terminal) {
                 TableAction::Shift(_) => return true,
-                TableAction::Reduce(rule) if rule == accept_rule => return true,
+                TableAction::Reduce(rule) if rule == site.accept_rule => return site.accepts,
                 TableAction::Reduce(rule) => {
                     self.pop(decoded.r2[rule as usize] as usize);
                     let target = decoded.goto(self.state(), decoded.r1[rule as usize]);

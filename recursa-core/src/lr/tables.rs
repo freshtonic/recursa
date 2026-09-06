@@ -30,6 +30,8 @@
 
 use std::sync::OnceLock;
 
+use super::provenance::FoldTable;
+
 /// The `pact` or `pgoto` value of a row that has no explicit entries.
 pub const PACT_NINF: i32 = i32::MIN;
 
@@ -66,8 +68,19 @@ pub struct LrTables {
     expected_atoms: &'static [u8],
     /// Packed `lookahead`.
     lookahead: &'static [u8],
+    /// Packed `folds`, the provenance fold of each rule (see [`super::provenance`]).
+    folds: &'static [u8],
+    /// Packed `tail`: per rule, whether recursive descent decides the rule's end by its caller
+    /// FOLLOW (`1`), never does so below it (`2`, a Pratt rule), or leaves the decision to the
+    /// rule's last symbol (`0`).
+    tail: &'static [u8],
+    /// Whether any fold carries a mandatory policy, so that provenance is retained even when the
+    /// root's policy does not capture, as recursive descent retains it.
+    mandatory: bool,
     /// The decoded form, filled on first lookup.
     decoded: OnceLock<DecodedTables>,
+    /// The decoded `folds`, filled by the first capturing parse, never by one that does not.
+    fold_table: OnceLock<FoldTable>,
     /// The decoded `expected_atoms`, filled by the first error, never by a successful parse.
     atoms: OnceLock<Vec<u32>>,
 }
@@ -96,6 +109,8 @@ pub struct DecodedTables {
     pub value_pops: Vec<u32>,
     /// Lookahead filters as flat `(token, merged, trigger)` triples.
     pub lookahead: Vec<u32>,
+    /// The tail decision of each rule; see [`LrTables::new`].
+    pub tail: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +141,9 @@ impl LrTables {
         value_pops: &'static [u8],
         expected_atoms: &'static [u8],
         lookahead: &'static [u8],
+        folds: &'static [u8],
+        tail: &'static [u8],
+        mandatory: bool,
     ) -> Self {
         Self {
             end_marker,
@@ -140,9 +158,25 @@ impl LrTables {
             value_pops,
             expected_atoms,
             lookahead,
+            folds,
+            tail,
+            mandatory,
             decoded: OnceLock::new(),
+            fold_table: OnceLock::new(),
             atoms: OnceLock::new(),
         }
+    }
+
+    /// Reports whether some rule folds an occurrence under a mandatory policy, which makes a
+    /// parse capture provenance whatever its root's policy and request say.
+    pub fn mandatory_provenance(&self) -> bool {
+        self.mandatory
+    }
+
+    /// Returns the decoded provenance folds, decoding the literal on first use.
+    pub fn folds(&self) -> &FoldTable {
+        self.fold_table
+            .get_or_init(|| FoldTable::decode(&decode_unsigned(self.folds)))
     }
 
     /// Returns the terminal that stands for end of input.
@@ -165,6 +199,7 @@ impl LrTables {
             r2: decode_unsigned(self.r2),
             value_pops: decode_unsigned(self.value_pops),
             lookahead: decode_unsigned(self.lookahead),
+            tail: decode_unsigned(self.tail),
         })
     }
 
@@ -311,6 +346,15 @@ fn decode_signed(literal: &[u8]) -> Vec<i32> {
 pub(super) mod tests {
     use super::*;
 
+    /// The provenance folds of the textbook rules, hand-encoded: the three-symbol rules fold to
+    /// a node of a group, a leaf and a group (`E -> E + T`, `T -> T * F`) or of a leaf, a group
+    /// and a leaf (`F -> ( E )`), the unit rules to a node of one group, and `F -> id` passes its
+    /// token through as a content token would; every policy is inherited.
+    const TEXTBOOK_FOLDS: &[u8] = b"BAAACADABBABBAACBBACABABBACADABBABBAACBBACABABBACADABAABBBACBAAAAA";
+
+    /// No textbook rule is decided by its caller FOLLOW.
+    const TEXTBOOK_TAIL: &[u8] = b"BAAAAAAA";
+
     /// The dragon-book expression grammar `E -> E + T | T`, `T -> T * F | F`,
     /// `F -> ( E ) | id`, as codegen's `lr::textbook::expression_grammar` packs and encodes it.
     /// Terminals are `+ * ( ) id $end` (0..=5); rules are `0: $accept -> E`, `1: E -> E + T`,
@@ -330,6 +374,9 @@ pub(super) mod tests {
         b"BBCBCBBA",
         b"BBCDEF",
         b"B",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
     );
 
     /// The textbook tables with a synthetic lookahead filter: `(` before `)` is read as `id`
@@ -348,6 +395,9 @@ pub(super) mod tests {
         b"BBCBCBBA",
         b"BBCDEF",
         b"BCED",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
     );
 
     /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
@@ -363,6 +413,7 @@ pub(super) mod tests {
             r2: vec![1, 3, 1, 3, 1, 3, 1],
             value_pops: vec![1, 2, 1, 2, 1, 1, 0],
             lookahead: Vec::new(),
+            tail: vec![0; 7],
         }
     }
 
