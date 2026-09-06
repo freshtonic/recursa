@@ -518,6 +518,14 @@ pub enum NonterminalOrigin {
     Start(TypeId),
     /// A helper the container lowering invented around a symbol.
     Helper,
+    /// A per-site copy of a shared helper (`opt(X)@site`), made when the shared form's LALR(1)
+    /// lookaheads merged into a reduce/reduce conflict (`docs/table-driven-parsing.md`, section
+    /// 5). Its rules are the original's with self-references redirected, its reduce actions
+    /// and folds are the original's, and it owns the use sites that the original no longer has.
+    HelperCopy {
+        /// The shared helper it was copied from.
+        original: NonterminalId,
+    },
     /// A distinct Pratt language: the grammar type minus the LED variants a
     /// `#[parse(pratt(exclude(...)))]` site names and minus the LED variants below an operand's
     /// minimum binding power, or the fixed-token attachment around such an operand, cloned once
@@ -871,6 +879,65 @@ impl TextbookGrammar {
                 variant: None,
                 sites,
             },
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
+        })
+    }
+
+    /// Adds `lhs -> rhs` as a rule of a helper nonterminal, creating `lhs` as a helper on first
+    /// use, the way the lowering records `opt(...)` and `list(...)`; the action is a placeholder,
+    /// because textbook grammars never reduce a value. Declare a helper's rules before the rules
+    /// that use it, because [`rule`](Self::rule) creates an unknown symbol as a grammar type.
+    pub fn helper_rule(&mut self, lhs: &str, rhs: &str) -> RuleId {
+        let lhs = match self.grammar.nonterminal_by_name(lhs) {
+            Some(id) => {
+                assert_eq!(
+                    self.grammar.nonterminal(id).origin,
+                    NonterminalOrigin::Helper,
+                    "`{lhs}` was created as a grammar type; declare helper rules first"
+                );
+                id
+            }
+            None => self
+                .grammar
+                .add_nonterminal(lhs, NonterminalOrigin::Helper, true),
+        };
+        let mut symbols = Vec::new();
+        let mut value_pops = 0;
+        for name in rhs.split_whitespace() {
+            if let Some(terminal) = self.terminals.get(name) {
+                symbols.push(Symbol::Terminal(*terminal));
+            } else {
+                symbols.push(Symbol::Nonterminal(self.nonterminal(name)));
+                value_pops += 1;
+            }
+        }
+        self.grammar.add_rule(Rule {
+            lhs,
+            rhs: symbols,
+            value_pops,
+            precedence: None,
+            action: RuleAction::ListTrailing,
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
+        })
+    }
+
+    /// Adds `lhs -> terminal` as a token-wrapper rule whose reduce yields the token, the way
+    /// the lowering records an admission-set member or a content token.
+    pub fn token_rule(&mut self, lhs: &str, terminal: &str) -> RuleId {
+        let lhs = self.nonterminal(lhs);
+        let terminal = self.terminals[terminal];
+        let type_id = match self.grammar.nonterminal(lhs).origin {
+            NonterminalOrigin::Type(type_id) => type_id,
+            _ => unreachable!("textbook nonterminals are grammar types"),
+        };
+        self.grammar.add_rule(Rule {
+            lhs,
+            rhs: vec![Symbol::Terminal(terminal)],
+            value_pops: 0,
+            precedence: None,
+            action: RuleAction::Token { type_id },
             fold: RuleFold::through(),
             tail: TailDecision::Keep,
         })

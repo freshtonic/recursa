@@ -305,6 +305,10 @@ _Avoid_: Expanded optional, rule duplication
 A nonterminal the table-driven lowering invents and shares between use sites: a nullable optional or presence helper, or a list core and its zero-or-more and trailing-separator forms. Its rules carry the element type and `Box` layers their reduce actions need.
 _Avoid_: Synthetic node, bison `opt_` rule
 
+**Helper copy**:
+A copy of a shared helper nonterminal (`opt(X)@site`) that the table-driven construction makes for one co-occurrence class of the helper's use sites when the shared helper's merged LALR(1) lookaheads are a reduce/reduce conflict. It carries the original's rules, reduce actions and folds, so parsing through it builds the same value and provenance.
+_Avoid_: Cloned helper, split nonterminal, per-site helper
+
 **Attachment unit**:
 The private sequence type materialized for one semantic field with attached fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one occurrence of the field's element. Under the table-driven style it is a nonterminal whose reduce passes the element's value through unchanged.
 _Avoid_: Surrounded node, per-element wrapper
