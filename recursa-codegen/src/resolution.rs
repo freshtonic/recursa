@@ -3651,6 +3651,15 @@ mod tests {
     }
 
     #[test]
+    fn rca1017_reports_a_repeated_parser_style() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            "recursa::grammar! { module = crate, parsers(a = recursive_descent, b = recursive_descent) }",
+            &["RCA1017"],
+        );
+    }
+
+    #[test]
     fn rca2002_reports_invalid_item_configuration() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),

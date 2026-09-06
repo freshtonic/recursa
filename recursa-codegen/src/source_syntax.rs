@@ -233,7 +233,14 @@ impl ParserDeclarations {
         Self(vec![ParserDeclaration { name: None, style }])
     }
 
-    /// Declares the named parsers of `parsers(...)`, rejecting an empty list and repeated names.
+    /// Declares the named parsers of `parsers(...)`, rejecting an empty list, repeated names
+    /// and repeated styles.
+    ///
+    /// A style is declared at most once because the generated parsers of one style share
+    /// their marker type and their per-node helpers: the recursive-descent bodies recurse
+    /// through facade helpers bound to the `RecursiveDescent` marker, and the table-driven
+    /// reduce actions are one inherent method per node. Two parsers of one style would be
+    /// the same parser twice.
     fn named(parsers: Vec<ParserDeclaration>, span: Span) -> syn::Result<Self> {
         if parsers.is_empty() {
             return Err(syn::Error::new(
@@ -250,6 +257,19 @@ impl ParserDeclarations {
                 return Err(syn::Error::new(
                     name.span(),
                     format!("duplicate parser name `{name}`"),
+                ));
+            }
+            if let Some(earlier) = parsers[..index]
+                .iter()
+                .find(|earlier| earlier.style == parser.style)
+            {
+                let earlier = earlier.name.as_ref().expect("named parsers carry names");
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!(
+                        "parser `{name}` repeats the `{}` style of `{earlier}`; one generation emits one parser per style",
+                        parser.style.as_str()
+                    ),
                 ));
             }
         }
@@ -765,6 +785,14 @@ mod capture_tests {
             (
                 "module = crate, parsers(lr = glr)",
                 "unsupported parser style `glr`; expected `recursive_descent` or `table_driven`",
+            ),
+            (
+                "module = crate, parsers(a = recursive_descent, b = recursive_descent)",
+                "parser `b` repeats the `recursive_descent` style of `a`; one generation emits one parser per style",
+            ),
+            (
+                "module = crate, parsers(rd = recursive_descent, lr = table_driven, lalr = table_driven)",
+                "parser `lalr` repeats the `table_driven` style of `lr`; one generation emits one parser per style",
             ),
         ] {
             let error = syn::parse_str::<GrammarConfigSyntax>(source).unwrap_err();

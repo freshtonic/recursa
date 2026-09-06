@@ -361,29 +361,29 @@ impl RenderingPlan for EmissionPlan {
 /// Renders every logical file of a recursive-descent generation without performing filesystem
 /// publication.
 pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
-    render_generation(plan, None)
+    render_generation(plan, &ParserSet::recursive_descent())
 }
 
-/// Renders every logical file of a table-driven generation: the analysis runs first and any
-/// conflict fails the generation.
-pub(super) fn render_table_driven(
+/// Renders every logical file of a generation with declared parsers: the LALR(1) analysis runs
+/// first for a table-driven parser and any conflict fails the generation.
+pub(super) fn render_declared(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<RenderedGeneration, String> {
-    let tables = TableDrivenRendering::build(plan.emission_plan(), lowered)?;
-    render_generation(plan, Some(&tables))
+    let parsers = ParserSet::declared(plan.emission_plan(), lowered)?;
+    render_generation(plan, &parsers)
 }
 
-/// Renders every logical file without performing filesystem publication; `lr` selects the
-/// table-driven bodies and is `None` for recursive descent.
+/// Renders every logical file without performing filesystem publication; `parsers` names the
+/// parsers whose bodies every node and content token carry.
 fn render_generation(
     plan: &impl RenderingPlan,
-    lr: Option<&TableDrivenRendering>,
+    parsers: &ParserSet,
 ) -> Result<RenderedGeneration, String> {
     plan.validate_for_rendering()?;
     let rendering = plan;
     let plan = rendering.emission_plan();
-    let root_tokens = render_root(plan, lr)?;
+    let root_tokens = render_root(plan, parsers)?;
     rendering
         .validate_rendered_rust(&root_tokens)
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
@@ -394,7 +394,7 @@ fn render_generation(
     let mut nodes = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let name = format!("node-{index}.rs");
-        let tokens = render_node(plan, node, index, &mut instrumentation, lr)?;
+        let tokens = render_node(plan, node, index, &mut instrumentation, parsers)?;
         rendering
             .validate_rendered_rust(&tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
@@ -402,7 +402,7 @@ fn render_generation(
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         nodes.push((name, tokens.to_string()));
     }
-    if lr.is_none()
+    if parsers.renders_recursive_descent()
         && instrumentation.frozen_dispatch_nodes_rendered
             != plan.instrumentation.frozen_dispatch_nodes_consumed
     {
@@ -431,29 +431,59 @@ fn render_generation(
             .collect(),
         selector,
         diagram_plan,
-        automaton_dump: lr.map(|lr| lr.dump.clone()),
+        automaton_dump: parsers.table_driven().map(|lr| lr.dump.clone()),
     })
 }
 
-/// The parser marker the generated `Input` names: the table-driven one when that style renders,
-/// otherwise the recursive-descent default spelled exactly as before.
-fn parser_marker(plan: &EmissionPlan, table_driven: bool) -> proc_macro2::TokenStream {
+/// Renders one grammar-local input newtype: the struct under the `doc` attribute tokens, its
+/// `GeneratedInput` impl naming the parser it selects, and its accessors. The root `Input` and
+/// every extra parser's `Input` are this shape.
+pub(super) fn render_input_newtype(
+    plan: &EmissionPlan,
+    doc: &proc_macro2::TokenStream,
+    marker: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
-    if table_driven {
-        quote!(#facade::__private::TableDriven)
-    } else {
-        quote!(#facade::__private::RecursiveDescent)
+    let accessors = input_accessors();
+    quote! {
+        #doc
+        pub struct Input<'input, A = ()> {
+            pub(crate) inner: #facade::__private::Input<'input, A>,
+        }
+
+        impl<'input, A> #facade::__private::GeneratedInput for Input<'input, A> {
+            type Inner = #facade::__private::Input<'input, A>;
+            type Parser = #marker;
+            fn __recursa_inner(&mut self) -> &mut Self::Inner {
+                &mut self.inner
+            }
+        }
+
+        impl<'input, A> Input<'input, A> {
+            #accessors
+        }
     }
 }
 
-/// The explicit marker argument of a `Parse<'input, A, P>` bound: present only for the
-/// table-driven style, so recursive-descent output keeps its defaulted spelling.
-fn parser_marker_argument(plan: &EmissionPlan, table_driven: bool) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    if table_driven {
-        quote!(, #facade::__private::TableDriven)
-    } else {
-        quote!()
+/// The accessor methods of a grammar-local input newtype: the source, the builder, the
+/// cursor and the end-of-input test.
+fn input_accessors() -> proc_macro2::TokenStream {
+    quote! {
+        pub fn source(&self) -> &'input str {
+            self.inner.source()
+        }
+
+        pub fn builder(&mut self) -> &mut A {
+            self.inner.builder()
+        }
+
+        pub fn cursor(&self) -> usize {
+            self.inner.cursor()
+        }
+
+        pub fn is_eof(&self) -> bool {
+            self.inner.is_eof()
+        }
     }
 }
 
@@ -1042,10 +1072,22 @@ fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> Tri
 /// Phases: renders compatibility checks, grammar services, exports, diagrams, and extension loaders.
 pub(super) fn render_root(
     plan: &EmissionPlan,
-    lr: Option<&TableDrivenRendering>,
+    parsers: &ParserSet,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let parser_marker = parser_marker(plan, lr.is_some());
-    let lr_items = lr.map(|lr| render_root_items(plan, lr)).transpose()?;
+    let parser_marker = parsers.default_parser().marker(plan);
+    let lr_items = parsers
+        .default_parser()
+        .tables()
+        .map(|lr| render_root_items(plan, lr))
+        .transpose()?;
+    let parser_modules = render_parser_modules(plan, parsers)?;
+    let input_newtype = render_input_newtype(
+        plan,
+        &quote! {
+            /// A cursor bound to this generated grammar's token identities.
+        },
+        &parser_marker,
+    );
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
@@ -1122,7 +1164,7 @@ pub(super) fn render_root(
         .tokens
         .iter()
         .enumerate()
-        .map(|(index, token)| render_token(plan, token, index, lr));
+        .map(|(index, token)| render_token(plan, token, index, parsers));
     let content_token_pretty_helper = render_content_token_pretty_helper(plan);
     let content_token_optional_trait_helpers = render_content_token_optional_trait_helpers(plan);
     let TriviaRootFragments {
@@ -1333,36 +1375,7 @@ pub(super) fn render_root(
             }
         }
 
-        /// A cursor bound to this generated grammar's token identities.
-        pub struct Input<'input, A = ()> {
-            pub(crate) inner: #facade::__private::Input<'input, A>,
-        }
-
-        impl<'input, A> #facade::__private::GeneratedInput for Input<'input, A> {
-            type Inner = #facade::__private::Input<'input, A>;
-            type Parser = #parser_marker;
-            fn __recursa_inner(&mut self) -> &mut Self::Inner {
-                &mut self.inner
-            }
-        }
-
-        impl<'input, A> Input<'input, A> {
-            pub fn source(&self) -> &'input str {
-                self.inner.source()
-            }
-
-            pub fn builder(&mut self) -> &mut A {
-                self.inner.builder()
-            }
-
-            pub fn cursor(&self) -> usize {
-                self.inner.cursor()
-            }
-
-            pub fn is_eof(&self) -> bool {
-                self.inner.is_eof()
-            }
-        }
+        #input_newtype
 
         mod __recursa_lexical {
             use super::{Input, TokenKind};
@@ -1767,6 +1780,7 @@ pub(super) fn render_root(
         }
 
         #lr_items
+        #parser_modules
 
         #content_token_pretty_helper
         #content_token_optional_trait_helpers
@@ -1811,9 +1825,9 @@ pub(super) fn render_node(
     node: &NodeParsePlan,
     node_index: usize,
     instrumentation: &mut RenderInstrumentation,
-    lr: Option<&TableDrivenRendering>,
+    parsers: &ParserSet,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let parser_argument = parser_marker_argument(plan, lr.is_some());
+    let parser_argument = parsers.default_parser().marker_argument(plan);
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
@@ -1825,14 +1839,70 @@ pub(super) fn render_node(
     let (view_impl_generics, _, view_where_clause) = view_generics.split_for_impl();
     let view_application = quote!(#module_anchor::View<'view, #node_ident #type_generics>);
     let input_lifetime = &node.input_lifetime;
-    let inherent_method_generics = if generics
+    let node_has_lifetime = generics
         .params
         .iter()
-        .any(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
-    {
+        .any(|parameter| matches!(parameter, GenericParam::Lifetime(_)));
+    let inherent_method_generics = if node_has_lifetime {
         quote!(<A>)
     } else {
         quote!(<#input_lifetime, A>)
+    };
+    // With extra parsers declared, the inherent entry points accept every input type of the
+    // generation, so `Foo::parse(&mut parsers::lr::input(&lexed))` selects the `lr` parser
+    // exactly as `Foo::parse(&mut lexed.input())` selects the default one; the blanket
+    // `Parse<I>` facade does the same selection. A single-parser generation keeps the entry
+    // points over its root `Input` alone, spelled exactly as before.
+    let entry_points = if parsers.extras().next().is_some() {
+        let input_generics = if node_has_lifetime {
+            quote!(<A, I>)
+        } else {
+            quote!(<#input_lifetime, A, I>)
+        };
+        let generated_input = quote!(#facade::__private::GeneratedInput);
+        quote! {
+            pub fn parse #input_generics(
+                input: &mut I,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                I: #generated_input<Inner = #facade::__private::Input<#input_lifetime, A>>,
+                Self: #facade::__private::Parse<#input_lifetime, A, <I as #generated_input>::Parser>,
+            {
+                #facade::__private::parse::<Self, A, <I as #generated_input>::Parser>(
+                    input.__recursa_inner(),
+                )
+            }
+            pub fn parse_spanned #input_generics(
+                input: &mut I,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                I: #generated_input<Inner = #facade::__private::Input<#input_lifetime, A>>,
+                Self: #facade::__private::Parse<#input_lifetime, A, <I as #generated_input>::Parser>,
+            {
+                #facade::__private::parse_spanned::<Self, A, <I as #generated_input>::Parser>(
+                    input.__recursa_inner(),
+                )
+            }
+        }
+    } else {
+        quote! {
+            pub fn parse #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
+            {
+                #facade::__private::parse(&mut input.inner)
+            }
+            pub fn parse_spanned #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
+            {
+                #facade::__private::parse_spanned(&mut input.inner)
+            }
+        }
     };
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
@@ -1840,8 +1910,9 @@ pub(super) fn render_node(
     let parse_implementations = node
         .parse_applications
         .iter()
-        .map(|application| match lr {
-            Some(lr) => render_node_application(plan, node, application, lr),
+        .flat_map(|application| parsers.iter().map(move |parser| (application, parser)))
+        .map(|(application, parser)| match parser.tables() {
+            Some(lr) => render_node_application(plan, node, application, lr, parser),
             None => Ok(render_node_parse_application(plan, node, application, instrumentation)),
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1913,22 +1984,7 @@ pub(super) fn render_node(
 
         #diagram_attribute
         impl #impl_generics #node_ident #type_generics #where_clause {
-            pub fn parse #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
-            {
-                #facade::__private::parse(&mut input.inner)
-            }
-            pub fn parse_spanned #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
-            {
-                #facade::__private::parse_spanned(&mut input.inner)
-            }
+            #entry_points
         }
     })
 }
