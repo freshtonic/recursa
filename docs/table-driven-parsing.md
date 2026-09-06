@@ -241,6 +241,25 @@ which changes no parse. The alternative, Pratt variants naming a
 declared level, was rejected: it rewrites every operator variant and
 changes the Pratt surface for nothing the `bp` does not give.
 
+*A merged kind at a level (#128).* A level names lexed token kinds and
+the merged kinds of the `lookahead` block alike, `NOT_LA` beside
+`BETWEEN` above, as gram.y names them (`%nonassoc BETWEEN IN_P LIKE
+ILIKE SIMILAR NOT_LA`, `gram.y:837`): a merged kind is a `TokenKind`
+variant like any other, and only the feed that produces it is special.
+It is the same level, read by the same comparison; the one difference is
+that the level can decide only where the table-driven feed produces the
+kind, so naming a merged kind is inert under recursive descent as the
+rest of the block is. A merged kind takes only the level that names it.
+It does not inherit its token's, because gram.y does not: it gives `NOT`
+level 834 and `NOT_LA` level 837 deliberately, and where it wants the
+base token's level on a twin it says so (`NOT_LA a_expr %prec NOT`,
+`gram.y:14855`). Inheritance would also hand `WITH_LA` and `WITHOUT_LA`
+the `IDENT` level of `WITH` and `WITHOUT`, which bison gives neither, and
+so retire conflicts nobody declared away. Fact: this is the last of
+pg-sql's conflict families, `ColIdText -> BETWEEN .` against
+`WindowFrameBody -> BETWEEN . NOT_LA`, and no other declaration retires
+it.
+
 *Rule precedence.* A rule with no Pratt precedence takes the level of
 its last terminal that has one, as bison does, in every rule the
 lowering emits (admission-set members, inlined alternatives, helpers,
@@ -249,9 +268,10 @@ that with `#[parse(prec = NAME)]`, bison's `%prec`: every rule lowered
 from it (an enum's alternative, a Pratt atom, a struct's construction)
 takes the named level. The attribute is not accepted on a prefix, infix
 or postfix Pratt variant, whose binding powers are its precedence. A
-name in the block that is no token is a *precedence-only name*, bison's
-`UMINUS`, declared by the block alone; it must be used by at least one
-`#[parse(prec = NAME)]`, so a misspelt token is still an error. A token
+name in the block that is neither a token nor a merged kind is a
+*precedence-only name*, bison's `UMINUS`, declared by the block alone; it
+must be used by at least one `#[parse(prec = NAME)]`, so a misspelt token
+or twin is still an error. A token
 in two levels, a level out of order, a missing or non-`u8` `bp`, and an
 unknown associativity are rejected where the token grammar is parsed
 (`RCA3101`, the token-grammar configuration error); an unused precedence-only
@@ -289,7 +309,9 @@ lookahead {
 ```
 
 The merged kind exists in `TokenKind` but only a table-driven parser's
-token feed produces it. Grammar nodes keep writing `#[tok(NOT, BETWEEN)]`.
+token feed produces it. Grammar nodes keep writing `#[tok(NOT, BETWEEN)]`;
+the `precedence` block may name it, which is how gram.y gives `NOT_LA` a
+level of its own (#128).
 Lowering decides every rule position that holds the token by what can
 follow it there, FIRST of the rest of the rule plus FOLLOW of the rule's
 nonterminal when the rest is nullable, the same way at every position:
