@@ -3,6 +3,7 @@
 //! of every positive parse with the cursor it leaves, where a root parse stops when tokens
 //! follow it, the kinds a lexing result holds, and for every failing input the error, the
 //! restored cursor and the number of heap allocations still live after the error is dropped.
+//! The `expr` lines drive gram.y's `a_expr` shape, where prefix `NOT` needs its `NOT_LA` twin.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -88,6 +89,80 @@ macro_rules! drive {
                 input.is_eof()
             );
             provenance(source);
+        }
+
+        // gram.y's `a_expr` shape: prefix `NOT` beside the tests, over names that admit `like`
+        // and `between`, so `NOT` before a trigger is read through the prefix rule's twin.
+        let expr_provenance = |source: &str| {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::ExprRule::parse_spanned(&mut input).expect("positive expression parses with capture");
+            println!("{tag} expr prov {source:?} => {}", parsed.debug_provenance());
+            let elements: Vec<String> = parsed
+                .root()
+                .span_elements()
+                .map(|element| {
+                    format!(
+                        "{}:{:?}@{}",
+                        element.name().unwrap_or("?"),
+                        element.role(),
+                        span_text(element.span())
+                    )
+                })
+                .collect();
+            println!("{tag} expr elements {source:?} => [{}]", elements.join(" "));
+            println!("{tag} expr pretty {source:?} => {:?}", parsed.render());
+        };
+        for source in [
+            "not a not like b;",
+            "a not between 1 and 2;",
+            "not not a;",
+            "not a like b;",
+            "a not in (3);",
+            "not like like b;",
+            "not between;",
+            "a not like between;",
+            "like not between 1 and 2;",
+            "not (a like b) like c;",
+            "a between 1 and 2;",
+            "not not like not between 1 and 2;",
+        ] {
+            let lexed = grammar::lex(source);
+            let kinds = lexed
+                .tokens()
+                .map(|token| token.kind().to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut input = $input(&lexed);
+            let parsed = grammar::ExprRule::parse(&mut input).expect("positive expression parses");
+            println!(
+                "{tag} expr ok {source:?} => {:?} cursor={} eof={} kinds=[{kinds}]",
+                parsed.into_ast(),
+                input.cursor(),
+                input.is_eof()
+            );
+            expr_provenance(source);
+        }
+        let source = "not between";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let expr = grammar::Expr::parse(&mut input).expect("an expression parses from its own entry");
+        println!("{tag} expr entry {:?} cursor={}", expr.into_ast(), input.cursor());
+        for source in ["not in;", "a not;", "not;", "a not like;", "not between like;", "a not between 1;"] {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            drop(grammar::ExprRule::parse(&mut input).expect_err("failing expression fails"));
+            let baseline = LIVE.load(Ordering::SeqCst);
+            let error = grammar::ExprRule::parse(&mut input).expect_err("failing expression fails");
+            let (code, kind, span, found) = (error.code(), error.kind(), error.span(), error.found());
+            drop(error);
+            let leaked = LIVE.load(Ordering::SeqCst) - baseline;
+            println!(
+                "{tag} expr err {source:?} => code={code} kind={kind:?} span={span:?} found={found:?} cursor={} leaked={leaked}",
+                input.cursor()
+            );
+            assert_eq!(leaked, 0, "a failed parse must drop every partial value");
+            assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
         }
 
         // merged-kind-evidence-start: the integration test removes this block together with the

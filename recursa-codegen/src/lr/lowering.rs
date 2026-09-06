@@ -300,12 +300,7 @@ pub fn lower(
     }
     lowering.decide_tails();
     let start_nonterminals = lowering.start_nonterminals();
-    super::lookahead::apply(
-        &mut lowering.lr,
-        grammar,
-        &lowering.rule_sites,
-        &start_nonterminals,
-    )?;
+    super::lookahead::apply(&mut lowering.lr, grammar, &start_nonterminals);
     lowering.lower_starts();
     Ok(lowering.lr)
 }
@@ -634,9 +629,6 @@ struct Lowering<'a> {
     helpers: HashMap<HelperKey, NonterminalId>,
     /// Names already taken, to keep nonterminal names unique.
     names: BTreeSet<String>,
-    /// The parse site of every position of each site-derived rule, for the lookahead-filter
-    /// pass to name an ambiguous position's node and field.
-    rule_sites: super::lookahead::RuleSites,
     /// `RCA0402` diagnostics collected while lowering Pratt variants.
     diagnostics: Vec<LrDiagnostic>,
     /// The clone of each distinct Pratt restriction, created on first reference.
@@ -848,7 +840,6 @@ impl<'a> Lowering<'a> {
             type_symbols,
             helpers: HashMap::new(),
             names,
-            rule_sites: HashMap::new(),
             diagnostics: Vec::new(),
             clones: BTreeMap::new(),
             attachment_clones: BTreeMap::new(),
@@ -904,11 +895,6 @@ impl<'a> Lowering<'a> {
                 Symbol::Terminal(_) => None,
             })
             .collect()
-    }
-
-    /// Records the sites behind the positions of the rule about to be added.
-    fn record_sites(&mut self, sites: &[SiteId]) {
-        self.rule_sites.insert(self.lr.rules().len(), sites.to_vec());
     }
 
     /// Emits the rules of every type that has a nonterminal.
@@ -1327,11 +1313,6 @@ impl<'a> Lowering<'a> {
                 });
                 rhs.extend_from_slice(&alternative.symbols);
             }
-            let positions: Vec<SiteId> = sites
-                .iter()
-                .zip(&forms)
-                .flat_map(|(site, form)| std::iter::repeat_n(*site, form.len as usize))
-                .collect();
             let action = match kind {
                 ConstructKind::Construct { type_id, variant } => RuleAction::Construct {
                     type_id,
@@ -1358,11 +1339,6 @@ impl<'a> Lowering<'a> {
                 }
             };
             let value_pops = self.value_pops(&rhs);
-            // The implicit left operand of a Pratt rule has no site, so such a rule records
-            // none; the lookahead pass names it by its type and variant.
-            if prefix.is_empty() {
-                self.record_sites(&positions);
-            }
             self.lr.add_rule(Rule {
                 lhs,
                 rhs,

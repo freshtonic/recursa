@@ -169,14 +169,23 @@ lookahead {
 
 The merged kind exists in `TokenKind` but only a table-driven parser's
 token feed produces it. Grammar nodes keep writing `#[tok(NOT, BETWEEN)]`.
-Lowering substitutes the merged kind at every rule position where the
-next symbol can begin with a trigger. A position where the next symbol can
-begin with both a trigger and a non-trigger is a hard error naming the
-node and field. A token that ends its rule is decided by the FOLLOW of the
-rule's nonterminal instead; when that FOLLOW holds both triggers and
-non-triggers the rule is emitted twice, once with each kind, which is
-conflict-free because the automaton chooses between the twins by the
-terminal it shifts. The declaration is inert under recursive descent. Fact:
+Lowering decides every rule position that holds the token by what can
+follow it there, FIRST of the rest of the rule plus FOLLOW of the rule's
+nonterminal when the rest is nullable, the same way at every position:
+the token stays where no trigger can follow, becomes the merged kind
+where only triggers can follow, and where both can follow the rule is
+emitted twice, once with each kind at that position, as gram.y writes
+`NOT a_expr | NOT_LA a_expr` by hand beside `a_expr NOT_LA LIKE a_expr`.
+The twins are conflict-free by construction, because the automaton
+chooses between them by the terminal it shifts; a twin is a clone of its
+original (action, precedence, tail decision) placed directly after it,
+and a rule with several twinned positions is emitted once per
+combination. A Pratt prefix whose operator is the token (pg-sql's
+`Expr::Not`) is twinned through its lowered rule like any other. No
+position is a hard error: a grammar that needs more than the trigger to
+decide shows as an ordinary conflict on the merged kind, the conflict its
+unfiltered form has on the token, so `RCA0404` is retired. The
+declaration is inert under recursive descent. Fact:
 of pg-sql's 528 decision tables, 377 walk deeper than one token and 137
 exhaust `max_lookahead = 5`; that is an LL fact, mostly shared prefixes
 that LR resolves by deferring the reduction, and the true filter set is
@@ -313,7 +322,7 @@ registry:
 | `RCA0401` | reduce/reduce conflict |
 | `RCA0402` | Pratt binding power with no precedence equivalent |
 | `RCA0403` | text predicate not supported in table mode |
-| `RCA0404` | ambiguous lookahead-filter substitution |
+| `RCA0404` | retired: ambiguous lookahead-filter substitution, superseded by the twin at any rule position |
 | `RCA0405` | note: conflict is an LALR merge artefact |
 | `RCA0406` | capture policy override not supported in table mode |
 

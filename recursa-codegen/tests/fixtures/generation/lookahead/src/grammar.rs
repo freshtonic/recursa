@@ -13,6 +13,13 @@
 //! FOLLOW, so the plain juxtaposition `cond cond` with unary `NOT` would make it read `a not
 //! between` as `a` and `not between`. That boundary is the Pratt loop's job in pg-sql.
 //!
+//! `ExprRule` is gram.y's `a_expr` shape: a `#[pratt]` enum with prefix `NOT`, infix `LIKE`
+//! and the tests `NOT LIKE`, `NOT BETWEEN` and `NOT IN`, over a name that admits `like` and
+//! `between` the way `ColId` admits `BETWEEN` and `func_name` admits `LIKE`. The operand of
+//! prefix `NOT` can therefore begin with a trigger or with anything else, so the rule is
+//! emitted twice, `NOT expr | NOT_LA expr`, as gram.y writes `NOT a_expr | NOT_LA a_expr` by
+//! hand; the filter itself is what lets `a NOT LIKE b` be a test while `NOT a` is a negation.
+//!
 //! The integration test generates this file as written, with the parser style flipped to
 //! `recursive_descent`, and with the `lookahead` block removed, and compares what the parsers
 //! produce.
@@ -129,4 +136,50 @@ pub struct Name<'input> {
 pub struct Number<'input> {
     #[lex(pattern = r"[0-9]+")]
     pub text: NumberText<'input>,
+}
+
+/// `expr ;`, the root of the expression language.
+#[derive(recursa::Node, Debug, Clone)]
+#[tok(this, SEMI)]
+pub struct ExprRule<'input> {
+    pub expr: Expr<'input>,
+}
+
+/// gram.y's `a_expr` shape: `NOT` binds weaker than every test, so `NOT a LIKE b` is
+/// `NOT (a LIKE b)` and `NOT a NOT LIKE b` is `NOT (a NOT LIKE b)`; the tests and `LIKE`
+/// share one level.
+#[derive(recursa::Node, Debug, Clone)]
+#[pratt]
+pub enum Expr<'input> {
+    Ident(Ident<'input>),
+    Number(Number<'input>),
+    Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+
+    /// `NOT expr`, pg-sql's `Expr::Not`: the operand can begin with `like` or `between` as a
+    /// name, so the lowering twins the rule with `NOT_LA`.
+    #[parse(prefix, bp = 10)]
+    Not(#[tok(NOT, this)] Box<Self>),
+
+    #[parse(postfix, bp = 20)]
+    NotLike(Box<Self>, #[tok(NOT, LIKE, this)] Box<Self>),
+
+    #[parse(postfix, bp = 20)]
+    NotBetween(Box<Self>, #[tok(NOT, BETWEEN, this)] Box<Self>, #[tok(AND, this)] Box<Self>),
+
+    #[parse(postfix, bp = 20)]
+    NotIn(Box<Self>, #[tok(NOT, IN, LPAREN, this, RPAREN)] Box<Self>),
+
+    #[parse(infix, lbp = 20, rbp = 21)]
+    #[tok(LIKE)]
+    Like(Box<Self>, Box<Self>),
+
+    #[parse(postfix, bp = 20)]
+    Between(Box<Self>, #[tok(BETWEEN, this)] Box<Self>, #[tok(AND, this)] Box<Self>),
+}
+
+/// A name of the expression language, admitting the keywords `like` and `between`.
+#[derive(recursa::Node, Debug, Clone)]
+pub struct Ident<'input> {
+    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(LIKE, BETWEEN))]
+    pub text: IdentText<'input>,
 }
