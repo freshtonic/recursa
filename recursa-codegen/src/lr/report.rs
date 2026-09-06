@@ -222,8 +222,8 @@ fn render_helper_copies(text: &mut String, grammar: &LrGrammar) {
     }
 }
 
-/// Renders one state: its shortest path, items, the conflicts precedence resolved, actions
-/// with rejected alternatives in brackets, then gotos.
+/// Renders one state: its shortest path, items, the conflicts precedence or declaration order
+/// resolved, actions with rejected alternatives in brackets, then gotos.
 fn render_state(
     text: &mut String,
     grammar: &LrGrammar,

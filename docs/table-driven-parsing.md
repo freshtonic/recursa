@@ -64,6 +64,36 @@ the machine from its start state and unwraps its value. Nodes never call
 each other. `Parse` is a public entry point and nothing more, which is
 what the glossary's "Parse capability" already says.
 
+**The end marker in every FOLLOW (#125).** One start rule per type puts
+`$end` in the FOLLOW of every nonterminal that can end some root. That
+never makes a shift/reduce conflict: no rule shifts `$end`, so a reduce on
+it competes only with other reduces; on pg-sql every remaining
+shift/reduce conflict is on a real terminal. It does make reduce/reduce
+conflicts on `$end` alone between rules that can each end a root and
+share an LR(0) state: two token wrappers over one terminal,
+`ColIdText -> IDENT .` beside `TypeFunctionNameText -> IDENT .`, reached
+from a statement context where the column ends the statement and from a
+`FuncName` context where the function name ends the root. When every
+competitor is a token-wrapper rule (an admission-set member or a content
+token, whose reduce yields the token) and the competitors share no
+lookahead but `$end`, the construction takes the earliest-declared rule,
+as bison does, records `Conflict between rules N and M resolved on $end
+by declaration order` in the dump, and counts no conflict. The rule is
+safe because `$end` is the lookahead only when the parse is ending: at
+the end of input, or at a token no continuation of either wrapper
+accepts, where every choice fails at that token. Every continuation
+terminal keeps its explicit action, so a root that continues past the
+wrapper reduces the right one, and a root that is genuinely ambiguous at
+the end of input yields the first-declared wrapper, which is the
+alternative recursive descent takes. The limit: a root context that can
+end only in a later-declared wrapper (`FuncName -> ColId . ColId |
+TypeFunctionName` on a bare name) reports an unexpected end where
+recursive descent accepts; that is an LALR(1) merge artefact of the
+per-type start rules, and the remedy is declaration order. The rule
+never applies to a pair that also competes on a real terminal, to a
+non-wrapper rule, or to a shift/reduce conflict. Measured on pg-sql main
+`f45441f`: 355 of 522 conflicts.
+
 **Prefix acceptance.** A root parse is a prefix parse today, and framing
 depends on it. In a state whose item set holds `S' -> T .`, a lookahead
 with no shift action accepts. A lookahead that can shift always shifts.
@@ -215,6 +245,40 @@ conflicts 17,220 to 15,353, the `opt(...)` shift/reduce family 2,970 to
 12,006, states 17,549 to 18,515 and encoded tables 814 KB to 1.33 MB, the
 last because inlined alternatives give more states explicit actions that
 comb packing cannot share.
+
+**Per-site copies of a shared helper (#125).** A shared helper gives
+every LR(0) state whose kernel holds one of its partially or fully parsed
+rules (`opt(X) -> X .`, `list1 -> list1 . sep e`) one core across all of
+its use sites, and LALR(1) unions the sites' lookaheads into it. That
+union can only manufacture reduce/reduce conflicts: a state's shift set
+is a property of its LR(0) core, so a shift/reduce conflict LALR(1)
+reports also exists in some canonical LR(1) state, and no renaming of
+nonterminals removes it. So the construction looks only at reduce/reduce
+conflicts in states whose kernel holds a helper item with the dot past
+the start, and gives such a helper one copy per co-occurrence class of
+its sites: two sites share a copy when some LR(0) state holds both of
+their items with the dot before the helper, because separate copies
+there would force a choice between the sites before the parser has seen
+what tells them apart, a conflict the shared form did not have. Under
+that rule every state of the copied grammar maps, with copy names
+erased, onto a state of the shared one with the same items, so
+lookaheads only shrink and no new conflict appears. The first class
+keeps the helper; each other class gets `opt(X)@site`, named after its
+first site (`@lhs`, or `@lhs#k` when the left-hand side has several
+sites), with the original's rules (self-references redirected), reduce
+actions, folds and tails. The automaton is rebuilt after each round
+until a round copies nothing, at most `MAX_ROUNDS` (8) rounds; a copy
+owns one class, so a helper splits again only when a copy of an
+enclosing helper gives it new sites. A copy made for a genuine conflict
+stays; its cost is its rules and states. The up-front alternative, one
+copy per distinct static FOLLOW set, was not taken: it cannot see
+co-occurrence, so it can create conflicts, and it copies helpers that
+conflict nowhere. Measured on pg-sql main `f45441f`: one copy
+(`list1(FuncArg, sep=COMMA)@CallArguments`), rules 16,307 to 16,309,
+states 22,600 to 22,603, encoded tables 2,318,758 to 2,353,218 bytes
+(1.5%), one extra construction round (40.7 s to 44.5 s); the copy's
+conflict is genuine and stays, with the other 26 reduce/reduce and 140
+shift/reduce conflicts that are pg-sql's.
 
 ## 6. Runtime
 
@@ -420,7 +484,10 @@ Measured on 2026-09-05 from pg-sql's newest generation and source.
 - Lexer items 7.3 and 7.5 of the research document.
 - Text-predicate lowering for the recursive-descent style (7.1), now
   known to have no caller in pg-sql.
-- IELR(1), only if `RCA0405` fires on a real pg-sql conflict.
+- IELR(1), only if `RCA0405` fires on a real pg-sql conflict; it would
+  also lift the limit of the `$end` declaration-order rule (section 3).
+- Undo a helper copy that removed no conflict, or classify the conflict
+  per state (lane tracing) before copying; one such copy on pg-sql.
 - Counterexample derivations in conflict reports.
 - A flat AST backend over the same value stack (api-design A7).
 - Housekeeping noticed on the way: pg-sql's `[package.metadata.recursa.ast]`
