@@ -325,6 +325,10 @@ _Avoid_: Presence wrapper, optional keyword node
 The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct extender exclusion set becomes its own lowered expression type.
 _Avoid_: Runtime Pratt loop, precedence climbing
 
+**Declared precedence**:
+A token-grammar declaration of precedence levels, each left, right or non-associative over token names and placed on the binding-power scale, that a table-driven parser uses where binding-power precedence says nothing: a rule outside the Pratt hierarchy takes the level of its last declared token or of the level its Node or variant names as an override, and a lookahead at a declared level is compared with the reducing rule's level. A precedence-only name is a level member that is no token and exists for overrides alone. Recursive descent ignores the declaration.
+_Avoid_: Token precedence table, %left line, keyword weight
+
 **Parse capability**:
 The sealed facade contract that gives a generated grammar type its safe grammar-bound input entry while keeping recursive FOLLOW-aware operations private.
 _Avoid_: Manual parser trait, parse plan

@@ -410,6 +410,52 @@ fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical(
 }
 
 #[test]
+fn a_precedence_declaration_leaves_recursive_descent_sources_byte_identical() {
+    let fixture = include_str!("../../tests/fixtures/generation/precedence/src/grammar.rs");
+    let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";
+    let precedence_start = fixture.find("    precedence {").expect("the fixture declares precedence");
+    let precedence_end = fixture[precedence_start..]
+        .find("    }\n")
+        .map(|end| precedence_start + end + "    }\n".len())
+        .expect("the declaration closes");
+    let precedence = &fixture[precedence_start..precedence_end];
+    let overrides = ["    #[parse(prec = UMINUS)]\n", "    #[parse(prec = UNBOUNDED)]\n"];
+    assert_eq!(fixture.matches(named_parsers).count(), 1);
+    for override_ in overrides {
+        assert_eq!(fixture.matches(override_).count(), 1, "{override_}");
+    }
+    let declared = fixture.replace(named_parsers, "parser_style = recursive_descent,");
+    // Blank lines keep every later declaration on its line: a Node's loader anchor hashes
+    // its line, so deleting lines would move the identity for a reason that is not the
+    // declaration.
+    let mut undeclared = declared.replace(precedence, &"\n".repeat(precedence.lines().count()));
+    for override_ in overrides {
+        undeclared = undeclared.replace(override_, "\n");
+    }
+    let (_declared_package, _, declared_plan) = joined_plan_from_source(&declared);
+    let (_undeclared_package, _, undeclared_plan) = joined_plan_from_source(&undeclared);
+    let (_table_package, table_analyzed, table_plan) = joined_plan_from_source(fixture);
+
+    let declared_rendered = render(&declared_plan).expect("render declared");
+    let undeclared_rendered = render(&undeclared_plan).expect("render undeclared");
+    assert!(!declared_rendered.nodes.is_empty());
+    assert_eq!(
+        declared_plan.identity, undeclared_plan.identity,
+        "the declaration is no input of the recursive-descent generation identity"
+    );
+    assert_eq!(
+        declared_rendered.nodes, undeclared_rendered.nodes,
+        "a precedence declaration is inert under recursive descent"
+    );
+    assert_eq!(declared_rendered.root, undeclared_rendered.root);
+
+    let table_rendered = render_by_parser_style(&table_plan, &table_analyzed.lowered)
+        .expect("render table-driven");
+    assert!(table_rendered.root.contains("__recursa_lr"));
+    assert_ne!(table_rendered.nodes, declared_rendered.nodes);
+}
+
+#[test]
 fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_moves_it() {
     let (_omitted_package, omitted, omitted_plan) = joined_pratt_plan_with_setting("");
     let (_explicit_package, explicit, explicit_plan) =
