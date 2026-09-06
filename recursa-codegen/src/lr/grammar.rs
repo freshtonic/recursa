@@ -518,6 +518,14 @@ pub enum NonterminalOrigin {
     Start(TypeId),
     /// A helper the container lowering invented around a symbol.
     Helper,
+    /// A per-site copy of a shared helper (`opt(X)@site`), made when the shared form's LALR(1)
+    /// lookaheads merged into a reduce/reduce conflict (`docs/table-driven-parsing.md`, section
+    /// 5). Its rules are the original's with self-references redirected, its reduce actions
+    /// and folds are the original's, and it owns the use sites that the original no longer has.
+    HelperCopy {
+        /// The shared helper it was copied from.
+        original: NonterminalId,
+    },
     /// A distinct Pratt language: the grammar type minus the LED variants a
     /// `#[parse(pratt(exclude(...)))]` site names and minus the LED variants below an operand's
     /// minimum binding power, or the fixed-token attachment around such an operand, cloned once
@@ -732,6 +740,34 @@ impl LrGrammar {
         }
     }
 
+    /// Inserts rules directly before the start rules, which stay the last rules of the grammar,
+    /// and returns the identities of the inserted rules in order.
+    ///
+    /// The helper-copy pass uses it after the start rules exist, so that a copy's rules sit with
+    /// the other helper rules and the start rules keep ending the numbering. The start rules
+    /// move up by the number inserted; nothing holds a rule identity across the call, because
+    /// the automaton is rebuilt from the result.
+    pub fn insert_rules_before_starts(&mut self, rules: Vec<Rule>) -> Vec<RuleId> {
+        let first_start = self.rules.len() - self.starts.len();
+        debug_assert!(
+            self.starts
+                .iter()
+                .enumerate()
+                .all(|(index, start)| start.rule.index() == first_start + index),
+            "start rules are the last rules of the grammar, in order"
+        );
+        let starts: Vec<Rule> = self.rules.drain(first_start..).collect();
+        for group in &mut self.rules_by_lhs {
+            group.retain(|rule| rule.index() < first_start);
+        }
+        let inserted: Vec<RuleId> = rules.into_iter().map(|rule| self.add_rule(rule)).collect();
+        let moved: Vec<RuleId> = starts.into_iter().map(|rule| self.add_rule(rule)).collect();
+        for (start, rule) in self.starts.iter_mut().zip(moved) {
+            start.rule = rule;
+        }
+        inserted
+    }
+
     /// Adds the synthetic start nonterminal and rule `S'(type) -> target` for one grammar type.
     pub fn add_start(&mut self, type_id: TypeId, target: NonterminalId) -> RuleId {
         let name = format!("$accept({})", self.nonterminal(target).name);
@@ -871,6 +907,26 @@ impl TextbookGrammar {
                 variant: None,
                 sites,
             },
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
+        })
+    }
+
+    /// Adds `lhs -> terminal` as a token-wrapper rule whose reduce yields the token, the way
+    /// the lowering records an admission-set member or a content token.
+    pub fn token_rule(&mut self, lhs: &str, terminal: &str) -> RuleId {
+        let lhs = self.nonterminal(lhs);
+        let terminal = self.terminals[terminal];
+        let type_id = match self.grammar.nonterminal(lhs).origin {
+            NonterminalOrigin::Type(type_id) => type_id,
+            _ => unreachable!("textbook nonterminals are grammar types"),
+        };
+        self.grammar.add_rule(Rule {
+            lhs,
+            rhs: vec![Symbol::Terminal(terminal)],
+            value_pops: 0,
+            precedence: None,
+            action: RuleAction::Token { type_id },
             fold: RuleFold::through(),
             tail: TailDecision::Keep,
         })
