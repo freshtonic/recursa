@@ -102,6 +102,10 @@ pub(super) struct TableDrivenRendering {
     end_marker: u32,
     /// The encoded tables.
     tables: EncodedLrTables,
+    /// Whether some rule folds an occurrence under a mandatory policy (an erased optional
+    /// fixed-token group), which makes every parse fold provenance, as recursive descent
+    /// retains it whatever the request (#118).
+    mandatory_provenance: bool,
     /// Per terminal, its canonical atom plus one or `0`: the vocabulary the error path names
     /// expected terminals by, the same canonical atom per kind recursive descent's expected
     /// sets carry.
@@ -263,7 +267,9 @@ impl TableDrivenRendering {
                 type_carries_value.insert(type_id, nonterminal.carries_value);
             }
         }
+        let mandatory_provenance = grammar.rules().iter().any(|rule| rule.fold.is_mandatory());
         Ok(Self {
+            mandatory_provenance,
             end_marker: grammar.end_marker().index() as u32,
             tables: analysis.tables.encode(),
             arms,
@@ -512,6 +518,9 @@ pub(super) fn render_root_items(
     let value_pops = literal(&lr.tables.value_pops);
     let expected_atoms = literal(&lr.expected_atoms);
     let lookahead = literal(&lr.tables.lookahead);
+    let folds = literal(&lr.tables.folds);
+    let tail = literal(&lr.tables.tail);
+    let mandatory = lr.mandatory_provenance;
     let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
         .tokens
         .iter()
@@ -553,7 +562,7 @@ pub(super) fn render_root_items(
         pub(crate) mod __recursa_lr {
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
-                #expected_atoms, #lookahead,
+                #expected_atoms, #lookahead, #folds, #tail, #mandatory,
             );
 
             #[doc = #safety]

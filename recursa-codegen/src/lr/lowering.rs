@@ -36,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use super::grammar::{
+    FoldKind, FoldPolicy, FoldSite, RuleFold, SiteKind, TailDecision,
     ElementValue, LrGrammar, NonterminalId, NonterminalOrigin, OptionalContent, Rule, RuleAction,
     RulePrecedence, SiteForm, Symbol, TerminalId, UnrepresentableBindingPowers,
 };
@@ -297,6 +298,7 @@ pub fn lower(
     if !lowering.diagnostics.is_empty() {
         return Err(lowering.diagnostics);
     }
+    lowering.decide_tails();
     let start_nonterminals = lowering.start_nonterminals();
     super::lookahead::apply(
         &mut lowering.lr,
@@ -445,6 +447,8 @@ enum SiteLowering {
     Required {
         /// The site's symbol.
         symbol: Symbol,
+        /// The site's fold: a fixed token's leaf, or a group around any other target.
+        kind: SiteKind,
     },
     /// An erased optional group or a presence: inlined as its terminals or a helper.
     FixedOptional {
@@ -574,6 +578,10 @@ struct Alternative {
     present: bool,
     /// Whether the choice was inlined (see [`SiteForm::inlined`]).
     inlined: bool,
+    /// What the site folds to on the occurrence stack.
+    kind: SiteKind,
+    /// The policy of the site's fold.
+    policy: FoldPolicy,
 }
 
 /// What the rules of one alternative set build.
@@ -927,6 +935,8 @@ impl<'a> Lowering<'a> {
                             } else {
                                 RuleAction::FixedSequence { type_id }
                             },
+                            fold: RuleFold::through(),
+                            tail: TailDecision::Keep,
                         });
                     }
                 }
@@ -1250,6 +1260,28 @@ impl<'a> Lowering<'a> {
             }
             break;
         }
+        // A repetition that ends the rule stops only before the caller FOLLOW, so recursive
+        // descent decides the rule's end by it.
+        let tail = if matches!(
+            lowerings.last(),
+            Some(SiteLowering::OneOrMore { .. } | SiteLowering::ZeroOrMore { .. })
+        ) {
+            TailDecision::Reject
+        } else {
+            TailDecision::Keep
+        };
+        // The semantic site of an attachment unit passes its operand's occurrence through: the
+        // unit's node is the operand's own occurrence with the fixed tokens as siblings.
+        let pass_through = match kind {
+            ConstructKind::Attachment { type_id } => self.roles.attachment_units.get(&type_id).copied(),
+            _ => None,
+        };
+        // A presence envelope's node is the outer group the presence renderer builds around the
+        // attached tokens, so its presence site folds to the inner group alone.
+        let envelope_presence = match kind {
+            ConstructKind::Envelope { presence_index, .. } => Some(presence_index),
+            _ => None,
+        };
         let alternatives: Vec<Vec<Alternative>> = lowerings
             .iter()
             .map(|lowering| self.alternatives(lowering))
@@ -1258,13 +1290,40 @@ impl<'a> Lowering<'a> {
         loop {
             let mut rhs = prefix.clone();
             let mut forms = Vec::with_capacity(alternatives.len());
-            for (site, choice) in alternatives.iter().zip(&selection) {
+            let mut fold_sites = Vec::with_capacity(alternatives.len() + prefix.len());
+            // The implicit left operand of a Pratt rule is grouped like a direct child.
+            fold_sites.extend((0..prefix.len()).map(|position| FoldSite {
+                start: position as u32,
+                len: 1,
+                kind: SiteKind::Group,
+                policy: FoldPolicy::Inherited,
+            }));
+            for (position, ((site_id, site), choice)) in
+                sites.iter().zip(&alternatives).zip(&selection).enumerate()
+            {
                 let alternative = &site[*choice];
+                let site_kind = if pass_through == Some(*site_id) {
+                    SiteKind::Through
+                } else if envelope_presence == Some(position) && alternative.kind == SiteKind::Presence {
+                    if alternative.symbols.is_empty() {
+                        SiteKind::Absent
+                    } else {
+                        SiteKind::Group
+                    }
+                } else {
+                    alternative.kind
+                };
                 forms.push(SiteForm {
                     start: rhs.len() as u32,
                     len: alternative.symbols.len() as u32,
                     present: alternative.present,
                     inlined: alternative.inlined,
+                });
+                fold_sites.push(FoldSite {
+                    start: rhs.len() as u32,
+                    len: alternative.symbols.len() as u32,
+                    kind: site_kind,
+                    policy: alternative.policy,
                 });
                 rhs.extend_from_slice(&alternative.symbols);
             }
@@ -1310,6 +1369,8 @@ impl<'a> Lowering<'a> {
                 value_pops,
                 precedence,
                 action,
+                fold: RuleFold::node(fold_sites),
+                tail,
             });
             // Advance the odometer over the sites' alternatives, last site fastest.
             let mut position = selection.len();
@@ -1440,7 +1501,10 @@ impl<'a> Lowering<'a> {
         let presence = self.roles.presence_sites.contains(&site_id);
         let (_, shape) = strip_boxes(&site.container);
         match shape {
-            ContainerShape::Direct | ContainerShape::Boxed(_) => SiteLowering::Required { symbol },
+            ContainerShape::Direct | ContainerShape::Boxed(_) => SiteLowering::Required {
+                symbol,
+                kind: self.required_site_kind(target),
+            },
             ContainerShape::Optional(inner) => {
                 if presence || self.roles.fixed_sequences.contains(&target) {
                     return SiteLowering::FixedOptional {
@@ -1554,18 +1618,27 @@ impl<'a> Lowering<'a> {
     /// Expands a site lowering to the alternatives it contributes, creating helpers for the
     /// choices that are not inlined.
     fn alternatives(&mut self, lowering: &SiteLowering) -> Vec<Alternative> {
-        let present = |symbols: Vec<Symbol>, inlined: bool| Alternative {
-            symbols,
-            present: true,
-            inlined,
+        let present = |symbols: Vec<Symbol>, inlined: bool, kind: SiteKind, policy: FoldPolicy| {
+            Alternative {
+                symbols,
+                present: true,
+                inlined,
+                kind,
+                policy,
+            }
         };
-        let absent = Alternative {
+        let absent = |kind: SiteKind| Alternative {
             symbols: Vec::new(),
             present: false,
             inlined: true,
+            kind,
+            policy: FoldPolicy::Inherited,
         };
+        let inherited = FoldPolicy::Inherited;
         match lowering.clone() {
-            SiteLowering::Required { symbol } => vec![present(vec![symbol], false)],
+            SiteLowering::Required { symbol, kind } => {
+                vec![present(vec![symbol], false, kind, inherited)]
+            }
             SiteLowering::FixedOptional {
                 tokens,
                 presence,
@@ -1576,11 +1649,29 @@ impl<'a> Lowering<'a> {
                 } else {
                     OptionalContent::Erased
                 };
+                // An erased group is captured whatever the policy; a presence takes the
+                // field's. Through a helper the presence keeps its outer group here, while
+                // the erased group's helper builds the whole occurrence.
                 if inline {
-                    vec![absent, present(tokens, true)]
+                    if presence {
+                        vec![
+                            absent(SiteKind::Presence),
+                            present(tokens, true, SiteKind::Presence, inherited),
+                        ]
+                    } else {
+                        vec![
+                            absent(SiteKind::Absent),
+                            present(tokens, true, SiteKind::Group, FoldPolicy::Mandatory),
+                        ]
+                    }
                 } else {
                     let helper = self.optional_helper(vec![tokens], content);
-                    vec![present(vec![Symbol::Nonterminal(helper)], false)]
+                    let kind = if presence {
+                        SiteKind::Group
+                    } else {
+                        SiteKind::Through
+                    };
+                    vec![present(vec![Symbol::Nonterminal(helper)], false, kind, inherited)]
                 }
             }
             SiteLowering::ValuedOptional {
@@ -1588,23 +1679,32 @@ impl<'a> Lowering<'a> {
                 content,
                 inline,
             } => {
-                let inner_alternatives = match inner {
-                    OptionalInner::Element(symbol) => vec![vec![symbol]],
-                    OptionalInner::List(list) => {
-                        self.list_alternatives(list.list1, list.trailing, list.trailing_inline)
+                let (inner_alternatives, kind, absent_kind) = match inner {
+                    OptionalInner::Element(symbol) => {
+                        (vec![vec![symbol]], SiteKind::Group, SiteKind::Absent)
                     }
+                    OptionalInner::List(list) => (
+                        self.list_alternatives(list.list1, list.trailing, list.trailing_inline),
+                        SiteKind::Repetition,
+                        SiteKind::Repetition,
+                    ),
                 };
                 if inline {
-                    let mut alternatives = vec![absent];
+                    let mut alternatives = vec![absent(absent_kind)];
                     alternatives.extend(
                         inner_alternatives
                             .into_iter()
-                            .map(|symbols| present(symbols, true)),
+                            .map(|symbols| present(symbols, true, kind, inherited)),
                     );
                     alternatives
                 } else {
                     let helper = self.optional_helper(inner_alternatives, content);
-                    vec![present(vec![Symbol::Nonterminal(helper)], false)]
+                    vec![present(
+                        vec![Symbol::Nonterminal(helper)],
+                        false,
+                        SiteKind::Through,
+                        inherited,
+                    )]
                 }
             }
             SiteLowering::OneOrMore {
@@ -1614,7 +1714,7 @@ impl<'a> Lowering<'a> {
             } => self
                 .list_alternatives(list1, trailing, trailing_inline)
                 .into_iter()
-                .map(|symbols| present(symbols, false))
+                .map(|symbols| present(symbols, false, SiteKind::Repetition, inherited))
                 .collect(),
             SiteLowering::ZeroOrMore {
                 list1,
@@ -1624,17 +1724,85 @@ impl<'a> Lowering<'a> {
                 trailing_inline,
             } => {
                 if inline {
-                    let mut alternatives = vec![absent];
+                    let mut alternatives = vec![absent(SiteKind::Repetition)];
                     alternatives.extend(
                         self.list_alternatives(list1, trailing, trailing_inline)
                             .into_iter()
-                            .map(|symbols| present(symbols, true)),
+                            .map(|symbols| present(symbols, true, SiteKind::Repetition, inherited)),
                     );
                     alternatives
                 } else {
                     let helper = self.zero_or_more_list(list1, trailing, element);
-                    vec![present(vec![Symbol::Nonterminal(helper)], false)]
+                    vec![present(
+                        vec![Symbol::Nonterminal(helper)],
+                        false,
+                        SiteKind::Repetition,
+                        inherited,
+                    )]
                 }
+            }
+        }
+    }
+
+    /// The fold of a required site: a fixed token's leaf, a presence envelope's own outer
+    /// group (the presence renderer builds it, with nothing around it), or a group around the
+    /// occurrence of any other target, as `parse_direct_child` wraps a child.
+    fn required_site_kind(&self, target: TypeId) -> SiteKind {
+        if self.roles.presence_envelopes.contains_key(&target) {
+            return SiteKind::Through;
+        }
+        match &self.grammar.types[target.index()].shape {
+            TypeShape::Token { .. } if !self.roles.content_tokens.contains(&target) => {
+                SiteKind::Leaf
+            }
+            _ => SiteKind::Group,
+        }
+    }
+
+    /// Decides every rule's tail (see [`TailDecision`]): Pratt rules clear the flag, an enum
+    /// alternative that derives exactly one token sets it, and a rule that ends in a
+    /// repetition already set it when it was lowered.
+    fn decide_tails(&mut self) {
+        let bounds = token_bounds(&self.lr);
+        let pratt_lhs: Vec<bool> = (0..self.lr.nonterminal_count())
+            .map(|index| {
+                let type_id = match self.lr.nonterminal(NonterminalId::new(index as u32)).origin {
+                    NonterminalOrigin::Type(type_id)
+                    | NonterminalOrigin::Restriction { type_id, .. } => type_id,
+                    _ => return false,
+                };
+                matches!(self.grammar.types[type_id.index()].shape, TypeShape::Pratt { .. })
+            })
+            .collect();
+        let grammar = self.grammar;
+        for rule in self.lr.rules_mut() {
+            if pratt_lhs[rule.lhs.index()] {
+                rule.tail = TailDecision::Clear;
+                continue;
+            }
+            let RuleAction::Construct {
+                type_id,
+                variant: Some(_),
+                ..
+            } = &rule.action
+            else {
+                continue;
+            };
+            if !matches!(grammar.types[type_id.index()].shape, TypeShape::Enum { .. }) {
+                continue;
+            }
+            let (min, max) = rule
+                .rhs
+                .iter()
+                .fold((0_u8, 0_u8), |(min, max), symbol| {
+                    let (symbol_min, symbol_max) = match symbol {
+                        Symbol::Terminal(_) => (1, 1),
+                        Symbol::Nonterminal(id) => bounds[id.index()],
+                    };
+                    ((min + symbol_min).min(2), (max + symbol_max).min(2))
+                });
+            if min == 1 && max == 1 {
+                rule.tail = TailDecision::Reject;
             }
         }
     }
@@ -1677,6 +1845,8 @@ impl<'a> Lowering<'a> {
             value_pops: element_pops,
             precedence: None,
             action: RuleAction::ListFirst { element: value },
+            fold: RuleFold::plain(FoldKind::ListStart, FoldPolicy::Inherited),
+            tail: TailDecision::Keep,
         });
         let mut rhs = vec![Symbol::Nonterminal(id)];
         rhs.extend(separator);
@@ -1687,6 +1857,8 @@ impl<'a> Lowering<'a> {
             value_pops: 1 + element_pops,
             precedence: None,
             action: RuleAction::ListPush { element: value },
+            fold: RuleFold::plain(FoldKind::ListExtend, FoldPolicy::Inherited),
+            tail: TailDecision::Keep,
         });
         id
     }
@@ -1715,6 +1887,8 @@ impl<'a> Lowering<'a> {
                 value_pops: 1,
                 precedence: None,
                 action: RuleAction::ListTrailing,
+                fold: RuleFold::plain(FoldKind::ListThrough, FoldPolicy::Inherited),
+                tail: TailDecision::Keep,
             });
         }
         id
@@ -1745,6 +1919,8 @@ impl<'a> Lowering<'a> {
             value_pops: 0,
             precedence: None,
             action: RuleAction::ListEmpty { element },
+            fold: RuleFold::plain(FoldKind::ListThrough, FoldPolicy::Inherited),
+            tail: TailDecision::Keep,
         });
         let mut present = vec![vec![Symbol::Nonterminal(list1)]];
         if let Some(separator) = trailing {
@@ -1757,6 +1933,8 @@ impl<'a> Lowering<'a> {
                 value_pops: 1,
                 precedence: None,
                 action: RuleAction::ListFromNonEmpty { element },
+                fold: RuleFold::plain(FoldKind::ListThrough, FoldPolicy::Inherited),
+                tail: TailDecision::Keep,
             });
         }
         id
@@ -1791,12 +1969,30 @@ impl<'a> Lowering<'a> {
             .lr
             .add_nonterminal(name, NonterminalOrigin::Helper, carries_value);
         self.helpers.insert(key, id);
+        // The helper folds what its inlined form would have: a group (mandatory for an
+        // erased group), a repetition group with or without items, or nothing.
+        let (absent_fold, present_fold) = match content {
+            OptionalContent::Erased => (
+                RuleFold::plain(FoldKind::Absent, FoldPolicy::Inherited),
+                RuleFold::plain(FoldKind::Group, FoldPolicy::Mandatory),
+            ),
+            OptionalContent::Presence | OptionalContent::Element(_) => (
+                RuleFold::plain(FoldKind::Absent, FoldPolicy::Inherited),
+                RuleFold::plain(FoldKind::Group, FoldPolicy::Inherited),
+            ),
+            OptionalContent::NonEmptyList { .. } => (
+                RuleFold::plain(FoldKind::Repetition, FoldPolicy::Inherited),
+                RuleFold::plain(FoldKind::Repetition, FoldPolicy::Inherited),
+            ),
+        };
         self.lr.add_rule(Rule {
             lhs: id,
             rhs: Vec::new(),
             value_pops: 0,
             precedence: None,
             action: RuleAction::OptionalAbsent { content },
+            fold: absent_fold,
+            tail: TailDecision::Keep,
         });
         for rhs in present {
             let value_pops = self.value_pops(&rhs);
@@ -1806,6 +2002,8 @@ impl<'a> Lowering<'a> {
                 value_pops,
                 precedence: None,
                 action: RuleAction::OptionalPresent { content },
+                fold: present_fold.clone(),
+                tail: TailDecision::Keep,
             });
         }
         id
@@ -1832,6 +2030,36 @@ impl<'a> Lowering<'a> {
             if let Symbol::Nonterminal(target) = self.type_symbols[type_id.index()] {
                 self.lr.add_start(*type_id, target);
             }
+        }
+    }
+}
+
+/// The least and greatest number of tokens each nonterminal derives, each saturated at two, so
+/// that "exactly one token" is decidable: a fixpoint over the rules from terminals at one.
+fn token_bounds(grammar: &LrGrammar) -> Vec<(u8, u8)> {
+    let mut bounds = vec![(2_u8, 0_u8); grammar.nonterminal_count()];
+    loop {
+        let mut changed = false;
+        for rule in grammar.rules() {
+            let (min, max) = rule
+                .rhs
+                .iter()
+                .fold((0_u8, 0_u8), |(min, max), symbol| {
+                    let (symbol_min, symbol_max) = match symbol {
+                        Symbol::Terminal(_) => (1, 1),
+                        Symbol::Nonterminal(id) => bounds[id.index()],
+                    };
+                    ((min + symbol_min).min(2), (max + symbol_max).min(2))
+                });
+            let entry = &mut bounds[rule.lhs.index()];
+            let next = (entry.0.min(min), entry.1.max(max));
+            if next != *entry {
+                *entry = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            return bounds;
         }
     }
 }

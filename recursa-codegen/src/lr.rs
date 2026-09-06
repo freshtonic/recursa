@@ -103,6 +103,10 @@ impl LrAnalysis {
         lowered: &LoweredGrammar,
         options: AutomatonOptions,
     ) -> Result<Self, Vec<LrDiagnostic>> {
+        let overrides = capture_override_diagnostics(lowered);
+        if !overrides.is_empty() {
+            return Err(overrides);
+        }
         let roles = TypeRoles::from_lowered(lowered);
         let grammar = lower(&lowered.grammar, &roles)?;
         let precedence = BindingPowerPrecedence::new(&grammar)?;
@@ -145,6 +149,52 @@ impl LrAnalysis {
     pub fn dump(&self) -> String {
         automaton_dump(&self.grammar, &self.automaton)
     }
+}
+
+/// Reports `RCA0406` for every node, variant or field that overrides the capture policy.
+///
+/// The table-driven fold resolves an inherited policy from the entry type's context, as the
+/// generated recursive-descent code resolves `context.capture_policy()`; an override on a
+/// node, variant or field would reach its children through the site that passes it down, which
+/// a child rule is reduced before knowing. Rejecting the grammar keeps the two styles' provenance
+/// identical for every grammar the table-driven style accepts.
+fn capture_override_diagnostics(lowered: &LoweredGrammar) -> Vec<LrDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut report = |what: String| {
+        diagnostics.push(LrDiagnostic {
+            code: report::CAPTURE_OVERRIDE,
+            message: format!(
+                "{what} overrides the capture policy with `#[spanned(...)]`; the table-driven \
+                 parser style resolves capture policies from the entry type only"
+            ),
+            path: String::new(),
+            items: Vec::new(),
+            actions: Vec::new(),
+            notes: Vec::new(),
+        });
+    };
+    for node in &lowered.source_modeled.resolved().nodes {
+        if node.capture.is_some() {
+            report(format!("node `{}`", node.ident));
+        }
+        if let crate::resolution::ResolvedNodeBody::Enum { variants } = &node.body {
+            for variant in variants.iter().filter(|variant| variant.capture.is_some()) {
+                report(format!("variant `{}::{}`", node.ident, variant.ident));
+            }
+        }
+        for field in node.fields.iter().filter(|field| field.capture.is_some()) {
+            report(format!(
+                "field `{}` of node `{}`",
+                field
+                    .syntax
+                    .ident
+                    .as_ref()
+                    .map_or_else(|| "?".to_owned(), ToString::to_string),
+                node.ident
+            ));
+        }
+    }
+    diagnostics
 }
 
 #[cfg(test)]
@@ -616,6 +666,80 @@ mod tests {
             assert_eq!(grammar.render_rule(add), "Expr -> Expr Plus Expr");
             assert_eq!(grammar.rule(add).precedence.map(|precedence| precedence.level), Some(lbp));
         }
+    }
+
+    #[test]
+    fn capture_overrides_are_rejected_with_rca0406() {
+        // A grammar whose only departure from the defaults is one `#[spanned(...)]` per level.
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+    recursa::grammar! {
+        module = crate::grammar,
+        keyword_matching = sensitive,
+        max_lookahead = 1,
+        parser_style = table_driven,
+    }
+
+    recursa::tokens! {
+        ignore = r"[ \t\n\r]+",
+        keywords {
+            LET => "let",
+        }
+        punctuation {
+            SEMI => ";",
+        }
+    }
+
+    #[derive(recursa::Node)]
+    pub enum Statement<'input> {
+        #[spanned(optional)]
+        Let(Let<'input>),
+    }
+
+    #[derive(recursa::Node)]
+    #[spanned(off)]
+    #[tok(LET, this, SEMI)]
+    pub struct Let<'input> {
+        #[spanned(mandatory)]
+        pub name: Name<'input>,
+    }
+
+    #[derive(recursa::Node)]
+    pub struct Name<'input> {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText<'input>,
+    }
+    "#,
+        )
+        .unwrap();
+        let lowered = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("the grammar passes source analysis")
+        .analyzed
+        .lowered;
+        let error = super::LrAnalysis::from_lowered(&lowered, AutomatonOptions::default()).unwrap_err();
+        let messages: Vec<String> = error
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.code, "RCA0406");
+                diagnostic.message.clone()
+            })
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "variant `Statement::Let` overrides the capture policy with `#[spanned(...)]`; the \
+                 table-driven parser style resolves capture policies from the entry type only",
+                "node `Let` overrides the capture policy with `#[spanned(...)]`; the table-driven \
+                 parser style resolves capture policies from the entry type only",
+                "field `name` of node `Let` overrides the capture policy with `#[spanned(...)]`; \
+                 the table-driven parser style resolves capture policies from the entry type only",
+            ]
+        );
     }
 
     #[test]

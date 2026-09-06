@@ -175,6 +175,212 @@ impl SiteForm {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The capture policy a provenance fold applies to an occurrence, as the runtime's
+/// `lr::provenance::FoldPolicy` decodes it (the codes are the protocol).
+///
+/// The lowering emits `Inherited` for every site the generated recursive-descent code reads
+/// through `context.capture_policy()` and `Mandatory` for erased optional fixed-token groups,
+/// which that code hardcodes. A grammar with an authored override is rejected (`RCA0406`).
+pub enum FoldPolicy {
+    /// The parse context's policy.
+    Inherited,
+    /// `CapturePolicy::Off`.
+    Off,
+    /// `CapturePolicy::Optional`.
+    Optional,
+    /// `CapturePolicy::Mandatory`.
+    Mandatory,
+}
+
+impl FoldPolicy {
+    /// The packed code.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Inherited => 0,
+            Self::Off => 1,
+            Self::Optional => 2,
+            Self::Mandatory => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// What the reduce of a rule folds its popped occurrence entries into; mirrors the runtime's
+/// `lr::provenance::FoldKind` (the codes are the protocol).
+pub enum FoldKind {
+    /// The one popped entry stays: a content-token or fixed-token rule.
+    Through,
+    /// An absent optional helper: no occurrence.
+    Absent,
+    /// A grammar type, attachment unit, fixed-only sequence or presence envelope: one node with
+    /// one child per site.
+    Node,
+    /// A present optional helper: one group over every popped entry.
+    Group,
+    /// A one-or-more list inside an optional helper: one repetition group over the entries.
+    Repetition,
+    /// `list1 -> e`.
+    ListStart,
+    /// `list1 -> list1 [sep] e`.
+    ListExtend,
+    /// `list1t -> list1 [sep]`, `list -> list1 [sep]` and `list -> %empty`.
+    ListThrough,
+}
+
+impl FoldKind {
+    /// The packed code.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Through => 0,
+            Self::Absent => 1,
+            Self::Node => 2,
+            Self::Group => 3,
+            Self::Repetition => 4,
+            Self::ListStart => 5,
+            Self::ListExtend => 6,
+            Self::ListThrough => 7,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The occurrence one site of a node fold builds; mirrors the runtime's
+/// `lr::provenance::SiteKind` (the codes are the protocol). Each kind names the shape the
+/// recursive-descent helper for that element produces.
+pub enum SiteKind {
+    /// A fixed token: `parse_fixed`'s leaf.
+    Leaf,
+    /// A semantic element, or an inlined present optional or erased group: `finish_group`
+    /// around the entries.
+    Group,
+    /// A helper's or attachment operand's entry unchanged.
+    Through,
+    /// An absent inlined optional or erased group.
+    Absent,
+    /// An inlined presence: the outer group over the inner group of the sequence tokens.
+    Presence,
+    /// An inlined repetition, present or absent: `finish_repeated_group` over the list entry
+    /// and any trailing separator.
+    Repetition,
+}
+
+impl SiteKind {
+    /// The packed code.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Leaf => 0,
+            Self::Group => 1,
+            Self::Through => 2,
+            Self::Absent => 3,
+            Self::Presence => 4,
+            Self::Repetition => 5,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// One site of a node fold: the popped entries it occupies (in right-hand-side order, so a
+/// Pratt rule's implicit left operand is the first site) and the shape it builds.
+pub struct FoldSite {
+    /// Index of the site's first entry among the rule's popped entries.
+    pub start: u32,
+    /// Number of entries the site occupies; zero for an absent choice.
+    pub len: u32,
+    /// The shape built.
+    pub kind: SiteKind,
+    /// The policy of the site's group and leaves.
+    pub policy: FoldPolicy,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// The provenance fold of one rule: what its reduce builds on the occurrence stack so that the
+/// table-driven parser yields recursive descent's occurrence tree (#118).
+pub struct RuleFold {
+    /// What the popped entries fold into.
+    pub kind: FoldKind,
+    /// The policy of the node, group or leaf built.
+    pub policy: FoldPolicy,
+    /// The sites of a [`FoldKind::Node`]; empty otherwise.
+    pub sites: Vec<FoldSite>,
+}
+
+impl RuleFold {
+    /// A pass-through fold.
+    pub const fn through() -> Self {
+        Self {
+            kind: FoldKind::Through,
+            policy: FoldPolicy::Inherited,
+            sites: Vec::new(),
+        }
+    }
+
+    /// A fold without sites.
+    pub const fn plain(kind: FoldKind, policy: FoldPolicy) -> Self {
+        Self {
+            kind,
+            policy,
+            sites: Vec::new(),
+        }
+    }
+
+    /// A node fold over `sites` under the inherited policy.
+    pub const fn node(sites: Vec<FoldSite>) -> Self {
+        Self {
+            kind: FoldKind::Node,
+            policy: FoldPolicy::Inherited,
+            sites,
+        }
+    }
+
+    /// Whether the fold or one of its sites applies a mandatory policy.
+    pub fn is_mandatory(&self) -> bool {
+        self.policy == FoldPolicy::Mandatory
+            || self
+                .sites
+                .iter()
+                .any(|site| site.policy == FoldPolicy::Mandatory)
+    }
+
+    /// Appends the packed form: `kind, policy, site count`, then `start, len, kind, policy`
+    /// per site.
+    pub fn pack(&self, into: &mut Vec<u32>) {
+        into.push(self.kind.code());
+        into.push(self.policy.code());
+        into.push(self.sites.len() as u32);
+        for site in &self.sites {
+            into.extend([site.start, site.len, site.kind.code(), site.policy.code()]);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Whether recursive descent decides where a rule ends by its caller FOLLOW, which at the root
+/// rejects a following token outside the root FOLLOW (`docs/table-driven-parsing.md`, section
+/// 3). The runtime keeps one flag along the spine of last symbols; each reduce applies its
+/// rule's decision to it.
+pub enum TailDecision {
+    /// The rule's last symbol decides: the flag is unchanged.
+    Keep,
+    /// The rule is decided by its caller FOLLOW: an enum alternative exactly one token long,
+    /// which the predictive dispatch selects only when the next token continues the caller, or
+    /// a rule whose last site is a repetition, whose loop stops only before the caller FOLLOW.
+    Reject,
+    /// A Pratt rule: the Pratt loop stops before any token, so the flag is cleared.
+    Clear,
+}
+
+impl TailDecision {
+    /// The packed code.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Keep => 0,
+            Self::Reject => 1,
+            Self::Clear => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 /// The Rust value of one element as a reduce action names it: a grammar type's value wrapped in
 /// `boxes` layers of `Box`.
 ///
@@ -297,6 +503,10 @@ pub struct Rule {
     pub precedence: Option<RulePrecedence>,
     /// What reducing the rule builds.
     pub action: RuleAction,
+    /// What reducing the rule folds on the occurrence stack.
+    pub fold: RuleFold,
+    /// Whether the rule's end is decided by its caller FOLLOW.
+    pub tail: TailDecision,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -432,6 +642,11 @@ impl LrGrammar {
         &self.rules[id.index()]
     }
 
+    /// Returns every rule in declaration order, mutably, for the lowering's tail post-pass.
+    pub fn rules_mut(&mut self) -> &mut [Rule] {
+        &mut self.rules
+    }
+
     /// Returns every rule in declaration order.
     pub fn rules(&self) -> &[Rule] {
         &self.rules
@@ -528,6 +743,8 @@ impl LrGrammar {
             value_pops: u32::from(carries_value),
             precedence: None,
             action: RuleAction::Accept { type_id },
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
         });
         self.starts.push(StartRule { type_id, rule });
         rule
@@ -642,6 +859,8 @@ impl TextbookGrammar {
             _ => unreachable!("textbook nonterminals are grammar types"),
         };
         let sites = (0..symbols.len() as u32).map(SiteForm::required).collect();
+        // Textbook grammars exercise the automaton, its conflicts and its tables, never a
+        // provenance fold; the fold is a placeholder that no test reduces under capture.
         self.grammar.add_rule(Rule {
             lhs,
             rhs: symbols,
@@ -652,6 +871,8 @@ impl TextbookGrammar {
                 variant: None,
                 sites,
             },
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
         })
     }
 
