@@ -23,6 +23,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "one-node/Cargo.lock",
         "pratt/Cargo.core.lock",
         "pratt/Cargo.lock",
+        "pratt-shapes/Cargo.core.lock",
         "repetitions/Cargo.core.lock",
         "repetitions/Cargo.lock",
         "table-driven/Cargo.core.lock",

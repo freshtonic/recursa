@@ -2059,17 +2059,35 @@ pub(super) fn render_pratt_node_pretty(
                                 )
                             }
                             PrettyPrattOperandBehavior::Recursive { minimum, next, .. } => {
+                                // A recursive operand is `Box<Self>`, or the attached optional
+                                // `#[tok(X, this)] Option<Box<Self>>`, whose absence renders
+                                // nothing, attachment included.
+                                let optional = matches!(
+                                    container.as_ref(),
+                                    PlannedContainer::Optional { .. }
+                                );
                                 assert!(
-                                    matches!(container.as_ref(), PlannedContainer::Direct { .. })
+                                    (optional
+                                        || matches!(
+                                            container.as_ref(),
+                                            PlannedContainer::Direct { .. }
+                                        ))
                                         && wrappers.iter().all(|wrapper| {
                                             matches!(wrapper, FieldWrapper::Boxed)
+                                                || (optional
+                                                    && matches!(wrapper, FieldWrapper::Optional))
                                         }),
-                                    "validated recursive Pratt operands are direct and may only use Box storage wrappers",
+                                    "validated recursive Pratt operands are direct or attached optionals and may only use Box storage wrappers",
                                 );
                                 let minimum = render_pretty_pratt_minimum(*minimum);
                                 let next = render_pretty_pratt_next(*next);
+                                let operand = if optional {
+                                    quote!(operand)
+                                } else {
+                                    quote!(#binding)
+                                };
                                 let semantic = quote!(
-                                    (#binding).__recursa_pretty_pratt(context, #minimum, #next)
+                                    (#operand).__recursa_pretty_pratt(context, #minimum, #next)
                                 );
                                 let rendered = if let Some(attachment) = attachment {
                                     let unit = render_pretty_attachment_unit(
@@ -2089,6 +2107,20 @@ pub(super) fn render_pratt_node_pretty(
                                             context.#child(0, |context| { #semantic })
                                         })?;
                                     }
+                                };
+                                let rendered = if optional {
+                                    let view = render_optional_view_reference(
+                                        quote!(#binding),
+                                        wrappers,
+                                        true,
+                                    );
+                                    quote! {
+                                        if let Some(operand) = #view {
+                                            #rendered
+                                        }
+                                    }
+                                } else {
+                                    rendered
                                 };
                                 render_pretty_presence(
                                     pretty,

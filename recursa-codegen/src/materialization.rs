@@ -749,6 +749,9 @@ pub(crate) enum MaterializationDiagnosticKind {
     InvalidContainer,
     /// Selects the invalid pratt shape materialization alternative.
     InvalidPrattShape,
+    /// A `#[parse(pratt(exclude(...)))]` name that is not a variant of the field's Pratt
+    /// target, or a restriction on a field whose target is not a Pratt Node.
+    InvalidPrattExclusion,
     /// Selects the inapplicable pretty hint materialization alternative.
     InapplicablePrettyHint,
     /// Selects the unsafe pretty boundary materialization alternative.
@@ -1308,7 +1311,19 @@ impl Materializer {
                 closed_pretty_summary_counts,
             };
         }
-        let (grammar, lowering_map) = self.project_normalized_grammar();
+        let (mut grammar, lowering_map) = self.project_normalized_grammar();
+        self.resolve_pratt_exclusions(&mut grammar, &lowering_map);
+        if !self.diagnostics.is_empty() {
+            return MaterializationReport {
+                lexical_diagnostics: Vec::new(),
+                diagnostics: std::mem::take(&mut self.diagnostics),
+                lowered: None,
+                #[cfg(test)]
+                pretty_boundary_proof_counts,
+                #[cfg(test)]
+                closed_pretty_summary_counts,
+            };
+        }
         MaterializationReport {
             lexical_diagnostics: Vec::new(),
             diagnostics: Vec::new(),
@@ -1325,6 +1340,162 @@ impl Materializer {
             pretty_boundary_proof_counts,
             #[cfg(test)]
             closed_pretty_summary_counts,
+        }
+    }
+
+    /// Resolves every `#[parse(pratt(exclude(...)))]` filter to the normalized declarations of
+    /// the excluded variants and records them on the site the field lowers to (the outer site
+    /// when fixed tokens are attached), so that the analysis, the lowering and the renderers
+    /// read one resolution. A name that is not a variant of the target, or a restriction on a
+    /// field whose target is not a Pratt Node, is `InvalidPrattExclusion`.
+    fn resolve_pratt_exclusions(
+        &mut self,
+        grammar: &mut GrammarDescription,
+        lowering_map: &LoweringMap,
+    ) {
+        let application_of_type: BTreeMap<TypeId, MaterializedApplicationId> = lowering_map
+            .applications
+            .iter()
+            .map(|correlation| (correlation.lowered, correlation.application))
+            .collect();
+        let unit_semantic_site: BTreeMap<TypeId, SiteId> = lowering_map
+            .attachments
+            .iter()
+            .map(|unit| (unit.unit, unit.sites[unit.semantic_index]))
+            .collect();
+        let mut resolutions: Vec<(SiteId, Vec<DeclId>)> = Vec::new();
+        let mut diagnostics: Vec<(SourceId, Range<u32>, String)> = Vec::new();
+        for application in &self.applications {
+            for group in application.body.element_groups() {
+                for element in group.elements {
+                    let MaterializedElement::SemanticField {
+                        field,
+                        projection:
+                            MaterializedSemanticFieldProjection::Direct {
+                                pratt_extensions: Some(filter),
+                                ..
+                            },
+                        ..
+                    } = element
+                    else {
+                        continue;
+                    };
+                    let Some(site) = lowering_map.fields.iter().find_map(|correlation| {
+                        match correlation.lowered {
+                            MaterializedFieldLowering::ParseSite(site)
+                                if correlation.application == application.id
+                                    && correlation.field == *field =>
+                            {
+                                Some(site)
+                            }
+                            _ => None,
+                        }
+                    }) else {
+                        continue;
+                    };
+                    let resolved_field = self.resolved_field(*field);
+                    let (source, range) = (resolved_field.ty.source, resolved_field.range.clone());
+                    let field_name = resolved_field
+                        .syntax
+                        .ident
+                        .as_ref()
+                        .map_or_else(|| "the field".to_owned(), |ident| format!("`{ident}`"));
+                    let mut target = grammar.sites[site.index()].target;
+                    if let Some(semantic) = unit_semantic_site.get(&target) {
+                        target = grammar.sites[semantic.index()].target;
+                    }
+                    let target_application = application_of_type
+                        .get(&target)
+                        .and_then(|id| self.applications.iter().find(|candidate| candidate.id == *id));
+                    let Some(MaterializedNodeBody::Pratt(variants)) =
+                        target_application.map(|candidate| &candidate.body)
+                    else {
+                        diagnostics.push((
+                            source,
+                            range,
+                            format!(
+                                "{field_name} restricts a Pratt language with \
+                                 `#[parse(pratt(exclude(...)))]`, but its type is not a Pratt Node"
+                            ),
+                        ));
+                        continue;
+                    };
+                    let target_application = target_application.expect("a Pratt body has an application");
+                    let repeated = Self::repeats(&grammar.sites[site.index()].container);
+                    let mut excluded = Vec::new();
+                    for name in &filter.excluded {
+                        let Some((resolved, is_nud)) = variants.iter().find_map(|variant| match variant {
+                            MaterializedPrattVariant::Nud(nud) if nud.common.name == *name => {
+                                Some((nud.common.resolved_variant, true))
+                            }
+                            MaterializedPrattVariant::Led(led) if led.common.name == *name => {
+                                Some((led.common.resolved_variant, false))
+                            }
+                            _ => None,
+                        }) else {
+                            diagnostics.push((
+                                source,
+                                range.clone(),
+                                format!(
+                                    "{field_name} excludes `{name}`, which is not a variant of \
+                                     Pratt Node `{}`",
+                                    target_application.display_name
+                                ),
+                            ));
+                            continue;
+                        };
+                        // An atom or prefix exclusion narrows the site's FIRST set, and the
+                        // decision frontier cannot carry that narrowing across a repetition:
+                        // its repeat tail expands the whole target type. Excluding an
+                        // extender leaves every FIRST set alone, so it stays admitted.
+                        if is_nud && repeated {
+                            diagnostics.push((
+                                source,
+                                range.clone(),
+                                format!(
+                                    "{field_name} excludes the Pratt atom or prefix variant \
+                                     `{name}` at a repeated site; only a single or optional \
+                                     operand may exclude one"
+                                ),
+                            ));
+                            continue;
+                        }
+                        let declaration = lowering_map
+                            .variants
+                            .iter()
+                            .find(|correlation| {
+                                correlation.application == target_application.id
+                                    && correlation.variant == resolved
+                            })
+                            .map(|correlation| correlation.lowered)
+                            .expect("every materialized Pratt variant is projected");
+                        excluded.push(declaration);
+                    }
+                    excluded.sort_unstable();
+                    excluded.dedup();
+                    resolutions.push((site, excluded));
+                }
+            }
+        }
+        for (site, excluded) in resolutions {
+            grammar.sites[site.index()].pratt_excluded = excluded;
+        }
+        for (source, range, message) in diagnostics {
+            self.push_diagnostic(
+                source,
+                Some(range),
+                MaterializationDiagnosticKind::InvalidPrattExclusion,
+                message,
+            );
+        }
+    }
+
+    /// Whether a container repeats its element, at any depth of its storage-only layers.
+    fn repeats(container: &ContainerShape) -> bool {
+        match container {
+            ContainerShape::Direct => false,
+            ContainerShape::Boxed(inner) | ContainerShape::Optional(inner) => Self::repeats(inner),
+            ContainerShape::Repeat { .. } => true,
         }
     }
 
@@ -2227,6 +2398,9 @@ impl Materializer {
                     current_application,
                     &mut elements,
                 )?;
+                if !self.validate_optional_pratt_operands(current_application, &elements) {
+                    return None;
+                }
                 Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
                     common,
                     position: MaterializedPrattLedPosition::Postfix { bp },
@@ -2237,7 +2411,10 @@ impl Materializer {
         }
     }
 
-    /// Validates one exact Pratt operand without admitting other semantic fields.
+    /// Validates the one exact `Box<Self>` operand of a prefix variant, which must be its last
+    /// semantic field; content-token fields before it are the operator, gram.y's
+    /// `qual_Op a_expr %prec Op` (pg-sql's user-defined operator class). No other semantic
+    /// field is admitted.
     fn validate_single_pratt_operand(
         &mut self,
         variant: ResolvedVariantId,
@@ -2249,23 +2426,56 @@ impl Materializer {
             .iter()
             .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
             .collect::<Vec<_>>();
-        if semantic.len() != 1 {
+        let content_token = |element: &MaterializedElement| {
+            matches!(
+                element,
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct {
+                        ty: ClosedType::ContentToken(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        };
+        let operands = semantic
+            .iter()
+            .filter(|element| !content_token(element))
+            .count();
+        if operands != 1 {
             let (source, range) = self.resolved_variant_site(variant);
             self.push_diagnostic(
                 source,
                 Some(range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
                 format!(
-                    "a Pratt {role} requires exactly one Box<Self> operand; found {} semantic fields",
-                    semantic.len(),
+                    "a Pratt {role} requires exactly one Box<Self> operand beside its \
+                     content-token operator fields; found {operands} other semantic fields",
                 ),
             );
             return false;
         }
-        if exact_pratt_self_operand(semantic[0], current_application) {
+        let operand = semantic
+            .last()
+            .copied()
+            .expect("one operand was counted");
+        if content_token(operand) {
+            let (source, range) = self.resolved_variant_site(variant);
+            self.push_diagnostic(
+                source,
+                Some(range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                format!(
+                    "the Box<Self> operand of a Pratt {role} must be its last semantic field; \
+                     a content-token operator follows it",
+                ),
+            );
+            return false;
+        }
+        if exact_pratt_self_operand(operand, current_application) {
             return true;
         }
-        let MaterializedElement::SemanticField { field, .. } = semantic[0] else {
+        let MaterializedElement::SemanticField { field, .. } = operand else {
             unreachable!("Pratt operand selection contains only semantic fields")
         };
         let resolved_field = self.resolved_field(*field).clone();
@@ -2278,7 +2488,8 @@ impl Materializer {
         false
     }
 
-    /// Validates exactly one recursive infix rhs while admitting ordinary semantic tail fields.
+    /// Validates exactly one required recursive infix rhs while admitting ordinary semantic
+    /// tail fields and attached optional operands (`#[tok(X, this)] Option<Box<Self>>`).
     fn validate_single_pratt_rhs(
         &mut self,
         variant: ResolvedVariantId,
@@ -2295,7 +2506,8 @@ impl Materializer {
                 else {
                     return false;
                 };
-                is_recursive_pratt_operand(ty, current_application.application)
+                !matches!(ty, ClosedType::Optional(_))
+                    && is_recursive_pratt_operand(ty, current_application.application)
             })
             .collect::<Vec<_>>();
         if recursive.len() != 1 {
@@ -2312,7 +2524,7 @@ impl Materializer {
             return false;
         }
         if exact_pratt_self_operand(recursive[0], current_application) {
-            return true;
+            return self.validate_optional_pratt_operands(current_application, elements);
         }
         let MaterializedElement::SemanticField { field, .. } = recursive[0] else {
             unreachable!("recursive Pratt rhs selection contains only semantic fields")
@@ -2326,6 +2538,63 @@ impl Materializer {
                 .to_owned(),
         );
         false
+    }
+
+    /// Validates every optional recursive operand of a led tail: it is exactly
+    /// `Option<Box<Self>>` and it follows a fixed token of its own
+    /// (`#[tok(ESCAPE, this)] Option<Box<Self>>`), which decides its presence the way gram.y's
+    /// `a_expr LIKE a_expr ESCAPE a_expr` does. A bare optional operand would decide its
+    /// presence by the operand language's FIRST set, which every extender's operand shares.
+    fn validate_optional_pratt_operands(
+        &mut self,
+        current_application: &MaterializedNodeUse,
+        elements: &[MaterializedElement],
+    ) -> bool {
+        for element in elements {
+            let MaterializedElement::SemanticField {
+                field,
+                projection:
+                    MaterializedSemanticFieldProjection::Direct {
+                        ty,
+                        trace,
+                        separator,
+                        ..
+                    },
+                attachment,
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let ClosedType::Optional(inner) = ty else {
+                continue;
+            };
+            if !is_recursive_pratt_operand(ty, current_application.application) {
+                continue;
+            }
+            let exact =
+                exact_pratt_self_parts(inner, trace, separator.as_ref(), current_application);
+            let attached = attachment.as_ref().is_some_and(|attachment| {
+                matches!(
+                    attachment.before.first(),
+                    Some(MaterializedAttachedFixedSyntax::Required(_))
+                )
+            });
+            if exact && attached {
+                continue;
+            }
+            let resolved_field = self.resolved_field(*field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "an optional Pratt operand must be an authored Option<Box<Self>> attached \
+                 behind a fixed token (`#[tok(X, this)] Option<Box<Self>>`)"
+                    .to_owned(),
+            );
+            return false;
+        }
+        true
     }
 
     /// Derives the resolved variant site while materializing grammar applications and container shapes.
@@ -6145,6 +6414,304 @@ enum Expr<'input> {
     }
 
     #[test]
+    fn led_tails_admit_an_optional_operand_attached_behind_a_fixed_token() {
+        // gram.y's `a_expr LIKE a_expr ESCAPE a_expr`: the escape operand is optional and its
+        // own token decides its presence, on an infix rhs and on a postfix tail alike.
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::like }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(infix, lbp = 6, rbp = 7)]
+    Like(Box<Self>, #[tok("LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
+    #[parse(postfix, bp = 6)]
+    NotLike(Box<Self>, #[tok("NOT", "LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "like::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("materialized Expr is Pratt")
+        };
+        for (index, position) in [
+            (1, MaterializedPrattLedPosition::Infix { lbp: 6, rbp: 7 }),
+            (2, MaterializedPrattLedPosition::Postfix { bp: 6 }),
+        ] {
+            let MaterializedPrattVariant::Led(led) = &variants[index] else {
+                panic!("variant {index} is a led variant")
+            };
+            assert_eq!(led.position, position);
+            let semantic: Vec<&MaterializedElement> = led
+                .tail
+                .iter()
+                .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+                .collect();
+            assert_eq!(semantic.len(), 2);
+            let MaterializedElement::SemanticField {
+                projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                attachment: Some(attachment),
+                ..
+            } = semantic[1]
+            else {
+                panic!("the escape operand is an attached direct field")
+            };
+            assert!(matches!(ty, ClosedType::Optional(_)));
+            assert!(matches!(
+                attachment.before.as_slice(),
+                [crate::materialization::MaterializedAttachedFixedSyntax::Required(_)]
+            ));
+        }
+        // Both optional operands project to a site that carries the operand minimum.
+        let minimums: Vec<u8> = lowered
+            .grammar
+            .sites
+            .iter()
+            .filter(|site| matches!(site.container, ContainerShape::Optional(_)))
+            .map(|site| site.min_bp)
+            .collect();
+        assert_eq!(minimums, [7, 6]);
+    }
+
+    #[test]
+    fn a_prefix_variant_admits_a_content_token_operator_before_its_operand() {
+        // gram.y's `qual_Op a_expr %prec Op`: the operator is pg-sql's user-defined operator
+        // class, a content token, and the variant keeps its binding power.
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::operators }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(prefix, bp = 8)]
+    Custom(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>),
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "operators::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("materialized Expr is Pratt")
+        };
+        let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
+            panic!("Custom is a nud variant")
+        };
+        assert_eq!(prefix.position, MaterializedPrattNudPosition::Prefix { bp: 8 });
+        let types: Vec<bool> = prefix
+            .body
+            .iter()
+            .filter_map(|element| match element {
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                    ..
+                } => Some(matches!(ty, ClosedType::ContentToken(_))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(types, [true, false]);
+        // The operand site, and only it, carries the prefix binding power as its minimum.
+        let minimums: Vec<u8> = lowered.grammar.sites.iter().map(|site| site.min_bp).collect();
+        assert_eq!(minimums.iter().filter(|minimum| **minimum == 8).count(), 1, "{minimums:?}");
+        assert_eq!(minimums.last(), Some(&8), "{minimums:?}");
+    }
+
+    #[test]
+    fn rejects_prefix_variants_whose_operator_field_has_the_wrong_shape() {
+        for (invalid_variant, expected) in [
+            (
+                r#"#[parse(prefix, bp = 1)] After(Box<Self>, #[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                "must be its last semantic field",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Node(Leaf, Box<Self>)"#,
+                "found 2 other semantic fields",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Two(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>, Box<Self>)"#,
+                "found 2 other semantic fields",
+            ),
+            (
+                r#"#[parse(prefix, bp = 1)] Only(#[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                "found 0 other semantic fields",
+            ),
+        ] {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {{
+    #[tok("ATOM")]
+    Atom,
+    {invalid_variant},
+}}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+                        && diagnostic.message.contains(expected)
+                }),
+                "`{invalid_variant}`: {:?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn an_exclusion_resolves_atoms_and_extenders_onto_the_site_it_lowers_to() {
+        // gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: the operand before
+        // `AS` excludes the `DEFAULT` atom; an attached operand carries the exclusion on the
+        // outer site, the one targeting the attachment unit.
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::namespaces }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("ATOM")]
+    Atom,
+    #[tok("DEFAULT")]
+    Default,
+    #[parse(prefix, bp = 9)]
+    #[tok("NOT")]
+    Not(Box<Self>),
+    #[parse(infix, lbp = 3, rbp = 4)]
+    #[tok("AND")]
+    And(Box<Self>, Box<Self>),
+}
+#[derive(recursa::Node)]
+struct Named {
+    #[parse(pratt(exclude(Default, And, Not)))]
+    uri: Box<Expr>,
+    #[tok("AS")]
+    label: Expr,
+}
+#[derive(recursa::Node)]
+struct Attached {
+    #[parse(pratt(exclude(And)))]
+    #[tok("OPEN", this, "CLOSE")]
+    inner: Box<Expr>,
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let grammar = &lowered.grammar;
+        let declaration = |name: &str| {
+            crate::DeclId::new(
+                grammar
+                    .declarations
+                    .iter()
+                    .position(|declaration| declaration.name == name)
+                    .unwrap_or_else(|| panic!("{name} is declared")) as u32,
+            )
+        };
+        let restricted: Vec<(String, Vec<crate::DeclId>)> = grammar
+            .sites
+            .iter()
+            .filter(|site| !site.pratt_excluded.is_empty())
+            .map(|site| (grammar.types[site.owner.index()].name.clone(), site.pratt_excluded.clone()))
+            .collect();
+        let mut named = vec![
+            declaration("namespaces::Expr::Default"),
+            declaration("namespaces::Expr::Not"),
+            declaration("namespaces::Expr::And"),
+        ];
+        named.sort_unstable();
+        assert_eq!(
+            restricted,
+            [
+                ("namespaces::Named".to_owned(), named),
+                ("namespaces::Attached".to_owned(), vec![declaration("namespaces::Expr::And")]),
+            ]
+        );
+        // The attached operand's exclusion sits on the outer site, whose target is the unit.
+        let attached = grammar
+            .sites
+            .iter()
+            .find(|site| grammar.types[site.owner.index()].name == "namespaces::Attached")
+            .unwrap();
+        assert!(matches!(grammar.types[attached.target.index()].shape, TypeShape::Sequence { .. }));
+    }
+
+    #[test]
+    fn rejects_an_unresolvable_or_unsupported_pratt_exclusion() {
+        for (field, expected) in [
+            (
+                r#"#[parse(pratt(exclude(Atom, Missing)))] uri: Box<Expr>"#,
+                "`uri` excludes `Missing`, which is not a variant of Pratt Node `invalid::Expr`",
+            ),
+            (
+                r#"#[parse(pratt(exclude(Atom)))] uri: Leaf"#,
+                "`uri` restricts a Pratt language with `#[parse(pratt(exclude(...)))]`, but its type is not a Pratt Node",
+            ),
+            // An extender exclusion never touches a FIRST set, but an atom's narrows one, and
+            // the decision frontier expands a repetition's tail as the whole target type.
+            (
+                r#"#[parse(pratt(exclude(Atom)))] uri: Vec<Expr>"#,
+                "`uri` excludes the Pratt atom or prefix variant `Atom` at a repeated site; only a single or optional operand may exclude one",
+            ),
+        ] {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {{
+    #[tok("ATOM")]
+    Atom,
+    #[parse(infix, lbp = 3, rbp = 4)]
+    #[tok("AND")]
+    And(Box<Self>, Box<Self>),
+}}
+#[derive(recursa::Node)]
+struct Named {{
+    {field},
+}}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{field}`");
+            let diagnostic = report
+                .diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattExclusion
+                })
+                .unwrap_or_else(|| panic!("`{field}`: {:?}", report.diagnostics));
+            assert_eq!(diagnostic.message, expected);
+            assert_eq!(
+                crate::source_analysis::materialization_code(diagnostic.kind),
+                "RCA3212"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_zero_multiple_and_non_exact_recursive_infix_rhs_fields() {
         for (invalid_variant, expected) in [
             (
@@ -6157,7 +6724,23 @@ enum Expr<'input> {
             ),
             (
                 r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(Box<Self>, Leaf, Option<Box<Self>>)"#,
-                "must be an authored Box<Self>",
+                "found 0 recursive semantic fields",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] BareOptional(Box<Self>, Box<Self>, Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] TrailingOptional(Box<Self>, Box<Self>, #[tok(this, "LEAF")] Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(postfix, bp = 1)] PostfixBareOptional(Box<Self>, #[tok("LEAF", this)] Box<Self>, Option<Box<Self>>)"#,
+                "attached behind a fixed token",
+            ),
+            (
+                r#"#[parse(postfix, bp = 1)] PostfixOptionalNode(Box<Self>, #[tok("LEAF", this)] Box<Self>, #[tok("LEAF", this)] Option<Box<Expr>>)"#,
+                "attached behind a fixed token",
             ),
         ] {
             let source = format!(

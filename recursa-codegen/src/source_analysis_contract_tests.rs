@@ -535,6 +535,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen materialization::tests::rejects_missing_unboxed_and_foreign_pratt_lhs_fields --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3212"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/materialization.rs",
+        test_name: "rejects_an_unresolvable_or_unsupported_pratt_exclusion",
+        command: "cargo test -p recursa-codegen materialization::tests::rejects_an_unresolvable_or_unsupported_pratt_exclusion --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA0400"],
         producer_source: "src/lr/report.rs",
         test_source: "src/lr.rs",

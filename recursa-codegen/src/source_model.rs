@@ -665,7 +665,9 @@ pub(crate) enum GrammarElement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Carries an authored restriction on the Pratt extensions available to one field.
 pub(crate) struct PrattExtensionFilter {
-    /// Names Pratt LED variants excluded from this field and its recursive operands.
+    /// Names the Pratt variants excluded from this field and its recursive operands: an atom
+    /// or prefix variant as well as an infix or postfix one. The names are resolved once, in
+    /// materialization, onto [`crate::ParseSite::pratt_excluded`].
     pub(crate) excluded: Vec<String>,
 }
 
@@ -9307,7 +9309,7 @@ struct PrattSyntax {
 
 /// Carries field-local Pratt extension restriction syntax.
 struct PrattFieldSyntax {
-    /// Names LED variants excluded at this field boundary.
+    /// Names the variants excluded at this field boundary, of any Pratt position.
     excluded: Vec<syn::Ident>,
 }
 

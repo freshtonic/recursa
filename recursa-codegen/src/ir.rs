@@ -530,11 +530,15 @@ pub struct ParseSite {
     pub container: ContainerShape,
     /// Minimum Pratt binding power required at this site.
     pub min_bp: u8,
-    /// Pratt led variants of the target that `#[parse(pratt(exclude(...)))]` removes here.
+    /// The variants of the target Pratt type this site excludes
+    /// (`#[parse(pratt(exclude(...)))]`), in ascending order without duplicates: an atom or
+    /// prefix variant leaves the operand's nud selection and its FIRST set, an infix or
+    /// postfix one its extenders. Empty at every other site, including one that targets the
+    /// attachment unit around such an operand only through the unit's own semantic site.
     ///
     /// The generated loop never selects an excluded variant at this site or in the
-    /// recursive operands it parses, so analysis leaves the variant's starters out of the
-    /// site's active extenders instead of reporting them as a caller-FOLLOW overlap.
+    /// recursive operands it parses, so analysis leaves an excluded extender's starters out
+    /// of the site's active extenders instead of reporting them as a caller-FOLLOW overlap.
     pub pratt_excluded: Vec<DeclId>,
 }
 
