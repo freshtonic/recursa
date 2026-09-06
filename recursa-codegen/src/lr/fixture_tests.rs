@@ -1026,3 +1026,114 @@ fn site_forms_map_every_element_to_its_symbols() {
     assert_eq!(grammar.rule(let_rules[0]).value_pops, 3);
     assert_eq!(grammar.rule(let_rules[3]).value_pops, 4);
 }
+
+/// Runs the whole table-driven analysis over the precedence generation fixture.
+fn precedence_fixture_analysis() -> LrAnalysis {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/generation/precedence");
+    LrAnalysis::analyze_source(&fixture, Path::new("src/grammar.rs"), AutomatonOptions::default())
+        .unwrap_or_else(|error| panic!("the precedence fixture analyzes:\n{error}"))
+}
+
+#[test]
+fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved() {
+    let analysis = precedence_fixture_analysis();
+    let grammar = &analysis.grammar;
+    let unresolved: Vec<String> = analysis
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.render())
+        .collect();
+    assert!(unresolved.is_empty(), "{}", unresolved.join("\n"));
+
+    // The declaration reaches the terminals: fixed tokens and the content token alike.
+    let declared = |name: &str| {
+        grammar
+            .declared_precedence(terminal(grammar, name))
+            .map(|precedence| (precedence.binding_power, precedence.associativity))
+    };
+    assert_eq!(declared("ESCAPE"), Some((6, Associativity::NonAssociative)));
+    assert_eq!(declared("LIKE"), Some((5, Associativity::NonAssociative)));
+    assert_eq!(declared("MINUS"), Some((10, Associativity::Left)));
+    assert_eq!(declared("DOT"), Some((20, Associativity::Left)));
+    assert_eq!(declared("NameText"), Some((9, Associativity::NonAssociative)));
+    assert_eq!(declared("SEMI"), None);
+    assert_eq!(declared("JSON"), None);
+
+    // The overrides reach the rules of their variant, and every other rule takes its last
+    // declared terminal.
+    let rule_precedence = |rendered: &str| {
+        let rule = grammar
+            .rules()
+            .iter()
+            .enumerate()
+            .find(|(index, _)| grammar.render_rule(super::RuleId::new(*index as u32)) == rendered)
+            .unwrap_or_else(|| panic!("no rule {rendered}"))
+            .1;
+        rule.precedence
+            .map(|precedence| (precedence.origin, precedence.level, precedence.associativity))
+    };
+    use super::PrecedenceOrigin::Declared;
+    assert_eq!(
+        rule_precedence("grammar::Expr -> grammar::SubSelect"),
+        Some((Declared, 12, Associativity::Right))
+    );
+    assert_eq!(
+        rule_precedence("grammar::IsJsonTail -> JSON"),
+        Some((Declared, 8, Associativity::NonAssociative))
+    );
+    assert_eq!(rule_precedence("grammar::IsJsonTail -> JSON VALUE"), Some((Declared, 9, Associativity::NonAssociative)));
+    assert_eq!(rule_precedence("NameText -> BETWEEN"), Some((Declared, 5, Associativity::NonAssociative)));
+    assert_eq!(rule_precedence("grammar::SetScope -> SESSION"), Some((Declared, 1, Associativity::NonAssociative)));
+    let escape_attachment = grammar
+        .rules()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| grammar.render_rule(super::RuleId::new(index as u32)))
+        .find(|rendered| rendered.contains(" -> ESCAPE "))
+        .expect("the escape clause lowers to a rule starting with ESCAPE");
+    assert_eq!(rule_precedence(&escape_attachment), Some((Declared, 6, Associativity::NonAssociative)));
+    assert_eq!(rule_precedence("grammar::SubSelect -> LPAREN SELECT grammar::Name RPAREN"), None);
+    assert_eq!(rule_precedence("grammar::Expr -> grammar::Number"), None);
+
+    let settled: Vec<(String, String, super::Resolution)> = analysis
+        .automaton
+        .resolved_conflicts()
+        .iter()
+        .map(|resolved| {
+            (
+                grammar.render_rule(resolved.reduce),
+                grammar.terminal_name(resolved.lookahead).to_owned(),
+                resolved.resolution,
+            )
+        })
+        .collect();
+    let shift = |rule: &str, lookahead: &str| {
+        (rule.to_owned(), lookahead.to_owned(), super::Resolution::Shift)
+    };
+    for expected in [
+        // `%prec UMINUS` below `'.'`.
+        shift("grammar::Expr -> grammar::SubSelect", "DOT"),
+        // `JSON %prec UNBOUNDED` below `VALUE_P` at IDENT's level.
+        shift("grammar::IsJsonTail -> JSON", "VALUE"),
+        // `BETWEEN` as a column name below `'-'`.
+        shift("NameText -> BETWEEN", "MINUS"),
+        // `NESTED` as a column name below `PATH`.
+        shift("NameText -> NESTED", "PATH"),
+        // The literal scope keyword below `CHARACTERISTICS`.
+        shift("grammar::SetScope -> SESSION", "CHARACTERISTICS"),
+        // The Pratt `LIKE` rule (5) against `ESCAPE` (6), which introduces no operator of
+        // `Expr`.
+        shift("grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#59", "ESCAPE"),
+    ] {
+        assert!(settled.contains(&expected), "{expected:?} not in {settled:#?}");
+    }
+    // A Pratt rule against a Pratt operator of its owner is still decided by binding powers.
+    assert!(settled.contains(&shift(
+        "grammar::Expr::__recursa_attachment#59 -> LIKE grammar::Expr[min 6]",
+        "PLUS"
+    )));
+    let dump = analysis.dump();
+    assert!(dump.contains("resolved by precedence (shift)."), "{dump}");
+    assert!(dump.ends_with("No conflicts.\n"), "{dump}");
+}
