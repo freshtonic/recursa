@@ -315,10 +315,22 @@ operand before it is one), so the site reports the nullable overlap
 operand there, which is the gram.y shift.
 
 When one grammar position admits only a named subset of a Pratt language,
-`#[parse(pratt(exclude(In, And)))]` on that field disables those LED variants
-for the whole recursive operand parse. A disabled extender yields its token to
-the field's ordinary FOLLOW boundary; other uses of the Pratt Node are
-unchanged.
+`#[parse(pratt(exclude(In, And)))]` on that field disables those variants
+for the whole recursive operand parse. A disabled extender (an infix or
+postfix variant) yields its token to the field's ordinary FOLLOW boundary; a
+disabled atom or prefix variant leaves the operand's nud selection and its
+FIRST set, so a sibling alternative may start with the token the atom did.
+That is gram.y's `b_expr` position before `DEFAULT`
+(`xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`, with `DEFAULT` also
+an expression atom) and its `c_expr` positions that must not start with a
+parenthesised query (`index_elem`): `#[parse(pratt(exclude(Default)))]`,
+`#[parse(pratt(exclude(Subquery)))]`. Inside the parentheses of an atom the
+operand keeps the full language, as `b_expr: '(' a_expr ')'` does. Other
+uses of the Pratt Node are unchanged. A name that is not a variant of the
+Pratt Node is `RCA3212`, and so is an atom or prefix exclusion on a repeated
+field: narrowing a FIRST set is a decision the repetition's tail cannot
+carry, while an extender exclusion changes no FIRST set and stays admitted
+there.
 
 Optionality of pure syntax is expressed by enum variants (presence = which
 variant parsed), as in `Alias::Explicit` vs `Alias::Bare` above — no
@@ -350,7 +362,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`, last, behind the fixed operator or behind content-token operator fields (gram.y's `qual_Op a_expr %prec Op`). |
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one required recursive `Box<Self>` rhs, and admits attached optional operands (`#[tok(X, this)] Option<Box<Self>>`) after it. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix; recursive tail operands inherit `N` as their minimum binding power, attached optional operands (`#[tok(X, this)] Option<Box<Self>>`) included. |
-| `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named LED variants from this field and its recursive operands; each name must identify an infix or postfix variant. |
+| `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named variants from this field and its recursive operands: an infix or postfix variant leaves the extenders, an atom or prefix variant leaves the nud selection and the field's FIRST set. Each name must identify a variant of the Pratt Node, and an atom or prefix name is admitted only on a single or optional field (`RCA3212`). |
 | `#[greedy(KIND, ...)]` or `#[greedy(all)]` | field, variant, or Node | Accepts the advisory caller-FOLLOW overlap (`RCA0300`, `RCA0301`) at the covered sites. For a nullable overlap (`RCA0300`) the parser already commits to the element on a shared kind and the acceptance only retires the warning. For a Pratt overlap (`RCA0301`) the acceptance makes the expression keep extending on the declared kinds at the covered sites instead of failing with `RCA4102` at run time; the kinds stay in FOLLOW and stay a Pratt boundary, an extension that bounded lookahead already rules out still ends the loop, and every site the acceptance does not cover keeps reporting `RCA4102`. The declared kinds must equal the union of the covered sites' overlaps exactly, else `RCA0302` (stale) or `RCA0303` (undeclared) fail the build. `all` accepts any non-empty overlap, and at a Pratt site it therefore covers every extender of the site's type: the generated loop consults the acceptance only at a kind it has already selected as an extension and already found in the Pratt boundary, which is exactly an overlap. A field attribute wins over its variant's, a variant's over its Node's. Diagrams annotate the element with the hover text `greedy(KIND, ...)`; nothing is drawn inline. |
 | `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |

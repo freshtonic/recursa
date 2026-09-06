@@ -41,17 +41,13 @@ use super::grammar::{
     RulePrecedence, SiteForm, Symbol, TerminalId, UnrepresentableBindingPowers,
 };
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
-use crate::materialization::{
-    MaterializedElement, MaterializedFieldLowering, MaterializedNodeBody, MaterializedPrattVariant,
-    MaterializedSemanticFieldProjection,
-};
 use crate::{
     ContainerShape, DeclId, GrammarDescription, KindSet, PrattPosition, PrattVariant,
     RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
 };
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-/// A distinct Pratt language: a Pratt type minus some of its LED variants (a
+/// A distinct Pratt language: a Pratt type minus some of its variants, of any position (a
 /// `#[parse(pratt(exclude(...)))]` site, carried into every operand) and minus every LED
 /// variant below a minimum binding power (an operand that the Pratt loop parses with
 /// `parse_bp(min_bp)`, not carried into its operands). Two sites with equal restrictions share
@@ -59,7 +55,8 @@ use crate::{
 pub struct PrattRestriction {
     /// The Pratt type restricted.
     pub type_id: TypeId,
-    /// The excluded LED variants, as normalized declarations in ascending order, deduplicated.
+    /// The excluded variants, atoms and prefix variants included, as normalized declarations
+    /// in ascending order, deduplicated.
     pub excluded: Vec<DeclId>,
     /// The minimum binding power: LED variants whose `lbp` or `bp` is below it are left out.
     pub min_bp: u8,
@@ -82,9 +79,9 @@ pub struct TypeRoles {
     pub presence_sites: BTreeSet<SiteId>,
     /// Types that get a start rule: node applications and content tokens.
     pub start_types: Vec<TypeId>,
-    /// Sites that restrict their Pratt target with `#[parse(pratt(exclude(...)))]`, keyed by the
-    /// site the authored field lowers to (the outer site when fixed tokens are attached); the
-    /// restriction carries no minimum binding power.
+    /// Sites that restrict their Pratt target with `#[parse(pratt(exclude(...)))]`, atoms and
+    /// prefix variants included, keyed by the site the authored field lowers to (the outer site
+    /// when fixed tokens are attached); the restriction carries no minimum binding power.
     pub pratt_exclusions: BTreeMap<SiteId, PrattRestriction>,
     /// Node application types, whose rules construct a node value.
     pub applications: BTreeSet<TypeId>,
@@ -116,7 +113,7 @@ impl TypeRoles {
             });
             presence_envelopes.insert(presence.envelope, presence.presence_index);
         }
-        let attachment_units = map
+        let attachment_units: BTreeMap<TypeId, SiteId> = map
             .attachments
             .iter()
             .map(|unit| (unit.unit, unit.sites[unit.semantic_index]))
@@ -162,7 +159,7 @@ impl TypeRoles {
         start_types.sort_unstable();
         start_types.dedup();
         Self {
-            pratt_exclusions: pratt_exclusions(lowered),
+            pratt_exclusions: pratt_exclusions(lowered, &attachment_units),
             content_tokens,
             fixed_sequences,
             presence_sites,
@@ -174,111 +171,34 @@ impl TypeRoles {
     }
 }
 
-/// Reads every `#[parse(pratt(exclude(...)))]` filter off the materialized fields and resolves
-/// it to the site it lowers to and the normalized declarations of the excluded LED variants.
-/// A name that is not a LED variant of the target is dropped here; the recursive-descent
-/// planner reports it.
+/// Reads every site's resolved `#[parse(pratt(exclude(...)))]` exclusion (materialization
+/// records it on the site the field lowers to, the outer site when fixed tokens are attached)
+/// as the restriction of the Pratt type the operand belongs to, which is the site's target or
+/// the semantic target of the attachment unit it targets.
 fn pratt_exclusions(
     lowered: &crate::materialization::LoweredGrammar,
+    attachment_units: &BTreeMap<TypeId, SiteId>,
 ) -> BTreeMap<SiteId, PrattRestriction> {
-    let map = &lowered.lowering_map;
-    let type_of_application: HashMap<_, _> = map
-        .applications
+    let grammar = &lowered.grammar;
+    grammar
+        .sites
         .iter()
-        .map(|correlation| (correlation.application, correlation.lowered))
-        .collect();
-    let application_of_type: HashMap<_, _> = map
-        .applications
-        .iter()
-        .map(|correlation| (correlation.lowered, correlation.application))
-        .collect();
-    let unit_semantic_site: HashMap<TypeId, SiteId> = map
-        .attachments
-        .iter()
-        .map(|unit| (unit.unit, unit.sites[unit.semantic_index]))
-        .collect();
-    let mut exclusions = BTreeMap::new();
-    for application in &lowered.applications {
-        for group in application.body.element_groups() {
-            for element in group.elements {
-                let MaterializedElement::SemanticField {
-                    field,
-                    projection:
-                        MaterializedSemanticFieldProjection::Direct {
-                            pratt_extensions: Some(filter),
-                            ..
-                        },
-                    ..
-                } = element
-                else {
-                    continue;
-                };
-                let Some(site) = map.fields.iter().find_map(|correlation| {
-                    match correlation.lowered {
-                        MaterializedFieldLowering::ParseSite(site)
-                            if correlation.application == application.id
-                                && correlation.field == *field =>
-                        {
-                            Some(site)
-                        }
-                        _ => None,
-                    }
-                }) else {
-                    continue;
-                };
-                let mut target = lowered.grammar.sites[site.index()].target;
-                if let Some(semantic) = unit_semantic_site.get(&target) {
-                    target = lowered.grammar.sites[semantic.index()].target;
-                }
-                let Some(target_application) = application_of_type.get(&target) else {
-                    continue;
-                };
-                let Some(MaterializedNodeBody::Pratt(variants)) = lowered
-                    .applications
-                    .iter()
-                    .find(|candidate| candidate.id == *target_application)
-                    .map(|candidate| &candidate.body)
-                else {
-                    continue;
-                };
-                debug_assert_eq!(type_of_application.get(target_application), Some(&target));
-                let mut excluded: Vec<DeclId> = filter
-                    .excluded
-                    .iter()
-                    .filter_map(|name| {
-                        variants.iter().find_map(|variant| match variant {
-                            MaterializedPrattVariant::Led(led) if led.common.name == *name => {
-                                Some(led.common.resolved_variant)
-                            }
-                            _ => None,
-                        })
-                    })
-                    .filter_map(|resolved| {
-                        map.variants
-                            .iter()
-                            .find(|correlation| {
-                                correlation.application == *target_application
-                                    && correlation.variant == resolved
-                            })
-                            .map(|correlation| correlation.lowered)
-                    })
-                    .collect();
-                excluded.sort_unstable();
-                excluded.dedup();
-                if !excluded.is_empty() {
-                    exclusions.insert(
-                        site,
-                        PrattRestriction {
-                            type_id: target,
-                            excluded,
-                            min_bp: 0,
-                        },
-                    );
-                }
-            }
-        }
-    }
-    exclusions
+        .enumerate()
+        .filter(|(_, site)| !site.pratt_excluded.is_empty())
+        .map(|(index, site)| {
+            let type_id = attachment_units
+                .get(&site.target)
+                .map_or(site.target, |semantic| grammar.sites[semantic.index()].target);
+            (
+                SiteId::new(index as u32),
+                PrattRestriction {
+                    type_id,
+                    excluded: site.pratt_excluded.clone(),
+                    min_bp: 0,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Lowers a normalized grammar to an LR grammar, or reports every text predicate (`RCA0403`)
@@ -666,7 +586,8 @@ struct OperandAttachment {
 struct OperandContext<'a> {
     /// The Pratt type of the rule.
     pratt: TypeId,
-    /// The excluded LED variants the rule's operands carry; empty outside an exclusion clone.
+    /// The excluded variants the rule's operands carry, of any position; empty outside an
+    /// exclusion clone.
     excluded: &'a [DeclId],
 }
 
@@ -1051,8 +972,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emits the rules of every clone created so far, including the clones those rules create:
-    /// every variant but the excluded ones and the LED variants below the minimum binding
-    /// power. A clone's rules compare their precedence with the tokens of the exclusion-level
+    /// every variant but the excluded ones, whatever their position, and the LED variants
+    /// below the minimum binding power. A clone's rules compare their precedence with the tokens of the exclusion-level
     /// nonterminal (the base type, or the clone without a minimum), which lists every operator.
     fn lower_clones(&mut self) {
         while let Some((restriction, lhs)) = self.pending_clones.pop_front() {

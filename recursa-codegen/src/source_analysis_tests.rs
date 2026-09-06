@@ -955,6 +955,65 @@ struct Root {
     }
 
     #[test]
+    fn an_excluded_atom_leaves_the_site_first_set_so_a_sibling_alternative_may_start_with_it() {
+        // gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr` with `DEFAULT` also
+        // an expression atom: the alternatives share `default` unless the first one's operand
+        // excludes the atom, and one token decides them.
+        let grammar = |exclusion: &str| {
+            format!(
+                r#"
+recursa::grammar! {{ module = crate, max_lookahead = 1 }}
+recursa::tokens! {{
+    keywords {{ DEFAULT => "default", AS => "as" }}
+    punctuation {{ PLUS => "+" }}
+}}
+#[derive(recursa::Node)]
+pub struct Name<'input> {{
+    #[lex(pattern = r"[a-z]+")]
+    pub text: NameText<'input>,
+}}
+#[derive(recursa::Node)]
+pub enum Namespace<'input> {{
+    Named {{
+        {exclusion}
+        uri: Box<Expr<'input>>,
+        #[tok(AS)]
+        label: Name<'input>,
+    }},
+    Default {{
+        #[tok(DEFAULT)]
+        uri: Box<Expr<'input>>,
+    }},
+}}
+#[derive(recursa::Node)]
+#[pratt]
+pub enum Expr<'input> {{
+    Name(Name<'input>),
+    #[tok(DEFAULT)]
+    Default,
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}}
+"#
+            )
+        };
+        let analyze = |source: String| {
+            let package = fixture(&source);
+            crate::source_analysis::analyze_source_tree(
+                crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+                &mut Vec::new(),
+            )
+            .map(|_| ())
+            .map_err(|error| error.report().canonical_rendering())
+        };
+        let without = analyze(grammar("")).expect_err("both alternatives start with `default`");
+        assert!(without.contains("Namespace"), "{without}");
+        analyze(grammar("#[parse(pratt(exclude(Default)))]"))
+            .unwrap_or_else(|report| panic!("the exclusion narrows the site's FIRST set:\n{report}"));
+    }
+
+    #[test]
     fn invalid_pratt_extension_filter_reports_source_analysis_diagnostic() {
         let package = fixture(
             r#"

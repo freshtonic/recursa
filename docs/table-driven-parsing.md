@@ -149,10 +149,13 @@ the Pratt parse. `#[parse(pratt(exclude(...)))]` on a field
 names a distinct language, so the lowering clones the expression
 nonterminal once per distinct exclusion set (`Expr[excl In]`, or
 `Expr[excl In, min 8]` with a minimum), the way gram.y has `a_expr`
-and `b_expr`; inside the clone the prefix, infix and postfix operands
-carry the exclusion (through a cloned fixed-token attachment when one
-wraps them) and an atom's operands keep the full language, as
-`b_expr: '(' a_expr ')'` does. A resolved conflict is recorded in the
+and `b_expr`; the clone drops the excluded rules whatever their position,
+an atom's (`Expr[excl Default]` before `DEFAULT`, the parenthesised query
+in a `c_expr` position) as well as an extender's, so its FIRST set is the
+narrowed one the recursive-descent site computes; inside the clone the
+prefix, infix and postfix operands carry the exclusion (through a cloned
+fixed-token attachment when one wraps them) and an atom's operands keep
+the full language, as `b_expr: '(' a_expr ')'` does. A resolved conflict is recorded in the
 automaton dump (`Conflict between rule N and token T resolved by
 precedence (shift)`), as in bison's `.output`, and is not a conflict.
 The Pratt loop, `select_pratt` and `RCA4102` do not exist

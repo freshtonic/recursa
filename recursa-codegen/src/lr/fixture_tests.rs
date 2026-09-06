@@ -7,7 +7,7 @@ use super::grammar::{
     Associativity, ElementValue, LrGrammar, NonterminalId, NonterminalOrigin, OptionalContent,
     RuleAction, RuleId, Symbol, TerminalId,
 };
-use super::lowering::{TypeRoles, lower};
+use super::lowering::{PrattRestriction, TypeRoles, lower};
 use super::precedence::BindingPowerPrecedence;
 use super::report::{automaton_dump, conflict_diagnostics};
 use super::LrAnalysis;
@@ -669,7 +669,6 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
     );
 }
 
-/// Lowers the container fixture grammar and builds its automaton.
 /// Lowers the Pratt shapes fixture (`tests/fixtures/generation/pratt-shapes`).
 fn pratt_shapes_fixture() -> (LoweredGrammar, LrGrammar) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -749,6 +748,51 @@ fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_va
 }
 
 #[test]
+fn an_exclusion_of_atoms_clones_the_pratt_nonterminal_without_them() {
+    let (lowered, grammar) = pratt_shapes_fixture();
+    let roles = TypeRoles::from_lowered(&lowered);
+    let expr = type_named(&lowered, "grammar::Expr");
+    let declaration = |name: &str| {
+        crate::DeclId::new(
+            lowered
+                .grammar
+                .declarations
+                .iter()
+                .position(|declaration| declaration.name == name)
+                .unwrap_or_else(|| panic!("{name} is declared")) as u32,
+        )
+    };
+    // The roles read the resolved exclusions off the sites: atoms, an extender, both.
+    let mut restrictions: Vec<&PrattRestriction> = roles.pratt_exclusions.values().collect();
+    restrictions.sort();
+    let mut index_elem = vec![declaration("grammar::Expr::Subquery"), declaration("grammar::Expr::And")];
+    index_elem.sort_unstable();
+    assert_eq!(
+        restrictions,
+        [
+            &PrattRestriction { type_id: expr, excluded: vec![declaration("grammar::Expr::Default")], min_bp: 0 },
+            &PrattRestriction { type_id: expr, excluded: index_elem, min_bp: 0 },
+        ]
+    );
+    // The clone drops the excluded atom's rule and keeps every other, extenders included; the
+    // `c_expr` clone drops the parenthesised query and `and`, and carries the exclusion into
+    // its operands.
+    let default = rules_of(&grammar, "grammar::Expr[excl Default]");
+    assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Name".to_owned()), "{default:?}");
+    assert!(!default.iter().any(|rule| rule.ends_with("-> DEFAULT")), "{default:?}");
+    assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Expr[excl Default] AND grammar::Expr[excl Default]".to_owned()), "{default:?}");
+    let full = rules_of(&grammar, "grammar::Expr");
+    assert_eq!(default.len(), full.len() - 1);
+    let index = rules_of(&grammar, "grammar::Expr[excl Subquery,And]");
+    assert_eq!(index.len(), full.len() - 2);
+    assert!(!index.iter().any(|rule| rule.contains(" AND ")), "{index:?}");
+    assert!(index.contains(&"grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]".to_owned()), "{index:?}");
+    let subquery = attachment_with_rule(&grammar, "LPAREN SELECT grammar::Expr RPAREN");
+    assert!(full.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)));
+    assert!(!index.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)), "{index:?}");
+}
+
+#[test]
 fn a_content_token_operator_lowers_before_the_operand_with_the_variant_binding_power() {
     let (_, grammar) = pratt_shapes_fixture();
     let expr = grammar.nonterminal_by_name("grammar::Expr").unwrap();
@@ -779,6 +823,7 @@ fn a_content_token_operator_lowers_before_the_operand_with_the_variant_binding_p
     assert!(automaton.conflicts().is_empty(), "{}", automaton_dump(&grammar, &automaton));
 }
 
+/// Lowers the container fixture grammar and builds its automaton.
 fn containers() -> (LoweredGrammar, LrGrammar, Automaton) {
     let lowered = lowered_containers();
     let roles = TypeRoles::from_lowered(&lowered);
