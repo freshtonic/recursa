@@ -3,17 +3,18 @@
 //! Bison-style automaton dump and conflict diagnostics.
 //!
 //! The dump is the human-readable half of the generated-code debug bundle: the rules, then every
-//! state with its shortest path, items, the conflicts precedence resolved, actions, rejected
-//! actions in brackets, and gotos, then a conflict summary. The diagnostics carry the same
-//! facts in the shape the build report needs: a code, a message, the shortest path to the
-//! state, the state's items, the competing actions, and notes such as `RCA0405`.
+//! state with its shortest path, items, the conflicts precedence or declaration order resolved,
+//! actions, rejected actions in brackets, and gotos, then a conflict summary and the helper
+//! copies the construction made. The diagnostics carry the same facts in the shape the build
+//! report needs: a code, a message, the shortest path to the state, the state's items, the
+//! competing actions, and notes such as `RCA0405`.
 
 use std::fmt::Write as _;
 
 use super::automaton::{
     Action, Automaton, Conflict, ConflictKind, MergeArtefactCheck, Resolution, State,
 };
-use super::grammar::{LrGrammar, RuleId, Symbol};
+use super::grammar::{LrGrammar, NonterminalOrigin, RuleId, Symbol};
 use super::paths::{SymbolPath, render_path, shortest_paths};
 
 /// Registered code of a shift/reduce conflict: a state where one lookahead can both be shifted
@@ -179,11 +180,48 @@ pub fn automaton_dump(grammar: &LrGrammar, automaton: &Automaton) -> String {
         render_state(&mut text, grammar, automaton, state, paths[state.id().index()].as_ref());
     }
     render_conflict_summary(&mut text, grammar, automaton);
+    render_end_marker_resolutions(&mut text, automaton);
+    render_helper_copies(&mut text, grammar);
     text
 }
 
-/// Renders one state: its shortest path, items, the conflicts precedence resolved, actions
-/// with rejected alternatives in brackets, then gotos.
+/// Renders how many reduce/reduce conflicts on the end marker declaration order settled.
+fn render_end_marker_resolutions(text: &mut String, automaton: &Automaton) {
+    let count = automaton.end_marker_resolutions().len();
+    if count > 0 {
+        let _ = writeln!(
+            text,
+            "{count} reduce/reduce conflicts on $end resolved by declaration order."
+        );
+    }
+}
+
+/// Renders the per-site helper copies the construction made, each with its original.
+fn render_helper_copies(text: &mut String, grammar: &LrGrammar) {
+    let copies: Vec<&super::grammar::Nonterminal> = grammar
+        .nonterminals()
+        .iter()
+        .filter(|nonterminal| matches!(nonterminal.origin, NonterminalOrigin::HelperCopy { .. }))
+        .collect();
+    if copies.is_empty() {
+        return;
+    }
+    text.push_str("\nHelper copies\n\n");
+    for copy in copies {
+        let NonterminalOrigin::HelperCopy { original } = copy.origin else {
+            unreachable!("only helper copies were kept");
+        };
+        let _ = writeln!(
+            text,
+            "{} copies {}",
+            copy.name,
+            grammar.nonterminal(original).name
+        );
+    }
+}
+
+/// Renders one state: its shortest path, items, the conflicts precedence or declaration order
+/// resolved, actions with rejected alternatives in brackets, then gotos.
 fn render_state(
     text: &mut String,
     grammar: &LrGrammar,
@@ -216,6 +254,26 @@ fn render_state(
             "    Conflict between rule {} and token {} resolved by precedence ({verdict}).",
             resolved.reduce.index(),
             grammar.terminal_name(resolved.lookahead)
+        );
+        wrote_resolved = true;
+    }
+    for resolution in automaton
+        .end_marker_resolutions()
+        .iter()
+        .filter(|resolution| resolution.state == state.id())
+    {
+        let rules: Vec<String> = resolution
+            .rules
+            .iter()
+            .map(|rule| rule.index().to_string())
+            .collect();
+        let (head, last) = rules.split_at(rules.len() - 1);
+        let _ = writeln!(
+            text,
+            "    Conflict between rules {} and {} resolved on $end by declaration order (reduce using rule {}).",
+            head.join(", "),
+            last[0],
+            resolution.chosen.index()
         );
         wrote_resolved = true;
     }

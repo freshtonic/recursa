@@ -14,11 +14,20 @@
 //! state's default reduction therefore prefers the reduce whose lookahead holds the end marker,
 //! so a root ends when the next token has no shift action, as the design's prefix acceptance
 //! requires.
+//!
+//! One start rule per grammar type puts the end marker in the FOLLOW of every nonterminal that
+//! can end some root. That never makes a shift/reduce conflict, because no rule shifts the end
+//! marker; it makes reduce/reduce conflicts on the end marker alone between rules that can each
+//! end a root, merged into one LALR(1) state by their shared LR(0) core. When every such rule is
+//! a token wrapper (`ColIdText -> IDENT .` beside `TypeFunctionNameText -> IDENT .`) and the
+//! competitors share no other lookahead, the construction takes the earliest-declared rule, as
+//! bison does, records an [`EndMarkerResolution`], and does not count a conflict; see
+//! [`EndMarkerResolution`] for why that is safe and where its limit is.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
-use super::grammar::{LrGrammar, NonterminalId, RuleId, Symbol, TerminalId};
+use super::grammar::{LrGrammar, NonterminalId, RuleAction, RuleId, Symbol, TerminalId};
 use crate::TypeId;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -103,6 +112,26 @@ impl TerminalSet {
     /// Reports whether the set holds a terminal.
     pub fn contains(&self, terminal: TerminalId) -> bool {
         self.words[terminal.index() / 64] & (1 << (terminal.index() % 64)) != 0
+    }
+
+    /// Removes one terminal.
+    pub fn remove(&mut self, terminal: TerminalId) {
+        debug_assert!(terminal.index() < self.width);
+        self.words[terminal.index() / 64] &= !(1 << (terminal.index() % 64));
+    }
+
+    /// Returns the terminals both sets hold.
+    pub fn intersection(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.width, other.width);
+        Self {
+            words: self
+                .words
+                .iter()
+                .zip(&other.words)
+                .map(|(left, right)| left & right)
+                .collect(),
+            width: self.width,
+        }
     }
 
     /// Reports whether the set is empty.
@@ -309,6 +338,32 @@ pub struct ResolvedConflict {
     pub resolution: Resolution,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One reduce/reduce conflict on the end marker between token-wrapper rules that declaration
+/// order settled (`docs/table-driven-parsing.md`, section 3). It is not a conflict: the tables
+/// carry the earliest-declared rule and the dump records the choice.
+///
+/// The rule applies when every competing reduction is a [`RuleAction::Token`] rule (an
+/// admission-set member or a content token, whose reduce yields the token just popped) and the
+/// competitors share no lookahead other than the end marker. The end marker is the lookahead
+/// only when the parse is ending: at the end of input, or at a token no continuation of either
+/// wrapper accepts, where every choice fails at that same token. So the choice decides only
+/// which wrapper a prefix parse yields when the input stops after the wrapper; the explicit
+/// action of every continuation terminal is untouched, so a root that continues past the wrapper
+/// still reduces the right one. The choice is exact for each root context in which the
+/// earliest-declared wrapper can end the parse, which is every root that recursive descent
+/// resolves to its first alternative; a root context that can end only in a later-declared
+/// wrapper reports an unexpected end where recursive descent accepts. That case is an LALR(1)
+/// merge artefact of the per-type start rules, and the remedy is declaration order.
+pub struct EndMarkerResolution {
+    /// The state in which the reductions competed.
+    pub state: StateId,
+    /// The competing token-wrapper rules in ascending order.
+    pub rules: Vec<RuleId>,
+    /// The earliest-declared rule, which the tables carry.
+    pub chosen: RuleId,
+}
+
 /// The precedence seam: [`BindingPowerPrecedence`](super::precedence::BindingPowerPrecedence)
 /// implements it over Pratt binding powers; [`NoPrecedence`] reports every conflict.
 pub trait ConflictResolver {
@@ -387,6 +442,9 @@ pub struct Automaton {
     conflicts: Vec<Conflict>,
     /// Shift/reduce conflicts the resolver settled, in ascending (state, lookahead, rule) order.
     resolved: Vec<ResolvedConflict>,
+    /// Reduce/reduce conflicts on the end marker that declaration order settled, in ascending
+    /// state order.
+    end_resolutions: Vec<EndMarkerResolution>,
     /// What the merge-artefact check did.
     merge_check: MergeArtefactCheck,
 }
@@ -409,6 +467,7 @@ impl Automaton {
         let mut states = Vec::with_capacity(lr0.states.len());
         let mut conflicts = Vec::new();
         let mut resolved = Vec::new();
+        let mut end_resolutions = Vec::new();
         for (index, built) in lr0.states.iter().enumerate() {
             let id = StateId::new(index as u32);
             let reductions: Vec<Reduction> = built
@@ -420,10 +479,11 @@ impl Automaton {
                     lookaheads: lookaheads[&(id, item.rule)].clone(),
                 })
                 .collect();
-            let (actions, state_conflicts, state_resolved) =
-                resolve_actions(grammar, resolver, id, built, &reductions);
-            conflicts.extend(state_conflicts);
-            resolved.extend(state_resolved);
+            let resolved_state = resolve_actions(grammar, resolver, id, built, &reductions);
+            conflicts.extend(resolved_state.conflicts);
+            resolved.extend(resolved_state.resolved);
+            end_resolutions.extend(resolved_state.end_resolutions);
+            let actions = resolved_state.actions;
             let default_reduction = choose_default_reduction(grammar, &actions);
             states.push(State {
                 id,
@@ -443,15 +503,24 @@ impl Automaton {
             .map(|(start, state)| (start.type_id, *state))
             .collect();
 
-        let merge_check = classify_merge_artefacts(grammar, &states, &mut conflicts, options);
-
-        Self {
+        let mut automaton = Self {
             states,
             start_states,
             conflicts,
             resolved,
-            merge_check,
-        }
+            end_resolutions,
+            merge_check: MergeArtefactCheck::Disabled,
+        };
+        automaton.classify_merge_artefacts(grammar, options);
+        automaton
+    }
+
+    /// Runs the merge-artefact check of `options` over the reduce/reduce conflicts, replacing
+    /// the previous outcome. [`build`](Self::build) runs it once; the helper-copy loop builds
+    /// its intermediate automata with the check disabled and runs it on the last one.
+    pub fn classify_merge_artefacts(&mut self, grammar: &LrGrammar, options: AutomatonOptions) {
+        self.merge_check =
+            classify_merge_artefacts(grammar, &self.states, &mut self.conflicts, options);
     }
 
     /// Returns the states in construction order.
@@ -476,6 +545,12 @@ impl Automaton {
     /// rule) order; none of them counts as a conflict.
     pub fn resolved_conflicts(&self) -> &[ResolvedConflict] {
         &self.resolved
+    }
+
+    /// Returns the reduce/reduce conflicts on the end marker that declaration order settled, in
+    /// ascending state order; none of them counts as a conflict.
+    pub fn end_marker_resolutions(&self) -> &[EndMarkerResolution] {
+        &self.end_resolutions
     }
 
     /// Returns the conflicts in ascending (state, lookahead) order.
@@ -771,14 +846,30 @@ fn digraph(relation: &[Vec<u32>], init: &[TerminalSet]) -> Vec<TerminalSet> {
     result
 }
 
+/// The actions of one state with what their resolution recorded.
+struct ResolvedActions {
+    /// The resolved action on every terminal that has one.
+    actions: BTreeMap<TerminalId, Action>,
+    /// The conflicts that stand, in ascending lookahead order.
+    conflicts: Vec<Conflict>,
+    /// The shift/reduce conflicts the resolver settled.
+    resolved: Vec<ResolvedConflict>,
+    /// The reduce/reduce conflict on the end marker that declaration order settled, if any.
+    end_resolutions: Vec<EndMarkerResolution>,
+}
+
 /// Resolves the actions of one state and records its conflicts and its resolved conflicts.
+///
+/// After the resolver has seen every shift/reduce pair, a reduce/reduce conflict on the end
+/// marker between token-wrapper rules that share no other lookahead is settled by declaration
+/// order; the earliest rule is already the action the bison default policy left in the table.
 fn resolve_actions(
     grammar: &LrGrammar,
     resolver: &dyn ConflictResolver,
     id: StateId,
     state: &Lr0State,
     reductions: &[Reduction],
-) -> (BTreeMap<TerminalId, Action>, Vec<Conflict>, Vec<ResolvedConflict>) {
+) -> ResolvedActions {
     let mut actions: BTreeMap<TerminalId, Action> = BTreeMap::new();
     for (symbol, target) in &state.transitions {
         if let Symbol::Terminal(terminal) = symbol {
@@ -858,7 +949,60 @@ fn resolve_actions(
         }
     }
     resolved.sort_by_key(|conflict| (conflict.lookahead, conflict.reduce));
-    (actions, conflicts.into_values().collect(), resolved)
+
+    let end = grammar.end_marker();
+    let mut end_resolutions = Vec::new();
+    let settled_by_declaration_order = conflicts.get(&end).is_some_and(|conflict| {
+        let ConflictKind::ReduceReduce { rules } = &conflict.kind else {
+            return false;
+        };
+        rules
+            .iter()
+            .all(|rule| matches!(grammar.rule(*rule).action, RuleAction::Token { .. }))
+            && shares_only_the_end_marker(reductions, rules, end)
+    });
+    if settled_by_declaration_order {
+        let conflict = conflicts.remove(&end).expect("the end-marker conflict was just seen");
+        let ConflictKind::ReduceReduce { mut rules } = conflict.kind else {
+            unreachable!("only a reduce/reduce conflict is settled by declaration order");
+        };
+        rules.sort_unstable();
+        let chosen = rules[0];
+        actions.insert(end, Action::Reduce(chosen));
+        end_resolutions.push(EndMarkerResolution {
+            state: id,
+            rules,
+            chosen,
+        });
+    }
+    ResolvedActions {
+        actions,
+        conflicts: conflicts.into_values().collect(),
+        resolved,
+        end_resolutions,
+    }
+}
+
+/// Reports whether the competing rules of one state share no lookahead other than the end
+/// marker, so that their conflict exists on the end marker alone.
+fn shares_only_the_end_marker(reductions: &[Reduction], rules: &[RuleId], end: TerminalId) -> bool {
+    let lookaheads = |rule: RuleId| {
+        &reductions
+            .iter()
+            .find(|reduction| reduction.rule == rule)
+            .expect("a competing rule is a reduction of its state")
+            .lookaheads
+    };
+    for (index, left) in rules.iter().enumerate() {
+        for right in &rules[index + 1..] {
+            let mut shared = lookaheads(*left).intersection(lookaheads(*right));
+            shared.remove(end);
+            if !shared.is_empty() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Chooses the default reduction: the reduce whose lookahead holds the end marker if any, else
