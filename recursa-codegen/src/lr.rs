@@ -41,9 +41,9 @@ pub use automaton::{
     NoPrecedence, ResolvedConflict, Resolution, State, StateId, TerminalSet,
 };
 pub use grammar::{
-    Associativity, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin, Rule, RuleAction,
-    RuleId, RulePrecedence, StartRule, Symbol, TerminalFilter, TerminalId,
-    UnrepresentableBindingPowers,
+    Associativity, ElementValue, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin,
+    OptionalContent, Rule, RuleAction, RuleId, RulePrecedence, SiteForm, StartRule, Symbol,
+    TerminalFilter, TerminalId, UnrepresentableBindingPowers,
 };
 pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
@@ -420,13 +420,12 @@ mod tests {
         let index_declaration =
             grammar.push_declaration(Declaration::new("Expr::Index", location));
         let unit = TypeId::new(grammar.types.len() as u32);
-        let mut sites = vec![
-            grammar.push_site(ParseSite::new(unit, open, index_declaration, ContainerShape::Direct)),
-            grammar.push_site(
-                ParseSite::new(unit, expr, index_declaration, ContainerShape::Direct)
-                    .with_min_bp(min_bp),
-            ),
-        ];
+        let operand_site = grammar.push_site(ParseSite::new(unit, open, index_declaration, ContainerShape::Direct));
+        let semantic_site = grammar.push_site(
+            ParseSite::new(unit, expr, index_declaration, ContainerShape::Direct)
+                .with_min_bp(min_bp),
+        );
+        let mut sites = vec![operand_site, semantic_site];
         if closing {
             sites.push(grammar.push_site(ParseSite::new(
                 unit,
@@ -455,7 +454,7 @@ mod tests {
             sites: vec![operand],
         });
         let mut roles = TypeRoles::default();
-        roles.attachment_units.insert(unit);
+        roles.attachment_units.insert(unit, semantic_site);
         (grammar, roles)
     }
 
