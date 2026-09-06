@@ -345,6 +345,10 @@ _Avoid_: Partial parse, incomplete AST
 A per-parse-site runtime composition fixed by analysis: static suffix FIRST, caller FOLLOW, or their union when the suffix is nullable.
 _Avoid_: Static type FOLLOW, emitter-derived FOLLOW
 
+**Pratt continuation**:
+The extenders of a Pratt type as the FOLLOW of a led variant's last non-recursive element and of every site that element reaches through nullable suffixes. Analysis reports the resulting overlap at the Pratt operand or nullable site where the generated parser consults the boundary, and never carries it into the type's own recursive operands, whose loops decide their extenders themselves.
+_Avoid_: Continuation FOLLOW propagation, per-operand re-report
+
 **Node view**:
 The concrete, visibility-matched occurrence view generated for a Node, pairing a semantic reference with its private provenance cursor while implementing Recursa's common view protocol.
 _Avoid_: AST wrapper, span block

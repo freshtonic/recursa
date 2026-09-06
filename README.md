@@ -126,6 +126,16 @@ is every identifier-capable keyword; at a Pratt site it therefore covers every
 extender of that site's type. It still fails with `RCA0302` when there is no
 overlap at all.
 
+Two facts shape what a Pratt site's overlap contains. A field that restricts
+the expression with `#[parse(pratt(exclude(...)))]` never selects the excluded
+extenders, so their starters are not part of its overlap, and an acceptance
+naming one of them is stale. And the last element of a Pratt led variant is
+followed by every extender of the expression, because the enclosing expression
+may continue after the variant; analysis reports that continuation at each
+Pratt operand the element reaches, as in `ESCAPE expr` inside `LIKE`, so the
+exact acceptance there names the extenders that the generated parser would
+otherwise report as `RCA4102`.
+
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a
 spanned value, rejects trailing input, and then extracts the semantic AST:

@@ -331,6 +331,11 @@ impl DiagnosticContext {
                     unreachable!("only Pratt led variants are extenders")
                 }
             },
+            ProvenanceStep::PrattContinuation { pratt, variant, .. } => format!(
+                "Pratt `{}` continues after the tail of `{}` with its extenders",
+                self.type_name(*pratt),
+                self.declaration_name(*variant),
+            ),
             ProvenanceStep::TextPredicate { predicate, .. } => {
                 let predicate = self.text_predicates.get(predicate.index()).map_or_else(
                     || "<missing predicate>".to_owned(),
@@ -11332,6 +11337,7 @@ fn detect_follow_conflicts(
         let active = active_extender_provenance(
             site.target,
             site.min_bp,
+            &site.pratt_excluded,
             grammar,
             semantic,
             first_provenance,
@@ -11369,7 +11375,210 @@ fn detect_follow_conflicts(
             ));
         }
     }
+    diagnostics.extend(detect_pratt_continuation_conflicts(
+        grammar,
+        semantic,
+        first_provenance,
+        static_conflict_kinds_by_declaration,
+        proofs,
+    ));
     aggregate_follow_diagnostics(diagnostics, grammar, proofs)
+}
+
+/// Diagnoses overlaps with the extenders that follow a Pratt led variant's tail.
+///
+/// The generated parser lets the owning loop continue after a led variant's last
+/// non-recursive element, so every extender of the Pratt type is a boundary for that
+/// element and for everything it reaches through nullable suffixes. Static FOLLOW does not
+/// carry that continuation, because carrying it would flow back into the Pratt type's own
+/// recursive operands, whose loops handle their active extenders themselves. This walk
+/// reports the continuation where the runtime consults it: at each Pratt operand site the
+/// tail reaches (`RCA0301`) and at each nullable site whose element may begin with an
+/// extender (`RCA0300`), and it stops at Pratt types instead of descending into them.
+fn detect_pratt_continuation_conflicts(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    static_conflict_kinds_by_declaration: &[KindSet],
+    proofs: &mut ProofArena,
+) -> Vec<Diagnostic> {
+    let reachable = reachable_types(grammar);
+    let mut diagnostics = Vec::new();
+    let mut pratt_types = (0..grammar.types.len())
+        .map(|index| TypeId::new(index as u32))
+        .filter(|type_id| {
+            reachable[type_id.index()]
+                && matches!(
+                    grammar.types[type_id.index()].shape,
+                    TypeShape::Pratt { .. }
+                )
+        })
+        .collect::<Vec<_>>();
+    pratt_types.sort_by_key(|type_id| {
+        declaration_source_key(grammar.types[type_id.index()].declaration, grammar)
+    });
+    for pratt in pratt_types {
+        let TypeShape::Pratt { variants } = &grammar.types[pratt.index()].shape else {
+            continue;
+        };
+        let mut led_variants = variants
+            .iter()
+            .filter(|variant| is_pratt_led(variant.position))
+            .collect::<Vec<_>>();
+        led_variants.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
+        let mut extenders = Vec::new();
+        for variant in &led_variants {
+            let first = pratt_extender_provenance(
+                pratt,
+                variant,
+                grammar,
+                semantic,
+                first_provenance,
+                proofs,
+            );
+            merge_provenanced_positions(&mut extenders, &first.positions, proofs);
+        }
+        if extenders.is_empty() {
+            continue;
+        }
+        for variant in led_variants {
+            let Some(last) = variant.sites.last().copied() else {
+                continue;
+            };
+            if grammar.sites[last.index()].target == pratt {
+                continue;
+            }
+            let continuation = wrap_follow_positions(
+                &extenders,
+                |_, _| ProvenanceStep::PrattContinuation {
+                    pratt,
+                    pratt_declaration: grammar.types[pratt.index()].declaration,
+                    variant: variant.declaration,
+                    site: last,
+                },
+                proofs,
+            );
+            let mut visited = Vec::new();
+            report_pratt_continuation_at_site(
+                last,
+                &continuation,
+                grammar,
+                semantic,
+                first_provenance,
+                static_conflict_kinds_by_declaration,
+                proofs,
+                &mut visited,
+                &mut diagnostics,
+            );
+        }
+    }
+    diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Reports one site's overlaps with a Pratt continuation and follows nullable suffixes.
+fn report_pratt_continuation_at_site(
+    site_id: SiteId,
+    continuation: &[ProvenancedPosition],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    static_conflict_kinds_by_declaration: &[KindSet],
+    proofs: &mut ProofArena,
+    visited: &mut Vec<TypeId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let site = &grammar.sites[site_id.index()];
+    let excluded = &static_conflict_kinds_by_declaration[site.declaration.index()];
+    if site_nullable(site, &semantic[site.target.index()])
+        && let Some(evidence) = overlap_evidence_excluding(
+            &first_provenance[site.target.index()],
+            continuation,
+            excluded,
+            grammar,
+            proofs,
+        )
+    {
+        let secondary_declaration =
+            follow_source_declaration(evidence.witness.right, site.declaration, proofs);
+        diagnostics.push(Diagnostic::conflict_warning(
+            DiagnosticCode::NullableFollowOverlap,
+            nullable_follow_message(site_id, &evidence.overlap, grammar),
+            declaration_label(
+                site.declaration,
+                grammar,
+                "this nullable use site can consume the witness kind",
+            ),
+            declaration_label(
+                secondary_declaration,
+                grammar,
+                "the same kind can follow this use site",
+            ),
+            evidence,
+            ConflictRemedy::ReviewNullableFollow { site: site_id },
+        ));
+    }
+    let target = &grammar.types[site.target.index()];
+    if matches!(target.shape, TypeShape::Pratt { .. }) {
+        let active = active_extender_provenance(
+            site.target,
+            site.min_bp,
+            &site.pratt_excluded,
+            grammar,
+            semantic,
+            first_provenance,
+            proofs,
+        );
+        if !active.is_empty()
+            && let Some(evidence) =
+                overlap_evidence_excluding(&active, continuation, excluded, grammar, proofs)
+        {
+            let secondary_declaration =
+                follow_source_declaration(evidence.witness.right, site.declaration, proofs);
+            diagnostics.push(Diagnostic::conflict_warning(
+                DiagnosticCode::PrattFollowOverlap,
+                pratt_follow_message(site_id, &evidence.overlap, grammar),
+                declaration_label(
+                    site.declaration,
+                    grammar,
+                    "this Pratt use site admits the witness extender",
+                ),
+                declaration_label(
+                    secondary_declaration,
+                    grammar,
+                    "the same kind can follow this Pratt use site",
+                ),
+                evidence,
+                ConflictRemedy::ReviewPrattFollow {
+                    site: site_id,
+                    min_bp: site.min_bp,
+                },
+            ));
+        }
+        return;
+    }
+    if visited.contains(&site.target) {
+        return;
+    }
+    visited.push(site.target);
+    for sites in site_sequences(&target.shape, grammar) {
+        for (index, inner) in sites.iter().copied().enumerate() {
+            if !first_for_sites(&sites[index + 1..], grammar, semantic).nullable {
+                continue;
+            }
+            report_pratt_continuation_at_site(
+                inner,
+                continuation,
+                grammar,
+                semantic,
+                first_provenance,
+                static_conflict_kinds_by_declaration,
+                proofs,
+                visited,
+                diagnostics,
+            );
+        }
+    }
 }
 
 /// Reports whether exact bounded optional viability resolves this static FOLLOW overlap.
@@ -11510,6 +11719,16 @@ fn aggregate_follow_diagnostics(
             {
                 existing_conflict.witness = incoming.witness;
             }
+            // The message names the overlap and the acceptance that retires it, so it
+            // must describe the union that the acceptance has to match kind for kind.
+            let overlap = existing_conflict.overlap.clone();
+            existing.message = match existing.code {
+                DiagnosticCode::PrattFollowOverlap => pratt_follow_message(site, &overlap, grammar),
+                DiagnosticCode::NullableFollowOverlap => {
+                    nullable_follow_message(site, &overlap, grammar)
+                }
+                _ => unreachable!("FOLLOW diagnostics are Pratt or nullable overlaps"),
+            };
         } else {
             aggregated.push(diagnostic);
         }
@@ -11531,10 +11750,16 @@ fn follow_source_declaration(
         .unwrap_or(site_declaration)
 }
 
-/// Derives the active extender provenance from normalized grammar structure and previously established semantic facts.
+/// Derives the extenders a Pratt operand site's loop can select, with their provenance.
+///
+/// Active means a led variant whose left binding power reaches `min_bp` and that the site
+/// does not exclude with `#[parse(pratt(exclude(...)))]`: the generated loop breaks on an
+/// excluded variant before it consults the caller-FOLLOW boundary, so an excluded starter
+/// is never a run-time ambiguity at the site.
 fn active_extender_provenance(
     type_id: TypeId,
     min_bp: u8,
+    excluded: &[crate::DeclId],
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     first_provenance: &[Vec<ProvenancedPosition>],
@@ -11545,6 +11770,7 @@ fn active_extender_provenance(
     };
     let mut variants = variants
         .iter()
+        .filter(|variant| !excluded.contains(&variant.declaration))
         .filter(|variant| match variant.position {
             PrattPosition::Infix { lbp, .. } => lbp >= min_bp,
             PrattPosition::Postfix { bp } => bp >= min_bp,

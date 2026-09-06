@@ -598,8 +598,19 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     } else {
         target.name.clone()
     };
+    let excluded = if site.pratt_excluded.is_empty() {
+        String::new()
+    } else {
+        let mut names = site
+            .pratt_excluded
+            .iter()
+            .map(|declaration| grammar.declarations[declaration.index()].name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        format!(" excluded={}", names.join(","))
+    };
     format!(
-        "{}:{} target={} cardinality={} separator={} min_bp={}",
+        "{}:{} target={} cardinality={} separator={} min_bp={}{excluded}",
         projected_site_name(site_id, lowered),
         projected_owner_name(site.owner, lowered),
         target_name,

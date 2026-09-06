@@ -1405,6 +1405,14 @@ fn collect_follow_expected_set(follow: &PlannedFollow, values: &mut BTreeSet<Exp
         PlannedFollow::Caller => {}
         PlannedFollow::Accepting { inner, accepted } => {
             collect_follow_expected_set(inner, values);
+            if matches!(**inner, PlannedFollow::Caller) {
+                // A caller-only FOLLOW is marked by unioning it with the empty set, which
+                // `render_follow_value` reads from the pool like every other expectation.
+                values.insert(ExpectedSet {
+                    words: vec![0; accepted.words.len()],
+                    atoms: Vec::new(),
+                });
+            }
             values.insert(accepted.clone());
         }
         PlannedFollow::Static(expected)
