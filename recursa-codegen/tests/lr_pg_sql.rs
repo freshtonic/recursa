@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use recursa_codegen::lr::{AutomatonOptions, ConflictKind, LrAnalysis, PACT_NINF};
+use recursa_codegen::lr::{AutomatonOptions, ConflictKind, LrAnalysis, NonterminalOrigin, PACT_NINF};
 
 /// Where the pg-sql checkout lives: `PG_SQL_MANIFEST_DIR`, else the sibling `pg-sql` directory.
 fn pg_sql_manifest_dir() -> PathBuf {
@@ -57,6 +57,15 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
                 automaton.states().len(),
                 automaton.merge_check(),
                 started.elapsed()
+            );
+            let helper_copies = grammar
+                .nonterminals()
+                .iter()
+                .filter(|nonterminal| matches!(nonterminal.origin, NonterminalOrigin::HelperCopy { .. }))
+                .count();
+            println!(
+                "helper copies: {helper_copies}; reduce/reduce conflicts on $end resolved by declaration order: {}",
+                automaton.end_marker_resolutions().len()
             );
             let encoded = tables.encode();
             println!(

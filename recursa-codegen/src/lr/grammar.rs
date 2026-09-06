@@ -740,34 +740,6 @@ impl LrGrammar {
         }
     }
 
-    /// Inserts rules directly before the start rules, which stay the last rules of the grammar,
-    /// and returns the identities of the inserted rules in order.
-    ///
-    /// The helper-copy pass uses it after the start rules exist, so that a copy's rules sit with
-    /// the other helper rules and the start rules keep ending the numbering. The start rules
-    /// move up by the number inserted; nothing holds a rule identity across the call, because
-    /// the automaton is rebuilt from the result.
-    pub fn insert_rules_before_starts(&mut self, rules: Vec<Rule>) -> Vec<RuleId> {
-        let first_start = self.rules.len() - self.starts.len();
-        debug_assert!(
-            self.starts
-                .iter()
-                .enumerate()
-                .all(|(index, start)| start.rule.index() == first_start + index),
-            "start rules are the last rules of the grammar, in order"
-        );
-        let starts: Vec<Rule> = self.rules.drain(first_start..).collect();
-        for group in &mut self.rules_by_lhs {
-            group.retain(|rule| rule.index() < first_start);
-        }
-        let inserted: Vec<RuleId> = rules.into_iter().map(|rule| self.add_rule(rule)).collect();
-        let moved: Vec<RuleId> = starts.into_iter().map(|rule| self.add_rule(rule)).collect();
-        for (start, rule) in self.starts.iter_mut().zip(moved) {
-            start.rule = rule;
-        }
-        inserted
-    }
-
     /// Adds the synthetic start nonterminal and rule `S'(type) -> target` for one grammar type.
     pub fn add_start(&mut self, type_id: TypeId, target: NonterminalId) -> RuleId {
         let name = format!("$accept({})", self.nonterminal(target).name);
@@ -907,6 +879,45 @@ impl TextbookGrammar {
                 variant: None,
                 sites,
             },
+            fold: RuleFold::through(),
+            tail: TailDecision::Keep,
+        })
+    }
+
+    /// Adds `lhs -> rhs` as a rule of a helper nonterminal, creating `lhs` as a helper on first
+    /// use, the way the lowering records `opt(...)` and `list(...)`; the action is a placeholder,
+    /// because textbook grammars never reduce a value. Declare a helper's rules before the rules
+    /// that use it, because [`rule`](Self::rule) creates an unknown symbol as a grammar type.
+    pub fn helper_rule(&mut self, lhs: &str, rhs: &str) -> RuleId {
+        let lhs = match self.grammar.nonterminal_by_name(lhs) {
+            Some(id) => {
+                assert_eq!(
+                    self.grammar.nonterminal(id).origin,
+                    NonterminalOrigin::Helper,
+                    "`{lhs}` was created as a grammar type; declare helper rules first"
+                );
+                id
+            }
+            None => self
+                .grammar
+                .add_nonterminal(lhs, NonterminalOrigin::Helper, true),
+        };
+        let mut symbols = Vec::new();
+        let mut value_pops = 0;
+        for name in rhs.split_whitespace() {
+            if let Some(terminal) = self.terminals.get(name) {
+                symbols.push(Symbol::Terminal(*terminal));
+            } else {
+                symbols.push(Symbol::Nonterminal(self.nonterminal(name)));
+                value_pops += 1;
+            }
+        }
+        self.grammar.add_rule(Rule {
+            lhs,
+            rhs: symbols,
+            value_pops,
+            precedence: None,
+            action: RuleAction::ListTrailing,
             fold: RuleFold::through(),
             tail: TailDecision::Keep,
         })

@@ -12,12 +12,16 @@
 //! `table_driven` style (`generation::table_driven`). Shift/reduce conflicts between Pratt rules
 //! and operator tokens are settled by
 //! [`BindingPowerPrecedence`](crate::lr::precedence::BindingPowerPrecedence) through the
-//! [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam.
+//! [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam. A shared helper whose
+//! merged lookaheads make a reduce/reduce conflict is copied per use-site class and the
+//! automaton rebuilt ([`helpers`](crate::lr::helpers)).
 
 /// LR(0) item sets, DeRemer–Pennello lookaheads and conflict detection.
 pub mod automaton;
 /// The LR grammar model the lowering produces and the automaton consumes.
 pub mod grammar;
+/// Per-site copies of shared helper nonterminals.
+pub mod helpers;
 /// Lookahead-filter substitution over lowered rules.
 pub mod lookahead;
 /// Lowering from the normalized grammar to LR rules.
@@ -46,6 +50,7 @@ pub use grammar::{
     OptionalContent, Rule, RuleAction, RuleId, RulePrecedence, SiteForm, StartRule, Symbol,
     TerminalFilter, TerminalId, UnrepresentableBindingPowers,
 };
+pub use helpers::{CopiedBuild, HelperCopy, HelperSite, HelperSplit, build_with_helper_copies};
 pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
 pub use precedence::BindingPowerPrecedence;
@@ -110,8 +115,9 @@ impl LrAnalysis {
         }
         let roles = TypeRoles::from_lowered(lowered);
         let grammar = lower(&lowered.grammar, &roles)?;
-        let precedence = BindingPowerPrecedence::new(&grammar)?;
-        let automaton = Automaton::build(&grammar, &precedence, options);
+        let CopiedBuild {
+            grammar, automaton, ..
+        } = build_with_helper_copies(grammar, BindingPowerPrecedence::new, options)?;
         let tables = LrTables::pack(&grammar, &automaton);
         let diagnostics = conflict_diagnostics(&grammar, &automaton);
         Ok(Self {
