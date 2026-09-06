@@ -1,8 +1,10 @@
-//! End-to-end proof of the lookahead filter (#116): the `NOT BETWEEN` fixture generates and
-//! runs under `parser_style = table_driven` with its `lookahead` declaration, and everything its
-//! consumer observes equals what the recursive-descent twin produces, with and without the
-//! declaration. The declaration is inert under recursive descent down to the generated node
-//! sources, which are byte-identical; only the root differs, by the merged `TokenKind` variant.
+//! End-to-end proof of the lookahead filter (#116): the `NOT BETWEEN` fixture generates with
+//! `parsers(rd = recursive_descent, lr = table_driven)` (#119) and its `lookahead` declaration,
+//! and everything the `lr` parser's consumer observes equals what the `rd` parser of the same
+//! generation produces. A generation with the recursive-descent parser alone prints what `rd`
+//! printed, with and without the declaration. The declaration is inert under recursive descent
+//! down to the generated node sources, which are byte-identical; only the root differs, by the
+//! merged `TokenKind` variant.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,20 +15,23 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/lookahead";
 
-/// The line of the fixture grammar the test flips to obtain the recursive-descent twin.
-const TABLE_DRIVEN: &str = "parser_style = table_driven,";
+/// The configuration of the fixture grammar as written, replaced to generate the
+/// recursive-descent parser alone.
+const NAMED_PARSERS: &str = "parsers(rd = recursive_descent, lr = table_driven),";
 
 /// The fixture's `lookahead` declaration, removed to obtain the undeclared twin.
 const LOOKAHEAD: &str = "    lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }\n";
 
 #[test]
-fn the_lookahead_fixture_parses_like_its_recursive_descent_twin_with_and_without_the_filter() {
+fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filter() {
     let package = scaffold_fixture();
 
-    let table_driven = run_fixture(&package);
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("lookahead-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("lookahead-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 
     let table_files = read_selected_generation(&package);
     let table_root = &table_files["root.rs"];
@@ -52,17 +57,22 @@ fn the_lookahead_fixture_parses_like_its_recursive_descent_twin_with_and_without
     assert!(table_stdout.contains("err \"a not between;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 13, end: 14 } found=Some(\"fixed:;\") cursor=0 leaked=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("err \"a not between 1 and 2\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 21, end: 21 } found=None cursor=0 leaked=0\n"), "{table_stdout}");
 
-    // The twin: the same grammar under recursive descent prints the same lines.
+    // The recursive-descent parser alone prints what `rd` printed beside `lr`.
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
+    assert_eq!(source.matches(NAMED_PARSERS).count(), 1);
     assert_eq!(source.matches(LOOKAHEAD).count(), 1);
-    let recursive_source = source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,");
-    fs::write(&grammar, &recursive_source).expect("flip the fixture to recursive descent");
+    let recursive_source = source.replace(NAMED_PARSERS, "parser_style = recursive_descent,");
+    fs::write(&grammar, &recursive_source).expect("keep the recursive-descent parser alone");
+    let driver = package.path().join("src/main.rs");
+    let driver_source = fs::read_to_string(&driver).expect("read scaffolded driver");
+    fs::write(&driver, remove_fence(&driver_source, "    // lr-parser-start", "    // lr-parser-end\n"))
+        .expect("remove the lr pass, which names a parser that no longer exists");
     let recursive = run_fixture(&package);
     assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
+    let (alone_stdout, absent) = split_by_parser(&String::from_utf8(recursive.stdout).unwrap());
+    assert!(absent.is_empty());
+    assert_eq!(alone_stdout, recursive_stdout, "a second parser changes nothing the default parser prints");
     let recursive_files = read_selected_generation(&package);
     let recursive_root = &recursive_files["root.rs"];
     assert!(recursive_root.contains("RecursiveDescent") && !recursive_root.contains("__recursa_lr"));
@@ -72,20 +82,15 @@ fn the_lookahead_fixture_parses_like_its_recursive_descent_twin_with_and_without
     // line and no generated node source; only the root loses the merged kind.
     fs::write(&grammar, recursive_source.replace(LOOKAHEAD, ""))
         .expect("remove the lookahead declaration");
-    let driver = package.path().join("src/main.rs");
     let driver_source = fs::read_to_string(&driver).expect("read scaffolded driver");
-    let start = driver_source
-        .find("    // merged-kind-evidence-start")
-        .expect("the driver fences its merged-kind evidence");
-    let end = driver_source
-        .find("    // merged-kind-evidence-end\n")
-        .map(|end| end + "    // merged-kind-evidence-end\n".len())
-        .expect("the driver fences its merged-kind evidence");
-    fs::write(&driver, format!("{}{}", &driver_source[..start], &driver_source[end..]))
-        .expect("remove the merged-kind evidence, which names a kind that no longer exists");
+    fs::write(
+        &driver,
+        remove_fence(&driver_source, "    // merged-kind-evidence-start", "    // merged-kind-evidence-end\n"),
+    )
+    .expect("remove the merged-kind evidence, which names a kind that no longer exists");
     let undeclared = run_fixture(&package);
     assert_success(&undeclared);
-    let undeclared_stdout = String::from_utf8(undeclared.stdout).unwrap();
+    let (undeclared_stdout, _) = split_by_parser(&String::from_utf8(undeclared.stdout).unwrap());
     let merged_lines = |stdout: &str| {
         stdout
             .lines()
@@ -118,6 +123,35 @@ fn the_lookahead_fixture_parses_like_its_recursive_descent_twin_with_and_without
     let undeclared_root = &undeclared_files["root.rs"];
     assert!(!undeclared_root.contains("NOT_LA"));
     assert_ne!(recursive_root, undeclared_root);
+}
+
+/// Removes one fenced block of the driver, from the line holding `start` through `end`.
+fn remove_fence(source: &str, start: &str, end: &str) -> String {
+    let start = source
+        .find(start)
+        .unwrap_or_else(|| panic!("the driver fences {start}"));
+    let end = source
+        .find(end)
+        .map(|position| position + end.len())
+        .unwrap_or_else(|| panic!("the driver fences {end}"));
+    format!("{}{}", &source[..start], &source[end..])
+}
+
+/// Splits the fixture's output into the lines of the two parsers, each without its tag and
+/// terminated by a newline so that the assertions can match whole lines.
+fn split_by_parser(stdout: &str) -> (String, String) {
+    let mut rd = String::new();
+    let mut lr = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("rd ") {
+            rd.push_str(rest);
+            rd.push('\n');
+        } else if let Some(rest) = line.strip_prefix("lr ") {
+            lr.push_str(rest);
+            lr.push('\n');
+        }
+    }
+    (rd, lr)
 }
 
 fn scaffold_fixture() -> TempDir {

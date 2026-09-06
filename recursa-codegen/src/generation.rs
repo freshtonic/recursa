@@ -64,6 +64,7 @@ mod explorer;
 mod generated_output;
 mod lexing;
 mod node_views;
+mod parsers;
 mod parsing;
 mod pretty;
 mod protocol;
@@ -83,6 +84,7 @@ use generated_output::*;
 use lexing::*;
 use table_driven::*;
 use node_views::*;
+use parsers::*;
 use parsing::*;
 use pretty::*;
 use protocol::*;
@@ -234,28 +236,20 @@ pub(crate) fn generate_with(
 
 /// Selects the renderer for the plan's declared parsers.
 ///
-/// This is the one point where a parser style chooses its rendering. The
-/// single implicit or explicit recursive-descent parser renders through
-/// [`render`]; a single `table_driven` parser renders through
-/// [`render_table_driven`], which runs the LALR(1) analysis over the lowered
-/// grammar and fails on any conflict. Extra named parsers are refused: each
-/// needs its own parser marker to satisfy trait coherence, and only the two
-/// style markers exist, so one generation emits exactly one parser per type
-/// today (#116).
+/// This is the one point where the declared parsers choose their rendering.
+/// The single implicit or explicit recursive-descent parser renders through
+/// [`render`], byte for byte as before parser styles existed. Any other
+/// declaration, a `table_driven` style or named parsers, renders through
+/// [`render_declared`], which runs the LALR(1) analysis over the lowered
+/// grammar for a table-driven parser and fails on any conflict.
 fn render_by_parser_style(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<RenderedGeneration, String> {
-    let parsers = &plan.emission_plan().parsers;
-    if parsers.iter().count() > 1 {
-        return Err(
-            "named parser rendering not implemented yet: only the default parser renders"
-                .to_string(),
-        );
-    }
-    match parsers.default_parser().style {
-        ParserStyle::RecursiveDescent => render(plan),
-        ParserStyle::TableDriven => render_table_driven(plan, lowered),
+    if plan.emission_plan().parsers.is_implicit_default() {
+        render(plan)
+    } else {
+        render_declared(plan, lowered)
     }
 }
 

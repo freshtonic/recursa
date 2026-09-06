@@ -1,7 +1,8 @@
 //! End-to-end proof of the table-driven container lowering (#114): the container fixture
-//! grammar generates and runs under `parser_style = table_driven`, every positive input parses
-//! to the value its recursive-descent twin produces, and every failing input restores the
-//! cursor and drops its partial values.
+//! grammar generates once with `parsers(rd = recursive_descent, lr = table_driven)` (#119),
+//! every positive input parses through the `lr` parser to the value the `rd` parser of the same
+//! generation produces, and every failing input restores the cursor and drops its partial
+//! values.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,20 +12,18 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/table-driven-containers";
 
-/// The line of the fixture grammar the test flips to obtain the recursive-descent twin.
-const TABLE_DRIVEN: &str = "parser_style = table_driven,";
-
 #[test]
-fn every_container_shape_parses_like_its_recursive_descent_twin() {
+fn every_container_shape_parses_like_the_recursive_descent_parser_of_the_same_generation() {
     let package = scaffold_fixture();
 
-    let table_driven = run_fixture(&package);
-    assert_success(&table_driven);
-    let table_stdout = String::from_utf8(table_driven.stdout).unwrap();
-    assert!(table_stdout.ends_with("table-driven-containers-ok\n"), "{table_stdout}");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("table-driven-containers-ok\n"), "{stdout}");
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
     assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(!root.contains("RecursiveDescent"), "a table-driven generation emits no recursive-descent parser");
+    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
 
     // Spot checks on the shapes the value stack must build correctly.
     assert!(
@@ -57,7 +56,7 @@ fn every_container_shape_parses_like_its_recursive_descent_twin() {
         "{table_stdout}"
     );
 
-    // The twin: the same grammar under recursive descent prints the same lines.
+    // The recursive-descent parser of the same generation prints the same lines.
     // Provenance (#118): erased groups, presences and envelopes, repetitions with their
     // separators, attachments and helper-lowered optionals all fold to recursive descent's
     // occurrence tree, which the twin comparison below holds to byte equality.
@@ -69,17 +68,7 @@ fn every_container_shape_parses_like_its_recursive_descent_twin() {
     assert!(table_stdout.contains("trailing Param \"x y\" => ok Param { mode: None, name: Name { text: __RecursaContentToken1 { text: ContentText(\"x\"), kind: NameText } } } cursor=1 eof=false\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing Value \"(1) x\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 5 }"), "{table_stdout}");
 
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);
-    fs::write(&grammar, source.replace(TABLE_DRIVEN, "parser_style = recursive_descent,"))
-        .expect("flip the fixture to recursive descent");
-    let recursive = run_fixture(&package);
-    assert_success(&recursive);
-    let recursive_stdout = String::from_utf8(recursive.stdout).unwrap();
-    assert_eq!(table_stdout, recursive_stdout, "the two parser styles must agree on every line");
-    let root = read_selected_root(&package);
-    assert!(root.contains("RecursiveDescent") && !root.contains("__recursa_lr"));
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -180,6 +169,23 @@ fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// Splits the fixture's output into the lines of the two parsers, each without its tag and
+/// terminated by a newline so that the assertions can match whole lines.
+fn split_by_parser(stdout: &str) -> (String, String) {
+    let mut rd = String::new();
+    let mut lr = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("rd ") {
+            rd.push_str(rest);
+            rd.push('\n');
+        } else if let Some(rest) = line.strip_prefix("lr ") {
+            lr.push_str(rest);
+            lr.push('\n');
+        }
+    }
+    (rd, lr)
 }
 
 fn assert_success(output: &Output) {
