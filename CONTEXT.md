@@ -270,7 +270,7 @@ One of several parsers a single generation emits over one grammar, each with its
 _Avoid_: Second grammar invocation, parser_name macro argument
 
 **Lookahead filter**:
-A token-grammar declaration that a fixed token immediately followed by a member of a closed trigger set is a distinct merged token kind. Only a table-driven parser's token feed produces it, and lowering substitutes it into rules at every position where the trigger can follow.
+A token-grammar declaration that a fixed token immediately followed by a member of a closed trigger set is a distinct merged token kind. Only a table-driven parser's token feed produces it, and lowering substitutes it into rules at every position where only a trigger can follow, and twins the rule where a trigger and a non-trigger can both follow.
 _Avoid_: Multi-token lookahead, scanner mode, lexer callback
 
 **Reduce action**:
