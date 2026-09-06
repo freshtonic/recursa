@@ -62,12 +62,15 @@ pub fn expected_set<A>(
     let stack = replay(context, decoded, site);
     let atoms = tables.expected_atoms();
     let end_marker = tables.end_marker();
+    let next = context
+        .record(site.failing + 1)
+        .map(|record| u32::from(record.kind));
     let kind_count = context.grammar().kind_count();
     let mut words = vec![0_u64; kind_count.div_ceil(64)];
     let mut expected = Vec::new();
     let mut scratch = Scratch::over(&stack);
     for terminal in 0..=end_marker {
-        if terminal == end_marker || !scratch.continues(decoded, terminal, &site) {
+        if terminal == end_marker || !scratch.continues(decoded, terminal, next, &site) {
             continue;
         }
         let index = terminal as usize;
@@ -88,11 +91,17 @@ pub fn expected_set<A>(
 /// Every token before `site.failing` was shifted by the real parse, so the replay never meets
 /// an error or the accept rule before the failing cursor; both arms return the stack anyway
 /// rather than panic, since the caller is already reporting an error.
-fn replay<A>(context: &ParseContext<'_, '_, A>, decoded: &DecodedTables, site: ErrorSite) -> Vec<u32> {
+fn replay<A>(
+    context: &ParseContext<'_, '_, A>,
+    decoded: &DecodedTables,
+    site: ErrorSite,
+) -> Vec<u32> {
     let mut stack = vec![site.start_state];
     let mut cursor = site.origin;
     loop {
-        let state = *stack.last().expect("the replayed stack keeps the start state");
+        let state = *stack
+            .last()
+            .expect("the replayed stack keeps the start state");
         let action = if decoded.acts_by_default(state) {
             decoded.default_action(state)
         } else {
@@ -102,7 +111,8 @@ fn replay<A>(context: &ParseContext<'_, '_, A>, decoded: &DecodedTables, site: E
             let record = context
                 .record(cursor)
                 .expect("every token before the failing one was shifted, so it is a lexed record");
-            decoded.action(state, u32::from(record.kind))
+            let next = context.record(cursor + 1).map(|next| u32::from(next.kind));
+            decoded.filtered_action(state, u32::from(record.kind), next)
         };
         match action {
             TableAction::Shift(target) => {
@@ -120,7 +130,9 @@ fn replay<A>(context: &ParseContext<'_, '_, A>, decoded: &DecodedTables, site: E
 fn reduce(decoded: &DecodedTables, stack: &mut Vec<u32>, rule: u32) {
     let kept = stack.len() - decoded.r2[rule as usize] as usize;
     stack.truncate(kept);
-    let top = *stack.last().expect("a reduction never pops the start state");
+    let top = *stack
+        .last()
+        .expect("a reduction never pops the start state");
     stack.push(decoded.goto(top, decoded.r1[rule as usize]));
 }
 
@@ -147,11 +159,17 @@ impl<'base> Scratch<'base> {
 
     /// Reports whether `terminal` can continue the parse from the base stack: it is shifted, or
     /// accepted when the site counts acceptance, after some reductions, rather than rejected.
-    fn continues(&mut self, decoded: &DecodedTables, terminal: u32, site: &ErrorSite) -> bool {
+    fn continues(
+        &mut self,
+        decoded: &DecodedTables,
+        terminal: u32,
+        next: Option<u32>,
+        site: &ErrorSite,
+    ) -> bool {
         self.base_len = self.base.len();
         self.top.clear();
         for _ in 0..EXPLORATION_BUDGET {
-            match decoded.action(self.state(), terminal) {
+            match decoded.filtered_action(self.state(), terminal, next) {
                 TableAction::Shift(_) => return true,
                 TableAction::Reduce(rule) if rule == site.accept_rule => return site.accepts,
                 TableAction::Reduce(rule) => {
@@ -178,7 +196,10 @@ impl<'base> Scratch<'base> {
         let from_top = count.min(self.top.len());
         self.top.truncate(self.top.len() - from_top);
         let from_base = count - from_top;
-        debug_assert!(from_base < self.base_len, "a reduction never pops the start state");
+        debug_assert!(
+            from_base < self.base_len,
+            "a reduction never pops the start state"
+        );
         self.base_len -= from_base;
     }
 }

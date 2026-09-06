@@ -164,7 +164,10 @@ fn site_classes(
     }
     let mut classes: BTreeMap<usize, Vec<HelperSite>> = BTreeMap::new();
     for (index, site) in sites.iter().enumerate() {
-        classes.entry(root(&mut parent, index)).or_default().push(*site);
+        classes
+            .entry(root(&mut parent, index))
+            .or_default()
+            .push(*site);
     }
     classes.into_values().collect()
 }
@@ -172,7 +175,12 @@ fn site_classes(
 /// Names a copy after the first site of its class: `helper@lhs`, or `helper@lhs#k` when the
 /// left-hand side uses the helper at several sites (`k` counts them in rule order), made unique
 /// with a trailing `@n` if the grammar already has the name.
-fn copy_name(grammar: &LrGrammar, helper: NonterminalId, sites: &[HelperSite], first: HelperSite) -> String {
+fn copy_name(
+    grammar: &LrGrammar,
+    helper: NonterminalId,
+    sites: &[HelperSite],
+    first: HelperSite,
+) -> String {
     let lhs = grammar.rule(first.rule).lhs;
     let under_lhs: Vec<&HelperSite> = sites
         .iter()

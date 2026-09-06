@@ -62,9 +62,24 @@ fn both_parsers_agree_on_every_input_but_the_documented_wrapper_limit() {
     let rd_lines = comparable_lines(&rd_stdout, "rd-ok");
     let lr_lines = comparable_lines(&lr_stdout, "lr-ok");
     assert_eq!(lr_lines, rd_lines);
-    assert!(rd_lines.iter().any(|line| line.starts_with("prov Statement \"a 1 c\" => captured")), "{rd_lines:?}");
-    assert!(rd_lines.iter().any(|line| line.starts_with("err Statement \"a 1\" => code=RCA4101 kind=UnexpectedEof")), "{rd_lines:?}");
-    assert!(rd_lines.iter().any(|line| line.starts_with("err Statement \"b 1 x\" => ")), "{rd_lines:?}");
+    assert!(
+        rd_lines
+            .iter()
+            .any(|line| line.starts_with("prov Statement \"a 1 c\" => captured")),
+        "{rd_lines:?}"
+    );
+    assert!(
+        rd_lines.iter().any(
+            |line| line.starts_with("err Statement \"a 1\" => code=RCA4101 kind=UnexpectedEof")
+        ),
+        "{rd_lines:?}"
+    );
+    assert!(
+        rd_lines
+            .iter()
+            .any(|line| line.starts_with("err Statement \"b 1 x\" => ")),
+        "{rd_lines:?}"
+    );
 }
 
 /// Every printed line except the parser's own final marker and the documented `FuncName`

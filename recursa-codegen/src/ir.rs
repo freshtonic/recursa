@@ -54,6 +54,48 @@ pub struct GrammarDescription {
     /// The `precedence { ... }` declaration: levels from lowest to highest binding power,
     /// indexed by [`PrecedenceLevelId`]; empty without one.
     pub precedence: Vec<PrecedenceLevel>,
+    /// Authored resolutions for specific unresolved LR conflict cells. Recursive descent ignores
+    /// these declarations; table-driven analysis validates them after precedence resolution.
+    pub lr_conflict_resolutions: Vec<LrConflictResolution>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The parser action an authored LR conflict declaration requires.
+pub enum LrConflictAction {
+    /// Keep the terminal shift.
+    Shift,
+    /// Reduce by the uniquely selected rule lowered from the declaration's owner.
+    Reduce,
+    /// Reject the lookahead as a syntax error.
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// A stable authored source identity used to select lowered LR rules.
+pub enum LrRuleOwner {
+    /// Every construction rule lowered from one concrete Node application.
+    Type(TypeId),
+    /// Every rule lowered from one enum or Pratt variant declaration.
+    Variant(DeclId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One fail-closed declaration resolving an exact family of otherwise unresolved LR cells.
+///
+/// `owner` selects the reducing rule (and the winning rule for a reduce action), while `against`
+/// fingerprints the opposing authored source identity. Every named lookahead must match and the
+/// total number of cells must equal `expected`; otherwise table-driven generation fails.
+pub struct LrConflictResolution {
+    /// The authored Node or variant whose lowered rule reduces in every selected cell.
+    pub owners: Vec<LrRuleOwner>,
+    /// The opposing authored Node or variant required in each selected state.
+    pub against: Vec<LrRuleOwner>,
+    /// The explicit parser action.
+    pub action: LrConflictAction,
+    /// Exact lookahead kinds this declaration claims, in authored order without duplicates.
+    pub lookaheads: Vec<KindId>,
+    /// Exact number of conflict cells the declaration must match.
+    pub expected: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -126,6 +168,7 @@ impl GrammarDescription {
             types: Vec::new(),
             lookahead_filters: Vec::new(),
             precedence: Vec::new(),
+            lr_conflict_resolutions: Vec::new(),
         }
     }
 

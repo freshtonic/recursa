@@ -12,7 +12,7 @@ use crate::explorer::{
 };
 use crate::input::{Input, LexResult, TokenRecord, TriviaRecord};
 use crate::lex::LexDiagnostic;
-use crate::parsed::{GeneratedParse, Parsed, parse_spanned_with_root_follow};
+use crate::parsed::{GeneratedParse, Parsed, ParserMarker, parse_spanned_with_root_follow};
 use crate::{FollowSet, GrammarInfo, Span};
 
 /// Generated lexical function used only behind a framing declaration.
@@ -463,13 +463,14 @@ enum DraftPart<'input, T> {
 /// framing regions and candidate boundaries, parse each island in a bounded window, freeze payload
 /// ownership, validate the complete partition, then publish the strict parts.
 #[doc(hidden)]
-pub fn frame_document<'input, T>(
+pub fn frame_document<'input, T, P>(
     source: &'input str,
     lex: LexFn,
     plan: &'static PlanData,
 ) -> Result<CompleteFrame<'input, T>, FrameFailure<'input>>
 where
-    T: GeneratedParse<'input> + ExplorerRoot + 'input,
+    T: GeneratedParse<'input, (), P> + ExplorerRoot + 'input,
+    P: ParserMarker,
 {
     validate_plan(source, plan)?;
     let mut byte = 0_usize;
@@ -527,7 +528,7 @@ where
                 plan,
             )?;
             if let Ok(parsed) =
-                parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow)
+                parse_spanned_with_root_follow::<T, (), P>(&mut input, plan.boundary_follow)
                 && input.peek(0).is_some_and(|record| record == boundary)
             {
                 strict_match = Some((parsed, boundary));
@@ -553,7 +554,7 @@ where
                 &segment,
                 plan,
             )?;
-            match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
+            match parse_spanned_with_root_follow::<T, (), P>(&mut input, plan.boundary_follow) {
                 Ok(parsed) => {
                     let root_end = consumed_end(&input, island_start);
                     if let Some(next) = input.peek(0) {
@@ -601,7 +602,7 @@ where
                     // When the source before the failing token is itself a complete
                     // island, the failure is a missing boundary rather than a syntax
                     // error inside the island.
-                    let framing = prefix_is_complete_island::<T>(
+                    let framing = prefix_is_complete_island::<T, P>(
                         source,
                         island_start,
                         failure_span.start() as usize,
@@ -684,7 +685,7 @@ where
 ///
 /// The prefix must parse strictly and leave no significant token unconsumed; an
 /// empty prefix is never a complete island.
-fn prefix_is_complete_island<'input, T>(
+fn prefix_is_complete_island<'input, T, P>(
     source: &'input str,
     island_start: usize,
     prefix_end: usize,
@@ -692,7 +693,8 @@ fn prefix_is_complete_island<'input, T>(
     plan: &'static PlanData,
 ) -> Result<bool, FrameError<'input>>
 where
-    T: GeneratedParse<'input> + ExplorerRoot + 'input,
+    T: GeneratedParse<'input, (), P> + ExplorerRoot + 'input,
+    P: ParserMarker,
 {
     if prefix_end <= island_start {
         return Ok(false);
@@ -704,7 +706,7 @@ where
         plan,
     )?;
     Ok(
-        parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow).is_ok()
+        parse_spanned_with_root_follow::<T, (), P>(&mut input, plan.boundary_follow).is_ok()
             && input.peek(0).is_none(),
     )
 }

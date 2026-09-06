@@ -1001,7 +1001,10 @@ pub enum Expr<'input> {{
         let analyze = |source: String| {
             let package = fixture(&source);
             crate::source_analysis::analyze_source_tree(
-                crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+                crate::source_analysis::SourceAnalysisInput::rust_2024(
+                    package.path(),
+                    "grammar.rs",
+                ),
                 &mut Vec::new(),
             )
             .map(|_| ())
@@ -1009,8 +1012,9 @@ pub enum Expr<'input> {{
         };
         let without = analyze(grammar("")).expect_err("both alternatives start with `default`");
         assert!(without.contains("Namespace"), "{without}");
-        analyze(grammar("#[parse(pratt(exclude(Default)))]"))
-            .unwrap_or_else(|report| panic!("the exclusion narrows the site's FIRST set:\n{report}"));
+        analyze(grammar("#[parse(pratt(exclude(Default)))]")).unwrap_or_else(|report| {
+            panic!("the exclusion narrows the site's FIRST set:\n{report}")
+        });
     }
 
     #[test]

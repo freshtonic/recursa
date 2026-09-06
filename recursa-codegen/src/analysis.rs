@@ -662,6 +662,23 @@ pub(crate) fn analyze_for_generation(grammar: &GrammarDescription) -> AnalysisRe
     analyze_with_publication_policy(grammar, AnalysisPublicationPolicy::GENERATION)
 }
 
+/// Validates a grammar for a table-driven-only generation.
+///
+/// The ordinary shared-prefix diagnostics are required to keep the recursive-
+/// descent dispatcher deterministic. A table-driven parser resolves that
+/// ambiguity in its automaton instead, so the enum FIRST-overlap diagnostic is
+/// not a blocking source-analysis finding when no recursive-descent parser is
+/// emitted. All other analysis diagnostics retain their normal severity.
+pub(crate) fn analyze_for_table_driven_generation(grammar: &GrammarDescription) -> AnalysisReport {
+    analyze_with_publication_policy(
+        grammar,
+        AnalysisPublicationPolicy {
+            suppress_recursive_descent_only: true,
+            ..AnalysisPublicationPolicy::GENERATION
+        },
+    )
+}
+
 #[derive(Clone, Copy)]
 /// Controls which reporting work is performed before an analysis report is published.
 struct AnalysisPublicationPolicy {
@@ -669,6 +686,8 @@ struct AnalysisPublicationPolicy {
     materialize_sequences: bool,
     /// Whether reachable proof nodes receive canonical dense identities.
     compact_proofs: bool,
+    /// Whether shared-prefix diagnostics that only constrain recursive descent are suppressed.
+    suppress_recursive_descent_only: bool,
 }
 
 impl AnalysisPublicationPolicy {
@@ -676,12 +695,14 @@ impl AnalysisPublicationPolicy {
     const PUBLIC: Self = Self {
         materialize_sequences: true,
         compact_proofs: true,
+        suppress_recursive_descent_only: false,
     };
 
     /// Private generation analysis retaining transient proof identities.
     const GENERATION: Self = Self {
         materialize_sequences: false,
         compact_proofs: false,
+        suppress_recursive_descent_only: false,
     };
 }
 
@@ -733,6 +754,9 @@ fn analyze_with_publication_policy(
         &mut proofs,
         &mut static_conflict_kinds_by_declaration,
     );
+    if policy.suppress_recursive_descent_only {
+        diagnostics.retain(|diagnostic| diagnostic.code != crate::DiagnosticCode::EnumFirstOverlap);
+    }
     let (follow_by_type, follow_by_site, follow_provenance) =
         compute_follow(grammar, &first_by_type, &first_provenance, &mut proofs);
     let warnings = detect_follow_conflicts(
@@ -753,12 +777,21 @@ fn analyze_with_publication_policy(
         None
     } else {
         let caller_first_by_site = follow_provenance.caller_first_by_site();
-        let planned = crate::decision_plan::plan_decisions(
-            grammar,
-            &first_by_type,
-            &first_sequence_analysis,
-            &caller_first_by_site,
-        );
+        let planned = if policy.suppress_recursive_descent_only {
+            crate::decision_plan::plan_decisions_for_table_driven(
+                grammar,
+                &first_by_type,
+                &first_sequence_analysis,
+                &caller_first_by_site,
+            )
+        } else {
+            crate::decision_plan::plan_decisions(
+                grammar,
+                &first_by_type,
+                &first_sequence_analysis,
+                &caller_first_by_site,
+            )
+        };
         match publish_decisions(grammar, planned) {
             Ok(mut decisions) => {
                 decisions
@@ -1213,6 +1246,22 @@ pub(crate) struct FirstSequenceAnalysis<'a> {
     pratt_crossings: RefCell<Option<Rc<(Vec<u8>, Vec<u8>)>>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// A separated repetition followed immediately by a tail which starts with its separator.
+///
+/// The tail's first token is deliberately left for the following optional site: a recursive
+/// descent list can inspect the token after its separator before deciding whether that comma
+/// begins another element or this suffix, while LR lowering can inline the optional without an
+/// epsilon reduce.
+pub(crate) struct SeparatedListContinuation {
+    /// The repeated site which leaves its separator unconsumed for the tail.
+    pub list: SiteId,
+    /// The immediately following optional site which consumes the separator and suffix.
+    pub tail: SiteId,
+    /// FIRST positions after the shared separator.
+    pub after_separator: Vec<FirstPosition>,
+}
+
 impl<'a> FirstSequenceAnalysis<'a> {
     /// Creates analysis-run FIRST support from one normalized grammar.
     pub(crate) fn for_grammar(grammar: &'a GrammarDescription) -> Self {
@@ -1272,6 +1321,110 @@ impl<'a> FirstSequenceAnalysis<'a> {
     /// Returns the pre-indexed source-ordered suffix following `site`.
     pub(crate) fn site_tail(&self, site: SiteId) -> Option<&[SiteId]> {
         self.site_tails.get(site.index()).copied().flatten()
+    }
+
+    /// Finds automatic separated-list continuations whose post-separator language is disjoint
+    /// from another list element.
+    ///
+    /// A candidate is a separated list followed directly by `Option<T>`. Every committed `T`
+    /// derivation must begin with exactly the list separator and must then consume a token whose
+    /// FIRST language is disjoint from the list element's. The two-token proof is intentionally
+    /// local: it preserves the authored grammar and needs no author-facing annotation.
+    pub(crate) fn separated_list_continuations(&self) -> Vec<SeparatedListContinuation> {
+        let mut continuations = Vec::new();
+        for (index, site) in self.grammar.sites.iter().enumerate() {
+            let list = SiteId::new(index.try_into().expect("grammar site identity width"));
+            let semantics = site
+                .container
+                .semantics()
+                .expect("container shapes are validated before analysis");
+            if !matches!(
+                semantics.cardinality,
+                ContainerCardinality::ZeroOrMore
+                    | ContainerCardinality::OneOrMore
+                    | ContainerCardinality::OptionalOneOrMore
+            ) {
+                continue;
+            }
+            let Some(separator) = semantics
+                .separator
+                .filter(|separator| !separator.optional_trailing)
+            else {
+                continue;
+            };
+            let Some(&tail) = self.site_tail(list).and_then(|tail| tail.first()) else {
+                continue;
+            };
+            let tail_site = &self.grammar.sites[tail.index()];
+            if tail_site
+                .container
+                .semantics()
+                .expect("container shapes are validated before analysis")
+                .cardinality
+                != ContainerCardinality::Optional
+            {
+                continue;
+            }
+
+            let separator_sequences = self.state_sequences_batch_at_depth(
+                std::iter::once(DecisionState(vec![DecisionItem::Type(separator.type_id)])),
+                1,
+            );
+            let mut separator_first = Vec::new();
+            for sequence in &separator_sequences[0] {
+                let Some(position) = sequence.positions.first() else {
+                    separator_first.clear();
+                    break;
+                };
+                merge_positions(&mut separator_first, std::slice::from_ref(position));
+            }
+            if separator_first.is_empty() {
+                continue;
+            }
+
+            let tail_sequences = self.element_sequences_at_depth(tail, 2);
+            if tail_sequences.is_empty()
+                || tail_sequences
+                    .iter()
+                    .any(|sequence| sequence.positions.len() < 2)
+            {
+                continue;
+            }
+            let mut tail_first = Vec::new();
+            let mut after_separator = Vec::new();
+            for sequence in &tail_sequences {
+                merge_positions(
+                    &mut tail_first,
+                    std::slice::from_ref(&sequence.positions[0]),
+                );
+                merge_positions(
+                    &mut after_separator,
+                    std::slice::from_ref(&sequence.positions[1]),
+                );
+            }
+            if tail_first != separator_first || after_separator.is_empty() {
+                continue;
+            }
+
+            let element_sequences = self.element_sequences_at_depth(list, 1);
+            let mut element_first = Vec::new();
+            for sequence in &element_sequences {
+                if let Some(position) = sequence.positions.first() {
+                    merge_positions(&mut element_first, std::slice::from_ref(position));
+                }
+            }
+            if element_first.is_empty()
+                || first_positions_overlap(&after_separator, &element_first, self.grammar)
+            {
+                continue;
+            }
+            continuations.push(SeparatedListContinuation {
+                list,
+                tail,
+                after_separator,
+            });
+        }
+        continuations
     }
 
     /// Derives one decision-site root with a fresh root-local arena.
@@ -2131,6 +2284,27 @@ fn merge_positions(into: &mut Vec<FirstPosition>, from: &[FirstPosition]) {
             .text_predicate
             .map_or(0, |id| u64::from(id.get()) + 1)
     });
+}
+
+/// Reports whether two FIRST-position languages share an exact kind/text cell.
+fn first_positions_overlap(
+    left: &[FirstPosition],
+    right: &[FirstPosition],
+    grammar: &GrammarDescription,
+) -> bool {
+    left.iter().any(|left| {
+        right.iter().any(|right| {
+            left.kinds
+                .intersects(&right.kinds)
+                .expect("FIRST positions share the grammar kind width")
+                && predicates_overlap(
+                    left.text_predicate,
+                    right.text_predicate,
+                    &grammar.text_predicates,
+                    grammar.text_equivalence,
+                )
+        })
+    })
 }
 
 /// Derives the first facts from normalized grammar structure and previously established semantic facts.
@@ -5091,9 +5265,8 @@ fn first_for_sites_provenance(
     let mut nullable_prefix: Vec<SiteId> = Vec::new();
     for site_id in sites {
         let site = &grammar.sites[site_id.index()];
-        let target_positions = first_positions_for_site_provenance(
-            site, grammar, semantic, provenanced, proofs,
-        );
+        let target_positions =
+            first_positions_for_site_provenance(site, grammar, semantic, provenanced, proofs);
         for position in target_positions.iter() {
             let mut kinds = wrap_provenance(
                 &position.kinds,
@@ -10896,9 +11069,7 @@ fn bounded_site_language_witness(
 ) -> BoundedDecisionWitness {
     if left.iter().chain(right).any(|site| {
         let site = &grammar.sites[site.index()];
-        site.min_bp != 0
-            || !site.pratt_excluded.is_empty()
-            || site.container.semantics().is_none()
+        site.min_bp != 0 || !site.pratt_excluded.is_empty() || site.container.semantics().is_none()
     }) {
         return BoundedDecisionWitness::Unsupported;
     }

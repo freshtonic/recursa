@@ -210,7 +210,8 @@ impl LrTables {
     /// the same canonical atom per token kind that recursive descent's expected sets carry.
     /// Only the error path reads it, so it is decoded apart from the action tables.
     pub fn expected_atoms(&self) -> &[u32] {
-        self.atoms.get_or_init(|| decode_unsigned(self.expected_atoms))
+        self.atoms
+            .get_or_init(|| decode_unsigned(self.expected_atoms))
     }
 }
 
@@ -254,6 +255,37 @@ impl DecodedTables {
             }
         }
         self.default_action(state)
+    }
+
+    /// Looks up a lexed token after applying a lookahead filter that is
+    /// relevant to this state. The merged terminal keeps any explicit action
+    /// or default reduction. Only an absent merged entry that resolves to the
+    /// row's default syntax error falls back to the source terminal; this lets
+    /// a filter distinguish one grammar context without making the source
+    /// token unusable in unrelated states. An explicit error remains
+    /// authoritative.
+    pub fn filtered_action(&self, state: u32, kind: u32, next: Option<u32>) -> TableAction {
+        let merged = self.merged_terminal(kind, next);
+        let action = self.action(state, merged);
+        if merged != kind && action == TableAction::Error && !self.has_explicit_entry(state, merged)
+        {
+            self.action(state, kind)
+        } else {
+            action
+        }
+    }
+
+    /// Reports whether `terminal` has an explicit row entry, including an
+    /// explicitly declared syntax error.
+    fn has_explicit_entry(&self, state: u32, terminal: u32) -> bool {
+        let base = self.pact[state as usize];
+        if base == PACT_NINF {
+            return false;
+        }
+        let slot = i64::from(base) + i64::from(terminal);
+        slot >= 0
+            && (slot as usize) < self.table.len()
+            && self.check[slot as usize] == terminal as i32
     }
 
     /// Returns a state's default action: its default reduction, or an error when it has none.
@@ -323,7 +355,10 @@ fn decode_unsigned(literal: &[u8]) -> Vec<u32> {
     );
     cells
         .chunks(width)
-        .map(|cell| cell.iter().fold(0_u32, |value, byte| (value << 6) | digit(*byte)))
+        .map(|cell| {
+            cell.iter()
+                .fold(0_u32, |value, byte| (value << 6) | digit(*byte))
+        })
         .collect()
 }
 
@@ -350,7 +385,8 @@ pub(super) mod tests {
     /// a node of a group, a leaf and a group (`E -> E + T`, `T -> T * F`) or of a leaf, a group
     /// and a leaf (`F -> ( E )`), the unit rules to a node of one group, and `F -> id` passes its
     /// token through as a content token would; every policy is inherited.
-    const TEXTBOOK_FOLDS: &[u8] = b"BAAACADABBABBAACBBACABABBACADABBABBAACBBACABABBACADABAABBBACBAAAAA";
+    const TEXTBOOK_FOLDS: &[u8] =
+        b"BAAACADABBABBAACBBACABABBACADABBABBAACBBACABABBACADABAABBBACBAAAAA";
 
     /// No textbook rule is decided by its caller FOLLOW.
     const TEXTBOOK_TAIL: &[u8] = b"BAAAAAAA";
@@ -400,10 +436,33 @@ pub(super) mod tests {
         false,
     );
 
+    /// The textbook tables with `)` filtered to `id` before `+`. States that
+    /// explicitly accept the merged `id` use it; a state that accepts only
+    /// the source `)` must fall back to that source terminal.
+    pub(in crate::lr) static FALLBACK_FILTERED_TEXTBOOK: LrTables = LrTables::new(
+        5,
+        b"BFFADJABFFAJA",
+        b"BPPVTDRFNBBBX",
+        b"BBBPHFDJDCCCR",
+        b"BAAHBDFAAAGCE",
+        b"BNAKH",
+        b"BDAEF",
+        b"BBAACCDD",
+        b"BBDBDBDB",
+        b"BBCBCBBA",
+        b"BBCDEF",
+        b"BDEA",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
+    );
+
     /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
     pub(in crate::lr) fn textbook_decoded() -> DecodedTables {
         DecodedTables {
-            pact: vec![2, 2, PACT_NINF, 1, 4, PACT_NINF, 0, 2, 2, PACT_NINF, 4, PACT_NINF],
+            pact: vec![
+                2, 2, PACT_NINF, 1, 4, PACT_NINF, 0, 2, 2, PACT_NINF, 4, PACT_NINF,
+            ],
             table: vec![7, 7, 10, 9, 1, 8, 2, 6, 0, 0, 0, 11],
             check: vec![0, 0, 7, 3, 2, 1, 4, 1, -1, -1, -1, 8],
             defact: vec![0, 0, 7, 1, 3, 5, 0, 0, 0, 6, 2, 4],
@@ -421,12 +480,85 @@ pub(super) mod tests {
     fn the_lookahead_table_maps_a_token_before_a_trigger_to_its_merged_terminal() {
         let decoded = FILTERED_TEXTBOOK.decoded();
         assert_eq!(decoded.lookahead, [2, 4, 3]);
-        assert_eq!(decoded.merged_terminal(2, Some(3)), 4, "`(` before `)` is `id`");
-        assert_eq!(decoded.merged_terminal(2, Some(0)), 2, "`(` before `+` stays `(`");
-        assert_eq!(decoded.merged_terminal(2, None), 2, "`(` at the end stays `(`");
-        assert_eq!(decoded.merged_terminal(4, Some(3)), 4, "an unfiltered token stays");
+        assert_eq!(
+            decoded.merged_terminal(2, Some(3)),
+            4,
+            "`(` before `)` is `id`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(2, Some(0)),
+            2,
+            "`(` before `+` stays `(`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(2, None),
+            2,
+            "`(` at the end stays `(`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(4, Some(3)),
+            4,
+            "an unfiltered token stays"
+        );
         assert!(TEXTBOOK.decoded().lookahead.is_empty());
         assert_eq!(TEXTBOOK.decoded().merged_terminal(2, Some(3)), 2);
+    }
+
+    #[test]
+    fn filtered_actions_use_the_merged_row_only_where_it_is_explicit() {
+        let filtered = FILTERED_TEXTBOOK.decoded();
+        assert_eq!(
+            filtered.filtered_action(0, 2, Some(3)),
+            TableAction::Shift(2),
+            "the start row explicitly accepts merged `id`"
+        );
+
+        let fallback = FALLBACK_FILTERED_TEXTBOOK.decoded();
+        assert_eq!(
+            fallback.filtered_action(6, 3, Some(0)),
+            fallback.action(6, 3),
+            "a row without merged `id` retains its source `)` action"
+        );
+    }
+
+    #[test]
+    fn filtered_actions_select_each_disjoint_filter_of_one_source_token() {
+        // Source terminal 0 has four disjoint continuations. Two select
+        // distinct merged terminals with actions; the third selects an
+        // explicit error. The fourth selects a merged terminal absent from
+        // this row and therefore falls back to the source terminal.
+        let tables = DecodedTables {
+            pact: vec![0],
+            table: vec![10, 11, 12, TABLE_NINF],
+            check: vec![0, 1, 2, 3],
+            defact: vec![0],
+            pgoto: Vec::new(),
+            defgoto: Vec::new(),
+            r1: Vec::new(),
+            r2: Vec::new(),
+            value_pops: Vec::new(),
+            lookahead: vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7],
+            tail: Vec::new(),
+        };
+
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(4)),
+            TableAction::Shift(11)
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(5)),
+            TableAction::Shift(12)
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(6)),
+            TableAction::Error,
+            "an explicit error for a merged terminal must not fall back"
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(7)),
+            TableAction::Shift(10),
+            "an absent merged entry falls back to the source terminal"
+        );
     }
 
     #[test]

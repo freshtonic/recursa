@@ -216,7 +216,10 @@ fn read_selected_generation(package: &TempDir) -> BTreeMap<String, String> {
         let path = entry.unwrap().path();
         if path.is_file() {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            files.insert(name, fs::read_to_string(&path).expect("read a generated file"));
+            files.insert(
+                name,
+                fs::read_to_string(&path).expect("read a generated file"),
+            );
         }
     }
     assert!(files.contains_key("root.rs"), "{directory:?} holds root.rs");

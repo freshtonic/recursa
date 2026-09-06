@@ -82,7 +82,6 @@ use emission_plan::*;
 use explorer::*;
 use generated_output::*;
 use lexing::*;
-use table_driven::*;
 use node_views::*;
 use parsers::*;
 use parsing::*;
@@ -91,6 +90,7 @@ use protocol::*;
 use publication::*;
 use reuse::*;
 use rust_names::*;
+use table_driven::*;
 use visit::*;
 
 /// One complete published logical output.

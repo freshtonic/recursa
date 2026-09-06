@@ -39,7 +39,10 @@ const PRECEDENCE: &str = "    precedence {
 ";
 
 /// The fixture's overrides, which need the declaration and are removed with it.
-const OVERRIDES: [&str; 2] = ["    #[parse(prec = UMINUS)]\n", "    #[parse(prec = UNBOUNDED)]\n"];
+const OVERRIDES: [&str; 2] = [
+    "    #[parse(prec = UMINUS)]\n",
+    "    #[parse(prec = UNBOUNDED)]\n",
+];
 
 #[test]
 fn the_precedence_fixture_parses_like_recursive_descent_with_and_without_the_declaration() {
@@ -62,11 +65,20 @@ fn the_precedence_fixture_parses_like_recursive_descent_with_and_without_the_dec
         shared(&recursive_stdout),
         "the two parsers must agree on every shared line"
     );
-    assert!(shared(&table_stdout).iter().filter(|line| line.starts_with("ok ")).count() >= 29);
+    assert!(
+        shared(&table_stdout)
+            .iter()
+            .filter(|line| line.starts_with("ok "))
+            .count()
+            >= 29
+    );
 
     let table_files = read_selected_generation(&package);
     let table_root = &table_files["root.rs"];
-    assert!(table_root.contains("__recursa_lr"), "root carries the tables and dispatcher");
+    assert!(
+        table_root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
 
     // One line per family, as the table-driven parser printed it; the shared lines above
     // prove recursive descent printed each of them too.
@@ -115,16 +127,28 @@ fn the_precedence_fixture_parses_like_recursive_descent_with_and_without_the_dec
     fs::write(&grammar, &recursive_source).expect("keep the recursive-descent parser alone");
     let driver = package.path().join("src/main.rs");
     let driver_source = fs::read_to_string(&driver).expect("read scaffolded driver");
-    fs::write(&driver, remove_fence(&driver_source, "    // lr-parser-start", "    // lr-parser-end\n"))
-        .expect("remove the lr pass, which names a parser that no longer exists");
+    fs::write(
+        &driver,
+        remove_fence(
+            &driver_source,
+            "    // lr-parser-start",
+            "    // lr-parser-end\n",
+        ),
+    )
+    .expect("remove the lr pass, which names a parser that no longer exists");
     let recursive = run_fixture(&package);
     assert_success(&recursive);
     let (alone_stdout, absent) = split_by_parser(&String::from_utf8(recursive.stdout).unwrap());
     assert!(absent.is_empty());
-    assert_eq!(alone_stdout, recursive_stdout, "a second parser changes nothing the default parser prints");
+    assert_eq!(
+        alone_stdout, recursive_stdout,
+        "a second parser changes nothing the default parser prints"
+    );
     let recursive_files = read_selected_generation(&package);
     let recursive_root = &recursive_files["root.rs"];
-    assert!(recursive_root.contains("RecursiveDescent") && !recursive_root.contains("__recursa_lr"));
+    assert!(
+        recursive_root.contains("RecursiveDescent") && !recursive_root.contains("__recursa_lr")
+    );
 
     // The declaration is inert under recursive descent: removing it, with the overrides that
     // need it, changes no observable line and no generated source at all.
@@ -238,7 +262,10 @@ fn read_selected_generation(package: &TempDir) -> BTreeMap<String, String> {
         let path = entry.unwrap().path();
         if path.is_file() {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            files.insert(name, fs::read_to_string(&path).expect("read a generated file"));
+            files.insert(
+                name,
+                fs::read_to_string(&path).expect("read a generated file"),
+            );
         }
     }
     assert!(files.contains_key("root.rs"), "{directory:?} holds root.rs");

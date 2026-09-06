@@ -512,6 +512,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::invalid_precedence_declarations_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3134"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "malformed_lr_conflict_declarations_are_structured_errors",
+        command: "cargo test -p recursa-codegen source_model::tests::malformed_lr_conflict_declarations_are_structured_errors --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
@@ -575,6 +582,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/lr.rs",
         test_name: "capture_overrides_are_rejected_with_rca0406",
         command: "cargo test -p recursa-codegen lr::tests::capture_overrides_are_rejected_with_rca0406 --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA0407"],
+        producer_source: "src/lr/report.rs",
+        test_source: "src/lr/textbook.rs",
+        test_name: "scoped_resolution_validation_is_atomic_and_fail_closed",
+        command: "cargo test -p recursa-codegen textbook::tests::scoped_resolution_validation_is_atomic_and_fail_closed --locked",
     },
     ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],

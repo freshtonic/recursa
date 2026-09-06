@@ -292,7 +292,10 @@ mod tests {
         let (precedence, automaton) = build(&grammar);
         assert!(automaton.conflicts().is_empty());
         assert_eq!(
-            precedence.token_precedence(grammar.nonterminal_by_name("E").unwrap(), terminal(&grammar, "^")),
+            precedence.token_precedence(
+                grammar.nonterminal_by_name("E").unwrap(),
+                terminal(&grammar, "^")
+            ),
             [30]
         );
         assert_eq!(
@@ -343,7 +346,10 @@ mod tests {
         let grammar = grammar.finish();
         let (precedence, automaton) = build(&grammar);
         let expr = grammar.nonterminal_by_name("E").unwrap();
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10, 20]);
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "+")),
+            [10, 20]
+        );
         let plus = terminal(&grammar, "+");
         let unresolved: Vec<String> = automaton
             .conflicts()
@@ -363,9 +369,18 @@ mod tests {
             .filter(|resolved| resolved.lookahead == plus)
             .map(|resolved| (grammar.render_rule(resolved.reduce), resolved.resolution))
             .collect();
-        assert!(settled.contains(&("E -> E ^ E".to_owned(), Resolution::Reduce)), "{settled:?}");
-        assert!(settled.contains(&("E -> E & E".to_owned(), Resolution::Shift)), "{settled:?}");
-        assert!(!settled.iter().any(|(rule, _)| rule == "E -> E * E"), "{settled:?}");
+        assert!(
+            settled.contains(&("E -> E ^ E".to_owned(), Resolution::Reduce)),
+            "{settled:?}"
+        );
+        assert!(
+            settled.contains(&("E -> E & E".to_owned(), Resolution::Shift)),
+            "{settled:?}"
+        );
+        assert!(
+            !settled.iter().any(|(rule, _)| rule == "E -> E * E"),
+            "{settled:?}"
+        );
     }
 
     #[test]
@@ -381,10 +396,23 @@ mod tests {
         let grammar = grammar.finish();
         let (precedence, automaton) = build(&grammar);
         let expr = grammar.nonterminal_by_name("E").unwrap();
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10]);
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "-")), [10]);
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "*")), [20]);
-        assert!(precedence.token_precedence(expr, terminal(&grammar, "id")).is_empty());
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "+")),
+            [10]
+        );
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "-")),
+            [10]
+        );
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "*")),
+            [20]
+        );
+        assert!(
+            precedence
+                .token_precedence(expr, terminal(&grammar, "id"))
+                .is_empty()
+        );
         assert!(automaton.conflicts().is_empty());
         assert_eq!(
             reductions(&grammar, &automaton, "- id - id * id"),
@@ -409,15 +437,35 @@ mod tests {
         grammar.rule("E", "id");
         grammar.pratt_rule("E", "E Plus", PrattPosition::Infix { lbp: 10, rbp: 11 });
         grammar.pratt_rule("E", "E Star", PrattPosition::Infix { lbp: 20, rbp: 21 });
-        grammar.attachment_rule("Plus", "+ E", "E", PrattPosition::Infix { lbp: 10, rbp: 11 });
-        grammar.attachment_rule("Star", "* E", "E", PrattPosition::Infix { lbp: 20, rbp: 21 });
+        grammar.attachment_rule(
+            "Plus",
+            "+ E",
+            "E",
+            PrattPosition::Infix { lbp: 10, rbp: 11 },
+        );
+        grammar.attachment_rule(
+            "Star",
+            "* E",
+            "E",
+            PrattPosition::Infix { lbp: 20, rbp: 21 },
+        );
         grammar.start("E");
         let grammar = grammar.finish();
         let (precedence, automaton) = build(&grammar);
         let expr = grammar.nonterminal_by_name("E").unwrap();
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "+")), [10]);
-        assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "*")), [20]);
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "+")),
+            [10]
+        );
+        assert_eq!(
+            precedence.token_precedence(expr, terminal(&grammar, "*")),
+            [20]
+        );
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             reductions(&grammar, &automaton, "id + id * id + id"),
             [
@@ -449,7 +497,11 @@ mod tests {
         grammar.start("E");
         let grammar = grammar.finish();
         let (_, automaton) = build(&grammar);
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let ties: Vec<(String, String, Resolution)> = automaton
             .resolved_conflicts()
             .iter()
@@ -501,6 +553,9 @@ mod tests {
         assert_eq!(conflict.lookahead, terminal(&grammar, "x"));
         assert!(matches!(conflict.kind, ConflictKind::ShiftReduce { .. }));
         assert_eq!(automaton.resolved_conflicts().len(), 1);
-        assert_eq!(automaton.resolved_conflicts()[0].resolution, Resolution::Reduce);
+        assert_eq!(
+            automaton.resolved_conflicts()[0].resolution,
+            Resolution::Reduce
+        );
     }
 }

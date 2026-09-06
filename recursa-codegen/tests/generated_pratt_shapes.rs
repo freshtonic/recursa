@@ -28,8 +28,14 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     assert!(stdout.ends_with("pratt-shapes-ok\n"), "{stdout}");
     let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
-    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
+    assert!(
+        root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
+    assert!(
+        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
+        "one generation carries both parsers"
+    );
 
     // The escape operand takes the operand minimum: `+` binds inside it, `like` and `and` do
     // not; `escape` attaches to the innermost `like`, whether it is an infix or a postfix
@@ -38,22 +44,62 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     for (source, value) in [
         ("a like b", format!("Like({a}, {b}, None)")),
         ("a like b escape c", format!("Like({a}, {b}, Some({c}))")),
-        ("a like b escape c + d", format!("Like({a}, {b}, Some(Add({c}, {d})))")),
-        ("a like b + c escape d", format!("Like({a}, Add({b}, {c}), Some({d}))")),
-        ("a like b escape c like d", format!("Like(Like({a}, {b}, Some({c})), {d}, None)")),
-        ("a like b escape c and d", format!("And(Like({a}, {b}, Some({c})), {d})")),
-        ("a and b like c escape d", format!("And({a}, Like({b}, {c}, Some({d})))")),
-        ("a like b not like c escape d", format!("NotLike(Like({a}, {b}, None), {c}, Some({d}))")),
-        ("a not like b escape c", format!("NotLike({a}, {b}, Some({c}))")),
-        ("a not like b like c escape d", format!("NotLike({a}, Like({b}, {c}, Some({d})), None)")),
-        ("a not like b not like c escape d", format!("NotLike({a}, NotLike({b}, {c}, Some({d})), None)")),
+        (
+            "a like b escape c + d",
+            format!("Like({a}, {b}, Some(Add({c}, {d})))"),
+        ),
+        (
+            "a like b + c escape d",
+            format!("Like({a}, Add({b}, {c}), Some({d}))"),
+        ),
+        (
+            "a like b escape c like d",
+            format!("Like(Like({a}, {b}, Some({c})), {d}, None)"),
+        ),
+        (
+            "a like b escape c and d",
+            format!("And(Like({a}, {b}, Some({c})), {d})"),
+        ),
+        (
+            "a and b like c escape d",
+            format!("And({a}, Like({b}, {c}, Some({d})))"),
+        ),
+        (
+            "a like b not like c escape d",
+            format!("NotLike(Like({a}, {b}, None), {c}, Some({d}))"),
+        ),
+        (
+            "a not like b escape c",
+            format!("NotLike({a}, {b}, Some({c}))"),
+        ),
+        (
+            "a not like b like c escape d",
+            format!("NotLike({a}, Like({b}, {c}, Some({d})), None)"),
+        ),
+        (
+            "a not like b not like c escape d",
+            format!("NotLike({a}, NotLike({b}, {c}, Some({d})), None)"),
+        ),
     ] {
         let line = format!("ok {source:?} => {value} cursor=");
-        assert!(table_stdout.contains(&line), "missing {line:?} in\n{table_stdout}");
+        assert!(
+            table_stdout.contains(&line),
+            "missing {line:?} in\n{table_stdout}"
+        );
     }
-    assert!(table_stdout.contains("ok \"(a like b) escape c\" => Parenthesized(") && table_stdout.contains("cursor=5 eof=false\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"a like b escape\" => code=RCA4101"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"escape a\" => code=RCA4100"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("ok \"(a like b) escape c\" => Parenthesized(")
+            && table_stdout.contains("cursor=5 eof=false\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"a like b escape\" => code=RCA4101"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"escape a\" => code=RCA4100"),
+        "{table_stdout}"
+    );
 
     // The automaton dump: the attachments around the escape operand carry the operand
     // minimum, and every `escape` decision is resolved by precedence as a shift.
@@ -66,7 +112,10 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 
     // The recursive-descent parser of the same generation prints the same lines.
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 #[test]
@@ -86,35 +135,90 @@ fn a_content_token_operator_on_a_prefix_variant_parses_alike_under_both_parsers(
     let op = |text: &str| format!("__RecursaContentToken1 {{ text: ContentText({text:?}) }}");
     for (source, value) in [
         ("@a", format!("CustomPrefix({}, {a})", op("@"))),
-        ("@ a + b", format!("CustomPrefix({}, Add({a}, {b}))", op("@"))),
-        ("@ a like b", format!("Like(CustomPrefix({}, {a}), {b}, None)", op("@"))),
-        ("@ @ a * b", format!("CustomPrefix({}, CustomPrefix({}, Multiply({a}, {b})))", op("@"), op("@"))),
-        ("a ~@ b + c", format!("CustomInfix({a}, {}, Add({b}, {c}))", op("~@"))),
-        ("a + b ~@ c", format!("CustomInfix(Add({a}, {b}), {}, {c})", op("~@"))),
-        ("a ~@ b ~@ c", format!("CustomInfix(CustomInfix({a}, {}, {b}), {}, {c})", op("~@"), op("~@"))),
-        ("a ~@ @ b", format!("CustomInfix({a}, {}, CustomPrefix({}, {b}))", op("~@"), op("@"))),
+        (
+            "@ a + b",
+            format!("CustomPrefix({}, Add({a}, {b}))", op("@")),
+        ),
+        (
+            "@ a like b",
+            format!("Like(CustomPrefix({}, {a}), {b}, None)", op("@")),
+        ),
+        (
+            "@ @ a * b",
+            format!(
+                "CustomPrefix({}, CustomPrefix({}, Multiply({a}, {b})))",
+                op("@"),
+                op("@")
+            ),
+        ),
+        (
+            "a ~@ b + c",
+            format!("CustomInfix({a}, {}, Add({b}, {c}))", op("~@")),
+        ),
+        (
+            "a + b ~@ c",
+            format!("CustomInfix(Add({a}, {b}), {}, {c})", op("~@")),
+        ),
+        (
+            "a ~@ b ~@ c",
+            format!(
+                "CustomInfix(CustomInfix({a}, {}, {b}), {}, {c})",
+                op("~@"),
+                op("~@")
+            ),
+        ),
+        (
+            "a ~@ @ b",
+            format!(
+                "CustomInfix({a}, {}, CustomPrefix({}, {b}))",
+                op("~@"),
+                op("@")
+            ),
+        ),
         (
             "a like @ b escape @ c + d",
-            format!("Like({a}, CustomPrefix({}, {b}), Some(CustomPrefix({}, Add({c}, {d}))))", op("@"), op("@")),
+            format!(
+                "Like({a}, CustomPrefix({}, {b}), Some(CustomPrefix({}, Add({c}, {d}))))",
+                op("@"),
+                op("@")
+            ),
         ),
     ] {
         let line = format!("ok {source:?} => {value} cursor=");
-        assert!(table_stdout.contains(&line), "missing {line:?} in
-{table_stdout}");
+        assert!(
+            table_stdout.contains(&line),
+            "missing {line:?} in
+{table_stdout}"
+        );
     }
-    assert!(table_stdout.contains("err \"@\" => code=RCA4101"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"~@ like a\" => code=RCA4100"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("err \"@\" => code=RCA4101"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"~@ like a\" => code=RCA4100"),
+        "{table_stdout}"
+    );
 
     // The lowering gives the prefix rule its binding power as precedence, so the automaton
     // resolves the operand's boundary and stays conflict-free.
     let index_path = find_one_debug_index(debug.path());
     let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
         .expect("the bundle carries the automaton dump");
-    assert!(dump.contains("grammar::Expr -> OperatorText grammar::Expr"), "{dump}");
-    assert!(dump.contains("grammar::Expr -> grammar::Expr OperatorText grammar::Expr"), "{dump}");
+    assert!(
+        dump.contains("grammar::Expr -> OperatorText grammar::Expr"),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("grammar::Expr -> grammar::Expr OperatorText grammar::Expr"),
+        "{dump}"
+    );
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 #[test]
@@ -132,37 +236,97 @@ fn an_exclusion_of_atoms_parses_alike_under_both_parsers() {
     // extender still ends the operand.
     let (a, b, c) = (name("a"), name("b"), name("c"));
     for (source, value) in [
-        ("xmlnamespaces(a as b)", format!("Xmlnamespaces(Named {{ uri: {a}, label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})")),
-        ("xmlnamespaces(a + b like c as d)", format!("Xmlnamespaces(Named {{ uri: Like(Add({a}, {b}), {c}, None), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"d\") }} }} }})")),
-        ("xmlnamespaces(default a)", format!("Xmlnamespaces(Default {{ uri: {a} }})")),
-        ("xmlnamespaces(default a + b)", format!("Xmlnamespaces(Default {{ uri: Add({a}, {b}) }})")),
-        ("xmlnamespaces(default default)", "Xmlnamespaces(Default { uri: Default })".to_owned()),
-        ("xmlnamespaces((default) as b)", format!("Xmlnamespaces(Named {{ uri: Parenthesized(Default), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})")),
-        ("index ((a + (select b)))", format!("Index(IndexElem {{ elem: Parenthesized(Add({a}, Subquery({b}))) }})")),
-        ("index (a like b)", format!("Index(IndexElem {{ elem: Like({a}, {b}, None) }})")),
+        (
+            "xmlnamespaces(a as b)",
+            format!(
+                "Xmlnamespaces(Named {{ uri: {a}, label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})"
+            ),
+        ),
+        (
+            "xmlnamespaces(a + b like c as d)",
+            format!(
+                "Xmlnamespaces(Named {{ uri: Like(Add({a}, {b}), {c}, None), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"d\") }} }} }})"
+            ),
+        ),
+        (
+            "xmlnamespaces(default a)",
+            format!("Xmlnamespaces(Default {{ uri: {a} }})"),
+        ),
+        (
+            "xmlnamespaces(default a + b)",
+            format!("Xmlnamespaces(Default {{ uri: Add({a}, {b}) }})"),
+        ),
+        (
+            "xmlnamespaces(default default)",
+            "Xmlnamespaces(Default { uri: Default })".to_owned(),
+        ),
+        (
+            "xmlnamespaces((default) as b)",
+            format!(
+                "Xmlnamespaces(Named {{ uri: Parenthesized(Default), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})"
+            ),
+        ),
+        (
+            "index ((a + (select b)))",
+            format!("Index(IndexElem {{ elem: Parenthesized(Add({a}, Subquery({b}))) }})"),
+        ),
+        (
+            "index (a like b)",
+            format!("Index(IndexElem {{ elem: Like({a}, {b}, None) }})"),
+        ),
         ("(select a) + b", format!("Add(Subquery({a}), {b})")),
     ] {
         let line = format!("ok {source:?} => {value} cursor=");
-        assert!(table_stdout.contains(&line), "missing {line:?} in\n{table_stdout}");
+        assert!(
+            table_stdout.contains(&line),
+            "missing {line:?} in\n{table_stdout}"
+        );
     }
-    assert!(table_stdout.contains("err \"xmlnamespaces(default a as b)\" => code=RCA4100"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"index (select a)\" => code=RCA4100"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"index ((select a))\" => code=RCA4100"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"index (a + (select b))\" => code=RCA4100"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"index (a and b)\" => code=RCA4100"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("err \"xmlnamespaces(default a as b)\" => code=RCA4100"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"index (select a)\" => code=RCA4100"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"index ((select a))\" => code=RCA4100"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"index (a + (select b))\" => code=RCA4100"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"index (a and b)\" => code=RCA4100"),
+        "{table_stdout}"
+    );
 
     // The exclusion clones drop the excluded atoms as they drop excluded extenders, and carry
     // the exclusion into their operands.
     let index_path = find_one_debug_index(debug.path());
     let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
         .expect("the bundle carries the automaton dump");
-    assert!(dump.contains("grammar::Expr[excl Default] -> grammar::Name"), "{dump}");
-    assert!(!dump.contains("grammar::Expr[excl Default] -> DEFAULT"), "{dump}");
+    assert!(
+        dump.contains("grammar::Expr[excl Default] -> grammar::Name"),
+        "{dump}"
+    );
+    assert!(
+        !dump.contains("grammar::Expr[excl Default] -> DEFAULT"),
+        "{dump}"
+    );
     assert!(dump.contains("grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]"), "{dump}");
-    assert!(!dump.contains("grammar::Expr[excl Subquery,And] -> LPAREN SELECT"), "{dump}");
+    assert!(
+        !dump.contains("grammar::Expr[excl Subquery,And] -> LPAREN SELECT"),
+        "{dump}"
+    );
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 /// Copies the fixture package into a temporary directory.
@@ -208,7 +372,11 @@ fn split_by_parser(stdout: &str) -> (String, String) {
 
 fn read_selected_root(package: &TempDir) -> String {
     let mut found = Vec::new();
-    find_named(&package.path().join("target"), "recursa-selected.rs", &mut found);
+    find_named(
+        &package.path().join("target"),
+        "recursa-selected.rs",
+        &mut found,
+    );
     assert_eq!(found.len(), 1, "one selected Generation: {found:?}");
     let selected = found.pop().unwrap();
     let selector = fs::read_to_string(&selected).expect("read selected Generation");

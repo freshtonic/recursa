@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use recursa_codegen::lr::{AutomatonOptions, ConflictKind, LrAnalysis, NonterminalOrigin, PACT_NINF};
+use recursa_codegen::lr::{
+    AutomatonOptions, ConflictKind, LrAnalysis, NonterminalOrigin, PACT_NINF,
+};
 
 /// Where the pg-sql checkout lives: `PG_SQL_MANIFEST_DIR`, else the sibling `pg-sql` directory.
 fn pg_sql_manifest_dir() -> PathBuf {

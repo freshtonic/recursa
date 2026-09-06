@@ -32,12 +32,21 @@ fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filt
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("lookahead-ok\n"), "{stdout}");
     let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 
     let table_files = read_selected_generation(&package);
     let table_root = &table_files["root.rs"];
-    assert!(table_root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(table_root.contains("NOT_LA"), "the merged kind is a TokenKind variant");
+    assert!(
+        table_root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
+    assert!(
+        table_root.contains("NOT_LA"),
+        "the merged kind is a TokenKind variant"
+    );
 
     // `NOT` before a trigger is a test; a bare `NOT` opens a negated condition.
     assert!(table_stdout.contains("ok \"a not between 1 and 2;\" => Rule { cond: NotBetween(NotBetween { subject: Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, low: Number { text: __RecursaContentToken2 { text: ContentText(\"1\") } }, high: Number { text: __RecursaContentToken2 { text: ContentText(\"2\") } } }) } cursor=7 eof=true kinds=[NameText not between NumberText and NumberText ;]\n"), "{table_stdout}");
@@ -52,19 +61,40 @@ fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filt
     assert!(table_stdout.contains("expr ok \"not not a;\" => ExprRule { expr: Not(Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"a\"), kind: NameText } }))) } cursor=4 eof=true kinds=[not not NameText ;]\n"), "{table_stdout}");
     assert!(table_stdout.contains("expr ok \"not like like b;\" => ExprRule { expr: Not(Like(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"like\"), kind: LIKE } }), Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"b\"), kind: NameText } }))) } cursor=5 eof=true kinds=[not like like NameText ;]\n"), "{table_stdout}");
     assert!(table_stdout.contains("expr ok \"not between;\" => ExprRule { expr: Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"between\"), kind: BETWEEN } })) } cursor=3 eof=true kinds=[not between ;]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("expr elements \"not between;\" => [expr:SemanticField@0..11 semi:FixedToken@11..12]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("expr pretty \"not between;\" => \"not between;\"\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains(
+            "expr elements \"not between;\" => [expr:SemanticField@0..11 semi:FixedToken@11..12]\n"
+        ),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("expr pretty \"not between;\" => \"not between;\"\n"),
+        "{table_stdout}"
+    );
     assert!(table_stdout.contains("expr entry Not(Ident(Ident { text: __RecursaContentToken0 { text: ContentText(\"between\"), kind: BETWEEN } })) cursor=2\n"), "{table_stdout}");
     assert!(table_stdout.contains("expr err \"not in;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 6 } found=Some(\"fixed:in\") cursor=0 leaked=0\n"), "{table_stdout}");
     // The merged kind exists, displays as the token it merges and is never lexed.
-    assert!(table_stdout.contains("merged kind NOT_LA displays as not like not\n"), "{table_stdout}");
-    assert!(table_stdout.contains("lexed [NOT, NameText, BETWEEN, NameText, IN, LIKE]\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("merged kind NOT_LA displays as not like not\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("lexed [NOT, NameText, BETWEEN, NameText, IN, LIKE]\n"),
+        "{table_stdout}"
+    );
     // A root parse stops where recursive descent stops when tokens follow the root.
-    assert!(table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:between\") cursor=11\n"), "{table_stdout}");
+    assert!(
+        table_stdout
+            .contains("prefix third code=RCA4100 found=Some(\"fixed:between\") cursor=11\n"),
+        "{table_stdout}"
+    );
     // Every grammar type is an entry point.
     assert!(table_stdout.contains("entry NotIn { subject: Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } }, member: Number { text: __RecursaContentToken2 { text: ContentText(\"1\") } } } cursor=6\n"), "{table_stdout}");
     assert!(table_stdout.contains("entry Subject { name: Name { text: __RecursaContentToken1 { text: ContentText(\"a\") } } } cursor=1\n"), "{table_stdout}");
-    assert!(table_stdout.contains("entry NotMark cursor=1\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("entry NotMark cursor=1\n"),
+        "{table_stdout}"
+    );
     // Failures name the lexed token, restore the cursor and drop every partial value.
     assert!(table_stdout.contains("err \"a between not 1 and 2;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 10, end: 13 } found=Some(\"fixed:not\") cursor=0 leaked=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("err \"a not between;\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 13, end: 14 } found=Some(\"fixed:;\") cursor=0 leaked=0\n"), "{table_stdout}");
@@ -79,17 +109,32 @@ fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filt
     fs::write(&grammar, &recursive_source).expect("keep the recursive-descent parser alone");
     let driver = package.path().join("src/main.rs");
     let driver_source = fs::read_to_string(&driver).expect("read scaffolded driver");
-    fs::write(&driver, remove_fence(&driver_source, "    // lr-parser-start", "    // lr-parser-end\n"))
-        .expect("remove the lr pass, which names a parser that no longer exists");
+    fs::write(
+        &driver,
+        remove_fence(
+            &driver_source,
+            "    // lr-parser-start",
+            "    // lr-parser-end\n",
+        ),
+    )
+    .expect("remove the lr pass, which names a parser that no longer exists");
     let recursive = run_fixture(&package);
     assert_success(&recursive);
     let (alone_stdout, absent) = split_by_parser(&String::from_utf8(recursive.stdout).unwrap());
     assert!(absent.is_empty());
-    assert_eq!(alone_stdout, recursive_stdout, "a second parser changes nothing the default parser prints");
+    assert_eq!(
+        alone_stdout, recursive_stdout,
+        "a second parser changes nothing the default parser prints"
+    );
     let recursive_files = read_selected_generation(&package);
     let recursive_root = &recursive_files["root.rs"];
-    assert!(recursive_root.contains("RecursiveDescent") && !recursive_root.contains("__recursa_lr"));
-    assert!(recursive_root.contains("NOT_LA"), "the merged kind exists under recursive descent too");
+    assert!(
+        recursive_root.contains("RecursiveDescent") && !recursive_root.contains("__recursa_lr")
+    );
+    assert!(
+        recursive_root.contains("NOT_LA"),
+        "the merged kind exists under recursive descent too"
+    );
 
     // The declaration is inert under recursive descent: removing it changes no observable
     // line and no generated node source; only the root loses the merged kind.
@@ -98,7 +143,11 @@ fn the_lookahead_fixture_parses_like_recursive_descent_with_and_without_the_filt
     let driver_source = fs::read_to_string(&driver).expect("read scaffolded driver");
     fs::write(
         &driver,
-        remove_fence(&driver_source, "    // merged-kind-evidence-start", "    // merged-kind-evidence-end\n"),
+        remove_fence(
+            &driver_source,
+            "    // merged-kind-evidence-start",
+            "    // merged-kind-evidence-end\n",
+        ),
     )
     .expect("remove the merged-kind evidence, which names a kind that no longer exists");
     let undeclared = run_fixture(&package);
@@ -212,7 +261,10 @@ fn read_selected_generation(package: &TempDir) -> BTreeMap<String, String> {
         let path = entry.unwrap().path();
         if path.is_file() {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            files.insert(name, fs::read_to_string(&path).expect("read a generated file"));
+            files.insert(
+                name,
+                fs::read_to_string(&path).expect("read a generated file"),
+            );
         }
     }
     assert!(files.contains_key("root.rs"), "{directory:?} holds root.rs");

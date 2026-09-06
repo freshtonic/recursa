@@ -26,9 +26,15 @@ default reductions, one value stack, and a start state per grammar type
 so that every type keeps its `Parse` capability as an entry point. The
 recursive-descent style is unchanged and remains the default. The
 lowering from Recursa's grammar to LR rules is a new analysis over the
-same lowered grammar; conflicts are hard build errors, Pratt binding
-powers lower to precedence, and multi-token lookahead is bought once with
-a declared lookahead filter, as PostgreSQL does.
+same lowered grammar; unresolved conflicts are hard build errors, Pratt
+binding powers lower to precedence, and multi-token lookahead is bought once
+with a declared lookahead filter, as PostgreSQL does. An author may resolve a
+specific LR conflict through a scoped declaration identified by stable
+grammar-source identities and lookaheads, never generated state numbers. The
+declaration must match exactly the conflict cells it claims, name the intended
+action or reducing source rule, and be recorded in the automaton dump; stale,
+missing, ambiguous, and
+over-broad declarations are build errors.
 
 ## Considered options
 

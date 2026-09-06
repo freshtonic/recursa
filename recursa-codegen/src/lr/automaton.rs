@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
 use super::grammar::{LrGrammar, NonterminalId, RuleAction, RuleId, Symbol, TerminalId};
-use crate::TypeId;
+use crate::{LrConflictAction, LrConflictResolution, LrRuleOwner, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Dense automaton state identity in construction order; start states come first.
@@ -168,7 +168,10 @@ impl TerminalSet {
 
     /// Counts the members.
     pub fn len(&self) -> usize {
-        self.words.iter().map(|word| word.count_ones() as usize).sum()
+        self.words
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 }
 
@@ -240,18 +243,22 @@ impl State {
 
     /// Returns the terminal transitions.
     pub fn shifts(&self) -> impl Iterator<Item = (TerminalId, StateId)> + '_ {
-        self.transitions.iter().filter_map(|(symbol, target)| match symbol {
-            Symbol::Terminal(terminal) => Some((*terminal, *target)),
-            Symbol::Nonterminal(_) => None,
-        })
+        self.transitions
+            .iter()
+            .filter_map(|(symbol, target)| match symbol {
+                Symbol::Terminal(terminal) => Some((*terminal, *target)),
+                Symbol::Nonterminal(_) => None,
+            })
     }
 
     /// Returns the nonterminal transitions.
     pub fn gotos(&self) -> impl Iterator<Item = (NonterminalId, StateId)> + '_ {
-        self.transitions.iter().filter_map(|(symbol, target)| match symbol {
-            Symbol::Nonterminal(nonterminal) => Some((*nonterminal, *target)),
-            Symbol::Terminal(_) => None,
-        })
+        self.transitions
+            .iter()
+            .filter_map(|(symbol, target)| match symbol {
+                Symbol::Nonterminal(nonterminal) => Some((*nonterminal, *target)),
+                Symbol::Terminal(_) => None,
+            })
     }
 
     /// Returns the complete items with their lookaheads.
@@ -336,6 +343,23 @@ pub struct ResolvedConflict {
     pub reduce: RuleId,
     /// The resolver's verdict.
     pub resolution: Resolution,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One conflict cell settled by an authored, source-stable scoped declaration.
+pub struct ScopedConflictResolution {
+    /// The state containing the cell; retained for the automaton dump, never used as a selector.
+    pub state: StateId,
+    /// The cell's lookahead.
+    pub lookahead: TerminalId,
+    /// Source-order index of the authored declaration.
+    pub declaration: u32,
+    /// The competing rules in ascending order; one rule for a shift/reduce conflict.
+    pub rules: Vec<RuleId>,
+    /// The explicit verdict.
+    pub resolution: Resolution,
+    /// The selected reducing rule for a reduce verdict.
+    pub reduced: Option<RuleId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -442,6 +466,8 @@ pub struct Automaton {
     conflicts: Vec<Conflict>,
     /// Shift/reduce conflicts the resolver settled, in ascending (state, lookahead, rule) order.
     resolved: Vec<ResolvedConflict>,
+    /// Conflict cells settled by authored scoped declarations.
+    scoped_resolutions: Vec<ScopedConflictResolution>,
     /// Reduce/reduce conflicts on the end marker that declaration order settled, in ascending
     /// state order.
     end_resolutions: Vec<EndMarkerResolution>,
@@ -508,6 +534,7 @@ impl Automaton {
             start_states,
             conflicts,
             resolved,
+            scoped_resolutions: Vec::new(),
             end_resolutions,
             merge_check: MergeArtefactCheck::Disabled,
         };
@@ -547,6 +574,11 @@ impl Automaton {
         &self.resolved
     }
 
+    /// Returns conflict cells settled by authored scoped declarations, in conflict order.
+    pub fn scoped_resolutions(&self) -> &[ScopedConflictResolution] {
+        &self.scoped_resolutions
+    }
+
     /// Returns the reduce/reduce conflicts on the end marker that declaration order settled, in
     /// ascending state order; none of them counts as a conflict.
     pub fn end_marker_resolutions(&self) -> &[EndMarkerResolution] {
@@ -562,6 +594,210 @@ impl Automaton {
     pub fn merge_check(&self) -> &MergeArtefactCheck {
         &self.merge_check
     }
+
+    /// Applies source-stable declarations to conflicts left unresolved by precedence.
+    ///
+    /// Validation is atomic: every declaration must match each named lookahead, match exactly its
+    /// expected number of cells, select a compatible action, and be the only declaration for each
+    /// cell. On any error the automaton is unchanged. State numbers are deliberately absent from
+    /// the interface and appear only in diagnostics and the dump.
+    pub fn apply_scoped_resolutions(
+        &mut self,
+        grammar: &LrGrammar,
+        declarations: &[LrConflictResolution],
+    ) -> Result<(), Vec<String>> {
+        if declarations.is_empty() {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        let mut selected_by = BTreeMap::<usize, usize>::new();
+        let mut plans = Vec::<(usize, Action, ScopedConflictResolution)>::new();
+        for (declaration_index, declaration) in declarations.iter().enumerate() {
+            let lookaheads = declaration
+                .lookaheads
+                .iter()
+                .map(|kind| TerminalId::new(u32::from(kind.get())))
+                .collect::<BTreeSet<_>>();
+            let mut per_lookahead = BTreeMap::<TerminalId, usize>::new();
+            let mut matched = 0usize;
+            for (conflict_index, conflict) in self.conflicts.iter().enumerate() {
+                if !lookaheads.contains(&conflict.lookahead) {
+                    continue;
+                }
+                let selected = selected_rules(grammar, conflict, &declaration.owners);
+                if selected.len() != 1 {
+                    continue;
+                }
+                let selected_rule = selected[0];
+                let against_matches = match &conflict.kind {
+                    ConflictKind::ShiftReduce { reduce, .. } => {
+                        *reduce == selected_rule
+                            && self.states[conflict.state.index()]
+                                .items
+                                .iter()
+                                .any(|item| {
+                                    item.rule != selected_rule
+                                        && rule_matches_any_owner(
+                                            grammar,
+                                            item.rule,
+                                            &declaration.against,
+                                        )
+                                })
+                    }
+                    ConflictKind::ReduceReduce { rules } => {
+                        let others = rules.iter().copied().filter(|rule| *rule != selected_rule);
+                        let mut count = 0usize;
+                        let exact = others.clone().all(|rule| {
+                            count += 1;
+                            rule_matches_any_owner(grammar, rule, &declaration.against)
+                        });
+                        exact && count > 0
+                    }
+                };
+                if !against_matches {
+                    continue;
+                }
+                matched += 1;
+                *per_lookahead.entry(conflict.lookahead).or_default() += 1;
+                if let Some(previous) = selected_by.insert(conflict_index, declaration_index) {
+                    errors.push(format!(
+                        "scoped LR declarations {previous} and {declaration_index} both select \
+                         state {} on lookahead `{}`",
+                        conflict.state.index(),
+                        grammar.terminal_name(conflict.lookahead)
+                    ));
+                    continue;
+                }
+                let (action, resolution, reduced, rules) =
+                    match (&conflict.kind, declaration.action) {
+                        (ConflictKind::ShiftReduce { shift, reduce }, LrConflictAction::Shift) => (
+                            Action::Shift(*shift),
+                            Resolution::Shift,
+                            None,
+                            vec![*reduce],
+                        ),
+                        (ConflictKind::ShiftReduce { reduce, .. }, LrConflictAction::Reduce) => (
+                            Action::Reduce(*reduce),
+                            Resolution::Reduce,
+                            Some(*reduce),
+                            vec![*reduce],
+                        ),
+                        (ConflictKind::ShiftReduce { reduce, .. }, LrConflictAction::Error) => {
+                            (Action::Error, Resolution::Error, None, vec![*reduce])
+                        }
+                        (ConflictKind::ReduceReduce { rules }, LrConflictAction::Reduce) => (
+                            Action::Reduce(selected_rule),
+                            Resolution::Reduce,
+                            Some(selected_rule),
+                            rules.clone(),
+                        ),
+                        (ConflictKind::ReduceReduce { .. }, action) => {
+                            errors.push(format!(
+                                "scoped LR declaration {declaration_index} selects a reduce/reduce \
+                             conflict in state {} on `{}`, but action `{}` cannot resolve it",
+                                conflict.state.index(),
+                                grammar.terminal_name(conflict.lookahead),
+                                match action {
+                                    LrConflictAction::Shift => "shift",
+                                    LrConflictAction::Error => "error",
+                                    LrConflictAction::Reduce => unreachable!(),
+                                }
+                            ));
+                            continue;
+                        }
+                    };
+                plans.push((
+                    conflict_index,
+                    action,
+                    ScopedConflictResolution {
+                        state: conflict.state,
+                        lookahead: conflict.lookahead,
+                        declaration: declaration_index as u32,
+                        rules,
+                        resolution,
+                        reduced,
+                    },
+                ));
+            }
+            for lookahead in &lookaheads {
+                if !per_lookahead.contains_key(lookahead) {
+                    errors.push(format!(
+                        "scoped LR declaration {declaration_index} matched no conflict on \
+                         lookahead `{}`",
+                        grammar.terminal_name(*lookahead)
+                    ));
+                }
+            }
+            if matched != declaration.expected as usize {
+                errors.push(format!(
+                    "scoped LR declaration {declaration_index} expected {} conflict cell(s) but \
+                     matched {matched}",
+                    declaration.expected
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        plans.sort_by_key(|(conflict, _, _)| *conflict);
+        for (_, action, resolution) in &plans {
+            self.states[resolution.state.index()]
+                .actions
+                .insert(resolution.lookahead, *action);
+        }
+        let selected = plans
+            .iter()
+            .map(|(conflict, _, _)| *conflict)
+            .collect::<BTreeSet<_>>();
+        self.conflicts = self
+            .conflicts
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, conflict)| (!selected.contains(&index)).then_some(conflict))
+            .collect();
+        self.scoped_resolutions = plans
+            .into_iter()
+            .map(|(_, _, resolution)| resolution)
+            .collect();
+        for state in &mut self.states {
+            state.default_reduction = choose_default_reduction(grammar, &state.actions);
+        }
+        Ok(())
+    }
+}
+
+/// Returns the conflict's reducing rules selected by an authored owner set.
+fn selected_rules(grammar: &LrGrammar, conflict: &Conflict, owners: &[LrRuleOwner]) -> Vec<RuleId> {
+    match &conflict.kind {
+        ConflictKind::ShiftReduce { reduce, .. } => {
+            rule_matches_any_owner(grammar, *reduce, owners)
+                .then_some(*reduce)
+                .into_iter()
+                .collect()
+        }
+        ConflictKind::ReduceReduce { rules } => rules
+            .iter()
+            .copied()
+            .filter(|rule| rule_matches_any_owner(grammar, *rule, owners))
+            .collect(),
+    }
+}
+
+/// Reports whether a lowered rule came from any selected source owner.
+fn rule_matches_any_owner(grammar: &LrGrammar, rule: RuleId, owners: &[LrRuleOwner]) -> bool {
+    owners
+        .iter()
+        .any(|owner| match (owner, &grammar.rule(rule).action) {
+            (LrRuleOwner::Type(owner), RuleAction::Construct { type_id, .. }) => owner == type_id,
+            (
+                LrRuleOwner::Variant(owner),
+                RuleAction::Construct {
+                    variant: Some(variant),
+                    ..
+                },
+            ) => owner == variant,
+            _ => false,
+        })
 }
 
 /// One LR(0) state under construction.
@@ -962,7 +1198,9 @@ fn resolve_actions(
             && shares_only_the_end_marker(reductions, rules, end)
     });
     if settled_by_declaration_order {
-        let conflict = conflicts.remove(&end).expect("the end-marker conflict was just seen");
+        let conflict = conflicts
+            .remove(&end)
+            .expect("the end-marker conflict was just seen");
         let ConflictKind::ReduceReduce { mut rules } = conflict.kind else {
             unreachable!("only a reduce/reduce conflict is settled by declaration order");
         };

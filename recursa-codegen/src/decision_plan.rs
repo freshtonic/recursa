@@ -604,6 +604,11 @@ pub struct ContainerMachine {
     element_first: Vec<FirstPosition>,
     /// Supplies the separator first consumed when generation replays this decision.
     separator_first: Vec<FirstPosition>,
+    /// Supplies the FIRST positions after a separator owned by the immediately following tail.
+    ///
+    /// When present, generated recursive descent leaves that separator for the tail rather than
+    /// consuming it as another list element.
+    separated_tail_after: Option<Vec<FirstPosition>>,
     /// Supplies the stop consumed when generation replays this decision.
     stop: FollowRecipe,
     /// Supplies sparse consume-vs-skip overrides when the legacy selector is insufficient.
@@ -647,6 +652,11 @@ impl ContainerMachine {
     /// Derives the canonical separator first recorded in the immutable decision plan.
     pub fn separator_first(&self) -> &[FirstPosition] {
         &self.separator_first
+    }
+
+    /// Returns the post-separator selector of an automatic adjacent continuation, when proven.
+    pub fn separated_tail_after(&self) -> Option<&[FirstPosition]> {
+        self.separated_tail_after.as_deref()
     }
 
     /// Exposes the FOLLOW recipe that terminates container parsing.
@@ -1213,6 +1223,45 @@ pub(crate) fn plan_decisions(
     first_sequences: &FirstSequenceAnalysis<'_>,
     caller_first_by_site: &[Vec<FirstPosition>],
 ) -> ConstructedDecisionProducts {
+    plan_decisions_with_policy(
+        grammar,
+        semantic,
+        first_sequences,
+        caller_first_by_site,
+        false,
+    )
+}
+
+/// Freezes decisions for a table-driven-only generation.
+///
+/// The LR parser does not consume the predictive enum trie. Keep a conservative
+/// declaration-order terminal when an enum has an unresolved recursive-descent
+/// shared prefix, so the surrounding Pretty and AST emission plans can still be
+/// materialized. Recursive descent never takes this path: its source-analysis
+/// policy retains the shared-prefix error and calls [`plan_decisions`] instead.
+pub(crate) fn plan_decisions_for_table_driven(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    caller_first_by_site: &[Vec<FirstPosition>],
+) -> ConstructedDecisionProducts {
+    plan_decisions_with_policy(
+        grammar,
+        semantic,
+        first_sequences,
+        caller_first_by_site,
+        true,
+    )
+}
+
+/// Freezes dispatch and container decisions under the selected parser-style policy.
+fn plan_decisions_with_policy(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    caller_first_by_site: &[Vec<FirstPosition>],
+    allow_unresolved_enum_shared_prefix: bool,
+) -> ConstructedDecisionProducts {
     #[cfg(test)]
     DECISION_PLAN_CONSTRUCTIONS.set(DECISION_PLAN_CONSTRUCTIONS.get().saturating_add(1));
     // An empty slice deliberately disables caller-overlap planning (test replays);
@@ -1249,6 +1298,7 @@ pub(crate) fn plan_decisions(
                     }),
                     grammar,
                     first_sequences,
+                    allow_unresolved_enum_shared_prefix,
                 ));
             }
             TypeShape::Pratt { variants } => {
@@ -1274,6 +1324,7 @@ pub(crate) fn plan_decisions(
                         }),
                     grammar,
                     first_sequences,
+                    false,
                 ));
                 if variants.iter().any(|variant| is_led(variant.position)) {
                     dispatches.push(dispatch_plan(
@@ -1291,6 +1342,7 @@ pub(crate) fn plan_decisions(
                             }),
                         grammar,
                         first_sequences,
+                        false,
                     ));
                 }
             }
@@ -1337,6 +1389,11 @@ pub(crate) fn plan_decisions(
         });
     }
 
+    let separated_tails = first_sequences
+        .separated_list_continuations()
+        .into_iter()
+        .map(|continuation| (continuation.list, continuation.after_separator))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let container_machines = grammar
         .sites
         .iter()
@@ -1376,6 +1433,7 @@ pub(crate) fn plan_decisions(
                 separator: semantics.separator,
                 element_first,
                 separator_first,
+                separated_tail_after: separated_tails.get(&SiteId::new(index as u32)).cloned(),
                 stop,
                 optional_viability_decision: optional_viability_decisions_by_site[index].clone(),
                 transitions,
@@ -2202,10 +2260,17 @@ fn dispatch_plan<'a>(
     alternatives: impl IntoIterator<Item = (DeclId, Option<PrattPosition>, &'a [SiteId])>,
     grammar: &GrammarDescription,
     first_sequences: &FirstSequenceAnalysis<'_>,
+    allow_unresolved_enum_shared_prefix: bool,
 ) -> DispatchPlan {
     let alternatives = alternatives.into_iter().collect::<Vec<_>>();
     if kind == DispatchKind::Enum {
-        return compact_enum_dispatch_plan(owner, &alternatives, grammar, first_sequences);
+        return compact_enum_dispatch_plan(
+            owner,
+            &alternatives,
+            grammar,
+            first_sequences,
+            allow_unresolved_enum_shared_prefix,
+        );
     }
     let maximum_depth = grammar.max_lookahead;
     let depths = if kind == DispatchKind::PrattLed || maximum_depth == 0 {
@@ -2296,46 +2361,50 @@ fn compact_enum_dispatch_plan(
     alternatives: &[(DeclId, Option<PrattPosition>, &[SiteId])],
     grammar: &GrammarDescription,
     first_sequences: &FirstSequenceAnalysis<'_>,
+    allow_unresolved_shared_prefix: bool,
 ) -> DispatchPlan {
     let semantic_alternatives = alternatives
         .iter()
         .map(|(declaration, _, sites)| (*declaration, *sites))
         .collect::<Vec<_>>();
-    let (sequences, trie, required_lookahead, balanced) =
-        if let Some(resolution) = first_sequences.compact_enum_dispatch(&semantic_alternatives) {
-            let mut by_declaration = compact_sequences_by_declaration(&resolution);
-            let sequences: Vec<_> = alternatives
-                .iter()
-                .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
-                .collect();
-            (
-                sequences,
-                dispatch_trie_from_compact(resolution.root),
-                resolution.required_lookahead,
-                None,
-            )
-        } else {
-            let resolution = first_sequences
-                .compact_balanced_enum_dispatch(&semantic_alternatives)
-                .expect("validated structural dispatch resolves the unbounded shared prefix");
-            // Structural routes are represented by `BalancedDispatch`; branch
-            // rows describe only truthful bounded routes in the ordinary trie.
-            let mut by_declaration = compact_sequences_by_declaration(&resolution.ordinary);
-            let sequences: Vec<_> = alternatives
-                .iter()
-                .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
-                .collect();
-            (
-                sequences,
-                dispatch_trie_from_compact(resolution.ordinary.root),
-                resolution.ordinary.required_lookahead,
-                Some(BalancedDispatch {
-                    open: resolution.open,
-                    close: resolution.close,
-                    after_close: dispatch_trie_from_compact(resolution.after_close.root),
-                }),
-            )
-        };
+    let (sequences, trie, required_lookahead, balanced) = if let Some(resolution) =
+        first_sequences.compact_enum_dispatch(&semantic_alternatives)
+    {
+        let mut by_declaration = compact_sequences_by_declaration(&resolution);
+        let sequences: Vec<_> = alternatives
+            .iter()
+            .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
+            .collect();
+        (
+            sequences,
+            dispatch_trie_from_compact(resolution.root),
+            resolution.required_lookahead,
+            None,
+        )
+    } else if allow_unresolved_shared_prefix {
+        return declaration_order_fallback_dispatch(owner, alternatives, grammar, first_sequences);
+    } else {
+        let resolution = first_sequences
+            .compact_balanced_enum_dispatch(&semantic_alternatives)
+            .expect("validated structural dispatch resolves the unbounded shared prefix");
+        // Structural routes are represented by `BalancedDispatch`; branch
+        // rows describe only truthful bounded routes in the ordinary trie.
+        let mut by_declaration = compact_sequences_by_declaration(&resolution.ordinary);
+        let sequences: Vec<_> = alternatives
+            .iter()
+            .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
+            .collect();
+        (
+            sequences,
+            dispatch_trie_from_compact(resolution.ordinary.root),
+            resolution.ordinary.required_lookahead,
+            Some(BalancedDispatch {
+                open: resolution.open,
+                close: resolution.close,
+                after_close: dispatch_trie_from_compact(resolution.after_close.root),
+            }),
+        )
+    };
     let mut branches = alternatives
         .iter()
         .zip(sequences)
@@ -2362,6 +2431,88 @@ fn compact_enum_dispatch_plan(
         on_caller_follow,
         trie,
         balanced,
+    }
+}
+
+/// Creates a non-authoritative predictive placeholder for a table-driven-only enum.
+fn declaration_order_fallback_dispatch(
+    owner: TypeId,
+    alternatives: &[(DeclId, Option<PrattPosition>, &[SiteId])],
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> DispatchPlan {
+    let declaration = alternatives
+        .first()
+        .map(|(declaration, _, _)| *declaration)
+        .expect("an enum dispatch has at least one alternative");
+    let sequences = first_sequences
+        .sequences_batch_at_depth(alternatives.iter().map(|(_, _, sites)| *sites), 1);
+    let mut branches = alternatives
+        .iter()
+        .zip(sequences)
+        .map(|((declaration, position, _), sequences)| DispatchBranch {
+            declaration: *declaration,
+            position: *position,
+            sequences: sequences
+                .into_iter()
+                .map(|sequence| owned_dispatch_sequence(sequence, grammar))
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    for branch in &mut branches {
+        if branch.sequences.is_empty() {
+            branch.sequences.push(DispatchSequence {
+                positions: Vec::new(),
+                on_caller_follow: false,
+            });
+        }
+    }
+    let (selected_declaration, selected_position) = branches
+        .iter()
+        .find_map(|branch| {
+            branch
+                .sequences
+                .iter()
+                .flat_map(|sequence| sequence.positions.first())
+                .next()
+                .map(|position| (branch.declaration, position.clone()))
+        })
+        .unwrap_or((
+            declaration,
+            DispatchPosition {
+                kinds: KindSet::empty(grammar.kind_count),
+                text_predicate: None,
+            },
+        ));
+    branches.sort_by(|left, right| {
+        grammar.declarations[left.declaration.index()]
+            .name
+            .cmp(&grammar.declarations[right.declaration.index()].name)
+    });
+    DispatchPlan {
+        owner,
+        kind: DispatchKind::Enum,
+        branches,
+        required_lookahead: 0,
+        on_caller_follow: None,
+        trie: DispatchTrieNode {
+            terminal: None,
+            edges: vec![DispatchTrieEdge {
+                position: DispatchPosition {
+                    kinds: selected_position.kinds,
+                    text_predicate: None,
+                },
+                next: DispatchTrieNode {
+                    terminal: Some(DispatchTerminal {
+                        declaration: selected_declaration,
+                        mode: DispatchTerminalMode::Immediate,
+                    }),
+                    edges: Vec::new().into(),
+                },
+            }]
+            .into(),
+        },
+        balanced: None,
     }
 }
 
@@ -4962,6 +5113,7 @@ mod tests {
                 .map(|alternative| (alternative.declaration, None, alternative.sites.as_slice())),
             &grammar,
             &first_sequences,
+            false,
         );
         assert_eq!(plan.required_lookahead(), 2);
         let rows = plan

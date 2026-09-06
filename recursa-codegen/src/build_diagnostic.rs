@@ -132,7 +132,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3005 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
-        1..=406 => DiagnosticEvidenceSchema::AnalysisWitness,
+        1..=407 => DiagnosticEvidenceSchema::AnalysisWitness,
         1001..=3212 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
@@ -154,7 +154,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3005 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
-        1..=406 => DiagnosticRemedySchema::ResolveAnalysisConflict,
+        1..=407 => DiagnosticRemedySchema::ResolveAnalysisConflict,
         1001..=3212 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }
@@ -219,6 +219,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     retired_diagnostic_spec!("RCA0404", Analysis, Error),
     diagnostic_spec!("RCA0405", Analysis, Warning),
     diagnostic_spec!("RCA0406", Analysis, Error),
+    diagnostic_spec!("RCA0407", Analysis, Error),
     diagnostic_spec!("RCA1001", Discovery, Error),
     diagnostic_spec!("RCA1002", Discovery, Error),
     diagnostic_spec!("RCA1003", Discovery, Error),
@@ -292,6 +293,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3131", Lowering, Error),
     diagnostic_spec!("RCA3132", Lowering, Error),
     diagnostic_spec!("RCA3133", Lowering, Error),
+    diagnostic_spec!("RCA3134", Lowering, Error),
     diagnostic_spec!("RCA3202", Lowering, Error),
     diagnostic_spec!("RCA3203", Lowering, Error),
     diagnostic_spec!("RCA3204", Lowering, Error),

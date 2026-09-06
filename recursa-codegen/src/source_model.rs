@@ -133,6 +133,55 @@ pub(crate) struct SourceModel {
     pub(crate) precedence: Vec<PrecedenceLevel>,
     /// Every `#[parse(prec = NAME)]` override, resolved to a level of `precedence`.
     pub(crate) precedence_overrides: Vec<PrecedenceOverride>,
+    /// Authored LR conflict resolutions, compiled to typed source identities and token
+    /// definitions. Recursive-descent generation deliberately ignores them.
+    pub(crate) lr_conflict_resolutions: Vec<LrConflictResolution>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A Node or variant whose lowered rules participate in an authored LR conflict declaration.
+pub(crate) enum LrRuleOwner {
+    /// One authored Node declaration.
+    Type(NodeId),
+    /// One authored enum or Pratt variant declaration.
+    Variant(ResolvedVariantId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The explicit action of an authored LR conflict declaration.
+pub(crate) enum LrConflictAction {
+    /// Keep the shift.
+    Shift,
+    /// Reduce by the declaration owner's uniquely matching rule.
+    Reduce,
+    /// Reject the lookahead.
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One validated `#[parse(lr_conflict(...))]` declaration in authored source terms.
+pub(crate) struct LrConflictResolution {
+    /// The reducing rule's authored owner, and the winner when `action` is `Reduce`.
+    pub(crate) owner: LrRuleOwner,
+    /// The opposing source identity required in the selected state.
+    pub(crate) against: LrRuleOwner,
+    /// The required parser action.
+    pub(crate) action: LrConflictAction,
+    /// Lookahead token kinds named by the declaration.
+    pub(crate) lookaheads: Vec<LrLookaheadReference>,
+    /// Exact number of conflict cells the declaration must select.
+    pub(crate) expected: u32,
+    /// Locates the declaration for diagnostics and source ordering.
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A token kind named as an LR conflict lookahead.
+pub(crate) enum LrLookaheadReference {
+    /// A fixed or content token definition.
+    Token(TokenDefinitionId),
+    /// A lookahead filter's merged kind, by index in the source model.
+    Merged(usize),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,7 +244,7 @@ pub(crate) enum PrecedenceOwner {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One compiled lookahead filter: a word-shaped fixed token that a table-driven parser's token
+/// One compiled lookahead filter: a fixed token that a table-driven parser's token
 /// feed reads as the merged kind `name` when the next record is one of `triggers`.
 ///
 /// The merged kind is not a token definition: `#[tok(name)]` stays unresolved, so grammar nodes
@@ -207,7 +256,8 @@ pub(crate) struct LookaheadFilter {
     pub(crate) site: SourceSite,
     /// The fixed token definition the filter merges.
     pub(crate) token: TokenDefinitionId,
-    /// The fixed token definitions that trigger the merge, in authored order without duplicates.
+    /// Fixed or single-semantic-kind content token definitions that trigger the merge, in
+    /// authored order without duplicates.
     pub(crate) triggers: Vec<TokenDefinitionId>,
 }
 
@@ -1134,12 +1184,15 @@ pub(crate) enum SourceModelDiagnosticKind {
     ObsoletePostLexHook,
     /// Identifies an obsolete authored parser postcondition.
     ObsoleteParserPostcondition,
-    /// A `lookahead { ... }` declaration names an unknown, duplicate or non-word-shaped token.
+    /// A `lookahead { ... }` declaration names an unknown, duplicate or ambiguous token.
     InvalidLookaheadFilter,
     /// A `precedence { ... }` declaration names an unknown token or is declared twice, or a
     /// `#[parse(prec = NAME)]` is malformed, names no declared level, or sits on a Pratt
     /// operator variant whose binding powers already are its precedence.
     InvalidPrecedenceDeclaration,
+    /// A `#[parse(lr_conflict(...))]` declaration is malformed or names an unknown source rule
+    /// owner or lookahead token.
+    InvalidLrConflictResolution,
 }
 
 impl SourceModelDiagnosticKind {
@@ -1204,7 +1257,6 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         input.resolved.configuration.syntax.text_equivalence,
         &mut diagnostics,
     );
-    tokens.compile_lookahead_filters(&mut diagnostics);
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
         cfg: input.cfg,
@@ -1224,6 +1276,8 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         pending_precedence_overrides: Vec::new(),
         precedence: Vec::new(),
         precedence_overrides: Vec::new(),
+        pending_lr_conflict_resolutions: Vec::new(),
+        lr_conflict_resolutions: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
@@ -1274,6 +1328,27 @@ struct SourceModelBuilder<'cfg> {
     precedence: Vec<PrecedenceLevel>,
     /// Resolved `#[parse(prec = NAME)]` overrides.
     precedence_overrides: Vec<PrecedenceOverride>,
+    /// Authored LR conflict declarations awaiting source-path and token resolution.
+    pending_lr_conflict_resolutions: Vec<PendingLrConflictResolution>,
+    /// Validated LR conflict declarations.
+    lr_conflict_resolutions: Vec<LrConflictResolution>,
+}
+
+#[derive(Clone)]
+/// One parsed LR conflict declaration awaiting source-path and token resolution.
+struct PendingLrConflictResolution {
+    /// The declaration's own source owner.
+    owner: LrRuleOwner,
+    /// Source path fingerprinting the opposing owner.
+    against: syn::Path,
+    /// The explicit action.
+    action: LrConflictAction,
+    /// Lookahead names with authored sites.
+    lookaheads: Vec<AdmissionReference>,
+    /// Exact selected-cell count.
+    expected: u32,
+    /// Locates the complete attribute.
+    site: SourceSite,
 }
 
 /// One `#[parse(prec = NAME)]` attribute whose name awaits the compiled declaration.
@@ -5173,8 +5248,10 @@ impl SourceModelBuilder<'_> {
         let pretty_soft_node_evaluations =
             self.pretty_boundary_analysis.borrow().soft_node_evaluations;
         normalize_source_order(&mut self.nodes, &mut self.tokens);
+        self.tokens.compile_lookahead_filters(&mut self.diagnostics);
         self.resolve_greedy();
         self.resolve_precedence();
+        self.resolve_lr_conflict_resolutions();
         let source_modeled = self
             .diagnostics
             .iter()
@@ -5191,6 +5268,7 @@ impl SourceModelBuilder<'_> {
                     lookahead_filters: self.tokens.lookahead_filters,
                     precedence: self.precedence,
                     precedence_overrides: self.precedence_overrides,
+                    lr_conflict_resolutions: self.lr_conflict_resolutions,
                 },
             });
         SourceModelReport {
@@ -5391,6 +5469,11 @@ impl SourceModelBuilder<'_> {
                                         PrecedenceOwner::Variant(variant.id),
                                         !matches!(position, SourcePrattPosition::Atom),
                                     );
+                                    self.lower_lr_conflict_resolutions(
+                                        origin,
+                                        &variant.metas,
+                                        LrRuleOwner::Variant(variant.id),
+                                    );
                                     SourcePrattVariant {
                                         common: Variant {
                                             resolved_variant: variant.id,
@@ -5456,6 +5539,11 @@ impl SourceModelBuilder<'_> {
                                         PrecedenceOwner::Variant(variant.id),
                                         false,
                                     );
+                                    self.lower_lr_conflict_resolutions(
+                                        origin,
+                                        &variant.metas,
+                                        LrRuleOwner::Variant(variant.id),
+                                    );
                                     Variant {
                                         resolved_variant: variant.id,
                                         name: variant.ident.clone(),
@@ -5494,6 +5582,7 @@ impl SourceModelBuilder<'_> {
                 PrecedenceOwner::Type(node.id),
                 false,
             );
+            self.lower_lr_conflict_resolutions(origin, configured, LrRuleOwner::Type(node.id));
             self.nodes.push(Node {
                 resolved_node: node.id,
                 name: node.ident,
@@ -5702,17 +5791,22 @@ impl SourceModelBuilder<'_> {
             Ok(name)
         };
         match parser.parse2(list.tokens.clone()) {
-            Ok(name) => self.pending_precedence_overrides.push(PendingPrecedenceOverride {
-                owner,
-                name: name.unraw().to_string(),
-                site,
-            }),
-            Err(error) => self
-                .diagnostics
-                .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
-                    self.site(origin, span_range(error.span())),
-                    format!("#[parse(prec = NAME)] names one declared precedence level: {error}"),
-                )),
+            Ok(name) => self
+                .pending_precedence_overrides
+                .push(PendingPrecedenceOverride {
+                    owner,
+                    name: name.unraw().to_string(),
+                    site,
+                }),
+            Err(error) => {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                        self.site(origin, span_range(error.span())),
+                        format!(
+                            "#[parse(prec = NAME)] names one declared precedence level: {error}"
+                        ),
+                    ))
+            }
         }
     }
 
@@ -5811,23 +5905,23 @@ impl SourceModelBuilder<'_> {
                         site: pending.site,
                     });
                 }
-                None => self
-                    .diagnostics
-                    .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                None => self.diagnostics.push(
+                    SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
                         pending.site,
                         format!(
                             "#[parse(prec = {})] names no level of the `precedence {{ ... }}` \
                              declaration",
                             pending.name
                         ),
-                    )),
+                    ),
+                ),
             }
         }
         for level in &levels {
             for name in &level.names {
                 if !used.contains(name) {
-                    self.diagnostics
-                        .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
+                    self.diagnostics.push(
+                        SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
                             level.site.clone(),
                             format!(
                                 "`{name}` in the precedence declaration is not a fixed token, a \
@@ -5835,11 +5929,285 @@ impl SourceModelBuilder<'_> {
                                  precedence-only name must be used by a \
                                  `#[parse(prec = {name})]`"
                             ),
-                        ));
+                        ),
+                    );
                 }
             }
         }
         self.precedence = levels;
+    }
+
+    /// Parses every `#[parse(lr_conflict(...))]` attached to a Node or variant.
+    ///
+    /// The declaration owner is implicit in the attachment site. `against` is a fully qualified
+    /// grammar-source path to the opposing Node or variant, `lookahead` is a nonempty exact token
+    /// set, and `expect` is a positive exact cell count. Resolution is table-driven-only data;
+    /// recursive descent does not consult it.
+    fn lower_lr_conflict_resolutions(
+        &mut self,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        owner: LrRuleOwner,
+    ) {
+        for meta in metas.iter().filter(|meta| is_lr_conflict_meta(meta)) {
+            let Meta::List(list) = meta else {
+                unreachable!("`is_lr_conflict_meta` matches list attributes only")
+            };
+            let site = self.site(origin, span_range(meta.span()));
+            let parser = |input: ParseStream<'_>| -> syn::Result<_> {
+                let marker = syn::Ident::parse_any(input)?;
+                debug_assert_eq!(marker, "lr_conflict");
+                let arguments;
+                syn::parenthesized!(arguments in input);
+                if !input.is_empty() {
+                    return Err(input.error("unexpected tokens after `lr_conflict(...)`"));
+                }
+                let mut action = None;
+                let mut against = None;
+                let mut lookaheads = None;
+                let mut expected = None;
+                while !arguments.is_empty() {
+                    let key = syn::Ident::parse_any(&arguments)?;
+                    arguments.parse::<Token![=]>()?;
+                    match key.to_string().as_str() {
+                        "action" if action.is_none() => {
+                            let value = syn::Ident::parse_any(&arguments)?;
+                            action = Some(match value.to_string().as_str() {
+                                "shift" => LrConflictAction::Shift,
+                                "reduce" => LrConflictAction::Reduce,
+                                "error" => LrConflictAction::Error,
+                                _ => {
+                                    return Err(syn::Error::new(
+                                        value.span(),
+                                        "LR conflict action must be `shift`, `reduce`, or `error`",
+                                    ));
+                                }
+                            });
+                        }
+                        "against" if against.is_none() => against = Some(arguments.parse()?),
+                        "lookahead" if lookaheads.is_none() => {
+                            let members;
+                            syn::braced!(members in arguments);
+                            let names = syn::punctuated::Punctuated::<
+                                syn::Ident,
+                                Token![,],
+                            >::parse_terminated(&members)?
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                            if names.is_empty() {
+                                return Err(syn::Error::new(
+                                    key.span(),
+                                    "LR conflict lookahead set must not be empty",
+                                ));
+                            }
+                            let mut seen = BTreeSet::new();
+                            for name in &names {
+                                if !seen.insert(name.unraw().to_string()) {
+                                    return Err(syn::Error::new(
+                                        name.span(),
+                                        format!(
+                                            "LR conflict lookahead `{name}` appears more than once"
+                                        ),
+                                    ));
+                                }
+                            }
+                            lookaheads = Some(names);
+                        }
+                        "expect" if expected.is_none() => {
+                            let literal: syn::LitInt = arguments.parse()?;
+                            let count = literal.base10_parse::<u32>()?;
+                            if count == 0 {
+                                return Err(syn::Error::new(
+                                    literal.span(),
+                                    "LR conflict `expect` must be greater than zero",
+                                ));
+                            }
+                            expected = Some(count);
+                        }
+                        "action" | "against" | "lookahead" | "expect" => {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                format!("LR conflict argument `{key}` is declared more than once"),
+                            ));
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "expected one of `action`, `against`, `lookahead`, or `expect`",
+                            ));
+                        }
+                    }
+                    if arguments.peek(Token![,]) {
+                        arguments.parse::<Token![,]>()?;
+                    } else if !arguments.is_empty() {
+                        return Err(arguments.error("expected `,` between LR conflict arguments"));
+                    }
+                }
+                Ok((
+                    action
+                        .ok_or_else(|| input.error("LR conflict declaration requires `action`"))?,
+                    against
+                        .ok_or_else(|| input.error("LR conflict declaration requires `against`"))?,
+                    lookaheads.ok_or_else(|| {
+                        input.error("LR conflict declaration requires `lookahead`")
+                    })?,
+                    expected
+                        .ok_or_else(|| input.error("LR conflict declaration requires `expect`"))?,
+                ))
+            };
+            match parser.parse2(list.tokens.clone()) {
+                Ok((action, against, names, expected)) => {
+                    self.pending_lr_conflict_resolutions
+                        .push(PendingLrConflictResolution {
+                            owner,
+                            against,
+                            action,
+                            lookaheads: names
+                                .into_iter()
+                                .map(|name| AdmissionReference {
+                                    name: name.unraw().to_string(),
+                                    site: self.site(origin, span_range(name.span())),
+                                })
+                                .collect(),
+                            expected,
+                            site,
+                        });
+                }
+                Err(error) => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::InvalidLrConflictResolution.at(
+                        self.site(origin, span_range(error.span())),
+                        format!(
+                            "#[parse(lr_conflict(...))] requires explicit action, opposing source \
+                             identity, lookaheads, and expected count: {error}"
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Resolves LR conflict declarations against exact source identities and the completed token
+    /// catalog. This rejects stale spelling before materialization; exact conflict-cell matching
+    /// remains the LR analysis phase's responsibility.
+    fn resolve_lr_conflict_resolutions(&mut self) {
+        let pending = std::mem::take(&mut self.pending_lr_conflict_resolutions);
+        for declaration in pending {
+            let against = match self.resolve_lr_rule_owner(&declaration.against) {
+                Ok(owner) => owner,
+                Err(message) => {
+                    self.diagnostics.push(
+                        SourceModelDiagnosticKind::InvalidLrConflictResolution
+                            .at(declaration.site, message),
+                    );
+                    continue;
+                }
+            };
+            let mut lookaheads = Vec::new();
+            let mut valid = true;
+            for reference in declaration.lookaheads {
+                let token_matches = self
+                    .tokens
+                    .definitions
+                    .iter()
+                    .filter(|definition| {
+                        definition.name == reference.name
+                            && !matches!(definition.kind, TokenDefinitionKind::LexicalBase(_))
+                    })
+                    .map(|definition| definition.id)
+                    .collect::<Vec<_>>();
+                let resolved = if token_matches.len() == 1 {
+                    Some(LrLookaheadReference::Token(token_matches[0]))
+                } else if token_matches.is_empty() {
+                    self.tokens
+                        .lookahead_filters
+                        .iter()
+                        .position(|filter| filter.name == reference.name)
+                        .map(LrLookaheadReference::Merged)
+                } else {
+                    None
+                };
+                match resolved {
+                    Some(resolved) => lookaheads.push(resolved),
+                    None => {
+                        valid = false;
+                        self.diagnostics.push(
+                            SourceModelDiagnosticKind::InvalidLrConflictResolution.at(
+                                reference.site,
+                                format!(
+                                    "LR conflict lookahead `{}` does not name one unique token \
+                                     kind or lookahead filter",
+                                    reference.name
+                                ),
+                            ),
+                        );
+                    }
+                }
+            }
+            if valid {
+                self.lr_conflict_resolutions.push(LrConflictResolution {
+                    owner: declaration.owner,
+                    against,
+                    action: declaration.action,
+                    lookaheads,
+                    expected: declaration.expected,
+                    site: declaration.site,
+                });
+            }
+        }
+    }
+
+    /// Resolves a root-anchored grammar source path to exactly one authored Node or variant.
+    fn resolve_lr_rule_owner(&self, path: &syn::Path) -> Result<LrRuleOwner, String> {
+        if path.leading_colon.is_some()
+            || path
+                .segments
+                .iter()
+                .any(|segment| !segment.arguments.is_empty())
+        {
+            return Err(
+                "an LR conflict `against` path must be a plain root-anchored grammar path"
+                    .to_owned(),
+            );
+        }
+        let mut segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.unraw().to_string())
+            .collect::<Vec<_>>();
+        if segments.first().is_some_and(|segment| segment == "crate") {
+            segments.remove(0);
+        }
+        let mut matches = Vec::new();
+        for node in &self.resolved.nodes {
+            if node.key.segments == segments {
+                matches.push(LrRuleOwner::Type(node.id));
+            }
+            if segments.len() == node.key.segments.len() + 1
+                && segments.starts_with(&node.key.segments)
+            {
+                let variant_name = &segments[segments.len() - 1];
+                if let ResolvedNodeBody::Enum { variants } = &node.body {
+                    matches.extend(
+                        variants
+                            .iter()
+                            .filter(|variant| &variant.ident == variant_name)
+                            .map(|variant| LrRuleOwner::Variant(variant.id)),
+                    );
+                }
+            }
+        }
+        match matches.as_slice() {
+            [owner] => Ok(*owner),
+            [] => Err(format!(
+                "LR conflict `against` path `{}` names no authored Node or variant",
+                path_text(path)
+            )),
+            _ => Err(format!(
+                "LR conflict `against` path `{}` is ambiguous",
+                path_text(path)
+            )),
+        }
     }
 
     /// Converts resolved fields and positional tokens into source-model elements.
@@ -6089,7 +6457,7 @@ struct TokenCatalog {
     pending_admissions: Vec<PendingAdmissionDefinition>,
     /// Indexes canonical compiled admission membership by authored name.
     named_admissions: BTreeMap<String, Vec<TokenDefinitionId>>,
-    /// Preserves lookahead filter declarations until every fixed token is known.
+    /// Preserves lookahead filter declarations until every fixed and content token is known.
     pending_lookaheads: Vec<PendingLookaheadDefinition>,
     /// Compiled lookahead filters in authored order.
     lookahead_filters: Vec<LookaheadFilter>,
@@ -6520,17 +6888,19 @@ impl TokenCatalog {
         self.named_admissions = compiler.compile();
     }
 
-    /// Validates `lookahead { ... }` declarations against the fixed-token definitions.
+    /// Validates `lookahead { ... }` declarations against the token definitions.
     ///
     /// Every failure is [`SourceModelDiagnosticKind::InvalidLookaheadFilter`]: a merged name that
     /// is declared twice or names a token definition, a merged token or trigger that is not a
-    /// fixed token, a merged token that is not word-shaped or is merged by an earlier filter,
-    /// and a trigger listed twice. A filter with any failure is dropped.
+    /// fixed token, a trigger that is neither a fixed token nor one unique content token, a
+    /// trigger listed twice, or another filter over the same base token whose trigger set
+    /// overlaps. Filters sharing a base token are valid when their trigger sets are disjoint;
+    /// then the table-driven feed has one deterministic merged kind for every token pair. A
+    /// filter with any failure is dropped.
     fn compile_lookahead_filters(&mut self, diagnostics: &mut Vec<SourceModelDiagnostic>) {
         let pending = std::mem::take(&mut self.pending_lookaheads);
         let mut declared = BTreeMap::<String, SourceSite>::new();
-        let mut merged_tokens = BTreeMap::<TokenDefinitionId, String>::new();
-        let mut compiled = Vec::new();
+        let mut compiled = Vec::<LookaheadFilter>::new();
         for filter in pending {
             let mut failures = Vec::new();
             let name = &filter.merged.name;
@@ -6557,40 +6927,59 @@ impl TokenCatalog {
                         filter.token.name
                     ),
                 )),
-                Some(token) => {
-                    let TokenDefinitionKind::Fixed(fixed) = &self.definitions[token.index()].kind
-                    else {
-                        unreachable!("`fixed_by_name` indexes fixed definitions only")
-                    };
-                    if !is_word_shaped(&fixed.spelling) {
-                        failures.push((
-                            vec![filter.token.site.clone()],
-                            format!(
-                                "lookahead filter `{name}` merges `{}`, which is not word-shaped",
-                                filter.token.name
-                            ),
-                        ));
-                    }
-                    if let Some(earlier) = merged_tokens.get(&token) {
-                        failures.push((
-                            vec![filter.token.site.clone()],
-                            format!(
-                                "lookahead filter `{name}` merges `{}`, which lookahead filter \
-                                 `{earlier}` already merges",
-                                filter.token.name
-                            ),
-                        ));
-                    }
-                }
+                Some(_) => {}
             }
             let mut triggers = Vec::new();
             for trigger in &filter.triggers {
-                match self.fixed_by_name.get(&trigger.name).copied() {
+                let content = self.content_by_name.get(&trigger.name);
+                let content_id = content.and_then(|definitions| {
+                    let identities = definitions
+                        .iter()
+                        .filter_map(
+                            |definition| match &self.definitions[definition.index()].kind {
+                                TokenDefinitionKind::Content(content) => Some((
+                                    content.semantic,
+                                    content.pattern.as_str(),
+                                    content.closed_matcher.as_ref(),
+                                    content.priority,
+                                )),
+                                TokenDefinitionKind::Fixed(_)
+                                | TokenDefinitionKind::LexicalBase(_) => None,
+                            },
+                        )
+                        .collect::<BTreeSet<_>>();
+                    (identities.len() == 1).then(|| definitions[0])
+                });
+                if content.is_some() && content_id.is_none() {
+                    let mut sites = vec![trigger.site.clone()];
+                    for definition in content.into_iter().flatten() {
+                        sites.extend(
+                            self.definitions[definition.index()]
+                                .definition_sites
+                                .clone(),
+                        );
+                    }
+                    failures.push((
+                        sites,
+                        format!(
+                            "lookahead filter `{name}` names trigger `{}`, whose content-token \
+                             definitions resolve to more than one lexical or semantic token kind",
+                            trigger.name
+                        ),
+                    ));
+                    continue;
+                }
+                let id = self
+                    .fixed_by_name
+                    .get(&trigger.name)
+                    .copied()
+                    .or(content_id);
+                match id {
                     None => failures.push((
                         vec![trigger.site.clone()],
                         format!(
-                            "lookahead filter `{name}` names trigger `{}`, which is not a fixed \
-                             token",
+                            "lookahead filter `{name}` names trigger `{}`, which is neither a \
+                             fixed token nor one unique content token",
                             trigger.name
                         ),
                     )),
@@ -6615,7 +7004,32 @@ impl TokenCatalog {
                 continue;
             }
             let token = token.expect("a filter without failures resolved its token");
-            merged_tokens.insert(token, name.clone());
+            let mut overlaps_an_earlier_filter = false;
+            for earlier in compiled.iter().filter(|earlier| earlier.token == token) {
+                let overlapping = triggers
+                    .iter()
+                    .filter(|trigger| earlier.triggers.contains(trigger))
+                    .map(|trigger| self.definitions[trigger.index()].name.as_str())
+                    .collect::<Vec<_>>();
+                if !overlapping.is_empty() {
+                    overlaps_an_earlier_filter = true;
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidLookaheadFilter,
+                        sites: vec![earlier.site.clone(), filter.merged.site.clone()],
+                        message: format!(
+                            "lookahead filter `{name}` merges `{}`, which lookahead filter \
+                             `{}` already merges before overlapping trigger{} `{}`",
+                            filter.token.name,
+                            earlier.name,
+                            if overlapping.len() == 1 { "" } else { "s" },
+                            overlapping.join(", "),
+                        ),
+                    });
+                }
+            }
+            if overlaps_an_earlier_filter {
+                continue;
+            }
             compiled.push(LookaheadFilter {
                 name: name.clone(),
                 site: filter.merged.site,
@@ -6992,17 +7406,18 @@ impl TokenCatalog {
                 .into_iter()
                 .map(|admission| pending_admission(resolved, origin, admission)),
         );
-        self.pending_lookaheads.extend(syntax.lookaheads.into_iter().map(|lookahead| {
-            let reference = |ident: syn::Ident| AdmissionReference {
-                name: ident.unraw().to_string(),
-                site: source_site(resolved, origin, span_range(ident.span())),
-            };
-            PendingLookaheadDefinition {
-                merged: reference(lookahead.merged),
-                token: reference(lookahead.token),
-                triggers: lookahead.triggers.into_iter().map(reference).collect(),
-            }
-        }));
+        self.pending_lookaheads
+            .extend(syntax.lookaheads.into_iter().map(|lookahead| {
+                let reference = |ident: syn::Ident| AdmissionReference {
+                    name: ident.unraw().to_string(),
+                    site: source_site(resolved, origin, span_range(ident.span())),
+                };
+                PendingLookaheadDefinition {
+                    merged: reference(lookahead.merged),
+                    token: reference(lookahead.token),
+                    triggers: lookahead.triggers.into_iter().map(reference).collect(),
+                }
+            }));
         self.pending_precedence
             .extend(syntax.precedence.into_iter().map(|declaration| {
                 PendingPrecedenceDeclaration {
@@ -7912,7 +8327,11 @@ impl SourcePrattPosition {
     ) -> Self {
         let parse_metas = metas
             .iter()
-            .filter(|meta| meta.path().is_ident("parse") && !is_precedence_override_meta(meta))
+            .filter(|meta| {
+                meta.path().is_ident("parse")
+                    && !is_precedence_override_meta(meta)
+                    && !is_lr_conflict_meta(meta)
+            })
             .collect::<Vec<_>>();
         if parse_metas.is_empty() {
             return Self::Atom;
@@ -8129,6 +8548,20 @@ fn is_precedence_override_meta(meta: &Meta) -> bool {
     matches!(
         list.tokens.clone().into_iter().next(),
         Some(proc_macro2::TokenTree::Ident(keyword)) if keyword == "prec"
+    )
+}
+
+/// Reports whether an attribute is a `#[parse(lr_conflict(...))]` declaration.
+fn is_lr_conflict_meta(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    if !list.path.is_ident("parse") {
+        return false;
+    }
+    matches!(
+        list.tokens.clone().into_iter().next(),
+        Some(proc_macro2::TokenTree::Ident(keyword)) if keyword == "lr_conflict"
     )
 }
 
@@ -9030,7 +9463,9 @@ impl Parse for CentralTokensSyntax {
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
                         } else if !body.is_empty() {
-                            return Err(body.error("expected `,` after lookahead filter declaration"));
+                            return Err(
+                                body.error("expected `,` after lookahead filter declaration")
+                            );
                         }
                     }
                 } else if section == "matchers" || section == "ignore" || section == "trivia" {
@@ -9801,6 +10236,21 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
         definition_remap[definition.id.index()] = new_id;
         definition.id = new_id;
     }
+    for definition in tokens.fixed_by_name.values_mut() {
+        *definition = definition_remap[definition.index()];
+    }
+    for definitions in tokens.content_by_name.values_mut() {
+        for definition in definitions.iter_mut() {
+            *definition = definition_remap[definition.index()];
+        }
+    }
+    for definitions in tokens.named_admissions.values_mut() {
+        for definition in definitions.iter_mut() {
+            *definition = definition_remap[definition.index()];
+        }
+        definitions.sort_unstable();
+        definitions.dedup();
+    }
     for definition in &mut tokens.definitions {
         if let TokenDefinitionKind::Content(content) = &mut definition.kind {
             for admission in &mut content.admission_set {
@@ -10085,7 +10535,7 @@ mod tests {
     #[test]
     fn lowers_positional_tokens_and_presence_nodes_in_source_order() {
         let report = model(
-            r#"
+            r##"
 recursa::grammar! { module = crate }
 
 #[derive(recursa::Node)]
@@ -10095,7 +10545,7 @@ struct Root { value: Present }
 #[derive(recursa::Node)]
 #[tok("PRESENT")]
 struct Present;
-"#,
+"##,
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -11160,7 +11610,7 @@ recursa::tokens! {
 
     #[test]
     fn lookahead_filters_compile_to_fixed_definitions_in_authored_order() {
-        let model = completed(model(
+        let report = model(
             r#"
 recursa::grammar! { module = crate }
 recursa::tokens! {
@@ -11179,7 +11629,9 @@ recursa::tokens! {
 }
 #[derive(recursa::Node)] struct Root;
 "#,
-        ));
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
         let by_name = |name: &str| {
             model
                 .token_definitions
@@ -11199,10 +11651,12 @@ recursa::tokens! {
         assert_eq!(model.lookahead_filters[1].token, by_name("NULLS"));
         assert_eq!(model.lookahead_filters[1].triggers, [by_name("FIRST")]);
         // A merged kind is not a token definition: `#[tok(NOT_LA)]` stays unresolved.
-        assert!(model
-            .token_definitions
-            .iter()
-            .all(|definition| definition.name != "NOT_LA"));
+        assert!(
+            model
+                .token_definitions
+                .iter()
+                .all(|definition| definition.name != "NOT_LA")
+        );
     }
 
     #[test]
@@ -11220,7 +11674,7 @@ recursa::tokens! {
             ),
             (
                 "lookahead { NOT_LA = NOT before { BETWEEN, MISSING } }",
-                "lookahead filter `NOT_LA` names trigger `MISSING`, which is not a fixed token",
+                "lookahead filter `NOT_LA` names trigger `MISSING`, which is neither a fixed token nor one unique content token",
             ),
             (
                 "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LA = NOT before { IN } }",
@@ -11231,8 +11685,8 @@ recursa::tokens! {
                 "lookahead filter `BETWEEN` has the name of a token definition",
             ),
             (
-                "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT before { IN } }",
-                "lookahead filter `NOT_LB` merges `NOT`, which lookahead filter `NOT_LA` already merges",
+                "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT before { BETWEEN, IN } }",
+                "lookahead filter `NOT_LB` merges `NOT`, which lookahead filter `NOT_LA` already merges before overlapping trigger `BETWEEN`",
             ),
             (
                 "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT_LA before { IN } }",
@@ -11241,10 +11695,6 @@ recursa::tokens! {
             (
                 "lookahead { NOT_LA = NOT before { BETWEEN, BETWEEN } }",
                 "lookahead filter `NOT_LA` names trigger `BETWEEN` more than once",
-            ),
-            (
-                "lookahead { PLUS_LA = PLUS before { BETWEEN } }",
-                "lookahead filter `PLUS_LA` merges `PLUS`, which is not word-shaped",
             ),
         ];
         for (block, message) in cases {
@@ -11268,6 +11718,120 @@ recursa::tokens! {
     }
 
     #[test]
+    fn lookahead_filters_accept_disjoint_triggers_for_one_base_token() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { NOT => "not", BETWEEN => "between", IN => "in" }
+    lookahead {
+        NOT_BEFORE_BETWEEN = NOT before { BETWEEN },
+        NOT_BEFORE_IN = NOT before { IN },
+    }
+}
+#[derive(recursa::Node)]
+#[tok(NOT, BETWEEN, IN)]
+struct Root;
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(model.lookahead_filters.len(), 2);
+        let first = &model.lookahead_filters[0];
+        let second = &model.lookahead_filters[1];
+        assert_eq!(first.token, second.token, "the filters share `NOT`");
+        assert!(
+            first
+                .triggers
+                .iter()
+                .all(|trigger| !second.triggers.contains(trigger)),
+            "the accepted filters have disjoint trigger sets"
+        );
+    }
+
+    #[test]
+    fn lookahead_filters_accept_one_unique_content_token_as_a_trigger() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { UESCAPE => "uescape" }
+    punctuation { RPAREN => ")" }
+    lookahead {
+        UESCAPE_LA = UESCAPE before { StringLit },
+        RPAREN_LA = RPAREN before { StringLit },
+    }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"'[^']*'")]
+    value: StringLit,
+}
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(model.lookahead_filters.len(), 2);
+        let filter = &model.lookahead_filters[0];
+        assert_eq!(filter.name, "UESCAPE_LA");
+        assert_eq!(
+            model.token_definitions[filter.triggers[0].index()].name,
+            "StringLit"
+        );
+        let punctuation = &model.lookahead_filters[1];
+        assert_eq!(punctuation.name, "RPAREN_LA");
+        assert_eq!(
+            model.token_definitions[punctuation.triggers[0].index()].name,
+            "StringLit"
+        );
+    }
+
+    #[test]
+    fn lookahead_filters_reject_a_content_name_with_distinct_lexical_identities() {
+        let report = model(
+            r##"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { UESCAPE => "uescape" }
+    lookahead { UESCAPE_LA = UESCAPE before { StringLit } }
+}
+#[derive(recursa::Node)]
+struct SingleQuoted {
+    #[lex(pattern = r"'[^']*'")]
+    value: StringLit,
+}
+#[derive(recursa::Node)]
+struct DoubleQuoted {
+    #[lex(pattern = r#""[^"]*""#)]
+    value: StringLit,
+}
+"##,
+        );
+        assert!(report.source_modeled.is_none(), "{:?}", report.diagnostics);
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidLookaheadFilter,
+            "RCA3132",
+        );
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::InvalidLookaheadFilter)
+            .expect("the ambiguous content trigger is diagnosed");
+        assert!(
+            diagnostic
+                .message
+                .contains("more than one lexical or semantic token kind"),
+            "{diagnostic:?}",
+        );
+        assert_eq!(
+            diagnostic.sites.len(),
+            3,
+            "the trigger reference and both competing definitions are located",
+        );
+    }
+
+    #[test]
     fn a_precedence_declaration_compiles_its_levels_and_overrides() {
         let report = model(
             r#"
@@ -11285,6 +11849,7 @@ recursa::tokens! {
         left(bp = 20) { DOT },
     }
 }
+
 #[derive(recursa::Node)]
 struct Name {
     #[lex(pattern = r"[a-z]+")]
@@ -11360,7 +11925,12 @@ enum Stmt {
                     vec![],
                 ),
                 (NonAssociative, 6, vec!["ESCAPE".to_owned()], vec![]),
-                (NonAssociative, 7, vec!["NameText".to_owned()], vec!["ESCAPE_ONLY".to_owned()]),
+                (
+                    NonAssociative,
+                    7,
+                    vec!["NameText".to_owned()],
+                    vec!["ESCAPE_ONLY".to_owned()]
+                ),
                 (Left, 10, vec!["PLUS".to_owned()], vec![]),
                 (Right, 18, vec![], vec!["UMINUS".to_owned()]),
                 (Left, 20, vec!["DOT".to_owned()], vec![]),
@@ -11370,7 +11940,10 @@ enum Stmt {
             model.precedence[0].kinds[0],
             super::PrecedenceKindReference::Token(by_name("LIKE"))
         );
-        assert_eq!(model.precedence[0].kinds[1], super::PrecedenceKindReference::Merged(0));
+        assert_eq!(
+            model.precedence[0].kinds[1],
+            super::PrecedenceKindReference::Merged(0)
+        );
         let mut overrides: Vec<(usize, bool)> = model
             .precedence_overrides
             .iter()
@@ -11385,6 +11958,67 @@ enum Stmt {
         // `Scope` names level 2 (`ESCAPE_ONLY`), `Expr::Sub` level 4 (`UMINUS`) and
         // `Stmt::Scoped` level 0 (`LIKE`, a token, which an override may name too).
         assert_eq!(overrides, [(0, false), (2, true), (4, false)]);
+    }
+
+    #[test]
+    fn lr_conflict_declarations_compile_source_owners_actions_and_lookaheads() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { ORDER => "order" } punctuation { RPAREN => ")" } }
+#[derive(recursa::Node)]
+#[parse(lr_conflict(action = reduce, against = SelectClause::Simple, lookahead = { RPAREN }, expect = 2))]
+struct DirectSubquery;
+#[derive(recursa::Node)]
+enum SelectClause {
+    #[parse(lr_conflict(action = shift, against = DirectSubquery, lookahead = { ORDER }, expect = 2))]
+    Simple,
+}
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(model.lr_conflict_resolutions.len(), 2);
+        assert_eq!(
+            model.lr_conflict_resolutions[0].action,
+            super::LrConflictAction::Reduce
+        );
+        assert!(matches!(
+            model.lr_conflict_resolutions[0].against,
+            super::LrRuleOwner::Variant(_)
+        ));
+        assert_eq!(
+            model.lr_conflict_resolutions[1].action,
+            super::LrConflictAction::Shift
+        );
+        assert!(matches!(
+            model.lr_conflict_resolutions[1].against,
+            super::LrRuleOwner::Type(_)
+        ));
+    }
+
+    #[test]
+    fn malformed_lr_conflict_declarations_are_structured_errors() {
+        let source = r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { ORDER => "order" } }
+#[derive(recursa::Node)] struct Other;
+#[derive(recursa::Node)]
+#[parse(lr_conflict(action = shift, against = Missing, lookahead = { ORDER }, expect = 1))]
+struct Root;
+"#;
+        let report = model(source);
+        assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidLrConflictResolution,
+            "RCA3134",
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("names no authored Node or variant")
+        }));
     }
 
     #[test]
@@ -11452,7 +12086,10 @@ recursa::tokens! {
         for (block, node, message) in cases {
             let source = format!("{prelude}{block}\n}}\n{node}\n");
             let report = model(&source);
-            assert!(report.source_modeled.is_none(), "{block} / {node} was non-blocking");
+            assert!(
+                report.source_modeled.is_none(),
+                "{block} / {node} was non-blocking"
+            );
             assert_code(
                 &report,
                 SourceModelDiagnosticKind::InvalidPrecedenceDeclaration,
@@ -11476,10 +12113,7 @@ recursa::tokens! {
                 "precedence { left(bp = 1) { A }, sideways(bp = 2) { B } }",
                 "a precedence level must be left, right, or nonassoc",
             ),
-            (
-                "precedence { left { A } }",
-                "expected parentheses",
-            ),
+            ("precedence { left { A } }", "expected parentheses"),
             (
                 "precedence { left(lbp = 1) { A } }",
                 "a precedence level takes exactly `bp = N`, its binding power",
@@ -11526,7 +12160,8 @@ recursa::tokens! {
         assert!(
             report.diagnostics.iter().any(|diagnostic| {
                 diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                    && diagnostic.message == "`A` appears more than once in the precedence declaration"
+                    && diagnostic.message
+                        == "`A` appears more than once in the precedence declaration"
             }),
             "{:?}",
             report.diagnostics

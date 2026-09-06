@@ -311,7 +311,10 @@ lookahead {
 The merged kind exists in `TokenKind` but only a table-driven parser's
 token feed produces it. Grammar nodes keep writing `#[tok(NOT, BETWEEN)]`;
 the `precedence` block may name it, which is how gram.y gives `NOT_LA` a
-level of its own (#128).
+level of its own (#128). The merged source must be a fixed token. A trigger
+may also be a content-token name when all its definitions
+share one lexical kind and one semantic token identity; a genuinely ambiguous content name is a
+source-model error carrying every conflicting definition site.
 Lowering decides every rule position that holds the token by what can
 follow it there, FIRST of the rest of the rule plus FOLLOW of the rule's
 nonterminal when the rest is nullable, the same way at every position:
@@ -334,6 +337,30 @@ exhaust `max_lookahead = 5`; that is an LL fact, mostly shared prefixes
 that LR resolves by deferring the reduction, and the true filter set is
 known only after the first construction run. PostgreSQL's six are the
 expected set because pg-sql mirrors gram.y.
+
+**Scoped conflict resolution.** Precedence remains the first resolver. An
+otherwise unresolved cell may be settled by a declaration on its reducing
+Node or variant:
+
+```rust
+#[parse(lr_conflict(
+    action = shift,
+    against = ast::shared::expr::DirectSubquery,
+    lookahead = { ORDER, OFFSET, LIMIT, FOR, FETCH },
+    expect = 10,
+))]
+```
+
+The attachment site and `against` path are stable grammar-source identities;
+generated state and rule numbers are not accepted. `action` is explicitly
+`shift`, `reduce`, or `error`. For `reduce`, the attachment site also selects
+the uniquely matching winning rule, including in a reduce/reduce conflict.
+Every named lookahead must match, the total must equal `expect`, the opposing
+source identity must match, the action must fit the conflict kind, and no
+second declaration may select the same cell. Validation is atomic: any stale,
+missing, ambiguous, incompatible, or over-broad declaration leaves the
+automaton unresolved and fails generation. The dump records each applied
+declaration. Recursive descent ignores the declaration.
 
 **Containers and admission sets.** `Vec<T>` and `Vec1<T>` with separators
 lower to left-recursive list rules, keeping the stack shallow and building
@@ -474,10 +501,10 @@ differential test writes `Statement::parse(&mut lr::input(&lexed))` and
 `Statement::parse_spanned(&mut lr::input(&lexed))` and nothing else
 changes. A single-parser generation keeps the inherent entry points over
 its root `Input` alone, spelled exactly as before. Framing and the
-explorer adapter drive the default parser through facade seams bound to
-the recursive-descent impl, so a table-driven default parser beside
-either capability is refused at generation with a remedy: declare the
-recursive-descent parser first.
+explorer adapter drive the marker selected by that default input. A lone
+`parser_style = table_driven` therefore uses the table-driven parser for
+both capabilities, while a named parser set preserves recursive-descent
+behavior when its first parser uses that style.
 
 **The one trait change.** `GeneratedParse<'input, A>` gains a third
 parameter `P = RecursiveDescent`, and `GeneratedInput` gains an
@@ -502,13 +529,14 @@ registry:
 | `RCA0404` | retired: ambiguous lookahead-filter substitution, superseded by the twin at any rule position |
 | `RCA0405` | note: conflict is an LALR merge artefact |
 | `RCA0406` | capture policy override not supported in table mode |
+| `RCA0407` | scoped LR conflict declaration does not match exactly |
 
 A conflict report carries the state's items, the conflicting lookahead,
 the competing actions, and the shortest path from the start state to the
 conflict state. Bison-style counterexample derivations are not in v1.
-The `precedence` declaration's own errors are source-model diagnostics
-(`RCA3133`, beside the lookahead filter's `RCA3132`), so they reach the
-author under either parser style.
+The `precedence` declaration and scoped-resolution syntax have source-model
+diagnostics (`RCA3133` and `RCA3134`, beside the lookahead filter's `RCA3132`),
+so they reach the author under either parser style.
 
 ## 8. The generated shape
 

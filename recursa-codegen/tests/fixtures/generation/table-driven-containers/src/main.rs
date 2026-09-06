@@ -51,6 +51,8 @@ const POSITIVE: &[&str] = &[
     "in(as, temp);",
     "f(1, 2,);",
     "out(only,);",
+    // FunctionTail: the comma before `variadic` belongs to the optional tail, not the list.
+    "vtail 1, 2, variadic 3;",
     // Define: Vec1 with separator, inlined Option<Mode>, helper Option<Box<Value>>.
     "fn f(x);",
     "fn as(in x, out only, temp) returns 1;",
