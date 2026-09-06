@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 25;
+const PRIVATE_PROTOCOL: u32 = 26;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///

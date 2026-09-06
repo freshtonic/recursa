@@ -556,6 +556,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen lr::tests::text_predicates_are_rejected_with_rca0403 --locked",
     },
     ProducerEvidence {
+        codes: &["RCA0406"],
+        producer_source: "src/lr.rs",
+        test_source: "src/lr.rs",
+        test_name: "capture_overrides_are_rejected_with_rca0406",
+        command: "cargo test -p recursa-codegen lr::tests::capture_overrides_are_rejected_with_rca0406 --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA0404"],
         producer_source: "src/lr/report.rs",
         test_source: "src/lr/lookahead.rs",

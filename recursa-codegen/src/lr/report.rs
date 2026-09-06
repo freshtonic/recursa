@@ -32,6 +32,10 @@ pub const LOOKAHEAD_AMBIGUITY: &str = "RCA0404";
 /// state exhibits, so a move to IELR(1) would remove it.
 pub const MERGE_ARTEFACT: &str = "RCA0405";
 
+/// A node, variant or field overrides the capture policy (`#[spanned(...)]`), which the
+/// table-driven parser cannot resolve below the entry type (#118).
+pub const CAPTURE_OVERRIDE: &str = "RCA0406";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One table-driven analysis diagnostic, before the build report adapts it.
 pub struct LrDiagnostic {

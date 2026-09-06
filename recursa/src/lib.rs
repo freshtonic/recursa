@@ -10,7 +10,8 @@ pub use recursa_core::explorer;
 #[cfg(feature = "explorer")]
 pub use recursa_core::framing;
 pub use recursa_core::{
-    ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
+    DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView,
+    OffsetOverflow,
     Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,
     Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
     Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
@@ -39,7 +40,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            25,
+            26,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

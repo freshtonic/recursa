@@ -430,6 +430,33 @@ impl ExactSizeIterator for Elements<'_> {}
 impl std::iter::FusedIterator for Elements<'_> {}
 
 impl OccurrenceNode {
+    /// Writes this node as `(span: children ; separators)`; see [`Parsed::debug_provenance`].
+    fn render(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("(")?;
+        match self.span {
+            Some(span) => write!(formatter, "{}..{}", span.start(), span.end())?,
+            None => formatter.write_str("-")?,
+        }
+        if !self.children.is_empty() {
+            formatter.write_str(":")?;
+            for child in &self.children {
+                formatter.write_str(" ")?;
+                if child.is_captured() {
+                    child.render(formatter)?;
+                } else {
+                    formatter.write_str("_")?;
+                }
+            }
+        }
+        if !self.repetition_separators.is_empty() {
+            formatter.write_str(" ;")?;
+            for separator in &self.repetition_separators {
+                write!(formatter, " {}..{}", separator.span.start(), separator.span.end())?;
+            }
+        }
+        formatter.write_str(")")
+    }
+
     /// Reports whether this node or any private descendant retained provenance.
     fn is_captured(&self) -> bool {
         self.span.is_some()
@@ -509,6 +536,50 @@ impl<'input, T> Parsed<'input, T> {
     /// Consumes the wrapper and discards all occurrence provenance.
     pub fn into_ast(self) -> T {
         self.ast
+    }
+
+    /// Renders the occurrence sidecar as text so that two parses can be compared exhaustively.
+    ///
+    /// The rendering is the whole retained tree, which the public views only expose piecemeal:
+    /// `synthetic` or `uncaptured` for a parse without provenance, otherwise the captured window
+    /// followed by the root occurrence. An occurrence is `(span: children ; separators)`, with
+    /// `-` for an occurrence whose span was not retained, `_` for an absent child, and the
+    /// separator list present only for repetitions that retained one. Two parsers agree on
+    /// provenance exactly when their renderings are equal.
+    pub fn debug_provenance(&self) -> DebugProvenance<'_> {
+        DebugProvenance {
+            origin: &self.origin,
+        }
+    }
+}
+
+/// The textual rendering of one parse's occurrence sidecar; see [`Parsed::debug_provenance`].
+pub struct DebugProvenance<'parsed> {
+    /// The provenance being rendered.
+    origin: &'parsed Origin<'parsed>,
+}
+
+impl fmt::Display for DebugProvenance<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.origin {
+            Origin::Synthetic => formatter.write_str("synthetic"),
+            Origin::Uncaptured => formatter.write_str("uncaptured"),
+            Origin::Captured {
+                bounds, provenance, ..
+            } => {
+                write!(formatter, "captured {}..{} ", bounds.start(), bounds.end())?;
+                match &provenance.root {
+                    None => formatter.write_str("none"),
+                    Some(root) => root.render(formatter),
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Debug for DebugProvenance<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
     }
 }
 
@@ -881,6 +952,21 @@ impl Occurrence {
         Self { node: None }
     }
 
+    /// Renders the retained node as [`Parsed::debug_provenance`] renders it, or `_`.
+    #[cfg(test)]
+    pub(crate) fn render(&self) -> String {
+        struct Render<'occurrence>(&'occurrence Occurrence);
+        impl fmt::Display for Render<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match &self.0.node {
+                    Some(node) => node.render(formatter),
+                    None => formatter.write_str("_"),
+                }
+            }
+        }
+        Render(self).to_string()
+    }
+
     /// Whether this occurrence retains any captured extent or descendant.
     pub fn is_captured(&self) -> bool {
         self.node.is_some()
@@ -896,6 +982,16 @@ impl Occurrence {
 pub struct RepetitionSeparatorOccurrence {
     /// Separator-specific sidecar that cannot become a semantic child.
     node: RepetitionSeparatorNode,
+}
+
+impl RepetitionSeparatorOccurrence {
+    /// Wraps the span of a separator the table-driven parser shifted; the span was validated
+    /// against the source when it was shifted.
+    pub(crate) fn from_span(span: Span) -> Self {
+        Self {
+            node: RepetitionSeparatorNode { span },
+        }
+    }
 }
 
 /// Lazy ordinal accumulator for runtime-sized child occurrence sequences.
@@ -957,6 +1053,11 @@ pub struct ParsedNode<T> {
 }
 
 impl<T> ParsedNode<T> {
+    /// Pairs a value the table-driven automaton built with the occurrence its fold produced.
+    pub(crate) fn from_parts(value: T, occurrence: Occurrence) -> Self {
+        Self { value, occurrence }
+    }
+
     /// Transforms a recursive semantic result without detaching its occurrence.
     pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> ParsedNode<U> {
         ParsedNode {
@@ -972,11 +1073,11 @@ impl<T> ParsedNode<T> {
 }
 
 /// Stateless builder that validates and compacts occurrence provenance.
-struct ProvenanceCollector;
+pub(crate) struct ProvenanceCollector;
 
 impl ProvenanceCollector {
     /// Finishes provenance for a non-repetition grammar occurrence.
-    fn finish(
+    pub(crate) fn finish(
         &self,
         source: &str,
         policy: CapturePolicy,
@@ -988,7 +1089,7 @@ impl ProvenanceCollector {
     }
 
     /// Finishes provenance while retaining separators outside child ordinals.
-    fn finish_repeated(
+    pub(crate) fn finish_repeated(
         &self,
         source: &str,
         policy: CapturePolicy,
@@ -1121,6 +1222,35 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     /// Returns a record by absolute token index without moving the cursor.
     pub(crate) fn record(&self, index: usize) -> Option<TokenRecord> {
         self.input.record(index)
+    }
+
+    /// Reports whether this context's own policy retains spans under the root request.
+    pub(crate) fn captures(&self) -> bool {
+        self.policy.captures(self.request)
+    }
+
+    /// The error recursive descent raises for a token span that leaves the source.
+    pub(crate) fn invalid_token_span(&self, span: Span) -> ParseError {
+        ParseError::invalid_token_span(self.input, span, None)
+    }
+
+    /// Runs the collector for the table-driven fold with this context's source and request.
+    pub(crate) fn collect_occurrence(
+        &self,
+        policy: CapturePolicy,
+        span: Option<Span>,
+        children: impl IntoIterator<Item = Occurrence>,
+        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
+    ) -> Result<Occurrence, ParseError> {
+        self.provenance
+            .finish_repeated(self.input.source(), policy, self.request, span, children, separators)
+            .map_err(|()| {
+                ParseError::invalid_token_span(
+                    self.input,
+                    span.expect("only a concrete invalid span can fail validation"),
+                    None,
+                )
+            })
     }
 
     /// Returns the source extent consumed since a saved token cursor.
@@ -1761,13 +1891,27 @@ pub(crate) fn test_context<'input, A, R>(
     input: &mut Input<'input, A>,
     operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
 ) -> R {
+    test_context_with_request(input, CaptureRequest::Default, operation)
+}
+
+/// Binds a root-style [`ParseContext`] with the span-capture request, as `parse_spanned` does.
+#[cfg(test)]
+pub(crate) fn test_context_spanned<'input, A, R>(
+    input: &mut Input<'input, A>,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+) -> R {
+    test_context_with_request(input, CaptureRequest::Spanned, operation)
+}
+
+/// Binds a root-style [`ParseContext`] under an optional policy and the given request.
+#[cfg(test)]
+fn test_context_with_request<'input, A, R>(
+    input: &mut Input<'input, A>,
+    request: CaptureRequest,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+) -> R {
     static EMPTY_FOLLOW: FollowSet = FollowSet::from_static(0, &[], &[]);
-    let mut context = ParseContext::new(
-        input,
-        &EMPTY_FOLLOW,
-        CapturePolicy::Optional,
-        CaptureRequest::Default,
-    );
+    let mut context = ParseContext::new(input, &EMPTY_FOLLOW, CapturePolicy::Optional, request);
     operation(&mut context)
 }
 
