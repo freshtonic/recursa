@@ -8,6 +8,11 @@
 //! - `@ a`: a content token, the user-defined operator class, as the operator of a prefix
 //!   variant with a binding power, gram.y's `qual_Op a_expr %prec Op`; `a ~@ b` is the same
 //!   class as an infix operator (#124).
+//! - `xmlnamespaces(a as b)` and `xmlnamespaces(default a)`: `default` is also an atom of
+//!   `Expr`, so the first alternative's operand excludes it, gram.y's `b_expr` position before
+//!   `DEFAULT` (`xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`); `index (a)`: an
+//!   operand that must not start with a parenthesised query, gram.y's `c_expr` position in
+//!   `index_elem`, written `index (a)` (#122).
 //!
 //! The integration test generates this file once and compares what the two parsers of the
 //! generation produce; the LR fixture tests lower the same file to assert the rules directly.
@@ -15,7 +20,7 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
+    max_lookahead = 2,
     parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
@@ -27,6 +32,11 @@ recursa::tokens! {
         ESCAPE => "escape",
         NOT => "not",
         AND => "and",
+        DEFAULT => "default",
+        AS => "as",
+        SELECT => "select",
+        XMLNAMESPACES => "xmlnamespaces",
+        INDEX => "index",
     }
     punctuation {
         PLUS => "+",
@@ -42,11 +52,43 @@ pub struct Name<'input> {
     pub text: NameText<'input>,
 }
 
+/// gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: `default` starts an
+/// expression too, so the operand of `Named` excludes that atom, else both alternatives start
+/// with `default` and the dispatch has no decision.
+#[derive(recursa::Node, Debug, Clone)]
+pub enum Namespace<'input> {
+    Named {
+        #[parse(pratt(exclude(Default)))]
+        uri: Box<Expr<'input>>,
+        #[tok(AS)]
+        label: Name<'input>,
+    },
+    Default {
+        #[tok(DEFAULT)]
+        uri: Box<Expr<'input>>,
+    },
+}
+
+/// gram.y's `index_elem`: a `c_expr` position that must not start with a parenthesised query
+/// (nor, here, extend on `and`), while a parenthesised expression keeps the full language
+/// inside its parentheses.
+#[derive(recursa::Node, Debug, Clone)]
+pub struct IndexElem<'input> {
+    #[parse(pratt(exclude(Subquery, And)))]
+    pub elem: Box<Expr<'input>>,
+}
+
 #[derive(recursa::Node, Debug, Clone)]
 #[pratt]
 pub enum Expr<'input> {
     Name(Name<'input>),
+    #[tok(DEFAULT)]
+    Default,
     Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+    /// A parenthesised query, told from a parenthesised expression by its second token.
+    Subquery(#[tok(LPAREN, SELECT, this, RPAREN)] Box<Self>),
+    Xmlnamespaces(#[tok(XMLNAMESPACES, LPAREN, this, RPAREN)] Namespace<'input>),
+    Index(#[tok(INDEX, LPAREN, this, RPAREN)] IndexElem<'input>),
 
     /// `a like b [escape c]`: the escape operand is optional and attached behind `escape`, so
     /// it takes the operand minimum `rbp` in both styles and, in table mode, `escape` shifts

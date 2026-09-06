@@ -34,6 +34,20 @@ const POSITIVE: &[&str] = &[
     "a ~@ @ b",
     "a like @ b escape @ c + d",
     "@ (a like b) and c",
+    "xmlnamespaces(a as b)",
+    "xmlnamespaces(a + b like c as d)",
+    "xmlnamespaces(default a)",
+    "xmlnamespaces(default a + b)",
+    "xmlnamespaces(default default)",
+    "xmlnamespaces((default) as b)",
+    "xmlnamespaces(default ~@ a)",
+    "a like default",
+    "index (a)",
+    "index (a + b)",
+    "index ((a))",
+    "index ((a + (select b)))",
+    "index (a like b)",
+    "(select a) + b",
 ];
 
 /// The inputs every parser rejects; each prints the error and asserts the restored cursor.
@@ -50,6 +64,15 @@ const FAILING: &[&str] = &[
     "a ~@",
     "~@ like a",
     "a @ @",
+    "xmlnamespaces(default a as b)",
+    "xmlnamespaces(default ~@ a as b)",
+    "xmlnamespaces(default)",
+    "xmlnamespaces(a)",
+    "index (select a)",
+    "index ((select a))",
+    "index (a + (select b))",
+    "index (a and b)",
+    "index",
 ];
 
 /// Drives every input through one parser: `$tag` prefixes each printed line and `$input`

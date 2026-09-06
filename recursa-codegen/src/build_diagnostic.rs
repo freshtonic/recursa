@@ -299,6 +299,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3209", Lowering, Error),
     diagnostic_spec!("RCA3210", Lowering, Error),
     diagnostic_spec!("RCA3211", Lowering, Error),
+    diagnostic_spec!("RCA3212", Lowering, Error),
     diagnostic_spec!("RCA3207", Lowering, Error),
     diagnostic_spec!("RCA3208", Lowering, Error),
     // M3-owned internal failures. RCA9001-RCA9005 retain their distinct M4

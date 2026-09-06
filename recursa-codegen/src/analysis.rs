@@ -2052,14 +2052,44 @@ fn first_for_sites(
     let mut nullable = true;
     for id in sites {
         let site = &grammar.sites[id.index()];
-        let target = &facts[site.target.index()];
+        let target = first_for_site(site, grammar, facts);
         merge_positions(&mut positions, &target.positions);
-        if !site_nullable(site, target) {
+        if !site_nullable(site, &target) {
             nullable = false;
             break;
         }
     }
     first_facts(positions, nullable, grammar.kind_count)
+}
+
+/// The FIRST facts of one site's target: the target type's, except that a site excluding
+/// variants of its Pratt target (`#[parse(pratt(exclude(...)))]`) starts only with the atom
+/// and prefix variants it keeps, the language gram.y's `b_expr` position before `DEFAULT`
+/// has. An excluded extender changes no FIRST set.
+fn first_for_site<'facts>(
+    site: &crate::ParseSite,
+    grammar: &GrammarDescription,
+    facts: &'facts [FirstFacts],
+) -> Cow<'facts, FirstFacts> {
+    let target = &facts[site.target.index()];
+    if site.pratt_excluded.is_empty() {
+        return Cow::Borrowed(target);
+    }
+    let TypeShape::Pratt { variants } = &grammar.types[site.target.index()].shape else {
+        return Cow::Borrowed(target);
+    };
+    let mut positions = Vec::new();
+    for variant in variants {
+        if matches!(
+            variant.position,
+            PrattPosition::Atom | PrattPosition::Prefix { .. }
+        ) && !site.pratt_excluded.contains(&variant.declaration)
+        {
+            let variant = first_for_sites(&variant.sites, grammar, facts);
+            merge_positions(&mut positions, &variant.positions);
+        }
+    }
+    Cow::Owned(first_facts(positions, false, grammar.kind_count))
 }
 
 /// Derives the site nullable from normalized grammar structure and previously established semantic facts.
@@ -5005,7 +5035,44 @@ fn first_for_shape_provenance(
     }
 }
 
-/// Derives the first for sites provenance from normalized grammar structure and previously established semantic facts.
+/// The provenanced FIRST positions of one site's target, as [`first_for_site`] refines them: a
+/// site excluding variants of its Pratt target starts only with the atom and prefix variants
+/// it keeps.
+fn first_positions_for_site_provenance<'provenanced>(
+    site: &crate::ParseSite,
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &'provenanced [Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> Cow<'provenanced, [ProvenancedPosition]> {
+    if site.pratt_excluded.is_empty() {
+        return Cow::Borrowed(&provenanced[site.target.index()]);
+    }
+    let TypeShape::Pratt { variants } = &grammar.types[site.target.index()].shape else {
+        return Cow::Borrowed(&provenanced[site.target.index()]);
+    };
+    let mut positions = Vec::new();
+    for variant in variants.iter().filter(|variant| {
+        is_pratt_nud(variant.position) && !site.pratt_excluded.contains(&variant.declaration)
+    }) {
+        let first = first_for_sites_provenance(
+            site.target,
+            &variant.sites,
+            grammar,
+            semantic,
+            provenanced,
+            proofs,
+        );
+        for position in first.positions {
+            merge_provenanced_position(&mut positions, position, proofs);
+        }
+    }
+    Cow::Owned(positions)
+}
+
+/// The provenanced FIRST of one sequence of sites: each site's positions, refined by
+/// [`first_positions_for_site_provenance`], merged in order until a site is not nullable, with
+/// the proof of every position recorded against `owner`.
 fn first_for_sites_provenance(
     owner: TypeId,
     sites: &[SiteId],
@@ -5019,7 +5086,10 @@ fn first_for_sites_provenance(
     let mut nullable_prefix: Vec<SiteId> = Vec::new();
     for site_id in sites {
         let site = &grammar.sites[site_id.index()];
-        for position in &provenanced[site.target.index()] {
+        let target_positions = first_positions_for_site_provenance(
+            site, grammar, semantic, provenanced, proofs,
+        );
+        for position in target_positions.iter() {
             let mut kinds = wrap_provenance(
                 &position.kinds,
                 |_, _| ProvenanceStep::Reference {
@@ -6156,7 +6226,7 @@ enum DecisionItem {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 /// Source-independent parse-site behavior observable to bounded decisions.
-struct DecisionSiteSemantics {
+struct DecisionSiteSemantics<'site> {
     /// Referenced grammar type.
     target: TypeId,
     /// Normalized cardinality encoded without source container ownership.
@@ -6167,10 +6237,14 @@ struct DecisionSiteSemantics {
     optional_trailing: bool,
     /// Minimum Pratt binding power required at this site.
     min_bp: u8,
+    /// The Pratt variants the site excludes (`#[parse(pratt(exclude(...)))]`). They narrow the
+    /// language the site admits, so two sites that agree on everything else but not on them
+    /// are distinct decisions and must not share one canonical site.
+    pratt_excluded: &'site [crate::DeclId],
 }
 
 /// Projects one authored site to its source-independent decision behavior.
-fn decision_site_semantics(site: &crate::ParseSite) -> DecisionSiteSemantics {
+fn decision_site_semantics(site: &crate::ParseSite) -> DecisionSiteSemantics<'_> {
     let semantics = container_semantics(site);
     let cardinality = match semantics.cardinality {
         ContainerCardinality::One => 0,
@@ -6187,6 +6261,7 @@ fn decision_site_semantics(site: &crate::ParseSite) -> DecisionSiteSemantics {
             .separator
             .is_some_and(|separator| separator.optional_trailing),
         min_bp: site.min_bp,
+        pratt_excluded: &site.pratt_excluded,
     }
 }
 
@@ -10124,6 +10199,39 @@ fn compact_balanced_dispatch_resolution(
     }
 }
 
+/// Expands one occurrence of a site's target: the target type, or, at a site that excludes
+/// variants of its Pratt target (`#[parse(pratt(exclude(...)))]`), the atom and prefix variants
+/// the site keeps, so that the decision sees the language gram.y's `b_expr` position has
+/// rather than the whole type's.
+fn visit_site_target(
+    site: &crate::ParseSite,
+    grammar: &GrammarDescription,
+    visit: &mut impl FnMut(DecisionHeadStep),
+) {
+    if !site.pratt_excluded.is_empty()
+        && let TypeShape::Pratt { variants } = &grammar.types[site.target.index()].shape
+    {
+        for variant in variants.iter().filter(|variant| {
+            is_pratt_nud(variant.position) && !site.pratt_excluded.contains(&variant.declaration)
+        }) {
+            visit(DecisionHeadStep::Expand {
+                prefix: variant
+                    .sites
+                    .iter()
+                    .copied()
+                    .map(DecisionItem::Site)
+                    .collect(),
+                enters_pratt_nud: true,
+            });
+        }
+        return;
+    }
+    visit(DecisionHeadStep::Expand {
+        prefix: vec![DecisionItem::Type(site.target)],
+        enters_pratt_nud: false,
+    });
+}
+
 /// Enumerates the consuming token or non-consuming expansions for one normalized grammar head.
 ///
 /// # Long-function contract
@@ -10192,19 +10300,13 @@ fn decision_head_steps(
             let site = &grammar.sites[site_id.index()];
             let semantics = container_semantics(site);
             match semantics.cardinality {
-                ContainerCardinality::One => visit(DecisionHeadStep::Expand {
-                    prefix: vec![DecisionItem::Type(site.target)],
-                    enters_pratt_nud: false,
-                }),
+                ContainerCardinality::One => visit_site_target(site, grammar, &mut visit),
                 ContainerCardinality::Optional => {
                     visit(DecisionHeadStep::Expand {
                         prefix: Vec::new(),
                         enters_pratt_nud: false,
                     });
-                    visit(DecisionHeadStep::Expand {
-                        prefix: vec![DecisionItem::Type(site.target)],
-                        enters_pratt_nud: false,
-                    });
+                    visit_site_target(site, grammar, &mut visit);
                 }
                 ContainerCardinality::ZeroOrMore
                 | ContainerCardinality::OneOrMore
@@ -10777,7 +10879,9 @@ fn bounded_site_language_witness(
 ) -> BoundedDecisionWitness {
     if left.iter().chain(right).any(|site| {
         let site = &grammar.sites[site.index()];
-        site.min_bp != 0 || site.container.semantics().is_none()
+        site.min_bp != 0
+            || !site.pratt_excluded.is_empty()
+            || site.container.semantics().is_none()
     }) {
         return BoundedDecisionWitness::Unsupported;
     }
@@ -11105,10 +11209,12 @@ fn bounded_nullable_tail_witness(
     first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> BoundedDecisionWitness {
     if site.min_bp != 0
+        || !site.pratt_excluded.is_empty()
         || site.container.semantics().is_none()
-        || tail_sites
-            .iter()
-            .any(|site| grammar.sites[site.index()].min_bp != 0)
+        || tail_sites.iter().any(|site| {
+            let site = &grammar.sites[site.index()];
+            site.min_bp != 0 || !site.pratt_excluded.is_empty()
+        })
     {
         return BoundedDecisionWitness::Unsupported;
     }
@@ -13873,6 +13979,126 @@ mod decision_product_tests {
             FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get(),
             frontier_computations,
             "repeated unsupported decisions must reuse the analysis-run frontier cache",
+        );
+    }
+
+    #[test]
+    fn a_pratt_exclusion_keeps_authored_identity_outside_the_site_language_cache() {
+        // gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: two sites onto one
+        // Pratt Node that agree on everything but their `#[parse(pratt(exclude(...)))]` admit
+        // different languages, so they are different decisions. Sharing one canonical site
+        // would carry the exclusion into the alternative that excludes nothing, and the
+        // dispatch would stop admitting the excluded atom after `DEFAULT`.
+        let mut grammar =
+            GrammarDescription::new("exclusion-sensitive-site", 2, 3, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: &str| {
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let number = push_token(&mut grammar, "NUMBER");
+        let bang = push_token(&mut grammar, "BANG");
+
+        let expression = grammar.next_type_id();
+        let expression_declaration = test_declaration(&mut grammar, &mut next_byte, "Expression");
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "Expression::Atom");
+        let atom_site = grammar.push_site(crate::ParseSite::new(
+            expression,
+            number,
+            atom_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let postfix_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Expression::Postfix");
+        let postfix_site = grammar.push_site(crate::ParseSite::new(
+            expression,
+            bang,
+            postfix_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expression",
+                expression_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: atom_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![atom_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: postfix_declaration,
+                            position: PrattPosition::Postfix { bp: 5 },
+                            sites: vec![postfix_site],
+                        },
+                    ],
+                },
+            )),
+            expression,
+        );
+
+        let choice = grammar.next_type_id();
+        let whole_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Whole");
+        let whole = grammar.push_site(crate::ParseSite::new(
+            choice,
+            expression,
+            whole_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let restricted_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Choice::Restricted");
+        let mut restricted_site = crate::ParseSite::new(
+            choice,
+            expression,
+            restricted_declaration,
+            crate::ContainerShape::Direct,
+        );
+        restricted_site.pratt_excluded = vec![atom_declaration];
+        let restricted = grammar.push_site(restricted_site);
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: whole_declaration,
+                            sites: vec![whole],
+                        },
+                        crate::Alternative {
+                            declaration: restricted_declaration,
+                            sites: vec![restricted],
+                        },
+                    ],
+                },
+            )),
+            choice,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        assert_ne!(
+            decision_site_semantics(&grammar.sites[whole.index()]),
+            decision_site_semantics(&grammar.sites[restricted.index()]),
+        );
+        assert_ne!(
+            first_sequences.canonical_sites[whole.index()],
+            first_sequences.canonical_sites[restricted.index()],
         );
     }
 

@@ -117,6 +117,54 @@ fn a_content_token_operator_on_a_prefix_variant_parses_alike_under_both_parsers(
     assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
+#[test]
+fn an_exclusion_of_atoms_parses_alike_under_both_parsers() {
+    let package = scaffold(FIXTURE);
+    let debug = tempfile::tempdir().unwrap();
+
+    let output = run_fixture(&package, Some(debug.path()));
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+
+    // `default` starts the second alternative only, because the first one's operand excludes
+    // the atom; inside the parentheses of an atom the full language returns; an excluded
+    // extender still ends the operand.
+    let (a, b, c) = (name("a"), name("b"), name("c"));
+    for (source, value) in [
+        ("xmlnamespaces(a as b)", format!("Xmlnamespaces(Named {{ uri: {a}, label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})")),
+        ("xmlnamespaces(a + b like c as d)", format!("Xmlnamespaces(Named {{ uri: Like(Add({a}, {b}), {c}, None), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"d\") }} }} }})")),
+        ("xmlnamespaces(default a)", format!("Xmlnamespaces(Default {{ uri: {a} }})")),
+        ("xmlnamespaces(default a + b)", format!("Xmlnamespaces(Default {{ uri: Add({a}, {b}) }})")),
+        ("xmlnamespaces(default default)", "Xmlnamespaces(Default { uri: Default })".to_owned()),
+        ("xmlnamespaces((default) as b)", format!("Xmlnamespaces(Named {{ uri: Parenthesized(Default), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})")),
+        ("index ((a + (select b)))", format!("Index(IndexElem {{ elem: Parenthesized(Add({a}, Subquery({b}))) }})")),
+        ("index (a like b)", format!("Index(IndexElem {{ elem: Like({a}, {b}, None) }})")),
+        ("(select a) + b", format!("Add(Subquery({a}), {b})")),
+    ] {
+        let line = format!("ok {source:?} => {value} cursor=");
+        assert!(table_stdout.contains(&line), "missing {line:?} in\n{table_stdout}");
+    }
+    assert!(table_stdout.contains("err \"xmlnamespaces(default a as b)\" => code=RCA4100"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"index (select a)\" => code=RCA4100"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"index ((select a))\" => code=RCA4100"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"index (a + (select b))\" => code=RCA4100"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"index (a and b)\" => code=RCA4100"), "{table_stdout}");
+
+    // The exclusion clones drop the excluded atoms as they drop excluded extenders, and carry
+    // the exclusion into their operands.
+    let index_path = find_one_debug_index(debug.path());
+    let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
+        .expect("the bundle carries the automaton dump");
+    assert!(dump.contains("grammar::Expr[excl Default] -> grammar::Name"), "{dump}");
+    assert!(!dump.contains("grammar::Expr[excl Default] -> DEFAULT"), "{dump}");
+    assert!(dump.contains("grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]"), "{dump}");
+    assert!(!dump.contains("grammar::Expr[excl Subquery,And] -> LPAREN SELECT"), "{dump}");
+    assert!(dump.ends_with("No conflicts.\n"), "{dump}");
+
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+}
+
 /// Copies the fixture package into a temporary directory.
 fn scaffold(fixture: &str) -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");
