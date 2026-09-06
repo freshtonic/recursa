@@ -5,6 +5,9 @@
 //!   variant (`#[tok(ESCAPE, this)] Option<Box<Self>>`), gram.y's
 //!   `a_expr LIKE a_expr ESCAPE a_expr %prec LIKE` with `%nonassoc ESCAPE` just above `LIKE`;
 //!   `a not like b [escape c]` is the same operand on pg-sql's postfix spelling (#123).
+//! - `@ a`: a content token, the user-defined operator class, as the operator of a prefix
+//!   variant with a binding power, gram.y's `qual_Op a_expr %prec Op`; `a ~@ b` is the same
+//!   class as an infix operator (#124).
 //!
 //! The integration test generates this file once and compares what the two parsers of the
 //! generation produce; the LR fixture tests lower the same file to assert the rules directly.
@@ -71,6 +74,17 @@ pub enum Expr<'input> {
         #[tok(ESCAPE, this)]
         Option<Box<Self>>,
     ),
+
+    /// `@ a`: the operator is a content token, so the nud dispatch keys on its kind and the
+    /// rule takes `bp` as its precedence, as gram.y's `qual_Op a_expr %prec Op`: the operand
+    /// binds `+` and `*` (above 8) and stops before `like` and `and` (below 8).
+    #[parse(prefix, bp = 8)]
+    CustomPrefix(#[lex(pattern = r"[~@#]+")] OperatorText<'input>, Box<Self>),
+
+    /// `a ~@ b`: the same operator class as an infix operator, gram.y's
+    /// `a_expr qual_Op a_expr %prec Op`.
+    #[parse(infix, lbp = 8, rbp = 9)]
+    CustomInfix(Box<Self>, OperatorText<'input>, Box<Self>),
 
     #[parse(infix, lbp = 3, rbp = 4)]
     #[tok(AND)]

@@ -23,6 +23,17 @@ const POSITIVE: &[&str] = &[
     "a not like b not like c escape d",
     "(a like b) escape c",
     "a like b escape c escape d",
+    "@a",
+    "@ a + b",
+    "@ a like b",
+    "@ @ a * b",
+    "a ~@ b",
+    "a ~@ b + c",
+    "a + b ~@ c",
+    "a ~@ b ~@ c",
+    "a ~@ @ b",
+    "a like @ b escape @ c + d",
+    "@ (a like b) and c",
 ];
 
 /// The inputs every parser rejects; each prints the error and asserts the restored cursor.
@@ -35,6 +46,10 @@ const FAILING: &[&str] = &[
     "a like b escape (c",
     "a not like escape c",
     "a like (b escape c)",
+    "@",
+    "a ~@",
+    "~@ like a",
+    "a @ @",
 ];
 
 /// Drives every input through one parser: `$tag` prefixes each printed line and `$input`

@@ -69,6 +69,54 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
 }
 
+#[test]
+fn a_content_token_operator_on_a_prefix_variant_parses_alike_under_both_parsers() {
+    let package = scaffold(FIXTURE);
+    let debug = tempfile::tempdir().unwrap();
+
+    let output = run_fixture(&package, Some(debug.path()));
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+
+    // The prefix operator takes its binding power: its operand binds `+` and `*` and stops
+    // before `like` and `and`; the infix operator of the same class is left-associative at
+    // its level, between `like` and `+`.
+    let (a, b, c, d) = (name("a"), name("b"), name("c"), name("d"));
+    let op = |text: &str| format!("__RecursaContentToken1 {{ text: ContentText({text:?}) }}");
+    for (source, value) in [
+        ("@a", format!("CustomPrefix({}, {a})", op("@"))),
+        ("@ a + b", format!("CustomPrefix({}, Add({a}, {b}))", op("@"))),
+        ("@ a like b", format!("Like(CustomPrefix({}, {a}), {b}, None)", op("@"))),
+        ("@ @ a * b", format!("CustomPrefix({}, CustomPrefix({}, Multiply({a}, {b})))", op("@"), op("@"))),
+        ("a ~@ b + c", format!("CustomInfix({a}, {}, Add({b}, {c}))", op("~@"))),
+        ("a + b ~@ c", format!("CustomInfix(Add({a}, {b}), {}, {c})", op("~@"))),
+        ("a ~@ b ~@ c", format!("CustomInfix(CustomInfix({a}, {}, {b}), {}, {c})", op("~@"), op("~@"))),
+        ("a ~@ @ b", format!("CustomInfix({a}, {}, CustomPrefix({}, {b}))", op("~@"), op("@"))),
+        (
+            "a like @ b escape @ c + d",
+            format!("Like({a}, CustomPrefix({}, {b}), Some(CustomPrefix({}, Add({c}, {d}))))", op("@"), op("@")),
+        ),
+    ] {
+        let line = format!("ok {source:?} => {value} cursor=");
+        assert!(table_stdout.contains(&line), "missing {line:?} in
+{table_stdout}");
+    }
+    assert!(table_stdout.contains("err \"@\" => code=RCA4101"), "{table_stdout}");
+    assert!(table_stdout.contains("err \"~@ like a\" => code=RCA4100"), "{table_stdout}");
+
+    // The lowering gives the prefix rule its binding power as precedence, so the automaton
+    // resolves the operand's boundary and stays conflict-free.
+    let index_path = find_one_debug_index(debug.path());
+    let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
+        .expect("the bundle carries the automaton dump");
+    assert!(dump.contains("grammar::Expr -> OperatorText grammar::Expr"), "{dump}");
+    assert!(dump.contains("grammar::Expr -> grammar::Expr OperatorText grammar::Expr"), "{dump}");
+    assert!(dump.ends_with("No conflicts.\n"), "{dump}");
+
+    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+}
+
 /// Copies the fixture package into a temporary directory.
 fn scaffold(fixture: &str) -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");

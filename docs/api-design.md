@@ -277,7 +277,11 @@ position: `#[parse(prefix)]` + `#[kwd(NOT)]` consumes the token before the
 operand; `infix` after the implicit first `Box<Self>` lhs and before its one
 recursive `Box<Self>` rhs; `postfix` after. An infix suffix may retain
 additional non-recursive semantic fields, such as a content-bearing operator,
-but exactly one suffix field must be the recursive rhs. Interleaved shapes
+but exactly one suffix field must be the recursive rhs. A prefix variant's
+operator may likewise be a content token, the user-defined operator class of
+gram.y's `qual_Op a_expr %prec Op`: `CustomPrefix(CustomOp<'i>, Box<Expr<'i>>)`
+with `#[parse(prefix, bp = N)]` dispatches on the token's kind and keeps
+`N` as its binding power in both parser styles. Interleaved shapes
 (`a BETWEEN b AND c`) put `#[tok(…)]` on the tuple field each token sequence
 precedes:
 
@@ -343,7 +347,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | Attribute | On | Meaning |
 |---|---|---|
 | `#[pratt]` | enum | Operator-precedence enum; drives the generated `parse_bp` driver. |
-| `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`. |
+| `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`, last, behind the fixed operator or behind content-token operator fields (gram.y's `qual_Op a_expr %prec Op`). |
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one required recursive `Box<Self>` rhs, and admits attached optional operands (`#[tok(X, this)] Option<Box<Self>>`) after it. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix; recursive tail operands inherit `N` as their minimum binding power, attached optional operands (`#[tok(X, this)] Option<Box<Self>>`) included. |
 | `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named LED variants from this field and its recursive operands; each name must identify an infix or postfix variant. |

@@ -116,9 +116,11 @@ conflict is a hard build error.
 **Pratt.** Each `#[pratt]` enum lowers to ordinary rules and its binding
 powers to rule precedence and associativity: the level is `lbp`,
 `rbp = lbp + 1` is left-associative, `rbp = lbp` or `lbp - 1` is
-right-associative, prefix and postfix use `bp` as the rule's precedence,
-and interleaved shapes (`BETWEEN a AND b`) become one rule with an
-explicit precedence. Precedence decides where a bare last operand
+right-associative, prefix and postfix use `bp` as the rule's precedence
+(a content-token operator, gram.y's `qual_Op a_expr %prec Op`, lowers to
+its own nonterminal before the operand and changes nothing else), and
+interleaved shapes (`BETWEEN a AND b`) become one rule with an explicit
+precedence. Precedence decides where a bare last operand
 stops. Every other operand (the middle of `BETWEEN a AND b`, the inside
 of `a[b]`, anything behind a fixed-token attachment such as pg-sql's
 `#[tok(BETWEEN, this)] Box<Self>`) is parsed by the Pratt loop with a
