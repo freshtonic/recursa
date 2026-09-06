@@ -391,6 +391,9 @@ impl DispatchPlan {
 /// has selected that declaration; an edge there re-validates the declaration's own language
 /// with a frontier that omits its open continuations, which is how `f(a + b)` failed at `+`
 /// (#127). The root is exempt because it has matched nothing yet.
+///
+/// The reachable declarations are recollected at every node rather than memoized, which is
+/// quadratic in trie size; the tries are small and this runs once per grammar at build time.
 fn dispatch_trie_walks_past_selection(node: &DispatchTrieNode) -> bool {
     fn declarations(node: &DispatchTrieNode, found: &mut Vec<DeclId>) {
         if let Some(terminal) = node.terminal {
