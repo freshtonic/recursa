@@ -245,6 +245,10 @@ _Avoid_: Arbitrary punctuation pair, runtime delimiter heuristic
 A frozen predictive selection strategy for an otherwise unbounded shared opener prefix. Analysis proves the enclosed language balanced for one delimiter pair and freezes the residual post-close trie; generated parsing only counts that pair's nesting and executes the frozen residual decision.
 _Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
 
+**Selection prefix**:
+The shortest matched token prefix at which a frozen enum dispatch leaves one outer declaration. The trie commits there, and the selected declaration's own parser owns every later token; only an exhausted one-token alternative keeps a caller-FOLLOW leaf.
+_Avoid_: Complete-route validation, deep trie walk
+
 **Optional viability decision**:
 A frozen predictive consume-or-skip strategy for one optional parse site. Analysis compares one occurrence plus the owning sequence tail against that tail alone, retaining exact token-text partitions and an explicit caller-FOLLOW fallback; generated parsing only executes the frozen decision.
 _Avoid_: Trial parsing, first-token optional commitment
@@ -344,6 +348,10 @@ _Avoid_: Partial parse, incomplete AST
 **FOLLOW recipe**:
 A per-parse-site runtime composition fixed by analysis: static suffix FIRST, caller FOLLOW, or their union when the suffix is nullable.
 _Avoid_: Static type FOLLOW, emitter-derived FOLLOW
+
+**Pratt continuation**:
+The extenders of a Pratt type as the FOLLOW of a led variant's last non-recursive element and of every site that element reaches through nullable suffixes. Analysis reports the resulting overlap at the Pratt operand or nullable site where the generated parser consults the boundary, and never carries it into the type's own recursive operands, whose loops decide their extenders themselves.
+_Avoid_: Continuation FOLLOW propagation, per-operand re-report
 
 **Node view**:
 The concrete, visibility-matched occurrence view generated for a Node, pairing a semantic reference with its private provenance cursor while implementing Recursa's common view protocol.

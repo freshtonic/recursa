@@ -1,25 +1,28 @@
 use super::*;
 
-/// Returns one direct framing emission-plan diagnostic without invoking downstream Cargo.
-fn framing_fixture_join_error(
+/// Returns the detail of one emission-plan failure for `source` without invoking downstream Cargo.
+///
+/// The grammar must analyze cleanly, because emission planning is the seam under test:
+/// `adjust` may corrupt the analyzed grammar for failures no authored source can express.
+fn emission_plan_join_error(
     source: String,
     adjust: impl FnOnce(&mut crate::source_analysis::AnalyzedGrammar),
 ) -> String {
-    let package = tempfile::tempdir().expect("temporary framing plan fixture");
-    fs::write(package.path().join("grammar.rs"), source).expect("write framing plan fixture");
+    let package = tempfile::tempdir().expect("temporary emission plan fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write emission plan fixture");
     let mut success = analyze_source_tree(
         SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
         &mut Vec::new(),
     )
-    .expect("framing diagnostic fixture reaches emission planning");
+    .expect("emission diagnostic fixture reaches emission planning");
     adjust(&mut success.analyzed);
     let detail = match EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default()) {
-        Ok(_) => panic!("invalid framing declaration reached emission"),
+        Ok(_) => panic!("an invalid declaration reached emission"),
         Err(detail) => detail,
     };
     let error = failure(Path::new("grammar.rs"), &detail);
     let [diagnostic] = error.report().diagnostics() else {
-        panic!("one framing plan failure must produce one diagnostic")
+        panic!("one emission plan failure must produce one diagnostic")
     };
     assert_eq!(diagnostic.code().as_str(), "RCA9105");
     assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
@@ -82,7 +85,7 @@ fn framing_planner_rejects_an_undefined_boundary_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
         .replace("boundary = SEMI", "boundary = MissingBoundary");
     assert_eq!(
-        framing_fixture_join_error(source, |_| {}),
+        emission_plan_join_error(source, |_| {}),
         "framing token `MissingBoundary` is not defined",
     );
 }
@@ -91,7 +94,7 @@ fn framing_planner_rejects_an_undefined_boundary_token_directly() {
 fn framing_planner_rejects_an_ambiguous_boundary_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs").to_owned();
     assert_eq!(
-        framing_fixture_join_error(source, |analyzed| {
+        emission_plan_join_error(source, |analyzed| {
             let model = analyzed.lowered.source_modeled.source_model_mut();
             let duplicate = model
                 .token_definitions
@@ -110,7 +113,7 @@ fn framing_planner_requires_a_fixed_boundary_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
         .replace("boundary = SEMI", "boundary = Quoted");
     assert_eq!(
-        framing_fixture_join_error(source, |_| {}),
+        emission_plan_join_error(source, |_| {}),
         "framing boundary must name one fixed token",
     );
 }
@@ -120,7 +123,7 @@ fn framing_planner_requires_a_closed_physical_line_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
         .replace("line = [MetaLine]", "line = [RawBlock]");
     assert_eq!(
-        framing_fixture_join_error(source, |_| {}),
+        emission_plan_join_error(source, |_| {}),
         "framing token `RawBlock` must use a closed physical-line matcher",
     );
 }
@@ -130,7 +133,7 @@ fn framing_planner_requires_a_closed_delimited_token_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
         .replace("delimited = [RawBlock]", "delimited = [MetaLine]");
     assert_eq!(
-        framing_fixture_join_error(source, |_| {}),
+        emission_plan_join_error(source, |_| {}),
         "framing token `MetaLine` must use a closed same- or nested-delimiter matcher",
     );
 }
@@ -140,8 +143,40 @@ fn framing_planner_rejects_overlapping_atomic_ownership_directly() {
     let source = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs")
         .replace("line = [MetaLine]", "line = [MetaLine, MetaLine]");
     assert_eq!(
-        framing_fixture_join_error(source, |_| {}),
+        emission_plan_join_error(source, |_| {}),
         "framing boundary, line, and delimited token ownership must be disjoint",
+    );
+}
+
+/// Returns the greedy fixture grammar with its one `exclude(Factorial)` name replaced.
+///
+/// The fixture's `Excluded::expr` is the only authored `#[parse(pratt(exclude(...)))]` site,
+/// and `Expr` has the NUD variant `Integer` beside the led variants `Factorial` and `Like`.
+fn greedy_fixture_excluding(name: &str) -> String {
+    include_str!("../../tests/fixtures/generation/greedy/src/grammar.rs")
+        .replace("exclude(Factorial)", &format!("exclude({name})"))
+}
+
+#[test]
+fn the_planner_rejects_an_exclusion_that_names_no_led_variant() {
+    // `project_pratt_exclusions` drops an exclusion name it cannot resolve to a led variant
+    // rather than reporting it, because it runs before every application is known to be
+    // Pratt (#126). Emission is what keeps a misspelled name from silently widening the
+    // site's active extenders, so the build must still fail here.
+    assert_eq!(
+        emission_plan_join_error(greedy_fixture_excluding("Factorail"), |_| {}),
+        "field `expr` excludes unknown Pratt extension `Factorail` from `grammar::Expr`",
+    );
+}
+
+#[test]
+fn the_planner_rejects_an_exclusion_that_names_a_nud_variant() {
+    // A NUD resolves to a variant of the target but never to a led one, so materialization
+    // drops it exactly as it drops a misspelling; emission names why it cannot be excluded.
+    assert_eq!(
+        emission_plan_join_error(greedy_fixture_excluding("Integer"), |_| {}),
+        "field `expr` cannot exclude Pratt NUD variant `Integer`; only extensions may be \
+         excluded",
     );
 }
 

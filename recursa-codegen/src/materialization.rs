@@ -3677,6 +3677,7 @@ impl Materializer {
             &reservations,
             &projected_fields,
         );
+        self.project_pratt_exclusions(&mut grammar, &projected_fields, &variant_correlations);
         (
             grammar,
             LoweringMap {
@@ -4099,6 +4100,84 @@ impl Materializer {
                 ))
             })
             .collect()
+    }
+
+    /// Records each field's `#[parse(pratt(exclude(...)))]` on its normalized parse site.
+    ///
+    /// Runs after every application has its Pratt variant declarations, because a field
+    /// may exclude variants of a Pratt type materialized later than its owner. Names that
+    /// do not resolve to a led variant of the field's target are left out here; emission
+    /// reports them, and the build fails before analysis facts are consumed. The filter
+    /// names led variants only today; once a field can also exclude NUD atoms (#122), the
+    /// same pass should record them so FIRST-based overlaps subtract them as well.
+    fn project_pratt_exclusions(
+        &self,
+        grammar: &mut GrammarDescription,
+        fields: &[MaterializedFieldCorrelation],
+        variants: &[VariantAlternativeCorrelation],
+    ) {
+        for correlation in fields {
+            let MaterializedFieldLowering::ParseSite(site) = correlation.lowered else {
+                continue;
+            };
+            let Some(application) = self
+                .applications
+                .iter()
+                .find(|application| application.id == correlation.application)
+            else {
+                continue;
+            };
+            let Some((ty, filter)) =
+                application
+                    .body
+                    .parsed_elements()
+                    .find_map(|element| match element {
+                        MaterializedElement::SemanticField {
+                            field,
+                            projection:
+                                MaterializedSemanticFieldProjection::Direct {
+                                    ty,
+                                    pratt_extensions: Some(filter),
+                                    ..
+                                },
+                            ..
+                        } if *field == correlation.field => Some((ty, filter)),
+                        _ => None,
+                    })
+            else {
+                continue;
+            };
+            let (Terminal::Node(target), _) = terminal_and_container(ty, None) else {
+                continue;
+            };
+            let Some(target) = self
+                .applications
+                .iter()
+                .find(|application| application.id == target)
+            else {
+                continue;
+            };
+            let MaterializedNodeBody::Pratt(target_variants) = &target.body else {
+                continue;
+            };
+            let excluded = filter
+                .excluded
+                .iter()
+                .filter_map(|name| {
+                    let led = target_variants.iter().find_map(|variant| match variant {
+                        MaterializedPrattVariant::Led(led) if led.common.name == *name => {
+                            Some(led.common.resolved_variant)
+                        }
+                        _ => None,
+                    })?;
+                    variants
+                        .iter()
+                        .find(|variant| variant.application == target.id && variant.variant == led)
+                        .map(|variant| variant.lowered)
+                })
+                .collect::<Vec<_>>();
+            grammar.sites[site.index()].pratt_excluded = excluded;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

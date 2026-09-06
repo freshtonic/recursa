@@ -97,6 +97,22 @@ pub enum ProvenanceStep {
         /// Pratt role and binding-power position.
         position: PrattPosition,
     },
+    /// The Pratt loop that owns a led variant continues after the variant's tail.
+    ///
+    /// Every extender of the Pratt type can follow the tail's last element, and the
+    /// generated parser makes that boundary visible to everything the element contains,
+    /// so the extenders count as FOLLOW of the sites the tail reaches through nullable
+    /// suffixes.
+    PrattContinuation {
+        /// Pratt grammar type whose loop continues.
+        pratt: TypeId,
+        /// Authored Pratt declaration.
+        pratt_declaration: DeclId,
+        /// Authored led-variant declaration whose tail the loop continues after.
+        variant: DeclId,
+        /// Last site of that tail.
+        site: SiteId,
+    },
     /// An exact-text predicate refines a token-kind fact.
     TextPredicate {
         /// Exact-text predicate refining the token kind.
@@ -154,6 +170,10 @@ impl ProvenanceStep {
             | Self::FirstPropagation { declaration, .. }
             | Self::NullablePrefix { declaration, .. }
             | Self::PrattExtender {
+                variant: declaration,
+                ..
+            }
+            | Self::PrattContinuation {
                 variant: declaration,
                 ..
             }
