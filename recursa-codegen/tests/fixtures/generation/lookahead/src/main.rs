@@ -8,6 +8,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use recursa_generated_lookahead::grammar;
+use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 
 /// Counts live heap allocations so a failed parse can prove it dropped every boxed partial
 /// value.
@@ -58,6 +59,7 @@ fn main() {
             input.cursor(),
             input.is_eof()
         );
+        provenance(source);
     }
 
     // merged-kind-evidence-start: the integration test removes this block together with the
@@ -145,4 +147,33 @@ fn main() {
         assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
     }
     println!("lookahead-ok");
+}
+
+/// Prints the provenance of one positive input parsed with capture requested: the occurrence
+/// tree, the root's elements and the Pretty rendering. The twin comparison requires all three
+/// to be identical between the parser styles.
+fn provenance(source: &str) {
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Rule::parse_spanned(&mut input).expect("positive input parses with capture");
+    println!("prov {source:?} => {}", parsed.debug_provenance());
+    let elements: Vec<String> = parsed
+        .root()
+        .span_elements()
+        .map(|element| {
+            format!(
+                "{}:{:?}@{}",
+                element.name().unwrap_or("?"),
+                element.role(),
+                span_text(element.span())
+            )
+        })
+        .collect();
+    println!("elements {source:?} => [{}]", elements.join(" "));
+    println!("pretty {source:?} => {:?}", parsed.render());
+}
+
+/// Renders an optional span as `start..end` or `-`.
+fn span_text(span: Option<recursa::Span>) -> String {
+    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
 }

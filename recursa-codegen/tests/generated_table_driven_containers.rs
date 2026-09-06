@@ -58,6 +58,17 @@ fn every_container_shape_parses_like_its_recursive_descent_twin() {
     );
 
     // The twin: the same grammar under recursive descent prints the same lines.
+    // Provenance (#118): erased groups, presences and envelopes, repetitions with their
+    // separators, attachments and helper-lowered optionals all fold to recursive descent's
+    // occurrence tree, which the twin comparison below holds to byte equality.
+    assert!(table_stdout.contains("prov \"let one if not exists x = 2 as y;\" => captured 0..33 (0..33: (0..33: (0..33: (0..3) (4..7: (4..7)) (8..21: (8..10) (11..14: (11..14)) (15..21)) (22..23: (22..23: (22..23: (22..23)))) (24..25) (26..27: (26..27: (26..27: (26..27: (26..27: (26..27)))))) (28..32: (28..32: (28..30) (31..32: (31..32: (31..32: (31..32)))))) (32..33))))\n"), "{table_stdout}");
+    assert!(table_stdout.contains("prov \"marks :;\" => captured 0..8 (0..8: (0..8: (0..8: (0..5) _ (6..7) (7..7) (7..8))))\n"), "{table_stdout}");
+    assert!(table_stdout.contains("pretty \"let one if not exists x = 2 as y;\" => \"let one if not exists x= 2 as y;\"\n"), "{table_stdout}");
+    // A struct root ending in a content token accepts the prefix; a repetition tail rejects
+    // the token after it, as recursive descent does (#118).
+    assert!(table_stdout.contains("trailing Param \"x y\" => ok Param { mode: None, name: Name { text: __RecursaContentToken1 { text: ContentText(\"x\"), kind: NameText } } } cursor=1 eof=false\n"), "{table_stdout}");
+    assert!(table_stdout.contains("trailing Value \"(1) x\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 5 }"), "{table_stdout}");
+
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
     assert_eq!(source.matches(TABLE_DRIVEN).count(), 1);

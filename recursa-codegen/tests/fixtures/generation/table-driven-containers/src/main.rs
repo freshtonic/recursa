@@ -8,6 +8,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use recursa_generated_table_driven_containers::grammar;
+use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 
 /// Counts live heap allocations so a failed parse can prove it dropped every partial vector and
 /// box.
@@ -139,6 +140,7 @@ fn main() {
             input.is_eof()
         );
         assert!(input.is_eof(), "a positive input is consumed whole");
+        provenance(source);
     }
 
     let source = "with a | b print 1; { }";
@@ -177,6 +179,28 @@ fn main() {
     let alias = grammar::Alias::parse(&mut input).expect("an alias parses from its own entry");
     println!("entry {:?} cursor={}", alias.into_ast(), input.cursor());
 
+    // A struct root ending in a content token accepts the prefix; a repetition tail and a
+    // one-token alternative reject the token after them; a closing token accepts (#118).
+    for (source, expect) in [("x y", "Param"), ("(1) x", "Value"), ("[1] x", "Value"), ("x y", "Value")] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let result = match expect {
+            "Param" => grammar::Param::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
+            _ => grammar::Value::parse(&mut input).map(|parsed| format!("{:?}", parsed.into_ast())),
+        };
+        match result {
+            Ok(value) => println!("trailing {expect} {source:?} => ok {value} cursor={} eof={}", input.cursor(), input.is_eof()),
+            Err(error) => println!(
+                "trailing {expect} {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
+                error.code(),
+                error.kind(),
+                error.span(),
+                error.found(),
+                input.cursor()
+            ),
+        }
+    }
+
     for source in NEGATIVE {
         let lexed = grammar::lex(source);
         let mut input = lexed.input();
@@ -196,4 +220,33 @@ fn main() {
         assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
     }
     println!("table-driven-containers-ok");
+}
+
+/// Prints the provenance of one positive input parsed with capture requested: the occurrence
+/// tree, the root's elements and the Pretty rendering. The twin comparison requires all three
+/// to be identical between the parser styles.
+fn provenance(source: &str) {
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Statement::parse_spanned(&mut input).expect("positive input parses with capture");
+    println!("prov {source:?} => {}", parsed.debug_provenance());
+    let elements: Vec<String> = parsed
+        .root()
+        .span_elements()
+        .map(|element| {
+            format!(
+                "{}:{:?}@{}",
+                element.name().unwrap_or("?"),
+                element.role(),
+                span_text(element.span())
+            )
+        })
+        .collect();
+    println!("elements {source:?} => [{}]", elements.join(" "));
+    println!("pretty {source:?} => {:?}", parsed.render());
+}
+
+/// Renders an optional span as `start..end` or `-`.
+fn span_text(span: Option<recursa::Span>) -> String {
+    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
 }

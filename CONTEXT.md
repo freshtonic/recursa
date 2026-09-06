@@ -282,8 +282,20 @@ The table-driven parser's runtime stack of semantic values only, kept apart from
 _Avoid_: Symbol stack, union stack
 
 **Prefix acceptance**:
-A table-driven root parse accepts once the root type is reduced and the lookahead has no shift action; a shiftable lookahead always shifts. This equals the greedy boundary of a recursive-descent root parse.
+A table-driven root parse accepts once the root type is reduced and the lookahead has no shift action; a shiftable lookahead always shifts. This equals the greedy boundary of a recursive-descent root parse, except where recursive descent decided the root's end by its caller FOLLOW (see tail decision), where the following token is rejected as recursive descent rejects it.
 _Avoid_: End-of-input accept, longest-match search
+
+**Tail decision**:
+The per-rule record of whether recursive descent decides the rule's end by its caller FOLLOW: an enum alternative exactly one token long or a rule ending in a repetition does, a Pratt rule never does, any other rule leaves it to its last symbol. The table-driven runtime tracks it along the reductions after the final shift and applies it at acceptance.
+_Avoid_: Strict root, trailing-input check
+
+**Occurrence stack**:
+The table-driven parser's runtime stack of occurrence provenance, parallel to the state stack: pushed on every shift with the token's span and folded on every reduce by the rule's fold into the occurrence recursive descent builds for the same rule. It exists only when the parse captures provenance or the grammar has a mandatory site.
+_Avoid_: Span stack, location stack
+
+**Rule fold**:
+The static description of what a rule's reduce builds on the occurrence stack, rendered from the same site forms as its reduce action: a node with one child per site, a pass-through, a group, a repetition group, or a list step. Site kinds name the shape the recursive-descent helper for that element produces.
+_Avoid_: Provenance action, span callback
 
 **Inlined choice**:
 An optional grammar element lowered into its parent rule as one alternative with the content and one without, the way gram.y writes optional syntax by hand, so that no epsilon reduce precedes the token that decides it. Fixed-only choices are always inlined; valued choices are inlined when their content can begin with an admitted keyword.

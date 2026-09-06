@@ -68,7 +68,14 @@ what the glossary's "Parse capability" already says.
 depends on it. In a state whose item set holds `S' -> T .`, a lookahead
 with no shift action accepts. A lookahead that can shift always shifts.
 This is the greedy boundary recursive descent produces, so both styles
-agree on where a root ends.
+agree on where a root ends. Recursive descent also rejects the token that
+follows a root when the last decision it made consulted the caller FOLLOW
+(an enum alternative exactly one token long, or a repetition that ends the
+rule, reached along the chain of last symbols with no Pratt rule between),
+so the table-driven parser carries that decision per rule in a `tail` table,
+tracks it along the reductions that follow the final shift, and on
+acceptance rejects a following token outside the root FOLLOW with the same
+failing token, span and error kind.
 
 **Loop placement.** The automaton loop, `lr::run`, lives in recursa-core
 and is generic over the tables. Generated code supplies data and reduce
@@ -224,9 +231,20 @@ substitute `u32` refs without touching the automaton. Lints that reject
 
 **Provenance.** A parallel occurrence stack, pushed on shift and folded on
 reduce, active only when the capture request or the node's policy asks
-for it. When capture is off the stack is never touched. Output must equal
-recursive descent's provenance for the same input; the pg-sql corpus
-checks it.
+for it, or when the grammar has a mandatory site (an erased optional
+fixed-token group), which recursive descent captures whatever the request.
+When capture is off and the grammar has no mandatory site the stack is
+never touched. The fold of each rule is a
+packed table (`folds`) rendered from the same site forms as the reduce
+actions: one node per construction rule with one child per site in
+grammar-element order, the helper rules folding to what their inlined form
+would have produced, every span computed as `consumed_span_from` computes
+it and every occurrence compacted by the same collector. An inherited
+capture policy resolves to the entry type's, so an authored
+`#[spanned(...)]` override below the root is rejected (`RCA0406`): a child
+rule is reduced before the site that would pass the override down is known.
+Output must equal recursive descent's provenance for the same input; the
+pg-sql corpus checks it.
 
 **Errors.** LR with default reductions detects an error at the same token
 as recursive descent, but after some reductions, so the natural expected
@@ -279,6 +297,7 @@ registry:
 | `RCA0403` | text predicate not supported in table mode |
 | `RCA0404` | ambiguous lookahead-filter substitution |
 | `RCA0405` | note: conflict is an LALR merge artefact |
+| `RCA0406` | capture policy override not supported in table mode |
 
 A conflict report carries the state's items, the conflicting lookahead,
 the competing actions, and the shortest path from the start state to the
