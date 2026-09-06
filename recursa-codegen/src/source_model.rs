@@ -147,12 +147,27 @@ pub(crate) struct PrecedenceLevel {
     pub(crate) binding_power: u8,
     /// Locates the level's declaration.
     pub(crate) site: SourceSite,
-    /// The token definitions at this level, in authored order: fixed tokens by definition
-    /// name and content tokens by type name, as `#[greedy(...)]` spells them.
-    pub(crate) tokens: Vec<TokenDefinitionId>,
+    /// The token kinds at this level, in authored order without duplicates.
+    pub(crate) kinds: Vec<PrecedenceKindReference>,
     /// Names at this level that are no token: precedence-only names such as bison's
     /// `UMINUS`, each used by at least one `#[parse(prec = NAME)]`.
     pub(crate) names: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One token kind named at a level of the `precedence { ... }` declaration.
+///
+/// The two spellings a level accepts, in the order the resolver tries them: a token the lexer
+/// produces, and the merged kind of a `lookahead { ... }` filter, which only a table-driven
+/// parser's token feed produces. gram.y names both in its precedence table, `NOT_LA` beside
+/// `BETWEEN` (`gram.y:837`), because to bison the filtered token is a terminal like any other.
+pub(crate) enum PrecedenceKindReference {
+    /// A token definition: a fixed token by definition name, a content token by type name, as
+    /// `#[greedy(...)]` spells them.
+    Token(TokenDefinitionId),
+    /// A lookahead filter's merged kind, by its index into [`SourceModel::lookahead_filters`],
+    /// which materialization reads to find the merged kind's [`KindId`](crate::KindId).
+    Merged(usize),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5662,10 +5677,16 @@ impl SourceModelBuilder<'_> {
     /// catalog and resolves every `#[parse(prec = NAME)]` against it.
     ///
     /// A name resolves the way `#[greedy(...)]` spells kinds: a fixed token by its definition
-    /// identifier, a content token by its type name. A name that is no token is a
-    /// precedence-only name, bison's `UMINUS`, and must be used by at least one override so a
-    /// misspelt token is still an error. A second block, an unused precedence-only name, and an
-    /// override naming no level are `RCA3133`.
+    /// identifier, a content token by its type name; failing both, a `lookahead { ... }`
+    /// filter's merged kind by its declared name, which gram.y's block names too (`NOT_LA`
+    /// beside `BETWEEN`). A name that is none of the three is a precedence-only name, bison's
+    /// `UMINUS`, and must be used by at least one override so a misspelt token is still an
+    /// error. A second block, an unused precedence-only name, and an override naming no level
+    /// are `RCA3133`.
+    ///
+    /// Every name a level carries, a merged kind's included, also names that level for
+    /// `#[parse(prec = NAME)]`, as gram.y writes `%prec NOT_LA` on the rules that shift the
+    /// merged kind (`gram.y:14872`).
     fn resolve_precedence(&mut self) {
         let mut blocks = std::mem::take(&mut self.tokens.pending_precedence).into_iter();
         let overrides = std::mem::take(&mut self.pending_precedence_overrides);
@@ -5693,7 +5714,7 @@ impl SourceModelBuilder<'_> {
         let mut levels = Vec::new();
         let mut level_of_name = BTreeMap::<String, crate::PrecedenceLevelId>::new();
         for (index, level) in block.levels.into_iter().enumerate() {
-            let mut tokens = Vec::new();
+            let mut kinds = Vec::new();
             let mut names = Vec::new();
             for reference in level.names {
                 let matches = self
@@ -5704,23 +5725,35 @@ impl SourceModelBuilder<'_> {
                         definition.name == reference.name
                             && !matches!(definition.kind, TokenDefinitionKind::LexicalBase(_))
                     })
-                    .map(|definition| definition.id)
+                    .map(|definition| PrecedenceKindReference::Token(definition.id))
                     .collect::<Vec<_>>();
                 if matches.is_empty() {
-                    names.push(reference.name.clone());
+                    // No token definition carries the name, so the name is a merged kind if a
+                    // `lookahead` filter declares one, and a precedence-only name otherwise. A
+                    // merged name can never be a token definition's: the filter is rejected
+                    // where it is compiled if it is.
+                    match self
+                        .tokens
+                        .lookahead_filters
+                        .iter()
+                        .position(|filter| filter.name == reference.name)
+                    {
+                        Some(filter) => kinds.push(PrecedenceKindReference::Merged(filter)),
+                        None => names.push(reference.name.clone()),
+                    }
                 } else {
-                    tokens.extend(matches);
+                    kinds.extend(matches);
                 }
                 let level = u32::try_from(index)
                     .expect("a precedence block declares fewer than u32 levels");
                 level_of_name.insert(reference.name, crate::PrecedenceLevelId::new(level));
             }
-            tokens.dedup();
+            kinds.dedup();
             levels.push(PrecedenceLevel {
                 associativity: level.associativity,
                 binding_power: level.binding_power,
                 site: level.site,
-                tokens,
+                kinds,
                 names,
             });
         }
@@ -5754,8 +5787,9 @@ impl SourceModelBuilder<'_> {
                         .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
                             level.site.clone(),
                             format!(
-                                "`{name}` in the precedence declaration is not a fixed token or \
-                                 a content token type; a precedence-only name must be used by a \
+                                "`{name}` in the precedence declaration is not a fixed token, a \
+                                 content token type or a lookahead filter's merged kind; a \
+                                 precedence-only name must be used by a \
                                  `#[parse(prec = {name})]`"
                             ),
                         ));
@@ -11196,10 +11230,11 @@ recursa::tokens! {
             r#"
 recursa::grammar! { module = crate }
 recursa::tokens! {
-    keywords { LIKE => "like", ESCAPE => "escape", SELECT => "select", LOCAL => "local" }
+    keywords { LIKE => "like", ESCAPE => "escape", SELECT => "select", LOCAL => "local", NOT => "not" }
     punctuation { LPAREN => "(", RPAREN => ")", DOT => ".", PLUS => "+" }
+    lookahead { NOT_LA = NOT before { LIKE } }
     precedence {
-        nonassoc(bp = 5) { LIKE, LOCAL },
+        nonassoc(bp = 5) { LIKE, NOT_LA, LOCAL },
         nonassoc(bp = 6) { ESCAPE },
         nonassoc(bp = 7) { NameText, ESCAPE_ONLY },
         left(bp = 10) { PLUS },
@@ -11254,9 +11289,16 @@ enum Stmt {
                     level.associativity,
                     level.binding_power,
                     level
-                        .tokens
+                        .kinds
                         .iter()
-                        .map(|id| model.token_definitions[id.index()].name.clone())
+                        .map(|reference| match reference {
+                            super::PrecedenceKindReference::Token(id) => {
+                                model.token_definitions[id.index()].name.clone()
+                            }
+                            super::PrecedenceKindReference::Merged(filter) => {
+                                model.lookahead_filters[*filter].name.clone()
+                            }
+                        })
                         .collect(),
                     level.names.clone(),
                 )
@@ -11266,7 +11308,14 @@ enum Stmt {
         assert_eq!(
             levels,
             [
-                (NonAssociative, 5, vec!["LIKE".to_owned(), "LOCAL".to_owned()], vec![]),
+                // `NOT_LA` is no token definition: it resolves as the merged kind of the
+                // `lookahead` filter, in its authored place between `LIKE` and `LOCAL`.
+                (
+                    NonAssociative,
+                    5,
+                    vec!["LIKE".to_owned(), "NOT_LA".to_owned(), "LOCAL".to_owned()],
+                    vec![],
+                ),
                 (NonAssociative, 6, vec!["ESCAPE".to_owned()], vec![]),
                 (NonAssociative, 7, vec!["NameText".to_owned()], vec!["ESCAPE_ONLY".to_owned()]),
                 (Left, 10, vec!["PLUS".to_owned()], vec![]),
@@ -11274,7 +11323,11 @@ enum Stmt {
                 (Left, 20, vec!["DOT".to_owned()], vec![]),
             ]
         );
-        assert_eq!(model.precedence[0].tokens[0], by_name("LIKE"));
+        assert_eq!(
+            model.precedence[0].kinds[0],
+            super::PrecedenceKindReference::Token(by_name("LIKE"))
+        );
+        assert_eq!(model.precedence[0].kinds[1], super::PrecedenceKindReference::Merged(0));
         let mut overrides: Vec<(usize, bool)> = model
             .precedence_overrides
             .iter()
@@ -11303,8 +11356,18 @@ recursa::tokens! {
             (
                 "precedence { nonassoc(bp = 5) { LIKE, MISSING } }",
                 "#[derive(recursa::Node)] struct Root;",
-                "`MISSING` in the precedence declaration is not a fixed token or a content \
-                 token type; a precedence-only name must be used by a `#[parse(prec = MISSING)]`",
+                "`MISSING` in the precedence declaration is not a fixed token, a content token \
+                 type or a lookahead filter's merged kind; a precedence-only name must be used \
+                 by a `#[parse(prec = MISSING)]`",
+            ),
+            // A merged kind resolves only where a `lookahead` filter declares it: the name is
+            // otherwise as unknown as any other, which keeps a misspelt twin an error.
+            (
+                "precedence { nonassoc(bp = 5) { LIKE, LIKE_LA } }",
+                "#[derive(recursa::Node)] struct Root;",
+                "`LIKE_LA` in the precedence declaration is not a fixed token, a content token \
+                 type or a lookahead filter's merged kind; a precedence-only name must be used \
+                 by a `#[parse(prec = LIKE_LA)]`",
             ),
             (
                 "precedence { nonassoc(bp = 5) { LIKE } } precedence { left(bp = 6) { PLUS } }",
