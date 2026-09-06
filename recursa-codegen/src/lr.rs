@@ -37,8 +37,9 @@ mod fixture_tests;
 mod textbook;
 
 pub use automaton::{
-    Action, Automaton, AutomatonOptions, Conflict, ConflictKind, ConflictResolver, Item,
-    NoPrecedence, ResolvedConflict, Resolution, State, StateId, TerminalSet,
+    Action, Automaton, AutomatonOptions, Conflict, ConflictKind, ConflictResolver,
+    EndMarkerResolution, Item, NoPrecedence, ResolvedConflict, Resolution, State, StateId,
+    TerminalSet,
 };
 pub use grammar::{
     Associativity, ElementValue, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin,

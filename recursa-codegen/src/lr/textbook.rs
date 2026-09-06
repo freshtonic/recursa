@@ -213,3 +213,172 @@ fn every_start_rule_gets_its_own_start_state() {
     assert_eq!(tables.start_states[0], 0);
     assert_eq!(tables.start_states[2], 1);
 }
+
+/// pg-sql's `ColId` beside `type_function_name` (#125): two token wrappers over `IDENT` that
+/// several roots can end in. `Expr` continues past the wrapper (`ColumnRef -> ColId`,
+/// `FuncCall -> TypeFunctionName ( )`), `FuncName` ends in the later-declared wrapper alone
+/// (`QualifiedName -> ColId . ColId | TypeFunctionName`), and `Name` is genuinely ambiguous at
+/// the end of input (`ColId | TypeFunctionName`). Every root reaches the one LR(0) state
+/// `{ColIdText -> IDENT ., TypeFunctionNameText -> IDENT .}`, whose merged lookaheads hold the
+/// end marker for both wrappers.
+fn wrapper_grammar() -> LrGrammar {
+    let mut grammar = TextbookGrammar::new(&["IDENT", "(", ")", "."]);
+    grammar.token_rule("ColIdText", "IDENT");
+    grammar.token_rule("TypeFunctionNameText", "IDENT");
+    grammar.rule("ColId", "ColIdText");
+    grammar.rule("TypeFunctionName", "TypeFunctionNameText");
+    grammar.rule("Expr", "ColumnRef");
+    grammar.rule("Expr", "FuncCall");
+    grammar.rule("ColumnRef", "ColId");
+    grammar.rule("FuncCall", "TypeFunctionName ( )");
+    grammar.rule("FuncName", "QualifiedName");
+    grammar.rule("FuncName", "TypeFunctionName");
+    grammar.rule("QualifiedName", "ColId . ColId");
+    grammar.rule("Name", "ColId");
+    grammar.rule("Name", "TypeFunctionName");
+    for root in ["Expr", "FuncName", "Name", "ColIdText", "TypeFunctionNameText"] {
+        grammar.start(root);
+    }
+    grammar.finish()
+}
+
+/// Simulates the tables from the start state of `root` over `input`, returning the reductions.
+fn reductions_of(
+    grammar: &LrGrammar,
+    automaton: &Automaton,
+    root: &str,
+    input: &[&str],
+) -> Result<Vec<String>, super::tables::SimulationError> {
+    let tables = LrTables::pack(grammar, automaton);
+    let terminal = |name: &str| {
+        (0..grammar.terminal_count())
+            .map(|index| super::grammar::TerminalId::new(index as u32))
+            .find(|terminal| grammar.terminal_name(*terminal) == name)
+            .unwrap()
+    };
+    let root = grammar.nonterminal_by_name(root).unwrap();
+    let start = automaton
+        .start_states()
+        .iter()
+        .find(|(_, state)| {
+            let kernel = automaton.states()[state.index()].kernel();
+            grammar.rule(kernel[0].rule).rhs == [super::grammar::Symbol::Nonterminal(root)]
+        })
+        .map(|(_, state)| state.index() as u32)
+        .expect("the root has a start state");
+    let input: Vec<_> = input.iter().map(|name| terminal(name)).collect();
+    super::tables::simulate(grammar, &tables, start, &input).map(|trace| trace.reductions)
+}
+
+#[test]
+fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order() {
+    let grammar = wrapper_grammar();
+    let automaton = build(&grammar);
+    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+
+    // The one merged state records the resolution; the earliest-declared wrapper wins.
+    let col_id_text = super::grammar::RuleId::new(0);
+    let type_function_name_text = super::grammar::RuleId::new(1);
+    let [resolution] = automaton.end_marker_resolutions() else {
+        panic!("one resolution: {:?}", automaton.end_marker_resolutions());
+    };
+    assert_eq!(resolution.rules, vec![col_id_text, type_function_name_text]);
+    assert_eq!(resolution.chosen, col_id_text);
+    let state = &automaton.states()[resolution.state.index()];
+    let kernel: Vec<String> = state.kernel().iter().map(|item| item.render(&grammar)).collect();
+    assert_eq!(kernel, ["ColIdText -> IDENT .", "TypeFunctionNameText -> IDENT ."]);
+
+    // Every continuation terminal keeps its own explicit action: only `$end` was decided.
+    let terminal = |name: &str| {
+        (0..grammar.terminal_count())
+            .map(|index| super::grammar::TerminalId::new(index as u32))
+            .find(|terminal| grammar.terminal_name(*terminal) == name)
+            .unwrap()
+    };
+    assert_eq!(state.actions()[&grammar.end_marker()], Action::Reduce(col_id_text));
+    assert_eq!(state.actions()[&terminal("(")], Action::Reduce(type_function_name_text));
+    assert_eq!(state.actions()[&terminal(".")], Action::Reduce(col_id_text));
+    assert_eq!(state.default_reduction(), Some(col_id_text));
+
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(dump.contains(
+        "    Conflict between rules 0 and 1 resolved on $end by declaration order (reduce using rule 0).\n"
+    ), "{dump}");
+    assert!(dump.contains("No conflicts.\n1 reduce/reduce conflicts on $end resolved by declaration order.\n"), "{dump}");
+
+    // A real root that continues past the wrapper reduces the right wrapper on the real
+    // continuation terminal, and the wrapper the end of input needs when the root ends there.
+    let reductions = |root, input: &[&str]| reductions_of(&grammar, &automaton, root, input);
+    assert_eq!(
+        reductions("Expr", &["IDENT", "(", ")"]).unwrap(),
+        [
+            "TypeFunctionNameText -> IDENT",
+            "TypeFunctionName -> TypeFunctionNameText",
+            "FuncCall -> TypeFunctionName ( )",
+            "Expr -> FuncCall"
+        ]
+    );
+    assert_eq!(
+        reductions("Expr", &["IDENT"]).unwrap(),
+        ["ColIdText -> IDENT", "ColId -> ColIdText", "ColumnRef -> ColId", "Expr -> ColumnRef"]
+    );
+    assert_eq!(
+        reductions("FuncName", &["IDENT", ".", "IDENT"]).unwrap(),
+        [
+            "ColIdText -> IDENT",
+            "ColId -> ColIdText",
+            "ColIdText -> IDENT",
+            "ColId -> ColIdText",
+            "QualifiedName -> ColId . ColId",
+            "FuncName -> QualifiedName"
+        ]
+    );
+    // A genuinely ambiguous root yields the earliest-declared wrapper, which is the first
+    // alternative recursive descent would take.
+    assert_eq!(
+        reductions("Name", &["IDENT"]).unwrap(),
+        ["ColIdText -> IDENT", "ColId -> ColIdText", "Name -> ColId"]
+    );
+    // The limit of the rule: a root context that can end only in the later-declared wrapper
+    // takes the earlier one at the end of input and then finds no action, where recursive
+    // descent would accept `TypeFunctionName`. The failing position is the end of input.
+    assert_eq!(
+        reductions("FuncName", &["IDENT"]).unwrap_err().position,
+        1
+    );
+    // The bare wrapper roots are unaffected: their start states reach one-item states.
+    assert_eq!(reductions("ColIdText", &["IDENT"]).unwrap(), ["ColIdText -> IDENT"]);
+    assert_eq!(
+        reductions("TypeFunctionNameText", &["IDENT"]).unwrap(),
+        ["TypeFunctionNameText -> IDENT"]
+    );
+}
+
+#[test]
+fn wrapper_conflicts_that_also_exist_on_a_real_terminal_stay_conflicts() {
+    // A root that continues past either wrapper with `(` and can end in either makes the
+    // wrappers compete on `(` as well as on `$end`: neither is settled, and both are reported.
+    let mut grammar = TextbookGrammar::new(&["IDENT", "(", ")"]);
+    grammar.token_rule("ColIdText", "IDENT");
+    grammar.token_rule("TypeFunctionNameText", "IDENT");
+    grammar.rule("ColId", "ColIdText");
+    grammar.rule("TypeFunctionName", "TypeFunctionNameText");
+    grammar.rule("Expr", "ColId ( )");
+    grammar.rule("Expr", "TypeFunctionName ( )");
+    grammar.rule("Expr", "ColId");
+    grammar.rule("Expr", "TypeFunctionName");
+    grammar.start("Expr");
+    let grammar = grammar.finish();
+    let automaton = build(&grammar);
+    assert!(automaton.end_marker_resolutions().is_empty());
+    let lookaheads: Vec<&str> = automaton
+        .conflicts()
+        .iter()
+        .map(|conflict| grammar.terminal_name(conflict.lookahead))
+        .collect();
+    assert_eq!(lookaheads, ["(", "$end"]);
+    assert!(automaton.conflicts().iter().all(|conflict| matches!(
+        conflict.kind,
+        ConflictKind::ReduceReduce { .. }
+    )));
+}
