@@ -10,12 +10,15 @@
 //! that names the shortest path to its state ([`paths`](crate::lr::paths)).
 //! Generation runs it from the renderer-selection point when the grammar selects the
 //! `table_driven` style (`generation::table_driven`). Shift/reduce conflicts between Pratt rules
-//! and operator tokens are settled by
+//! and operator tokens, and those the token grammar's `precedence` declaration covers
+//! ([`declared_precedence`](crate::lr::declared_precedence)), are settled by
 //! [`BindingPowerPrecedence`](crate::lr::precedence::BindingPowerPrecedence) through the
 //! [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam.
 
 /// LR(0) item sets, DeRemer–Pennello lookaheads and conflict detection.
 pub mod automaton;
+/// Rule precedence from the `precedence` declaration, bison's token-precedence facility.
+pub mod declared_precedence;
 /// The LR grammar model the lowering produces and the automaton consumes.
 pub mod grammar;
 /// Lookahead-filter substitution over lowered rules.
@@ -41,9 +44,10 @@ pub use automaton::{
     NoPrecedence, ResolvedConflict, Resolution, State, StateId, TerminalSet,
 };
 pub use grammar::{
-    Associativity, ElementValue, LrGrammar, Nonterminal, NonterminalId, NonterminalOrigin,
-    OptionalContent, Rule, RuleAction, RuleId, RulePrecedence, SiteForm, StartRule, Symbol,
-    TerminalFilter, TerminalId, UnrepresentableBindingPowers,
+    Associativity, DeclaredPrecedence, ElementValue, LrGrammar, Nonterminal, NonterminalId,
+    NonterminalOrigin, OptionalContent, PrecedenceOrigin, Rule, RuleAction, RuleId,
+    RulePrecedence, SiteForm, StartRule, Symbol, TerminalFilter, TerminalId,
+    UnrepresentableBindingPowers,
 };
 pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
