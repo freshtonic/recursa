@@ -2050,6 +2050,193 @@ enum Expr<'input> {
     );
 }
 
+/// Proves the emitted grouping survives the same witnessless cycle the source
+/// model admits, so a grammar that clears RCA3101 still renders its delimiters.
+pub(super) fn pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant() {
+    let (_package, plan) = joined_pratt_fixture_from(
+        r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { SELECT => "select" }
+    punctuation {
+        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
+        COMMA => ",", PLUS => "+"
+    }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Simple<'input> {
+    #[sep(COMMA)]
+    targets: recursa::Vec1<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+struct Paren<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum Q<'input> {
+    Simple(Simple<'input>),
+    Paren(Paren<'input>),
+}
+
+#[derive(recursa::Node)]
+enum C<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Query(Box<Q<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: C<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+    );
+    let index = plan
+        .nodes
+        .iter()
+        .position(|node| node.semantic_key == "Expr")
+        .expect("fixture has the owning Pratt Expr");
+    let grouping = plan.pretty.nodes[index]
+        .as_ref()
+        .and_then(|behavior| behavior.pratt.as_ref())
+        .and_then(|pratt| pratt.grouping.as_ref())
+        .expect("the witnessless cycle still supplies Pratt grouping syntax");
+
+    assert_eq!(
+        grouping
+            .before
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        ["("]
+    );
+    assert_eq!(
+        grouping
+            .after
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        [")"]
+    );
+}
+
+/// Proves a live cycle mark stays behind a half-open fixed context.
+///
+/// `Q` owns a witness of its own, so its self-cycle is not witnessless and its
+/// mark survives. Reaching it through `S` puts it behind required syntax with
+/// nothing after, a context that can never contribute a witness, so the mark
+/// must not reach `C` and cost the sibling `Exprs` witness its grouping.
+pub(super) fn pretty_pratt_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context() {
+    let (_package, plan) = joined_pratt_fixture_from(
+        r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { KW => "kw" }
+    punctuation {
+        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
+        COMMA => ",", PLUS => "+"
+    }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct QParen<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum Q<'input> {
+    Direct(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Paren(QParen<'input>),
+}
+
+#[derive(recursa::Node)]
+#[tok(KW, this)]
+struct S<'input> {
+    query: Box<Q<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum C<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Sub(Box<S<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: C<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+    );
+    let index = plan
+        .nodes
+        .iter()
+        .position(|node| node.semantic_key == "Expr")
+        .expect("fixture has the owning Pratt Expr");
+    let grouping = plan.pretty.nodes[index]
+        .as_ref()
+        .and_then(|behavior| behavior.pratt.as_ref())
+        .and_then(|pratt| pratt.grouping.as_ref())
+        .expect("a half-open context withholds the cycle mark and keeps the grouping");
+
+    assert_eq!(
+        grouping
+            .before
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        ["("]
+    );
+    assert_eq!(
+        grouping
+            .after
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        [")"]
+    );
+}
+
 pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
     let (package, plan) = joined_pratt_fixture();
 
