@@ -132,7 +132,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3005 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
-        1..=405 => DiagnosticEvidenceSchema::AnalysisWitness,
+        1..=406 => DiagnosticEvidenceSchema::AnalysisWitness,
         1001..=3212 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
@@ -154,7 +154,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3005 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
-        1..=405 => DiagnosticRemedySchema::ResolveAnalysisConflict,
+        1..=406 => DiagnosticRemedySchema::ResolveAnalysisConflict,
         1001..=3212 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }

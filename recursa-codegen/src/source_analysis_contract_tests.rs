@@ -846,6 +846,37 @@ fn build_report_deduplicates_orders_and_renders_structured_diagnostics() {
 }
 
 #[test]
+/// Guards the numeric ranges in `evidence_schema` and `remedy_schema` against a new code
+/// falling past their end. A code outside every range takes the `InternalInvariant` fallback,
+/// so an ordinary grammar mistake renders as "Recursa detected an internal generation
+/// invariant failure" and tells the author to report a Recursa bug. Only the `RCA91xx` family
+/// describes an internal failure; every other active code describes the author's input.
+/// Both `RCA3212` and `RCA0406` reached main with this defect before this test existed.
+fn only_internal_codes_carry_the_internal_invariant_schema() {
+    let internal: Vec<&str> = crate::build_diagnostic::diagnostic_code_registry()
+        .iter()
+        .filter(|spec| spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Active)
+        .filter(|spec| {
+            matches!(
+                spec.evidence,
+                crate::build_diagnostic::DiagnosticEvidenceSchema::InternalInvariant
+            )
+        })
+        .map(|spec| spec.code.as_str())
+        .collect();
+    let unexpected: Vec<&&str> = internal
+        .iter()
+        .filter(|code| !code.starts_with("RCA91"))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "these codes describe authored input but take the internal-invariant schema, so they \
+         render as a Recursa bug report: {unexpected:?}; widen the numeric range in \
+         `evidence_schema` and `remedy_schema` to cover them",
+    );
+}
+
+#[test]
 fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
     let registry = crate::build_diagnostic::diagnostic_code_registry();
     let mut codes = registry
