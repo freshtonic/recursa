@@ -18,6 +18,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "follow-pollution/Cargo.core.lock",
         "lexing/Cargo.lock",
         "lookahead/Cargo.core.lock",
+        "lookahead-precedence/Cargo.core.lock",
         "named-parsers/Cargo.core.lock",
         "one-node/Cargo.core.lock",
         "one-node/Cargo.lock",

@@ -326,7 +326,7 @@ The lowering of a Pratt Node's binding powers into rule precedence and associati
 _Avoid_: Runtime Pratt loop, precedence climbing
 
 **Declared precedence**:
-A token-grammar declaration of precedence levels, each left, right or non-associative over token names and placed on the binding-power scale, that a table-driven parser uses where binding-power precedence says nothing: a rule outside the Pratt hierarchy takes the level of its last declared token or of the level its Node or variant names as an override, and a lookahead at a declared level is compared with the reducing rule's level. A precedence-only name is a level member that is no token and exists for overrides alone. Recursive descent ignores the declaration.
+A token-grammar declaration of precedence levels, each left, right or non-associative over token names and placed on the binding-power scale, that a table-driven parser uses where binding-power precedence says nothing: a rule outside the Pratt hierarchy takes the level of its last declared token or of the level its Node or variant names as an override, and a lookahead at a declared level is compared with the reducing rule's level. A level names lexed token kinds and lookahead-filter merged kinds alike; a merged kind takes only the level that names it, never its token's. A precedence-only name is a level member that is neither and exists for overrides alone. Recursive descent ignores the declaration.
 _Avoid_: Token precedence table, %left line, keyword weight
 
 **Parse capability**:
