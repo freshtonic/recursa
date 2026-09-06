@@ -385,6 +385,39 @@ impl DispatchPlan {
     }
 }
 
+/// Reports whether a matched dispatch prefix keeps walking although one declaration decides it.
+///
+/// Every terminal below `node` naming one declaration means the prefix that reached `node`
+/// has selected that declaration; an edge there re-validates the declaration's own language
+/// with a frontier that omits its open continuations, which is how `f(a + b)` failed at `+`
+/// (#127). The root is exempt because it has matched nothing yet.
+///
+/// The reachable declarations are recollected at every node rather than memoized, which is
+/// quadratic in trie size; the tries are small and this runs once per grammar at build time.
+fn dispatch_trie_walks_past_selection(node: &DispatchTrieNode) -> bool {
+    fn declarations(node: &DispatchTrieNode, found: &mut Vec<DeclId>) {
+        if let Some(terminal) = node.terminal {
+            found.push(terminal.declaration);
+        }
+        for edge in node.edges.iter() {
+            declarations(&edge.next, found);
+        }
+    }
+    if node.edges.is_empty() {
+        return false;
+    }
+    let mut found = Vec::new();
+    declarations(node, &mut found);
+    found.sort_unstable();
+    found.dedup();
+    if found.len() == 1 {
+        return true;
+    }
+    node.edges
+        .iter()
+        .any(|edge| dispatch_trie_walks_past_selection(&edge.next))
+}
+
 /// Reports whether a trie contains a complement terminal that cannot be projected as a row.
 fn dispatch_trie_has_fallback_after_edges(node: &DispatchTrieNode) -> bool {
     node.terminal
@@ -1045,6 +1078,24 @@ impl DecisionProducts {
         if failure_keys.len() != failure_count {
             return Err(DecisionInvariant::DuplicateFailureEdge);
         }
+        for dispatch in &self.dispatches {
+            if dispatch.kind != DispatchKind::Enum {
+                continue;
+            }
+            let after_close = dispatch
+                .balanced
+                .as_ref()
+                .map(|balanced| &balanced.after_close);
+            if dispatch
+                .trie
+                .edges
+                .iter()
+                .chain(after_close.iter().flat_map(|node| node.edges.iter()))
+                .any(|edge| dispatch_trie_walks_past_selection(&edge.next))
+            {
+                return Err(DecisionInvariant::DispatchWalksPastSelection);
+            }
+        }
         Ok(())
     }
 
@@ -1133,6 +1184,8 @@ pub(crate) enum DecisionInvariant {
     MultipleCallerFallbacks,
     /// Selects the duplicate failure edge decision for generation.
     DuplicateFailureEdge,
+    /// Selects an enum dispatch that keeps walking after one declaration is selected.
+    DispatchWalksPastSelection,
     #[cfg(test)]
     /// Selects the follow recipe mismatch decision for generation.
     FollowRecipeMismatch,

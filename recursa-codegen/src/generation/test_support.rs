@@ -927,7 +927,7 @@ pub(super) fn large_expected_set_batch_uses_canonical_atom_index() {
     );
 }
 
-pub(super) fn overlapping_rectangles_preserve_full_ordinary_routes() {
+pub(super) fn overlapping_rectangles_commit_unique_routes_at_their_first_token() {
     let (_package, plan) = joined_pratt_fixture_from(include_str!(
         "../../tests/fixtures/generation/predictive/src/grammar.rs"
     ));
@@ -945,49 +945,57 @@ pub(super) fn overlapping_rectangles_preserve_full_ordinary_routes() {
         })
         .expect("the predictive fixture contains OverlappingRectangles dispatch");
 
-    assert_eq!(dispatch.frozen_sequence_count, 2);
+    // `A` and `C` are one-token rows that commit, `B C` and `B D` are the shared route.
+    assert_eq!(dispatch.frozen_sequence_count, 4);
     assert_eq!(dispatch.frozen_node_count, 6);
     assert_eq!(dispatch.states.len(), 6);
     assert_eq!(
         validate_predictive_dispatch(dispatch, 2).unwrap(),
         6,
-        "the four two-token paths have six unique states, not eight expanded occurrences",
+        "the two unique leaves and the shared two-token route have six unique states",
     );
 
     let root = &dispatch.states[dispatch.root.index()];
     assert!(root.target.is_none());
     assert_eq!(root.edges.len(), 3);
 
-    let mut complete_routes = 0;
-    let mut terminal_variants = Vec::new();
-    let mut suffix_widths = Vec::new();
+    // `A` only starts `First` and `C` only starts `Second`, so the dispatch commits at
+    // that token and leaves the rest of the route to the selected variant's parser
+    // (#127). `B` starts both, so the second token decides under the caller-FOLLOW guard.
+    let mut immediate_variants = Vec::new();
+    let mut shared_routes = Vec::new();
     for edge in &root.edges {
         let child = &dispatch.states[edge.next.index()];
-        assert_eq!(
-            child.target, None,
-            "ordinary enum dispatch must not commit before checking the complete route and caller FOLLOW",
-        );
-        suffix_widths.push(child.edges.len());
-        for suffix in &child.edges {
-            let terminal = &dispatch.states[suffix.next.index()];
-            let target = terminal
-                .target
-                .expect("every complete two-token rectangle route is terminal");
-            assert!(terminal.edges.is_empty());
-            assert!(
-                matches!(target.mode, crate::DispatchTerminalMode::CallerFollow),
-                "complete ordinary routes retain the caller-FOLLOW guard before selection",
-            );
-            complete_routes += 1;
-            terminal_variants.push(target.variant);
+        match child.target {
+            Some(target) => {
+                assert!(
+                    matches!(target.mode, crate::DispatchTerminalMode::Immediate),
+                    "a route only one variant can derive commits immediately",
+                );
+                assert!(child.edges.is_empty());
+                immediate_variants.push(target.variant);
+            }
+            None => {
+                for suffix in &child.edges {
+                    let terminal = &dispatch.states[suffix.next.index()];
+                    let target = terminal
+                        .target
+                        .expect("every complete two-token rectangle route is terminal");
+                    assert!(terminal.edges.is_empty());
+                    assert!(
+                        matches!(target.mode, crate::DispatchTerminalMode::CallerFollow),
+                        "complete shared routes retain the caller-FOLLOW guard before selection",
+                    );
+                    shared_routes.push(target.variant);
+                }
+            }
         }
     }
 
-    suffix_widths.sort_unstable();
-    terminal_variants.sort_unstable();
-    assert_eq!(suffix_widths, [1, 1, 2]);
-    assert_eq!(complete_routes, 4);
-    assert_eq!(terminal_variants, [0, 0, 1, 1]);
+    immediate_variants.sort_unstable();
+    shared_routes.sort_unstable();
+    assert_eq!(immediate_variants, [0, 1]);
+    assert_eq!(shared_routes, [0, 1]);
 }
 
 pub(super) fn corrupted_joined_dispatch_fails_before_publication_with_rca9105() {

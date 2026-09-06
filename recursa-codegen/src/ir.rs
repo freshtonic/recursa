@@ -482,6 +482,12 @@ pub struct ParseSite {
     pub container: ContainerShape,
     /// Minimum Pratt binding power required at this site.
     pub min_bp: u8,
+    /// Pratt led variants of the target that `#[parse(pratt(exclude(...)))]` removes here.
+    ///
+    /// The generated loop never selects an excluded variant at this site or in the
+    /// recursive operands it parses, so analysis leaves the variant's starters out of the
+    /// site's active extenders instead of reporting them as a caller-FOLLOW overlap.
+    pub pratt_excluded: Vec<DeclId>,
 }
 
 impl ParseSite {
@@ -498,12 +504,19 @@ impl ParseSite {
             declaration,
             container,
             min_bp: 0,
+            pratt_excluded: Vec::new(),
         }
     }
 
     /// Sets the minimum Pratt binding power for this site.
     pub const fn with_min_bp(mut self, min_bp: u8) -> Self {
         self.min_bp = min_bp;
+        self
+    }
+
+    /// Records the target's Pratt led variants that this site excludes.
+    pub fn with_pratt_excluded(mut self, excluded: Vec<DeclId>) -> Self {
+        self.pratt_excluded = excluded;
         self
     }
 }
