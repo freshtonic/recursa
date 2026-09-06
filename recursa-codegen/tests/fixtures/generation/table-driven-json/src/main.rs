@@ -113,133 +113,149 @@ const NEGATIVE: &[&str] = &[
     "[1,[2,[3,]]]",
 ];
 
-fn main() {
-    for source in POSITIVE {
-        let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        let parsed = grammar::Value::parse(&mut input)
-            .unwrap_or_else(|error| panic!("positive input {source:?} failed: {error}"));
-        println!(
-            "ok {source:?} => {} cursor={} eof={}",
-            render(&parsed.into_ast()),
-            input.cursor(),
-            input.is_eof()
-        );
-        assert!(input.is_eof(), "a positive input is consumed whole");
-        provenance(source);
-    }
-
-    // Roots that end in a closing token, so that both styles accept the prefix: a
-    // recursive-descent root that ends in a keyword or content token rejects any token after
-    // it, while the table-driven parser accepts the prefix (design section 3), so a `null true`
-    // sequence is not compared here.
-    let source = r#"{} [] {"a":[null]} [true]"#;
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    for ordinal in ["first", "second", "third", "fourth"] {
-        let value = grammar::Value::parse(&mut input).expect("each root parses");
-        println!("prefix {ordinal} {} cursor={} eof={}", render(&value.into_ast()), input.cursor(), input.is_eof());
-    }
-    let source = "[1] ,";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let value = grammar::Value::parse(&mut input).expect("the array parses");
-    println!("prefix fifth {} cursor={}", render(&value.into_ast()), input.cursor());
-    let Err(error) = grammar::Value::parse(&mut input) else {
-        panic!("a bare comma is no value");
-    };
-    println!("prefix sixth code={} found={:?} cursor={}", error.code(), error.found(), input.cursor());
-
-    // A root whose selected alternative is one token long (a keyword or a content token) is
-    // accepted only at the end of input, as recursive descent's dispatch decides it, while a
-    // root that ends in a closing token above accepted the prefix (#118).
-    for source in ["null,", "null true", "42 ]", "\"s\" {", "true"] {
-        let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        match grammar::Value::parse(&mut input) {
-            Ok(value) => println!("trailing {source:?} => ok {} cursor={} eof={}", render(&value.into_ast()), input.cursor(), input.is_eof()),
-            Err(error) => println!(
-                "trailing {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
-                error.code(),
-                error.kind(),
-                error.span(),
-                error.found(),
-                input.cursor()
-            ),
-        }
-    }
-
-    let source = r#"{"a":1}"#;
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let object = grammar::Object::parse(&mut input).expect("an object parses from its own entry");
-    println!("entry object{{{}}} cursor={}", render_members(&object.into_ast()), input.cursor());
-    let source = "[1]";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let array = grammar::Array::parse(&mut input).expect("an array parses from its own entry");
-    println!(
-        "entry {} cursor={}",
-        render(&grammar::Value::Array(array.into_ast())),
-        input.cursor()
-    );
-    let source = r#""k":true"#;
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let member = grammar::Member::parse(&mut input).expect("a member parses from its own entry");
-    println!("entry {} cursor={}", render_member(&member.into_ast()), input.cursor());
-    let source = "false";
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let boolean = grammar::Bool::parse(&mut input).expect("a boolean parses from its own entry");
-    println!("entry {} cursor={}", render_bool(&boolean.into_ast()), input.cursor());
-
-    for source in NEGATIVE {
-        let lexed = grammar::lex(source);
-        let mut input = lexed.input();
-        // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-        // those records by design, so the live count is taken on a warm second parse.
-        assert!(grammar::Value::parse(&mut input).is_err(), "failing input {source:?} fails");
-        let baseline = LIVE.load(Ordering::SeqCst);
-        let Err(error) = grammar::Value::parse(&mut input) else {
-            panic!("failing input {source:?} fails");
+/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
+/// builds that parser's input over a lexing result. The test compares the lines of the two
+/// parsers of the one generation.
+macro_rules! drive {
+    ($tag:expr, $input:expr) => {{
+        let tag: &str = $tag;
+        // Prints the provenance of one positive input parsed with capture requested: the
+        // occurrence tree, the root's elements and the Pretty rendering. The comparison
+        // requires all three to be identical between the parsers.
+        let provenance = |source: &str| {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::Value::parse_spanned(&mut input).expect("positive input parses with capture");
+            println!("{tag} prov {source:?} => {}", parsed.debug_provenance());
+            let elements: Vec<String> = parsed
+                .root()
+                .span_elements()
+                .map(|element| {
+                    format!(
+                        "{}:{:?}@{}",
+                        element.name().unwrap_or("?"),
+                        element.role(),
+                        span_text(element.span())
+                    )
+                })
+                .collect();
+            println!("{tag} elements {source:?} => [{}]", elements.join(" "));
+            println!("{tag} pretty {source:?} => {:?}", parsed.render());
         };
-        let (code, kind, span, found) = (error.code(), error.kind(), error.span(), error.found());
-        drop(error);
-        let leaked = LIVE.load(Ordering::SeqCst) - baseline;
+        for source in POSITIVE {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let parsed = grammar::Value::parse(&mut input)
+                .unwrap_or_else(|error| panic!("positive input {source:?} failed: {error}"));
+            println!(
+                "{tag} ok {source:?} => {} cursor={} eof={}",
+                render(&parsed.into_ast()),
+                input.cursor(),
+                input.is_eof()
+            );
+            assert!(input.is_eof(), "a positive input is consumed whole");
+            provenance(source);
+        }
+
+        // Roots that end in a closing token, so that both styles accept the prefix: a
+        // recursive-descent root that ends in a keyword or content token rejects any token after
+        // it, while the table-driven parser accepts the prefix (design section 3), so a `null true`
+        // sequence is not compared here.
+        let source = r#"{} [] {"a":[null]} [true]"#;
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        for ordinal in ["first", "second", "third", "fourth"] {
+            let value = grammar::Value::parse(&mut input).expect("each root parses");
+            println!("{tag} prefix {ordinal} {} cursor={} eof={}", render(&value.into_ast()), input.cursor(), input.is_eof());
+        }
+        let source = "[1] ,";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let value = grammar::Value::parse(&mut input).expect("the array parses");
+        println!("{tag} prefix fifth {} cursor={}", render(&value.into_ast()), input.cursor());
+        let Err(error) = grammar::Value::parse(&mut input) else {
+            panic!("a bare comma is no value");
+        };
+        println!("{tag} prefix sixth code={} found={:?} cursor={}", error.code(), error.found(), input.cursor());
+
+        // A root whose selected alternative is one token long (a keyword or a content token) is
+        // accepted only at the end of input, as recursive descent's dispatch decides it, while a
+        // root that ends in a closing token above accepted the prefix (#118).
+        for source in ["null,", "null true", "42 ]", "\"s\" {", "true"] {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            match grammar::Value::parse(&mut input) {
+                Ok(value) => println!("{tag} trailing {source:?} => ok {} cursor={} eof={}", render(&value.into_ast()), input.cursor(), input.is_eof()),
+                Err(error) => println!(
+                    "{tag} trailing {source:?} => code={} kind={:?} span={:?} found={:?} cursor={}",
+                    error.code(),
+                    error.kind(),
+                    error.span(),
+                    error.found(),
+                    input.cursor()
+                ),
+            }
+        }
+
+        let source = r#"{"a":1}"#;
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let object = grammar::Object::parse(&mut input).expect("an object parses from its own entry");
+        println!("{tag} entry object{{{}}} cursor={}", render_members(&object.into_ast()), input.cursor());
+        let source = "[1]";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let array = grammar::Array::parse(&mut input).expect("an array parses from its own entry");
         println!(
-            "err {source:?} => code={code} kind={kind:?} span={span:?} found={found:?} cursor={} leaked={leaked}",
+            "{tag} entry {} cursor={}",
+            render(&grammar::Value::Array(array.into_ast())),
             input.cursor()
         );
-        assert_eq!(leaked, 0, "a failed parse must drop every partial value");
-        assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
-    }
+        let source = r#""k":true"#;
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let member = grammar::Member::parse(&mut input).expect("a member parses from its own entry");
+        println!("{tag} entry {} cursor={}", render_member(&member.into_ast()), input.cursor());
+        let source = "false";
+        let lexed = grammar::lex(source);
+        let mut input = $input(&lexed);
+        let boolean = grammar::Bool::parse(&mut input).expect("a boolean parses from its own entry");
+        println!("{tag} entry {} cursor={}", render_bool(&boolean.into_ast()), input.cursor());
+
+        for source in NEGATIVE {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
+            // those records by design, so the live count is taken on a warm second parse.
+            assert!(grammar::Value::parse(&mut input).is_err(), "failing input {source:?} fails");
+            let baseline = LIVE.load(Ordering::SeqCst);
+            let Err(error) = grammar::Value::parse(&mut input) else {
+                panic!("failing input {source:?} fails");
+            };
+            let (code, kind, span, found) = (error.code(), error.kind(), error.span(), error.found());
+            drop(error);
+            let leaked = LIVE.load(Ordering::SeqCst) - baseline;
+            println!(
+                "{tag} err {source:?} => code={code} kind={kind:?} span={span:?} found={found:?} cursor={} leaked={leaked}",
+                input.cursor()
+            );
+            assert_eq!(leaked, 0, "a failed parse must drop every partial value");
+            assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
+        }
+    }};
+}
+
+/// The default parser's input.
+fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+    lexed.input()
+}
+
+fn main() {
+    drive!("rd", rd_input);
+    drive!("lr", grammar::parsers::lr::input);
     println!("table-driven-json-ok");
 }
 
-/// Prints the provenance of one positive input parsed with capture requested: the occurrence
-/// tree, the root's elements and the Pretty rendering. The twin comparison requires all three
-/// to be identical between the parser styles.
-fn provenance(source: &str) {
-    let lexed = grammar::lex(source);
-    let mut input = lexed.input();
-    let parsed = grammar::Value::parse_spanned(&mut input).expect("positive input parses with capture");
-    println!("prov {source:?} => {}", parsed.debug_provenance());
-    let elements: Vec<String> = parsed
-        .root()
-        .span_elements()
-        .map(|element| {
-            format!(
-                "{}:{:?}@{}",
-                element.name().unwrap_or("?"),
-                element.role(),
-                span_text(element.span())
-            )
-        })
-        .collect();
-    println!("elements {source:?} => [{}]", elements.join(" "));
-    println!("pretty {source:?} => {:?}", parsed.render());
-}
 
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {

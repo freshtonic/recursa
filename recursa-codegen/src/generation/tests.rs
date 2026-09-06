@@ -323,11 +323,11 @@ fn joined_plan_from_source(
 #[test]
 fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical() {
     let fixture = include_str!("../../tests/fixtures/generation/lookahead/src/grammar.rs");
-    let table_driven = "parser_style = table_driven,";
+    let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";
     let lookahead = "    lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }\n";
-    assert_eq!(fixture.matches(table_driven).count(), 1);
+    assert_eq!(fixture.matches(named_parsers).count(), 1);
     assert_eq!(fixture.matches(lookahead).count(), 1);
-    let declared = fixture.replace(table_driven, "parser_style = recursive_descent,");
+    let declared = fixture.replace(named_parsers, "parser_style = recursive_descent,");
     let undeclared = declared.replace(lookahead, "");
     let (_declared_package, _, declared_plan) = joined_plan_from_source(&declared);
     let (_undeclared_package, _, undeclared_plan) = joined_plan_from_source(&undeclared);
