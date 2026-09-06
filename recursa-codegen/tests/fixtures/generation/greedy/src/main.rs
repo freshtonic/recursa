@@ -32,4 +32,20 @@ fn main() {
             outcome(grammar::Tail::parse(&mut input).map(|parsed| parsed.into_ast()))
         );
     }
+    for source in ["1 LIKE 2 ESCAPE 3 !", "1 LIKE 2 ESCAPE 3 LIKE 4"] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        println!(
+            "escape {source:?}: {}",
+            outcome(grammar::Expr::parse(&mut input).map(|parsed| parsed.into_ast()))
+        );
+    }
+    for source in ["1 !", "1 LIKE 2 !"] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        println!(
+            "excluded {source:?}: {}",
+            outcome(grammar::Excluded::parse(&mut input).map(|parsed| parsed.into_ast()))
+        );
+    }
 }

@@ -15,7 +15,7 @@ fn greedy_acceptances_silence_follow_warnings_and_extend_pratt_expressions() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
     let accepted_source = fs::read_to_string(&grammar).expect("read scaffolded grammar");
-    assert_eq!(accepted_source.matches("#[greedy(").count(), 4);
+    assert_eq!(accepted_source.matches("#[greedy(").count(), 5);
 
     let accepted_build = build_fixture(&package);
     assert_success(&accepted_build);
@@ -42,6 +42,19 @@ fn greedy_acceptances_silence_follow_warnings_and_extend_pratt_expressions() {
             && accepted_output.contains("terminator: None }"),
         "the accepted extender keeps extending where the caller can do without the token:\n{accepted_output}"
     );
+    assert!(
+        accepted_output.contains("escape \"1 LIKE 2 ESCAPE 3 !\": ok Like(")
+            && accepted_output.contains("Some(EscapeClause { char: Factorial(")
+            && accepted_output.contains("escape \"1 LIKE 2 ESCAPE 3 LIKE 4\": ok Like(")
+            && accepted_output.contains("Some(EscapeClause { char: Like("),
+        "the exact acceptance names the continuation extenders, so the escape operand keeps \
+         extending on each of them:\n{accepted_output}"
+    );
+    assert!(
+        accepted_output.contains("excluded \"1 !\": ok Excluded { expr: Integer(")
+            && accepted_output.contains("excluded \"1 LIKE 2 !\": ok Excluded { expr: Like("),
+        "an excluded extender leaves its token to the terminator without any acceptance:\n{accepted_output}"
+    );
 
     let plain_source = accepted_source
         .lines()
@@ -58,17 +71,34 @@ fn greedy_acceptances_silence_follow_warnings_and_extend_pratt_expressions() {
     );
     assert!(
         plain_stderr.contains("`#[greedy(SELECT)]` on `maybe`")
-            && plain_stderr.contains("`#[greedy(BANG)]` on `expr`"),
-        "each warning suggests the exact acceptance:\n{plain_stderr}"
+            && plain_stderr.contains("`#[greedy(BANG)]` on `expr`")
+            && plain_stderr.contains("`#[greedy(LIKE, BANG)]` on `char`"),
+        "each warning suggests the exact acceptance, including the led tail's continuation:\n{plain_stderr}"
+    );
+    assert!(
+        !plain_stderr.contains("`Excluded`"),
+        "an exclusion leaves nothing to accept, so no warning names the excluding site:\n{plain_stderr}"
     );
     let plain_run = run_fixture(&package);
     assert_success(&plain_run);
     let plain_output = String::from_utf8_lossy(&plain_run.stdout).into_owned();
     assert!(
         plain_output.contains("stmt \"1 !\": err RCA4102")
-            && plain_output.contains("tail \"1 !\": err RCA4102"),
-        "without the acceptance the shared extender is a runtime Pratt ambiguity:\n{plain_output}"
+            && plain_output.contains("tail \"1 !\": err RCA4102")
+            && plain_output.contains("escape \"1 LIKE 2 ESCAPE 3 !\": err RCA4102")
+            && plain_output.contains("escape \"1 LIKE 2 ESCAPE 3 LIKE 4\": err RCA4102"),
+        "without the acceptance the shared extender is a runtime Pratt ambiguity, and the \
+         build-time warning named exactly the kinds that raise it:\n{plain_output}"
     );
+    for line in accepted_output
+        .lines()
+        .filter(|line| line.starts_with("excluded "))
+    {
+        assert!(
+            plain_output.contains(line),
+            "an exclusion needs no acceptance to keep its behaviour:\n{plain_output}"
+        );
+    }
     for line in accepted_output
         .lines()
         .filter(|line| line.starts_with("query "))
