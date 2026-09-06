@@ -25,13 +25,24 @@
 //! around an operand (`Plus -> + Expr` for `Expr -> Expr Plus`) carries its variant's
 //! precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s tokens;
 //! that is what gives an interleaved shape's middle operand its minimum binding power.
+//!
+//! The `precedence` declaration ([`declared_precedence`](super::declared_precedence)) is the
+//! second source, consulted only where the Pratt levels say nothing: a Pratt rule against a
+//! lookahead that introduces no operator of its owner (`a LIKE b . ESCAPE`), and a rule whose
+//! own precedence is declared (`ColId -> BETWEEN .` before a window frame, or an alternative
+//! with `#[parse(prec = UMINUS)]`). Both compare the rule's level with the lookahead's declared
+//! binding power on the one scale: higher rule reduces, higher token shifts, and a tie goes to
+//! the reducing rule's associativity as bison's `%left`, `%right` and `%nonassoc` do, the last
+//! as an error action. A Pratt rule against a Pratt operator of its owner is decided as before;
+//! the declaration never changes it.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::automaton::{ConflictResolver, Item, Resolution, TerminalSet, first_sets};
 use super::grammar::{
-    Associativity, LrGrammar, NonterminalId, RuleId, RulePrecedence, Symbol, TerminalId,
+    Associativity, LrGrammar, NonterminalId, PrecedenceOrigin, RuleId, RulePrecedence, Symbol,
+    TerminalId,
 };
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT};
 use crate::PrattPosition;
@@ -64,8 +75,10 @@ impl BindingPowerPrecedence {
                 continue;
             };
             if !matches!(
-                precedence.position,
-                PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+                precedence.origin,
+                PrecedenceOrigin::Pratt {
+                    position: PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+                }
             ) {
                 continue;
             }
@@ -87,7 +100,10 @@ impl BindingPowerPrecedence {
             let Some(precedence) = rule.precedence else {
                 continue;
             };
-            let PrattPosition::Infix { lbp, rbp } = precedence.position else {
+            let PrecedenceOrigin::Pratt {
+                position: PrattPosition::Infix { lbp, rbp },
+            } = precedence.origin
+            else {
                 continue;
             };
             if rbp.checked_add(1) != Some(lbp) {
@@ -155,6 +171,8 @@ fn verdict(rule: &RulePrecedence, token: u8) -> Resolution {
             // A prefix operand binds every operator whose `lbp` reaches its `bp`; a postfix
             // rule is complete once its operator is shifted and never meets a shift.
             Associativity::None => Resolution::Shift,
+            // A `nonassoc` level: `a < b < c` is a syntax error.
+            Associativity::NonAssociative => Resolution::Error,
         },
     }
 }
@@ -169,12 +187,16 @@ impl ConflictResolver for BindingPowerPrecedence {
     ) -> Option<Resolution> {
         let rule = grammar.rule(reduce);
         let precedence = rule.precedence?;
-        let mut verdicts = self
-            .token_precedence(precedence.owner, lookahead)
-            .iter()
-            .map(|token| verdict(&precedence, *token));
-        let first = verdicts.next()?;
-        verdicts.all(|other| other == first).then_some(first)
+        if let PrecedenceOrigin::Pratt { .. } = precedence.origin {
+            let levels = self.token_precedence(precedence.owner, lookahead);
+            if !levels.is_empty() {
+                let mut verdicts = levels.iter().map(|token| verdict(&precedence, *token));
+                let first = verdicts.next()?;
+                return verdicts.all(|other| other == first).then_some(first);
+            }
+        }
+        let declared = grammar.declared_precedence(lookahead)?;
+        Some(verdict(&precedence, declared.binding_power))
     }
 }
 

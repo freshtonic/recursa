@@ -80,20 +80,66 @@ pub enum Associativity {
     Right,
     /// Prefix and postfix operators, which have one operand and no associativity question.
     None,
+    /// A `nonassoc` level of the `precedence` declaration: a tie is a syntax error, as in
+    /// bison.
+    NonAssociative,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// The binding powers of a Pratt variant, recorded on its lowered rule for precedence resolution.
-pub struct RulePrecedence {
-    /// The authored Pratt position with its raw binding powers.
-    pub position: PrattPosition,
-    /// The precedence level, which is `lbp` for infix and postfix and `bp` for prefix.
-    pub level: u8,
-    /// The associativity derived from the binding-power pair.
+/// Where a rule's precedence comes from; the resolver reads the lookahead's precedence from
+/// the matching side.
+pub enum PrecedenceOrigin {
+    /// A Pratt variant's binding powers, compared with the operator levels of the rule's
+    /// owner nonterminal.
+    Pratt {
+        /// The authored Pratt position with its raw binding powers.
+        position: PrattPosition,
+    },
+    /// The `precedence` declaration: the level of the rule's last terminal with declared
+    /// precedence, or of its `#[parse(prec = ...)]` override, compared with the lookahead's
+    /// declared level.
+    Declared,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// One terminal's entry in the `precedence` declaration: its level's binding power and
+/// associativity. Levels are declared with strictly ascending binding powers, so the binding
+/// power orders the levels and identifies one.
+pub struct DeclaredPrecedence {
+    /// The binding power of the level, on the Pratt scale.
+    pub binding_power: u8,
+    /// The associativity of the level: `left`, `right` or `nonassoc`.
     pub associativity: Associativity,
-    /// The Pratt nonterminal whose operator tokens this precedence is compared with: the rule's
-    /// own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion clone) that
-    /// owns the operand for a fixed-token attachment around one.
+}
+
+impl DeclaredPrecedence {
+    /// The rule precedence a rule takes from this level.
+    pub fn rule_precedence(self, lhs: NonterminalId) -> RulePrecedence {
+        RulePrecedence {
+            origin: PrecedenceOrigin::Declared,
+            level: self.binding_power,
+            associativity: self.associativity,
+            owner: lhs,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The precedence of a lowered rule, for shift/reduce resolution: a Pratt variant's binding
+/// powers, or a declared level for a rule outside the Pratt hierarchy.
+pub struct RulePrecedence {
+    /// Where the precedence comes from.
+    pub origin: PrecedenceOrigin,
+    /// The precedence level on the binding-power scale: `lbp` for infix and postfix, `bp` for
+    /// prefix, and the level's binding power for a declared precedence.
+    pub level: u8,
+    /// The associativity: derived from the binding-power pair for a Pratt rule, declared with
+    /// the level otherwise.
+    pub associativity: Associativity,
+    /// The Pratt nonterminal whose operator tokens a Pratt precedence is compared with: the
+    /// rule's own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion
+    /// clone) that owns the operand for a fixed-token attachment around one. A declared
+    /// precedence names the rule's own left-hand side and never consults it.
     pub owner: NonterminalId,
 }
 
@@ -118,7 +164,7 @@ impl RulePrecedence {
         match position {
             PrattPosition::Atom => Ok(None),
             PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Ok(Some(Self {
-                position,
+                origin: PrecedenceOrigin::Pratt { position },
                 level: bp,
                 associativity: Associativity::None,
                 owner,
@@ -132,7 +178,7 @@ impl RulePrecedence {
                     return Err(UnrepresentableBindingPowers { lbp, rbp });
                 };
                 Ok(Some(Self {
-                    position,
+                    origin: PrecedenceOrigin::Pratt { position },
                     level: lbp,
                     associativity,
                     owner,
@@ -586,6 +632,8 @@ pub struct LrGrammar {
     by_name: BTreeMap<String, NonterminalId>,
     /// The lookahead filters the token feed must apply, in declaration order.
     filters: Vec<TerminalFilter>,
+    /// The `precedence` declaration by terminal, `None` for a terminal outside it.
+    declared_precedence: Vec<Option<DeclaredPrecedence>>,
 }
 
 /// Display name of the synthetic end marker terminal.
@@ -596,6 +644,7 @@ impl LrGrammar {
     pub fn new(kind_names: impl IntoIterator<Item = String>) -> Self {
         let mut terminals: Vec<String> = kind_names.into_iter().collect();
         terminals.push(END_MARKER.to_owned());
+        let declared_precedence = vec![None; terminals.len()];
         Self {
             terminals,
             nonterminals: Vec::new(),
@@ -604,7 +653,18 @@ impl LrGrammar {
             starts: Vec::new(),
             by_name: BTreeMap::new(),
             filters: Vec::new(),
+            declared_precedence,
         }
+    }
+
+    /// Records `terminal`'s entry in the `precedence` declaration.
+    pub fn declare_precedence(&mut self, terminal: TerminalId, precedence: DeclaredPrecedence) {
+        self.declared_precedence[terminal.index()] = Some(precedence);
+    }
+
+    /// The `precedence` declaration's entry for `terminal`, if it is in one.
+    pub fn declared_precedence(&self, terminal: TerminalId) -> Option<DeclaredPrecedence> {
+        self.declared_precedence[terminal.index()]
     }
 
     /// Returns the end-marker terminal.
@@ -815,6 +875,8 @@ pub(crate) struct TextbookGrammar {
     grammar: LrGrammar,
     /// Terminal lookup by spelling.
     terminals: BTreeMap<String, TerminalId>,
+    /// Declared precedence levels by spelling, including precedence-only names.
+    levels: BTreeMap<String, DeclaredPrecedence>,
 }
 
 #[cfg(test)]
@@ -827,7 +889,11 @@ impl TextbookGrammar {
             .enumerate()
             .map(|(index, name)| ((*name).to_owned(), TerminalId::new(index as u32)))
             .collect();
-        Self { grammar, terminals }
+        Self {
+            grammar,
+            terminals,
+            levels: BTreeMap::new(),
+        }
     }
 
     /// Returns the nonterminal for a spelling, creating it on first use.
@@ -897,6 +963,42 @@ impl TextbookGrammar {
         self.grammar.rules[id.index()].precedence = RulePrecedence::from_position(position, owner)
             .expect("textbook Pratt rules use representable binding powers");
         id
+    }
+
+    /// Declares one level of the `precedence` declaration over terminal spellings, the way
+    /// `left(bp = N) { ... }` does; a spelling that is no terminal is a precedence-only name
+    /// such as bison's `UMINUS`, usable by [`Self::rule_precedence`] alone. Levels must be
+    /// declared from lowest to highest binding power.
+    pub fn precedence_level(
+        &mut self,
+        associativity: Associativity,
+        binding_power: u8,
+        names: &[&str],
+    ) {
+        let precedence = DeclaredPrecedence {
+            binding_power,
+            associativity,
+        };
+        for name in names {
+            if let Some(terminal) = self.terminals.get(*name) {
+                self.grammar.declare_precedence(*terminal, precedence);
+            }
+            self.levels.insert((*name).to_owned(), precedence);
+        }
+    }
+
+    /// Gives `rule` the precedence of the declared level that holds `name`, the way
+    /// `#[parse(prec = NAME)]` (bison's `%prec`) does.
+    pub fn rule_precedence(&mut self, rule: RuleId, name: &str) {
+        let precedence = self.levels[name];
+        let lhs = self.grammar.rules[rule.index()].lhs;
+        self.grammar.rules[rule.index()].precedence = Some(precedence.rule_precedence(lhs));
+    }
+
+    /// Gives every rule without a Pratt precedence or an override the precedence of its last
+    /// declared terminal, as the lowering does after every rule is emitted.
+    pub fn assign_declared_precedence(&mut self) {
+        super::declared_precedence::assign_rule_precedence(&mut self.grammar);
     }
 
     /// Adds the start rule for one nonterminal.
