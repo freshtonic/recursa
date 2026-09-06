@@ -644,4 +644,147 @@ pub struct Other<'input> {
             super::Symbol::Nonterminal(_) => true,
         })));
     }
+
+    /// The pg-sql window-frame shape of recursa#128: a keyword that names a column also opens a
+    /// frame extent, and the token that decides is the merged kind of a lookahead filter.
+    ///
+    /// `ROWS BETWEEN . NOT_LA` is pg-sql's one conflict no declaration could retire before this
+    /// ticket: the reduce takes `BETWEEN` as a column name that a `NOT LIKE` test may follow,
+    /// the shift takes it as the frame keyword whose first bound begins with the prefix twin
+    /// `NOT_LA`. gram.y settles it by giving `NOT_LA` `BETWEEN`'s own `%nonassoc` level
+    /// (gram.y:837), which makes the tie an error action.
+    ///
+    /// `level` is the body of the one `precedence` level, which the callers vary to name the
+    /// merged kind, the base token, or neither.
+    fn frame_grammar(level: &str) -> String {
+        format!(
+            r#"
+recursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 3 }}
+recursa::tokens! {{
+    ignore = r"[ \t\n\r]+",
+    keywords {{
+        NOT => "not",
+        BETWEEN => "between",
+        AND => "and",
+        LIKE => "like",
+        ROWS => "rows",
+        PRECEDING => "preceding",
+    }}
+    punctuation {{ SEMI => ";" }}
+    lookahead {{ NOT_LA = NOT before {{ BETWEEN, LIKE }} }}
+    precedence {{ {level} }}
+}}
+
+#[derive(recursa::Node, Debug, Clone)]
+#[tok(ROWS, this, SEMI)]
+pub struct Frame<'input> {{
+    pub extent: Extent<'input>,
+}}
+
+#[derive(recursa::Node, Debug, Clone)]
+pub enum Extent<'input> {{
+    Between {{
+        #[tok(BETWEEN)]
+        low: Bound<'input>,
+        #[tok(AND)]
+        high: Bound<'input>,
+    }},
+    Single(Bound<'input>),
+}}
+
+#[derive(recursa::Node, Debug, Clone)]
+#[tok(this, PRECEDING)]
+pub struct Bound<'input> {{
+    pub offset: Expr<'input>,
+}}
+
+#[derive(recursa::Node, Debug, Clone)]
+#[pratt]
+pub enum Expr<'input> {{
+    Column(Ident<'input>),
+    #[parse(prefix, bp = 10)]
+    Not(#[tok(NOT, this)] Box<Self>),
+    #[parse(postfix, bp = 20)]
+    NotLike(Box<Self>, #[tok(NOT, LIKE, this)] Box<Self>),
+    #[parse(infix, lbp = 20, rbp = 21)]
+    #[tok(LIKE)]
+    Like(Box<Self>, Box<Self>),
+}}
+
+#[derive(recursa::Node, Debug, Clone)]
+pub struct Ident<'input> {{
+    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(BETWEEN, LIKE))]
+    pub text: IdentText<'input>,
+}}
+"#
+        )
+    }
+
+    /// The conflicts of `frame_grammar` whose lookahead is the merged kind, each as its kind
+    /// and the rule that wants to reduce, which is stable across state numbering.
+    fn merged_conflicts(grammar: &LrGrammar) -> Vec<String> {
+        let precedence =
+            BindingPowerPrecedence::new(grammar).expect("the fixture has a precedence equivalent");
+        let automaton = Automaton::build(grammar, &precedence, AutomatonOptions::default());
+        let merged = terminal(grammar, "NOT_LA");
+        automaton
+            .conflicts()
+            .iter()
+            .filter(|conflict| conflict.lookahead == merged)
+            .map(|conflict| match &conflict.kind {
+                ConflictKind::ShiftReduce { reduce, .. } => {
+                    format!("shift/reduce against `{}`", grammar.render_rule(*reduce))
+                }
+                ConflictKind::ReduceReduce { rules } => format!(
+                    "reduce/reduce among [{}]",
+                    rules
+                        .iter()
+                        .map(|rule| grammar.render_rule(*rule))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_merged_kind_named_in_the_precedence_block_settles_the_window_frame_conflict() {
+        let (_, undeclared) = lr(&frame_grammar("nonassoc(bp = 20) { BETWEEN, LIKE },"));
+        let undeclared = undeclared.expect("the frame fixture lowers");
+        assert_eq!(
+            merged_conflicts(&undeclared),
+            ["shift/reduce against `IdentText -> BETWEEN`"],
+            "without the merged kind's level `ROWS BETWEEN . NOT_LA` is a conflict"
+        );
+
+        let (_, declared) = lr(&frame_grammar("nonassoc(bp = 20) { BETWEEN, LIKE, NOT_LA },"));
+        let declared = declared.expect("the frame fixture lowers with the merged kind declared");
+        assert_eq!(
+            merged_conflicts(&declared),
+            Vec::<String>::new(),
+            "the merged kind's level settles every conflict on it"
+        );
+    }
+
+    #[test]
+    fn a_merged_kind_does_not_inherit_the_level_of_the_token_it_merges() {
+        // gram.y gives `NOT` level 834 and `NOT_LA` level 837, and where a twin is to take its
+        // base token's level it says so (`NOT_LA a_expr %prec NOT`, gram.y:14855). A twin that
+        // inherited silently would hand `WITH_LA` and `WITHOUT_LA` the `IDENT` level of `WITH`
+        // and `WITHOUT`, which bison gives neither, and retire conflicts nobody declared away.
+        // pg-sql measured the same thing on the real grammar: declaring the base token leaves
+        // the conflict count at 33, declaring the twin takes it to 32.
+        let (_, base) = lr(&frame_grammar("nonassoc(bp = 20) { BETWEEN, LIKE, NOT },"));
+        let base = base.expect("the frame fixture lowers with the base token declared");
+        assert_eq!(
+            merged_conflicts(&base),
+            ["shift/reduce against `IdentText -> BETWEEN`"],
+            "the base token's level does not reach its twin"
+        );
+        assert!(
+            base.declared_precedence(terminal(&base, "NOT")).is_some(),
+            "the base token itself does take the level"
+        );
+        assert_eq!(base.declared_precedence(terminal(&base, "NOT_LA")), None);
+    }
 }

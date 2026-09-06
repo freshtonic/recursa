@@ -415,6 +415,47 @@ fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical(
 }
 
 #[test]
+fn a_merged_kind_in_the_precedence_block_leaves_recursive_descent_sources_byte_identical() {
+    // #128: a lookahead filter's merged kind may take a declared precedence level, which only
+    // the table-driven feed can produce. Taking it out of the level must leave the
+    // recursive-descent generation byte-identical, generation identity included; the level
+    // without it has the same line count, so no Node's loader anchor moves either.
+    let fixture =
+        include_str!("../../tests/fixtures/generation/lookahead-precedence/src/grammar.rs");
+    let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";
+    let declared = "nonassoc(bp = 20) { BETWEEN, LIKE, NOT_LA },";
+    let undeclared_level = "nonassoc(bp = 20) { BETWEEN, LIKE },";
+    assert_eq!(fixture.matches(named_parsers).count(), 1);
+    assert_eq!(fixture.matches(declared).count(), 1);
+    let recursive = fixture.replace(named_parsers, "parser_style = recursive_descent,");
+    let undeclared = recursive.replace(declared, undeclared_level);
+    let (_recursive_package, _, recursive_plan) = joined_plan_from_source(&recursive);
+    let (_undeclared_package, _, undeclared_plan) = joined_plan_from_source(&undeclared);
+    let (_table_package, table_analyzed, table_plan) = joined_plan_from_source(fixture);
+
+    let recursive_rendered = render(&recursive_plan).expect("render with the merged kind");
+    let undeclared_rendered = render(&undeclared_plan).expect("render without it");
+    assert!(!recursive_rendered.nodes.is_empty());
+    assert_eq!(
+        recursive_plan.identity, undeclared_plan.identity,
+        "a merged kind's level is no input of the recursive-descent generation identity"
+    );
+    assert_eq!(
+        recursive_rendered.nodes, undeclared_rendered.nodes,
+        "naming a merged kind in the precedence block is inert under recursive descent"
+    );
+    assert_eq!(recursive_rendered.root, undeclared_rendered.root);
+    // The merged kind is a `TokenKind` variant under recursive descent too, which is why the
+    // block can name it: only the feed that produces it differs.
+    assert!(recursive_rendered.root.contains("NOT_LA"));
+
+    let table_rendered =
+        render_by_parser_style(&table_plan, &table_analyzed.lowered).expect("render table-driven");
+    assert!(table_rendered.root.contains("__recursa_lr"));
+    assert!(table_rendered.root.contains("NOT_LA"));
+}
+
+#[test]
 fn a_precedence_declaration_leaves_recursive_descent_sources_byte_identical() {
     let fixture = include_str!("../../tests/fixtures/generation/precedence/src/grammar.rs");
     let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";

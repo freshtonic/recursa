@@ -3415,8 +3415,29 @@ impl Materializer {
             .iter()
             .map(|level| {
                 let mut kinds = Vec::new();
-                for definition in &level.tokens {
-                    let kind = self.kind_for_definition(*definition);
+                for reference in &level.kinds {
+                    let kind = match reference {
+                        crate::source_model::PrecedenceKindReference::Token(definition) => {
+                            self.kind_for_definition(*definition)
+                        }
+                        // A merged kind has no token definition, so its KindId comes from the
+                        // lexical plan by the name the `lookahead` filter declares.
+                        crate::source_model::PrecedenceKindReference::Merged(filter) => {
+                            let name = &self.source_model().lookahead_filters[*filter].name;
+                            self.lexical_plan()
+                                .token_kinds
+                                .iter()
+                                .find_map(|kind| match &kind.identity {
+                                    crate::lexical::TokenKindIdentity::Merged(merged)
+                                        if &merged.name == name =>
+                                    {
+                                        Some(kind.id)
+                                    }
+                                    _ => None,
+                                })
+                                .expect("every lookahead filter plans one merged kind")
+                        }
+                    };
                     if !kinds.contains(&kind) {
                         kinds.push(kind);
                     }
