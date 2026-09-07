@@ -10146,7 +10146,7 @@ mod tests {
         pretty_boundary_reachable_transition_len,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
-    use crate::lowering::RustEdition;
+    use crate::lowering::{ElementId, RustEdition};
     use crate::resolution::{
         ResolutionInput, ResolvedFieldStyle, ResolvedNodeBody, resolve_local_semantics,
     };
@@ -11018,7 +11018,7 @@ struct Later;
                 .collect::<Vec<_>>(),
             ["Word", "LATE"],
         );
-        let element_ids = model
+        let elements = model
             .nodes
             .iter()
             .flat_map(|node| {
@@ -11035,9 +11035,13 @@ struct Later;
                             .flat_map(|variant| variant.common.elements.iter()),
                     )
             })
-            .map(|element| element.id().index())
             .collect::<Vec<_>>();
-        assert_eq!(element_ids, (0..element_ids.len()).collect::<Vec<_>>());
+        assert!(
+            elements
+                .iter()
+                .enumerate()
+                .all(|(index, element)| element.id() == ElementId::next(index))
+        );
     }
 
     #[test]

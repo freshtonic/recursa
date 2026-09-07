@@ -436,22 +436,6 @@ pub enum AtomExpression {
     },
 }
 
-impl AtomExpression {
-    /// Derives the references from canonical normalized grammar structure.
-    pub(crate) fn references(&self) -> Vec<AtomId> {
-        match self {
-            Self::Kind(_) => Vec::new(),
-            Self::Category(members) | Self::Class(members) => members.clone(),
-            Self::Target { base, admits } => {
-                let mut references = Vec::with_capacity(1 + admits.len());
-                references.push(*base);
-                references.extend(admits);
-                references
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Supplies the grammar-wide comparison policy for exact token text to normalized grammar consumers.
 pub enum TextEquivalence {
@@ -676,6 +660,7 @@ impl ContainerShape {
     }
 
     /// Visits repetition separators from the outermost container layer inward.
+    #[cfg(test)]
     pub(crate) fn visit_separators(&self, visit: &mut impl FnMut(TypeId)) {
         match self {
             Self::Direct => {}
@@ -767,16 +752,6 @@ pub(crate) struct ContainerSemantics {
     pub cardinality: ContainerCardinality,
     /// Supplies the separator to normalized grammar consumers.
     pub separator: Option<RepeatSeparator>,
-}
-
-impl ContainerSemantics {
-    /// Derives the separator type from canonical normalized grammar structure.
-    pub(crate) const fn separator_type(self) -> Option<TypeId> {
-        match self.separator {
-            Some(separator) => Some(separator.type_id),
-            None => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

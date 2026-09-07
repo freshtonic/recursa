@@ -202,7 +202,15 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
         stderr.contains("expected one of") || stderr.contains("expected `!`"),
         "native Rust syntax diagnostics must remain authoritative\nstderr:\n{stderr}"
     );
-    assert!(!stderr.contains("RCA9002"), "stderr:\n{stderr}");
+    // The generated root embeds the RCA9002 loader fallback in a macro definition. When the
+    // included Node body is malformed, rustc prints the whole one-line root source context, so
+    // a plain substring check mistakes that embedded fallback text for an emitted diagnostic.
+    assert!(
+        !stderr
+            .lines()
+            .any(|line| line.trim_start().starts_with("error: error[RCA9002]")),
+        "stderr:\n{stderr}"
+    );
 
     fs::write(&node, &node_rust).expect("restore generated Node body after corruption");
     fs::write(&root, "this is externally malformed generated Rust").unwrap();
@@ -721,7 +729,7 @@ macro_rules! parse {
     ($ty:ty, $source:expr) => {{
         let lexed = grammar::lex($source);
         let mut input = lexed.input();
-        let parsed = <$ty>::parse(&mut input).expect("separated path parses");
+        let parsed = <$ty>::parse_spanned(&mut input).expect("separated path parses");
         assert!(input.is_eof());
         parsed
     }};
@@ -880,7 +888,16 @@ fn debug_emission_preserves_compiled_semantics_for_every_capability_combination(
         for line in index.lines().skip(2) {
             let private_name = line.split('\t').nth(2).expect("indexed private filename");
             let source = fs::read_to_string(bundle.join(private_name)).unwrap();
-            let parsed = syn::parse_file(&source).expect("every logical output is parseable Rust");
+            if !private_name.ends_with(".rs") {
+                assert_eq!(
+                    private_name, "automaton.txt",
+                    "unexpected non-Rust debug artifact"
+                );
+                continue;
+            }
+            let parsed = syn::parse_file(&source).unwrap_or_else(|error| {
+                panic!("{name}: {private_name} is not parseable Rust: {error}")
+            });
             assert_eq!(
                 prettyplease::unparse(&parsed),
                 source,

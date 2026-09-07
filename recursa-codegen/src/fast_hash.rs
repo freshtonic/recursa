@@ -11,7 +11,7 @@
 //! these hash values, while run-to-run reproducibility is preserved because
 //! the function has no random state.
 
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::Hasher;
 
 /// Multiplicative constant from the Firefox/rustc Fx hash function.
 const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
@@ -83,9 +83,3 @@ impl Hasher for FxHasher {
         self.hash
     }
 }
-
-/// Deterministic build-hasher for analysis-internal lookup tables.
-pub(crate) type FxBuildHasher = BuildHasherDefault<FxHasher>;
-
-/// Hash map over the seedless deterministic Fx hasher.
-pub(crate) type FxHashMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
