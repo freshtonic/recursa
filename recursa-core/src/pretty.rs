@@ -470,6 +470,44 @@ pub struct PrettyContext {
     explicit_group_depth: usize,
 }
 
+/// A generated Pretty scope that restores its enclosing context when dropped.
+///
+/// This is public only so generated code can hold the scope across calls into
+/// user-authored [`Pretty`] implementations. Its representation is private.
+#[doc(hidden)]
+pub struct PrettyScope<'a> {
+    context: &'a mut PrettyContext,
+    restore: PrettyScopeRestore,
+}
+
+enum PrettyScopeRestore {
+    Provenance(Option<PrettyProvenance>),
+    Repetition(Option<RepetitionLayout>),
+}
+
+impl std::ops::Deref for PrettyScope<'_> {
+    type Target = PrettyContext;
+
+    fn deref(&self) -> &Self::Target {
+        self.context
+    }
+}
+
+impl std::ops::DerefMut for PrettyScope<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.context
+    }
+}
+
+impl Drop for PrettyScope<'_> {
+    fn drop(&mut self) {
+        match std::mem::replace(&mut self.restore, PrettyScopeRestore::Provenance(None)) {
+            PrettyScopeRestore::Provenance(previous) => self.context.provenance = previous,
+            PrettyScopeRestore::Repetition(previous) => self.context.repetition = previous,
+        }
+    }
+}
+
 #[derive(Clone)]
 /// Restorable rendering state around one optional grammar layout.
 struct PrettyLayoutCheckpoint {
@@ -883,6 +921,32 @@ impl PrettyContext {
         result
     }
 
+    /// Enters one generated repetition policy without monomorphizing a
+    /// callback at every generated call site.
+    #[doc(hidden)]
+    pub fn repetition_scope_style(
+        &mut self,
+        separator: Option<&str>,
+        trailing: bool,
+        hard_break: bool,
+        leading_separator: bool,
+        separator_spacing: (bool, bool),
+    ) -> PrettyScope<'_> {
+        let (space_before_separator, space_after_separator) = separator_spacing;
+        let previous = self.repetition.replace(RepetitionLayout {
+            separator: separator.map(str::to_owned),
+            trailing,
+            hard_break,
+            leading_separator,
+            space_before_separator,
+            space_after_separator,
+        });
+        PrettyScope {
+            context: self,
+            restore: PrettyScopeRestore::Repetition(previous),
+        }
+    }
+
     /// Applies one generated repetition's separator policy to its container.
     #[doc(hidden)]
     pub fn with_repetition<R>(
@@ -1037,6 +1101,22 @@ impl PrettyContext {
         self.with_provenance(provenance, render)
     }
 
+    /// Enters one source-ordered child occurrence without a generated
+    /// callback. Dropping the returned scope restores the parent occurrence.
+    #[doc(hidden)]
+    pub fn child_scope(&mut self, index: usize) -> PrettyScope<'_> {
+        let provenance = self
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.children.get(index))
+            .cloned();
+        let previous = std::mem::replace(&mut self.provenance, provenance);
+        PrettyScope {
+            context: self,
+            restore: PrettyScopeRestore::Provenance(previous),
+        }
+    }
+
     /// Runs rendering at a source-ordered child whose concrete closed shape was
     /// opaque at the generic declaration boundary.
     #[doc(hidden)]
@@ -1044,10 +1124,27 @@ impl PrettyContext {
         self.with_child(index, render)
     }
 
+    /// Enters a source-ordered child whose concrete closed shape was opaque at
+    /// the generic declaration boundary.
+    #[doc(hidden)]
+    pub fn opaque_child_scope(&mut self, index: usize) -> PrettyScope<'_> {
+        self.child_scope(index)
+    }
+
     /// Runs structured rendering without assuming a source occurrence shape.
     #[doc(hidden)]
     pub fn without_provenance<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
         self.with_provenance(None, render)
+    }
+
+    /// Enters generated rendering without a source occurrence.
+    #[doc(hidden)]
+    pub fn without_provenance_scope(&mut self) -> PrettyScope<'_> {
+        let previous = self.provenance.take();
+        PrettyScope {
+            context: self,
+            restore: PrettyScopeRestore::Provenance(previous),
+        }
     }
 
     /// Returns the exact matched text at the active occurrence, when captured.
@@ -1158,7 +1255,7 @@ impl<T: Pretty> Pretty for crate::Vec1<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pretty, PrettyConfig, PrettyContext};
+    use super::{Pretty, PrettyConfig, PrettyContext, PrettyProvenance};
     use std::fmt;
 
     #[test]
@@ -1321,6 +1418,57 @@ mod tests {
             Dispatch(vec![Word("one"), Word("two")]).render(),
             "one\ntwo"
         );
+    }
+
+    #[test]
+    fn generated_scopes_match_callback_layout_and_restore_on_error() {
+        fn render_with_callback(config: PrettyConfig) -> String {
+            let mut context = PrettyContext::with_config(config);
+            context
+                .with_repetition_style(Some(","), false, false, false, (false, true), |context| {
+                    context.render_repeated_by(["alpha", "beta"].iter(), |context, word| {
+                        context.tight_token(word)
+                    })
+                })
+                .unwrap();
+            context.finish()
+        }
+
+        fn render_with_scope(config: PrettyConfig) -> String {
+            let mut context = PrettyContext::with_config(config);
+            {
+                let mut scope =
+                    context.repetition_scope_style(Some(","), false, false, false, (false, true));
+                scope
+                    .render_repeated_by(["alpha", "beta"].iter(), |context, word| {
+                        context.tight_token(word)
+                    })
+                    .unwrap();
+            }
+            context.finish()
+        }
+
+        for config in [PrettyConfig::new(88, 2), PrettyConfig::new(6, 2)] {
+            assert_eq!(render_with_scope(config), render_with_callback(config));
+        }
+
+        let child =
+            PrettyProvenance::new(Some("child".to_owned()), None, Box::new([]), Box::new([]));
+        let mut context = PrettyContext::new();
+        context.provenance = Some(PrettyProvenance::new(
+            Some("parent".to_owned()),
+            None,
+            Box::new([child]),
+            Box::new([]),
+        ));
+        let failed = (|| -> fmt::Result {
+            let scope = context.child_scope(0);
+            assert_eq!(scope.matched_text().as_deref(), Some("child"));
+            Err(fmt::Error)?;
+            Ok(())
+        })();
+        assert!(failed.is_err());
+        assert_eq!(context.matched_text().as_deref(), Some("parent"));
     }
 
     #[test]

@@ -18,7 +18,6 @@
 recursa::grammar! {
     module = crate::selcyc,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

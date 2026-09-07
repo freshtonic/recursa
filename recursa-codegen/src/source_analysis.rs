@@ -13,7 +13,6 @@
 
 use std::path::Path;
 
-use crate::analysis::{analyze_for_generation, analyze_for_table_driven_generation};
 use crate::build_diagnostic::diagnostic_code_spec;
 use crate::discovery::{
     DiscoveredModuleTree, DiscoveryDiagnostic, DiscoveryDiagnosticKind, DiscoveryInput,
@@ -36,9 +35,9 @@ use crate::source_model::{
 };
 use crate::source_syntax::CargoCfgSnapshot;
 use crate::{
-    AnalysisReport, BuildReport, ConflictRemedy, DiagnosticEvidence, DiagnosticFact,
-    DiagnosticLocation, DiagnosticRemedy, DiagnosticStage, GenerateError, LexicalEvidenceClass,
-    RecursaDiagnostic, RecursaDiagnosticCode, RecursaDiagnosticLabel, Remedy, Severity,
+    BuildReport, DiagnosticEvidence, DiagnosticFact, DiagnosticLocation, DiagnosticRemedy,
+    DiagnosticStage, GenerateError, LexicalEvidenceClass, RecursaDiagnostic, RecursaDiagnosticCode,
+    RecursaDiagnosticLabel, Severity,
 };
 
 #[derive(Clone, Debug)]
@@ -97,12 +96,10 @@ impl CargoOutput for Vec<String> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// A validated lowered grammar paired with successful semantic facts.
+/// A validated lowered grammar ready for LR emission.
 pub(crate) struct AnalyzedGrammar {
     /// Authored and normalized structures with total correlations.
     pub(crate) lowered: LoweredGrammar,
-    /// Successful source-independent semantic result.
-    pub(crate) analysis: AnalysisReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -253,36 +250,10 @@ pub(crate) fn analyze_discovered_tree(
         ));
     };
 
-    let analysis = if lowered
-        .source_modeled
-        .resolved()
-        .build_inputs
-        .parsers
-        .renders_recursive_descent()
-    {
-        analyze_for_generation(&lowered.grammar)
-    } else {
-        analyze_for_table_driven_generation(&lowered.grammar)
-    };
-    collector.extend(
-        analysis
-            .diagnostics
-            .iter()
-            .map(|diagnostic| adapt_analysis(diagnostic, &analysis, &lowered, input.selected_root)),
-    );
-    collector.stop_if_errors(cargo)?;
-    if analysis.output.is_none() {
-        return Err(collector.internal_failure(
-            DiagnosticStage::Analysis,
-            "semantic analysis produced neither errors nor semantic analysis output",
-            input.selected_root,
-            cargo,
-        ));
-    }
     let build_report = collector.finish();
     emit_warnings(&build_report, cargo);
     Ok(SourceAnalysisSuccess {
-        analyzed: AnalyzedGrammar { lowered, analysis },
+        analyzed: AnalyzedGrammar { lowered },
         build_report,
     })
 }
@@ -1105,309 +1076,5 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
         MaterializationDiagnosticKind::UnsafePrettyBoundary => "RCA3211",
         MaterializationDiagnosticKind::AliasCycle => "RCA3207",
         MaterializationDiagnosticKind::NonRegularRecursion => "RCA3208",
-    }
-}
-
-/// Converts semantic-analysis failures into stable RCA diagnostics.
-fn adapt_analysis(
-    diagnostic: &crate::Diagnostic,
-    report: &AnalysisReport,
-    lowered: &LoweredGrammar,
-    selected_root: &Path,
-) -> RecursaDiagnostic {
-    let primary = match adapt_analysis_label(&diagnostic.primary, report, lowered) {
-        Ok(primary) => primary,
-        Err(invariant) => {
-            return internal_diagnostic(
-                DiagnosticStage::Analysis,
-                &format!("semantic analysis supplied an invalid source location: {invariant:?}"),
-                selected_root,
-            );
-        }
-    };
-    let evidence = analysis_evidence(diagnostic, lowered);
-    let remedy = match (&diagnostic.remedy, &diagnostic.conflict_remedy) {
-        (Some(Remedy::CorrectReference), _) => DiagnosticRemedy::CorrectReference,
-        (Some(Remedy::BreakLeftRecursion { cycle }), _) => DiagnosticRemedy::BreakRecursion {
-            cycle: cycle
-                .iter()
-                .map(|type_id| lowered.grammar.types[type_id.index()].name.clone())
-                .collect(),
-        },
-        (Some(Remedy::ReportInternalFailure), _) => DiagnosticRemedy::ReportInternalFailure,
-        (_, Some(remedy)) => adapt_conflict_remedy(remedy, &lowered.grammar),
-        _ => DiagnosticRemedy::CorrectSource,
-    };
-    let code = RecursaDiagnosticCode::new(diagnostic.code.as_str());
-    let spec = diagnostic_code_spec(code);
-    let mut adapted = RecursaDiagnostic::with_primary(
-        spec.stage,
-        code,
-        diagnostic.severity,
-        &diagnostic.message,
-        primary,
-        evidence,
-        vec![remedy],
-    );
-    let secondary = diagnostic
-        .secondary
-        .iter()
-        .map(|label| adapt_analysis_label(label, report, lowered))
-        .collect::<Result<Vec<_>, _>>();
-    let secondary = match secondary {
-        Ok(secondary) => secondary,
-        Err(invariant) => {
-            return internal_diagnostic(
-                DiagnosticStage::Analysis,
-                &format!(
-                    "semantic analysis supplied an invalid related source location: {invariant:?}"
-                ),
-                selected_root,
-            );
-        }
-    };
-    adapted = adapted.with_secondary(secondary);
-    if let Some(location) = diagnostic.primary.location {
-        let location = &report.locations()[location.index()];
-        let source = &lowered.source_modeled.resolved().tree.files[location.source.index()];
-        adapted = adapted.with_order(
-            u64::from(location.range.start),
-            format!(
-                "path={};offset={}",
-                source.path.display(),
-                location.range.start,
-            ),
-        );
-    }
-    adapted
-}
-
-/// Resolves a parse site's declaration name for conflict evidence.
-fn diagnostic_site_name(site: crate::SiteId, grammar: &crate::GrammarDescription) -> String {
-    let site = &grammar.sites[site.index()];
-    grammar.declarations[site.declaration.index()].name.clone()
-}
-
-/// Converts a semantic conflict action into the diagnostic remedy schema.
-pub(crate) fn adapt_conflict_remedy(
-    remedy: &ConflictRemedy,
-    grammar: &crate::GrammarDescription,
-) -> DiagnosticRemedy {
-    let declaration = |id: crate::DeclId| grammar.declarations[id.index()].name.clone();
-    let pratt = |id: crate::TypeId| grammar.types[id.index()].name.clone();
-    match remedy {
-        ConflictRemedy::DisambiguateAlternatives { left, right } => {
-            DiagnosticRemedy::DisambiguateAlternatives {
-                left: declaration(*left),
-                right: declaration(*right),
-            }
-        }
-        ConflictRemedy::RaiseMaxLookahead {
-            configured,
-            sufficient,
-        } => DiagnosticRemedy::RaiseMaxLookahead {
-            configured: *configured,
-            sufficient: *sufficient,
-        },
-        ConflictRemedy::RestructureSharedPrefix { left, right } => {
-            DiagnosticRemedy::RestructureSharedPrefix {
-                left: declaration(*left),
-                right: declaration(*right),
-            }
-        }
-        ConflictRemedy::MakeSiteRequired { site } => DiagnosticRemedy::MakeSiteRequired {
-            site: diagnostic_site_name(*site, grammar),
-        },
-        ConflictRemedy::DisambiguatePrattVariants {
-            pratt: ty,
-            left,
-            right,
-        } => DiagnosticRemedy::DisambiguatePrattVariants {
-            pratt: pratt(*ty),
-            left: declaration(*left),
-            right: declaration(*right),
-        },
-        ConflictRemedy::RestructurePrattSharedPrefix {
-            pratt: ty,
-            left,
-            right,
-        } => DiagnosticRemedy::RestructurePrattSharedPrefix {
-            pratt: pratt(*ty),
-            left: declaration(*left),
-            right: declaration(*right),
-        },
-        ConflictRemedy::ReviewNullableFollow { site } => DiagnosticRemedy::ReviewNullableFollow {
-            site: diagnostic_site_name(*site, grammar),
-        },
-        ConflictRemedy::ReviewPrattFollow { site, min_bp } => DiagnosticRemedy::ReviewPrattFollow {
-            site: diagnostic_site_name(*site, grammar),
-            min_bp: *min_bp,
-        },
-        ConflictRemedy::RemoveGreedy { site, kinds } => DiagnosticRemedy::RemoveGreedyAcceptance {
-            site: diagnostic_site_name(*site, grammar),
-            kinds: kinds
-                .iter()
-                .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
-                .collect(),
-        },
-        ConflictRemedy::DeclareGreedy { site, kinds } => DiagnosticRemedy::DeclareGreedyKinds {
-            site: diagnostic_site_name(*site, grammar),
-            kinds: kinds
-                .iter()
-                .map(|kind| grammar.kinds[kind.index()].attribute_spelling().to_owned())
-                .collect(),
-        },
-    }
-}
-
-/// Adapts semantic conflict witnesses and provenance into diagnostic evidence.
-fn analysis_evidence(
-    diagnostic: &crate::Diagnostic,
-    lowered: &LoweredGrammar,
-) -> DiagnosticEvidence {
-    let overlap = diagnostic
-        .conflict
-        .as_ref()
-        .map_or_else(Vec::new, |conflict| {
-            conflict
-                .overlap
-                .iter()
-                .map(|kind| lowered.grammar.kinds[kind.index()].name.clone())
-                .collect()
-        });
-    let witness = diagnostic.lookahead.as_ref().map_or_else(
-        || {
-            diagnostic
-                .conflict
-                .as_ref()
-                .map_or_else(Vec::new, |conflict| {
-                    vec![
-                        lowered.grammar.kinds[conflict.witness.kind.index()]
-                            .name
-                            .clone(),
-                    ]
-                })
-        },
-        |lookahead| {
-            lookahead
-                .witness
-                .iter()
-                .map(|position| lowered.grammar.kinds[position.kind.index()].name.clone())
-                .collect()
-        },
-    );
-    let cycle = match &diagnostic.remedy {
-        Some(Remedy::BreakLeftRecursion { cycle }) => cycle
-            .iter()
-            .map(|type_id| lowered.grammar.types[type_id.index()].name.clone())
-            .collect(),
-        Some(Remedy::CorrectGrammar | Remedy::CorrectReference | Remedy::ReportInternalFailure)
-        | None => Vec::new(),
-    };
-    let (configured_lookahead, sufficient_lookahead, end_of_alternative) = diagnostic
-        .lookahead
-        .as_ref()
-        .map_or((None, None, false), |lookahead| {
-            (
-                Some(lookahead.configured_depth),
-                lookahead.sufficient_depth,
-                lookahead.end_of_alternative,
-            )
-        });
-    if diagnostic.code == crate::DiagnosticCode::InternalAnalysisInvariant {
-        DiagnosticEvidence::InternalInvariant {
-            producer: "semantic analysis decision publication".to_owned(),
-            detail: diagnostic.message.clone(),
-        }
-    } else {
-        DiagnosticEvidence::Analysis {
-            overlap,
-            witness,
-            cycle,
-            configured_lookahead,
-            sufficient_lookahead,
-            end_of_alternative,
-        }
-    }
-}
-
-/// Converts a normalized semantic label to an authored source location.
-fn adapt_analysis_label(
-    label: &crate::DiagnosticLabel,
-    report: &AnalysisReport,
-    lowered: &LoweredGrammar,
-) -> Result<RecursaDiagnosticLabel, crate::build_diagnostic::DiagnosticLocationInvariant> {
-    let Some(location) = label.location else {
-        return Ok(RecursaDiagnosticLabel::unlocated(&label.message));
-    };
-    let location = &report.locations()[location.index()];
-    let source = &lowered.source_modeled.resolved().tree.files[location.source.index()];
-    DiagnosticLocation::new(source.path.clone(), Some(location.range.clone()))
-        .and_then(|location| location.with_source_text(&source.text))
-        .map(|location| RecursaDiagnosticLabel::located(location, &label.message))
-}
-
-#[cfg(test)]
-mod transient_provenance_tests {
-    use super::*;
-
-    #[test]
-    fn transient_and_compacted_provenance_adapt_to_identical_source_diagnostics() {
-        let package = tempfile::tempdir().expect("temporary diagnostic-provenance fixture");
-        std::fs::write(
-            package.path().join("grammar.rs"),
-            r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-recursa::tokens! { keywords { SELECT => "SELECT" } }
-
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Select;
-
-#[derive(recursa::Node)]
-struct Inner {
-    maybe: Option<Select>,
-}
-
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(SELECT)]
-    items: Vec<Inner>,
-}
-"#,
-        )
-        .expect("write diagnostic-provenance fixture");
-        let selected_root = Path::new("grammar.rs");
-        let success = analyze_source_tree(
-            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
-            &mut Vec::new(),
-        )
-        .expect("nullable FOLLOW warning coexists with successful analysis");
-        let transient = &success.analyzed.analysis;
-        let compact = crate::analysis::analyze(&success.analyzed.lowered.grammar);
-
-        assert_eq!(
-            transient.canonical_diagnostics(),
-            compact.canonical_diagnostics(),
-            "transient proof identities must render the same semantic diagnostics",
-        );
-        let compact_build_report = BuildReport::new(
-            compact
-                .diagnostics
-                .iter()
-                .map(|diagnostic| {
-                    adapt_analysis(
-                        diagnostic,
-                        &compact,
-                        &success.analyzed.lowered,
-                        selected_root,
-                    )
-                })
-                .collect(),
-        );
-        assert_eq!(
-            success.build_report, compact_build_report,
-            "source adaptation must not expose transient proof identities",
-        );
     }
 }

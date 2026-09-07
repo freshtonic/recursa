@@ -43,8 +43,7 @@ macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -234,8 +233,7 @@ macro_rules! drive {
         ] {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-            // those records by design, so the live count is taken on a warm second parse.
+            // The first failure exercises partial-value cleanup before the checked parse.
             drop(grammar::Rule::parse(&mut input).expect_err("failing input fails"));
             let baseline = LIVE.load(Ordering::SeqCst);
             let error = grammar::Rule::parse(&mut input).expect_err("failing input fails");
@@ -252,17 +250,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    // lr-parser-start: the integration test removes this block when it generates the
-    // grammar with the recursive-descent parser alone.
-    drive!("lr", grammar::parsers::lr::input);
-    // lr-parser-end
+    drive!("lr", parser_input);
     println!("lookahead-ok");
 }
 

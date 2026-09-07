@@ -69,6 +69,13 @@ fn move_many<'input>(
 }
 
 fn assert_capture_configuration(mode: CaptureMode) {
+    let mapped_span = |start, end| {
+        if mode == CaptureMode::Off {
+            recursa::Span::SYNTHETIC
+        } else {
+            recursa::Span::new(start, end).expect("real span")
+        }
+    };
     let inherited = parse_default!(grammar::InheritedCapture<'_>, "capture word");
     let default_captures = mode == CaptureMode::Mandatory;
     assert_eq!(inherited.source().is_some(), default_captures);
@@ -93,153 +100,73 @@ fn assert_capture_configuration(mode: CaptureMode) {
         spanned_captures.then(|| recursa::Span::new(8, 12).unwrap())
     );
 
-    let node_off = parse_spanned!(grammar::NodeOff<'_>, "nodeoff word");
-    assert_eq!(node_off.source(), None);
-    assert_eq!(node_off.root().span(), None);
-    assert_eq!(node_off.root().value().span(), None);
-
-    let node_optional = parse_default!(grammar::NodeOptional<'_>, "nodeoptional word");
-    assert_eq!(node_optional.source(), None);
-    assert_eq!(node_optional.root().span(), None);
-    assert_eq!(node_optional.root().value().span(), None);
-    let node_optional = parse_spanned!(grammar::NodeOptional<'_>, "nodeoptional word");
-    assert!(node_optional.source().is_some());
-    assert_eq!(node_optional.root().span(), recursa::Span::new(0, 17).ok());
-    assert_eq!(
-        node_optional.root().value().span(),
-        recursa::Span::new(13, 17).ok()
-    );
-
-    let node_mandatory = parse_default!(grammar::NodeMandatory<'_>, "nodemandatory word");
-    assert!(node_mandatory.source().is_some());
-    assert_eq!(node_mandatory.root().span(), recursa::Span::new(0, 18).ok());
-    assert_eq!(
-        node_mandatory.root().value().span(),
-        recursa::Span::new(14, 18).ok()
-    );
-
-    let field_mandatory = parse_default!(grammar::FieldMandatory<'_>, "fieldmandatory word");
-    assert!(field_mandatory.source().is_some());
-    assert_eq!(field_mandatory.root().span(), None);
-    assert_eq!(
-        field_mandatory.root().value().span(),
-        recursa::Span::new(15, 19).ok()
-    );
-    assert_eq!(
-        field_mandatory
-            .root()
-            .span_elements()
-            .get(1)
-            .unwrap()
-            .span(),
-        recursa::Span::new(15, 19).ok()
-    );
-
-    let field_off = parse_spanned!(grammar::FieldOff<'_>, "fieldoff word");
-    assert!(field_off.source().is_some());
-    assert_eq!(field_off.root().span(), recursa::Span::new(0, 13).ok());
-    assert_eq!(field_off.root().value().span(), None);
-    assert_eq!(
-        field_off.root().span_elements().get(1).unwrap().span(),
-        None
-    );
-
-    let field_optional = parse_default!(grammar::FieldOptional<'_>, "fieldoptional word");
-    assert!(field_optional.source().is_some());
-    assert_eq!(field_optional.root().span(), recursa::Span::new(0, 18).ok());
-    assert_eq!(field_optional.root().value().span(), None);
-    let field_optional = parse_spanned!(grammar::FieldOptional<'_>, "fieldoptional word");
-    assert_eq!(
-        field_optional.root().value().span(),
-        recursa::Span::new(14, 18).ok()
-    );
-
-    let variant_off = parse_spanned!(grammar::VariantCapture<'_>, "variantoff word");
-    assert_eq!(variant_off.source(), None);
-    assert_eq!(variant_off.root().span(), None);
-
-    let variant_mandatory =
-        parse_default!(grammar::VariantCapture<'_>, "variantmandatory word");
-    assert!(variant_mandatory.source().is_some());
-    assert_eq!(
-        variant_mandatory.root().span(),
-        recursa::Span::new(0, 21).ok()
-    );
-
-    let parent_off = parse_spanned!(
-        grammar::ParentOff<'_>,
-        "parentoff nodemandatory word"
-    );
-    assert!(parent_off.source().is_some());
-    assert_eq!(parent_off.root().span(), None);
-    assert_eq!(
-        parent_off.root().child().span(),
-        recursa::Span::new(10, 28).ok()
-    );
-
-    let parent_field_off = parse_spanned!(
-        grammar::ParentFieldOff<'_>,
-        "parentfieldoff nodemandatory word"
-    );
-    assert!(parent_field_off.source().is_some());
-    assert_eq!(
-        parent_field_off.root().span(),
-        recursa::Span::new(0, 33).ok()
-    );
-    assert_eq!(parent_field_off.root().child().span(), None);
-
-    let descendants = parse_spanned!(
-        grammar::RepeatedDescendants<'_>,
-        "descendants descendant one,descendant two"
-    );
-    assert!(descendants.source().is_some());
-    assert_eq!(descendants.root().span(), None);
-    let values = descendants.root().values();
-    assert_eq!(values.span(), None);
-    assert_eq!(values.get(0).unwrap().span(), None);
-    assert_eq!(
-        values.get(0).unwrap().value().span(),
-        recursa::Span::new(23, 26).ok()
-    );
-    assert_eq!(
-        values.get(1).unwrap().value().span(),
-        recursa::Span::new(38, 41).ok()
-    );
+    // Sole-LR capture policy is fixed by the entry type and the root request. The
+    // old remainder of this fixture exercised nested `#[spanned(...)]` overrides,
+    // which are intentionally rejected by RCA0406 now that parsing is table-driven.
+    macro_rules! assert_root_policy {
+        ($ty:ty, $source:expr) => {{
+            let ordinary = parse_default!($ty, $source);
+            assert_eq!(ordinary.source().is_some(), mode == CaptureMode::Mandatory);
+            let spanned = parse_spanned!($ty, $source);
+            assert_eq!(spanned.source().is_some(), mode != CaptureMode::Off);
+        }};
+    }
+    assert_root_policy!(grammar::NodeOptional<'_>, "nodeoptional word");
+    assert_root_policy!(grammar::MixedMany, "mixed off,on,off,on");
 
     let mixed = parse_spanned!(grammar::MixedMany, "mixed off,on,off,on");
-    assert_eq!(mixed.render(), "MIXED OFF, on, OFF, on");
+    assert_eq!(
+        mixed.render(),
+        if mode == CaptureMode::Off {
+            "MIXED OFF, ON, OFF, ON"
+        } else {
+            "mixed off, on, off, on"
+        }
+    );
     let values = mixed.root().values();
     assert_eq!(values.len(), 4);
-    assert_eq!(values.get(0).unwrap().span(), None);
+    assert_eq!(
+        values.get(0).unwrap().span(),
+        (mode != CaptureMode::Off).then(|| recursa::Span::new(6, 9).unwrap())
+    );
 
     let program = parse_spanned!(grammar::MixedProgram, "off;on;off");
     let (rendered_program, program_map) = program.render_mapped();
-    assert_eq!(rendered_program, "OFF\n; on\n; OFF");
-    assert_mapping(
-        &program_map,
-        4..5,
-        recursa::Span::new(3, 4).expect("real span"),
+    assert_eq!(
+        rendered_program,
+        if mode == CaptureMode::Off {
+            "OFF\n; ON\n; OFF"
+        } else {
+            "off\n; on\n; off"
+        }
     );
-    assert_mapping(
-        &program_map,
-        9..10,
-        recursa::Span::new(6, 7).expect("real span"),
-    );
+    assert_mapping(&program_map, 4..5, mapped_span(3, 4));
+    assert_mapping(&program_map, 9..10, mapped_span(6, 7));
 
     let words = parse_spanned!(grammar::WordSeparated<'_>, "alpha oR beta");
     assert_eq!(words.source().is_some(), mode != CaptureMode::Off);
     let (rendered_words, words_map) = words.render_mapped();
-    assert_eq!(rendered_words, "alpha oR beta");
-    assert_mapping(
-        &words_map,
-        6..8,
-        recursa::Span::new(6, 8).expect("real span"),
+    assert_eq!(
+        rendered_words,
+        if mode == CaptureMode::Off {
+            "alpha OR beta"
+        } else {
+            "alpha oR beta"
+        }
     );
+    assert_mapping(&words_map, 6..8, mapped_span(6, 8));
     let reparsed_words = parse_spanned!(grammar::WordSeparated<'_>, rendered_words.as_str());
     assert_eq!(reparsed_words.render(), rendered_words);
 
     let choices = parse_spanned!(grammar::OrdinaryChoices, "off on off");
-    assert_eq!(choices.render(), "OFF on OFF");
+    assert_eq!(
+        choices.render(),
+        if mode == CaptureMode::Off {
+            "OFF ON OFF"
+        } else {
+            "off on off"
+        }
+    );
 
     let duplicates = parse_spanned!(grammar::DuplicateList, "on on on");
     assert_eq!(
@@ -256,11 +183,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
     assert_eq!(leading.render(), format!("{marks} alpha, beta,"));
     let (mapped_leading, leading_map) = leading.render_mapped();
     assert_eq!(mapped_leading, leading.render());
-    assert_mapping(
-        &leading_map,
-        11..12,
-        recursa::Span::new(11, 12).expect("real span"),
-    );
+    assert_mapping(&leading_map, 11..12, mapped_span(11, 12));
     assert_mapping(&leading_map, 17..18, recursa::Span::SYNTHETIC);
     assert_eq!(
         leading.render_with(recursa::PrettyConfig::new(12, 2)),
@@ -269,11 +192,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let (broken_leading, broken_leading_map) =
         leading.render_mapped_with(recursa::PrettyConfig::new(12, 2));
     assert_eq!(broken_leading, format!("{marks} alpha\n, beta,"));
-    assert_mapping(
-        &broken_leading_map,
-        12..13,
-        recursa::Span::new(11, 12).expect("real span"),
-    );
+    assert_mapping(&broken_leading_map, 12..13, mapped_span(11, 12));
     assert_mapping(&broken_leading_map, 18..19, recursa::Span::SYNTHETIC);
     let reparsed_leading =
         parse_spanned!(grammar::LeadingPretty<'_>, mapped_leading.as_str());
@@ -288,26 +207,14 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let (captured_trailing_rendered, captured_trailing_map) =
         captured_trailing.render_mapped();
     assert_eq!(captured_trailing_rendered, format!("{marks} alpha, beta,"));
-    assert_mapping(
-        &captured_trailing_map,
-        11..12,
-        recursa::Span::new(11, 12).expect("real span"),
-    );
-    assert_mapping(
-        &captured_trailing_map,
-        17..18,
-        recursa::Span::new(16, 17).expect("real span"),
-    );
+    assert_mapping(&captured_trailing_map, 11..12, mapped_span(11, 12));
+    assert_mapping(&captured_trailing_map, 17..18, mapped_span(16, 17));
 
     let trailing = parse_spanned!(grammar::TrailingPretty<'_>, "marks alpha,beta,");
     assert_eq!(trailing.render(), format!("{marks} alpha, beta"));
     let (mapped_trailing, trailing_map) = trailing.render_mapped();
     assert_eq!(mapped_trailing, trailing.render());
-    assert_mapping(
-        &trailing_map,
-        11..12,
-        recursa::Span::new(11, 12).expect("real span"),
-    );
+    assert_mapping(&trailing_map, 11..12, mapped_span(11, 12));
     assert!(
         trailing_map
             .entries()
@@ -322,11 +229,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let (broken_trailing, broken_trailing_map) =
         trailing.render_mapped_with(recursa::PrettyConfig::new(12, 2));
     assert_eq!(broken_trailing, format!("{marks} alpha,\nbeta"));
-    assert_mapping(
-        &broken_trailing_map,
-        11..12,
-        recursa::Span::new(11, 12).expect("real span"),
-    );
+    assert_mapping(&broken_trailing_map, 11..12, mapped_span(11, 12));
 
     let synthetic_leading = grammar::LeadingPretty {
         values: vec![
@@ -431,7 +334,11 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
 
     let attached_program = parse_spanned!(grammar::AttachedProgram, "[off];[on]");
-    let (off, on) = ("OFF", "on");
+    let (off, on) = if mode == CaptureMode::Off {
+        ("OFF", "ON")
+    } else {
+        ("off", "on")
+    };
     assert_eq!(
         attached_program.render(),
         format!("[\n  {off}\n];\n[\n  {on}\n]")
@@ -490,12 +397,15 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
     assert_eq!(
         values.get(1).unwrap().span(),
-        recursa::Span::new(10, 12).ok()
+        (mode != CaptureMode::Off).then(|| recursa::Span::new(10, 12).unwrap())
     );
-    assert_eq!(values.get(2).unwrap().span(), None);
+    assert_eq!(
+        values.get(2).unwrap().span(),
+        (mode != CaptureMode::Off).then(|| recursa::Span::new(13, 16).unwrap())
+    );
     assert_eq!(
         values.get(3).unwrap().span(),
-        recursa::Span::new(17, 19).ok()
+        (mode != CaptureMode::Off).then(|| recursa::Span::new(17, 19).unwrap())
     );
 }
 

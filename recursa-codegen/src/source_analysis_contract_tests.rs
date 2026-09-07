@@ -22,13 +22,9 @@ fn diagnostic(
     summary: &str,
 ) -> RecursaDiagnostic {
     let evidence = if stage == DiagnosticStage::Analysis {
-        DiagnosticEvidence::Analysis {
-            overlap: Vec::new(),
-            witness: Vec::new(),
-            cycle: Vec::new(),
-            configured_lookahead: None,
-            sufficient_lookahead: None,
-            end_of_alternative: false,
+        DiagnosticEvidence::SemanticWitness {
+            subject: "LR analysis".to_owned(),
+            witness: vec![summary.to_owned()],
         }
     } else {
         DiagnosticEvidence::SourceFacts(vec![crate::DiagnosticFact {
@@ -92,7 +88,7 @@ const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[RuntimeDiagnost
 }];
 
 /// Complete append-only code contract for failures produced while parsing user input.
-const RUNTIME_PARSE_CODES: &[&str] = &["RCA4100", "RCA4101", "RCA4102", "RCA4103", "RCA4104"];
+const RUNTIME_PARSE_CODES: &[&str] = &["RCA4100", "RCA4101", "RCA4103", "RCA4104"];
 
 /// Maps every runtime parse failure code to executable public or core-boundary evidence.
 const RUNTIME_PARSE_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[
@@ -104,15 +100,6 @@ const RUNTIME_PARSE_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[
         command_test_source: "tests/generated_one_node.rs",
         command_test_name: "a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade",
         command: "cargo test -p recursa-codegen --test generated_one_node a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade --locked",
-    },
-    RuntimeDiagnosticEvidence {
-        codes: &["RCA4102"],
-        producer_source: "../recursa-core/src/parse.rs",
-        assertion_source: "../recursa-core/src/parsed.rs",
-        assertion_name: "pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor",
-        command_test_source: "../recursa-core/src/parsed.rs",
-        command_test_name: "pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor",
-        command: "cargo test -p recursa-core parsed::tests::pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor --locked",
     },
     RuntimeDiagnosticEvidence {
         codes: &["RCA4103"],
@@ -153,83 +140,6 @@ macro_rules! phase_producer_evidence {
 }
 
 const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
-    ProducerEvidence {
-        codes: &["RCA0001"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/normalized_analysis.rs",
-        test_name: "unsupported_container_cardinality_is_rejected_before_analysis",
-        command: "cargo test -p recursa-codegen --test normalized_analysis unsupported_container_cardinality_is_rejected_before_analysis --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0002"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_diagnostics.rs",
-        test_name: "invalid_references_are_reported_before_dependent_semantics",
-        command: "cargo test -p recursa-codegen --test analysis_diagnostics invalid_references_are_reported_before_dependent_semantics --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0100"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_diagnostics.rs",
-        test_name: "mutual_left_recursion_has_one_deterministic_cycle_snapshot",
-        command: "cargo test -p recursa-codegen --test analysis_diagnostics mutual_left_recursion_has_one_deterministic_cycle_snapshot --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0200"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_conflicts.rs",
-        test_name: "singleton_enum_overlap_matches_the_spike_scalar_baseline",
-        command: "cargo test -p recursa-codegen --test analysis_conflicts singleton_enum_overlap_matches_the_spike_scalar_baseline --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0201"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_conflicts.rs",
-        test_name: "static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not",
-        command: "cargo test -p recursa-codegen --test analysis_conflicts static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0202"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_pratt_conflicts.rs",
-        test_name: "pratt_atom_atom_conflict_has_a_canonical_snapshot",
-        command: "cargo test -p recursa-codegen --test analysis_pratt_conflicts pratt_atom_atom_conflict_has_a_canonical_snapshot --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0203"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_pratt_conflicts.rs",
-        test_name: "pratt_led_led_conflict_has_a_canonical_snapshot",
-        command: "cargo test -p recursa-codegen --test analysis_pratt_conflicts pratt_led_led_conflict_has_a_canonical_snapshot --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0300"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_follow.rs",
-        test_name: "nested_nullable_tail_warning_is_predicate_aware_and_keeps_output",
-        command: "cargo test -p recursa-codegen --test analysis_follow nested_nullable_tail_warning_is_predicate_aware_and_keeps_output --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0301"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_follow.rs",
-        test_name: "pratt_follow_warnings_filter_extenders_by_site_min_bp",
-        command: "cargo test -p recursa-codegen --test analysis_follow pratt_follow_warnings_filter_extenders_by_site_min_bp --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0302"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_greedy.rs",
-        test_name: "stale_greedy_acceptance_is_a_blocking_rca0302_error",
-        command: "cargo test -p recursa-codegen --test analysis_greedy stale_greedy_acceptance_is_a_blocking_rca0302_error --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0303"],
-        producer_source: "src/diagnostic.rs",
-        test_source: "tests/analysis_greedy.rs",
-        test_name: "stale_kinds_and_undeclared_kinds_are_reported_separately",
-        command: "cargo test -p recursa-codegen --test analysis_greedy stale_kinds_and_undeclared_kinds_are_reported_separately --locked",
-    },
     phase_producer_evidence!(
         "RCA1001",
         "discovery",
@@ -472,9 +382,9 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
     ProducerEvidence {
         codes: &["RCA3131"],
         producer_source: "src/source_analysis.rs",
-        test_source: "src/source_analysis_tests.rs",
-        test_name: "malformed_greedy_acceptances_report_source_analysis_diagnostics",
-        command: "cargo test -p recursa-codegen source_analysis_tests::tests::malformed_greedy_acceptances_report_source_analysis_diagnostics --locked",
+        test_source: "src/source_model.rs",
+        test_name: "removed_greedy_helper_has_a_targeted_migration_diagnostic",
+        command: "cargo test -p recursa-codegen source_model::tests::removed_greedy_helper_has_a_targeted_migration_diagnostic --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
@@ -820,11 +730,11 @@ fn producer_test_command(source: &str, test: &str) -> String {
 fn build_report_deduplicates_orders_and_renders_structured_diagnostics() {
     let late_warning = diagnostic(
         DiagnosticStage::Analysis,
-        "RCA0300",
+        "RCA0405",
         Severity::Warning,
         "grammar/root.rs",
         24..31,
-        "nullable use overlaps caller FOLLOW",
+        "LALR merge introduces a conflict absent from canonical LR(1)",
     );
     let early_error = diagnostic(
         DiagnosticStage::Resolution,
@@ -846,8 +756,8 @@ fn build_report_deduplicates_orders_and_renders_structured_diagnostics() {
             "error[RCA2004] resolution at grammar/root.rs:8..12: unresolved grammar-semantic reference\n",
             "  evidence: subject=unresolved grammar-semantic reference\n",
             "  remedy: correct the authored grammar source\n",
-            "warning[RCA0300] analysis at grammar/root.rs:24..31: nullable use overlaps caller FOLLOW\n",
-            "  evidence: analysis overlap=[] witness=[] cycle=[] lookahead=None->None end=false\n",
+            "warning[RCA0405] analysis at grammar/root.rs:24..31: LALR merge introduces a conflict absent from canonical LR(1)\n",
+            "  evidence: LR analysis: LALR merge introduces a conflict absent from canonical LR(1)\n",
             "  remedy: correct the authored grammar source\n",
         ),
     );
@@ -910,7 +820,10 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
             })
             .map(|spec| spec.code.as_str())
             .collect::<Vec<_>>(),
-        ["RCA0404", "RCA3117"],
+        [
+            "RCA0001", "RCA0002", "RCA0100", "RCA0200", "RCA0201", "RCA0202", "RCA0203", "RCA0300",
+            "RCA0301", "RCA0302", "RCA0303", "RCA0404", "RCA3117",
+        ],
         "retired diagnostic assignments remain reserved and cannot be reused",
     );
     assert!(
@@ -980,13 +893,9 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
                 }
             }
             crate::build_diagnostic::DiagnosticEvidenceSchema::AnalysisWitness => {
-                DiagnosticEvidence::Analysis {
-                    overlap: Vec::new(),
-                    witness: Vec::new(),
-                    cycle: Vec::new(),
-                    configured_lookahead: None,
-                    sufficient_lookahead: None,
-                    end_of_alternative: false,
+                DiagnosticEvidence::SemanticWitness {
+                    subject: "LR analysis".to_owned(),
+                    witness: vec!["registry-contract".to_owned()],
                 }
             }
             crate::build_diagnostic::DiagnosticEvidenceSchema::InternalInvariant => {
@@ -1234,26 +1143,27 @@ fn diagnostics_use_unicode_scalar_coordinates_semantic_dedup_and_lossless_cargo_
     );
     let warning = RecursaDiagnostic::new(
         DiagnosticStage::Analysis,
-        RecursaDiagnosticCode::new("RCA0300"),
+        RecursaDiagnosticCode::new("RCA0405"),
         Severity::Warning,
-        "nullable use overlaps caller FOLLOW",
+        "LALR merge introduces a conflict absent from canonical LR(1)",
         location,
         DiagnosticEvidence::SemanticWitness {
-            subject: "overlapping grammar paths".to_owned(),
+            subject: "merged LR items".to_owned(),
             witness: vec!["IDENT".to_owned()],
         },
-        vec![DiagnosticRemedy::MakeSiteRequired {
-            site: "Root::optional".to_owned(),
+        vec![DiagnosticRemedy::DisambiguateAlternatives {
+            left: "Root::first".to_owned(),
+            right: "Root::second".to_owned(),
         }],
     )
-    .with_order(1, "logical=root;site=optional-name");
+    .with_order(1, "logical=root;conflict=first-second");
     let unrelated = diagnostic(
         DiagnosticStage::Analysis,
-        "RCA0301",
+        "RCA0405",
         Severity::Warning,
         "grammar.rs",
         8..9,
-        "Pratt extender overlaps caller FOLLOW",
+        "a distinct LALR merge artefact",
     );
     let report = BuildReport::new(vec![warning.clone(), unrelated, warning]);
     assert_eq!(report.diagnostics().len(), 2, "A-B-A duplicates collapse");
@@ -1262,8 +1172,10 @@ fn diagnostics_use_unicode_scalar_coordinates_semantic_dedup_and_lossless_cargo_
     let mut cargo = Vec::new();
     crate::source_analysis::emit_warnings(&report, &mut cargo);
     assert_eq!(cargo.len(), 2);
-    assert!(cargo[0].contains("evidence: overlapping grammar paths: IDENT"));
-    assert!(cargo[0].contains("remedy: make nullable grammar site Root::optional required"));
+    assert!(cargo[0].contains("evidence: merged LR items: IDENT"));
+    assert!(
+        cargo[0].contains("remedy: make alternatives Root::first and Root::second distinguishable")
+    );
     assert!(cargo.iter().all(|line| !line.contains('\n')));
 }
 
@@ -1272,17 +1184,17 @@ fn cargo_warning_transport_collapses_indistinguishable_semantic_findings() {
     let warning = |range: std::ops::Range<u32>, origin: &str| {
         RecursaDiagnostic::new(
             DiagnosticStage::Analysis,
-            RecursaDiagnosticCode::new("RCA0301"),
+            RecursaDiagnosticCode::new("RCA0405"),
             Severity::Warning,
-            "Pratt use site may consume an active extender from caller FOLLOW",
+            "LALR merge introduces a conflict absent from canonical LR(1)",
             DiagnosticLocation::new(PathBuf::from("grammar.rs"), Some(range)).unwrap(),
             DiagnosticEvidence::SemanticWitness {
-                subject: "overlapping grammar paths".to_owned(),
+                subject: "merged LR items".to_owned(),
                 witness: vec!["NOTNULL".to_owned()],
             },
-            vec![DiagnosticRemedy::ReviewPrattFollow {
-                site: "Expr::__recursa_attachment_element1".to_owned(),
-                min_bp: 6,
+            vec![DiagnosticRemedy::DisambiguateAlternatives {
+                left: "Expr::first".to_owned(),
+                right: "Expr::second".to_owned(),
             }],
         )
         .with_order(1, origin)
@@ -1455,7 +1367,7 @@ fn diagnostic_locations_cannot_represent_package_escape_reversed_or_non_utf8_ran
 fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives() {
     let malformed = RecursaDiagnostic::new(
         DiagnosticStage::Analysis,
-        RecursaDiagnosticCode::new("RCA0300"),
+        RecursaDiagnosticCode::new("RCA0405"),
         Severity::Warning,
         "bad producer",
         DiagnosticLocation::new(PathBuf::from("grammar.rs"), Some(0..1)).unwrap(),
@@ -1476,7 +1388,7 @@ fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives
         (DiagnosticStage::Discovery, "RCA1001", "RCA9101"),
         (DiagnosticStage::Resolution, "RCA2001", "RCA9102"),
         (DiagnosticStage::Lowering, "RCA3101", "RCA9103"),
-        (DiagnosticStage::Analysis, "RCA0300", "RCA9104"),
+        (DiagnosticStage::Analysis, "RCA0405", "RCA9104"),
         (DiagnosticStage::Emission, "RCA9105", "RCA9105"),
     ] {
         let malformed = RecursaDiagnostic::new(
@@ -1505,7 +1417,7 @@ fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives
 
     let warning = diagnostic(
         DiagnosticStage::Analysis,
-        "RCA0300",
+        "RCA0405",
         Severity::Warning,
         "gram\r\nmar.rs",
         0..1,

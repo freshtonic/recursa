@@ -1,13 +1,11 @@
 //! Enum variants that share a long call tail and part on their second token (#127).
 //!
-//! `max_lookahead = 4` lets a predictive walk reach the token after `f ( a`, which is
-//! where the defect lived: the walk continued past the dot-or-paren decision into the
-//! call tail, whose arguments are open Pratt expressions, and rejected `f(a + b)` at `+`.
+//! The LR automaton separates the qualified and unqualified forms at their second
+//! token without inspecting the open call tail.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 4,
 }
 
 recursa::tokens! {

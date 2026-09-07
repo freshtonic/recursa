@@ -151,6 +151,13 @@ pub fn conflict_diagnostics(grammar: &LrGrammar, automaton: &Automaton) -> Vec<L
                     "{MERGE_ARTEFACT}: this conflict is an LALR(1) merge artefact; no canonical \
                      LR(1) state with these items has it"
                 ));
+            } else if matches!(conflict.kind, ConflictKind::ReduceReduce { .. })
+                && let MergeArtefactCheck::BudgetExceeded { budget } = automaton.merge_check()
+            {
+                notes.push(format!(
+                    "merge-artefact classification is inconclusive: canonical LR(1) exceeded \
+                     the {budget}-state budget"
+                ));
             }
             LrDiagnostic {
                 code,
@@ -476,7 +483,7 @@ fn render_conflict_summary(text: &mut String, grammar: &LrGrammar, automaton: &A
         MergeArtefactCheck::BudgetExceeded { budget } => {
             let _ = writeln!(
                 text,
-                "Merge-artefact check skipped: canonical LR(1) exceeded {budget} states."
+                "Merge-artefact check inconclusive: canonical LR(1) exceeded {budget} states."
             );
         }
     }

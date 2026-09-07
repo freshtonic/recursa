@@ -5,15 +5,14 @@
 //! (the symbolic expectation the error path names a terminal by) and its `lookahead` filter
 //! table, the flat `(token, merged, trigger)` triples of the grammar's `lookahead`
 //! declarations, which [`DecodedTables::merged_terminal`] applies to the token feed. Codegen
-//! packs them
-//! (`recursa_codegen::lr::tables`) and renders each as one byte-string literal so a table costs
-//! the compiler one token; this module is the runtime half of that format and must agree with
-//! the codegen encoder cell for cell.
+//! packs them (`recursa_codegen::lr::tables`) with URL-safe base64 and renders each as one
+//! byte-string literal so a table costs the compiler one token; this module is the runtime half
+//! of that format and must agree with the codegen encoder cell for cell.
 //!
 //! # Wire format
 //!
 //! A literal is one base64 digit giving the cell width, then `width` digits per cell, in the
-//! URL-safe alphabet `DispatchTable` uses. Unsigned tables store the cell value. Signed tables
+//! URL-safe alphabet below. Unsigned tables store the cell value. Signed tables
 //! store `0` for the sentinel [`PACT_NINF`] and otherwise the zigzag form of the value plus one,
 //! so small magnitudes keep small widths.
 //!
@@ -38,7 +37,7 @@ pub const PACT_NINF: i32 = i32::MIN;
 /// The `table` value of an explicit syntax error.
 pub const TABLE_NINF: i32 = i32::MIN;
 
-/// The URL-safe base64 alphabet shared with `DispatchTable` and the codegen encoder.
+/// The URL-safe base64 alphabet shared with the codegen encoder.
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /// The packed tables of one generation's automaton, decoded once on first use.
@@ -70,12 +69,12 @@ pub struct LrTables {
     lookahead: &'static [u8],
     /// Packed `folds`, the provenance fold of each rule (see [`super::provenance`]).
     folds: &'static [u8],
-    /// Packed `tail`: per rule, whether recursive descent decides the rule's end by its caller
-    /// FOLLOW (`1`), never does so below it (`2`, a Pratt rule), or leaves the decision to the
-    /// rule's last symbol (`0`).
+    /// Packed `tail`: per rule, whether the rule's end is constrained by root FOLLOW (`1`), never
+    /// constrained below it (`2`, a Pratt rule), or inherits the decision from its last symbol
+    /// (`0`).
     tail: &'static [u8],
-    /// Whether any fold carries a mandatory policy, so that provenance is retained even when the
-    /// root's policy does not capture, as recursive descent retains it.
+    /// Whether any fold carries a mandatory policy, so provenance is retained even when the
+    /// root's policy does not capture.
     mandatory: bool,
     /// The decoded form, filled on first lookup.
     decoded: OnceLock<DecodedTables>,
@@ -206,9 +205,8 @@ impl LrTables {
     /// Returns the canonical atom of each terminal, as the atom index plus one or `0` when the
     /// terminal has no atom; the end marker has no entry.
     ///
-    /// This is the vocabulary [`ParseError::expected`](crate::ParseError::expected) renders,
-    /// the same canonical atom per token kind that recursive descent's expected sets carry.
-    /// Only the error path reads it, so it is decoded apart from the action tables.
+    /// This is the vocabulary [`ParseError::expected`](crate::ParseError::expected) renders. Only
+    /// the error path reads it, so it is decoded apart from the action tables.
     pub fn expected_atoms(&self) -> &[u32] {
         self.atoms
             .get_or_init(|| decode_unsigned(self.expected_atoms))

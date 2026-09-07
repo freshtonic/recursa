@@ -12,7 +12,14 @@ use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
-use crate::Severity;
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Whether a diagnostic blocks generation.
+pub enum Severity {
+    /// Generation cannot continue for the affected grammar.
+    Error,
+    /// Generation may continue, but authored intent is ambiguous or fragile.
+    Warning,
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
@@ -201,17 +208,18 @@ macro_rules! retired_diagnostic_spec {
 
 /// Canonical DIAGNOSTIC CODE REGISTRY value for this boundary.
 static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
-    diagnostic_spec!("RCA0001", Analysis, Error),
-    diagnostic_spec!("RCA0002", Analysis, Error),
-    diagnostic_spec!("RCA0100", Analysis, Error),
-    diagnostic_spec!("RCA0200", Analysis, Error),
-    diagnostic_spec!("RCA0201", Analysis, Error),
-    diagnostic_spec!("RCA0202", Analysis, Error),
-    diagnostic_spec!("RCA0203", Analysis, Error),
-    diagnostic_spec!("RCA0300", Analysis, Warning),
-    diagnostic_spec!("RCA0301", Analysis, Warning),
-    diagnostic_spec!("RCA0302", Analysis, Error),
-    diagnostic_spec!("RCA0303", Analysis, Error),
+    // Reserved assignments from the retired recursive-descent analysis pipeline.
+    retired_diagnostic_spec!("RCA0001", Analysis, Error),
+    retired_diagnostic_spec!("RCA0002", Analysis, Error),
+    retired_diagnostic_spec!("RCA0100", Analysis, Error),
+    retired_diagnostic_spec!("RCA0200", Analysis, Error),
+    retired_diagnostic_spec!("RCA0201", Analysis, Error),
+    retired_diagnostic_spec!("RCA0202", Analysis, Error),
+    retired_diagnostic_spec!("RCA0203", Analysis, Error),
+    retired_diagnostic_spec!("RCA0300", Analysis, Warning),
+    retired_diagnostic_spec!("RCA0301", Analysis, Warning),
+    retired_diagnostic_spec!("RCA0302", Analysis, Error),
+    retired_diagnostic_spec!("RCA0303", Analysis, Error),
     diagnostic_spec!("RCA0400", Analysis, Error),
     diagnostic_spec!("RCA0401", Analysis, Error),
     diagnostic_spec!("RCA0402", Analysis, Error),
@@ -522,21 +530,6 @@ pub enum DiagnosticEvidence {
         /// Optional concrete spelling or pattern witness.
         witness: Option<String>,
     },
-    /// Records an analysis conflict and its competing alternatives.
-    Analysis {
-        /// Complete set of overlapping token descriptions.
-        overlap: Vec<String>,
-        /// Ordered semantic proof path for one overlap.
-        witness: Vec<String>,
-        /// Recursive type path when recursion contributes evidence.
-        cycle: Vec<String>,
-        /// Maximum lookahead depth used by analysis.
-        configured_lookahead: Option<usize>,
-        /// Proven separating depth when one exists.
-        sufficient_lookahead: Option<usize>,
-        /// Whether an alternative terminates inside the shared prefix.
-        end_of_alternative: bool,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -602,21 +595,6 @@ impl DiagnosticEvidence {
                 }
                 rendered
             }
-            Self::Analysis {
-                overlap,
-                witness,
-                cycle,
-                configured_lookahead,
-                sufficient_lookahead,
-                end_of_alternative,
-            } => format!(
-                "analysis overlap=[{}] witness=[{}] cycle=[{}] lookahead={:?}->{:?} end={end_of_alternative}",
-                overlap.join(","),
-                witness.join(" -> "),
-                cycle.join(" -> "),
-                configured_lookahead,
-                sufficient_lookahead,
-            ),
         }
     }
 }
@@ -629,41 +607,11 @@ pub enum DiagnosticRemedy {
     CorrectSource,
     /// Directs the author to repair a missing or incompatible reference.
     CorrectReference,
-    /// Directs the author to consume input before recursive parsing.
-    BreakRecursion {
-        /// Recursive semantic path that must be interrupted.
-        cycle: Vec<String>,
-    },
     /// Requests distinct prefixes for competing alternatives.
     DisambiguateAlternatives {
         /// First alternative identity to make distinct.
         left: String,
         /// Conflicting alternative identity to make distinct.
-        right: String,
-    },
-    /// Requests factoring or restructuring a shared prefix.
-    RestructureSharedPrefix {
-        /// First declaration sharing the prefix.
-        left: String,
-        /// Second declaration sharing the prefix.
-        right: String,
-    },
-    /// Requests distinct prefixes for competing Pratt variants.
-    DisambiguatePrattVariants {
-        /// Pratt Node owning the conflicting variants.
-        pratt: String,
-        /// First conflicting Pratt variant.
-        left: String,
-        /// Second conflicting Pratt variant.
-        right: String,
-    },
-    /// Requests restructuring a shared Pratt prefix.
-    RestructurePrattSharedPrefix {
-        /// Pratt Node whose variants share the prefix.
-        pratt: String,
-        /// First Pratt variant sharing the prefix.
-        left: String,
-        /// Second Pratt variant sharing the prefix.
         right: String,
     },
     /// Requests a configuration supported by the named capability.
@@ -672,44 +620,6 @@ pub enum DiagnosticRemedy {
     AssignDistinctPriority,
     /// Directs the user to report an internal invariant failure.
     ReportInternalFailure,
-    /// Suggests a larger lookahead bound when it resolves the witness.
-    RaiseMaxLookahead {
-        /// Current grammar maximum lookahead.
-        configured: usize,
-        /// Smallest proven separating lookahead.
-        sufficient: usize,
-    },
-    /// Requests removing nullability at the affected use site.
-    MakeSiteRequired {
-        /// Nullable grammar site to make required.
-        site: String,
-    },
-    /// Requests separating a nullable branch from its FOLLOW context.
-    ReviewNullableFollow {
-        /// Nullable site whose caller FOLLOW must be reviewed.
-        site: String,
-    },
-    /// Requests separating Pratt continuation from caller FOLLOW.
-    ReviewPrattFollow {
-        /// Pratt site whose caller FOLLOW overlaps active extenders.
-        site: String,
-        /// Minimum binding power currently admitted at the Pratt site.
-        min_bp: u8,
-    },
-    /// Requests removing declared `#[greedy(...)]` kinds that no caller-FOLLOW overlap produces.
-    RemoveGreedyAcceptance {
-        /// Accepted site the stale declaration covers.
-        site: String,
-        /// Declared kinds no overlap contains, as the attribute spells them.
-        kinds: Vec<String>,
-    },
-    /// Requests declaring the overlap kinds a `#[greedy(...)]` acceptance omits.
-    DeclareGreedyKinds {
-        /// Accepted site whose overlap exceeds the declaration.
-        site: String,
-        /// Undeclared overlap kinds, as the attribute spells them.
-        kinds: Vec<String>,
-    },
     /// Requests the mechanically derived class for fixed syntax.
     UseMechanicalFixedTokenClass {
         /// Mechanically derived fixed-token class to use.
@@ -734,24 +644,9 @@ impl DiagnosticRemedy {
             Self::CorrectReference => {
                 "resolve the grammar-semantic reference to a supported target".to_owned()
             }
-            Self::BreakRecursion { cycle } => {
-                format!(
-                    "break the unguarded recursive grammar path {}",
-                    cycle.join(" -> ")
-                )
-            }
             Self::DisambiguateAlternatives { left, right } => {
                 format!("make alternatives {left} and {right} distinguishable")
             }
-            Self::RestructureSharedPrefix { left, right } => {
-                format!("restructure alternatives {left} and {right} into a shared-prefix type")
-            }
-            Self::DisambiguatePrattVariants { pratt, left, right } => {
-                format!("make Pratt variants {left} and {right} of {pratt} distinguishable")
-            }
-            Self::RestructurePrattSharedPrefix { pratt, left, right } => format!(
-                "restructure Pratt variants {left} and {right} of {pratt} into a shared-prefix type"
-            ),
             Self::SelectSupportedConfiguration => {
                 "select one supported build configuration".to_owned()
             }
@@ -759,29 +654,6 @@ impl DiagnosticRemedy {
                 "assign distinct authored lexical priorities".to_owned()
             }
             Self::ReportInternalFailure => "report this Recursa invariant failure".to_owned(),
-            Self::RaiseMaxLookahead {
-                configured,
-                sufficient,
-            } => {
-                format!("raise max_lookahead from {configured} to {sufficient}")
-            }
-            Self::MakeSiteRequired { site } => {
-                format!("make nullable grammar site {site} required")
-            }
-            Self::ReviewNullableFollow { site } => format!(
-                "accept the greedy commitment with #[greedy(...)] at {site}, or make the site required, narrow its caller's type, or add a separator"
-            ),
-            Self::ReviewPrattFollow { site, min_bp } => format!(
-                "make the expression keep extending with #[greedy(...)] at {site}, or raise its minimum binding power above {min_bp}, or narrow its caller's type"
-            ),
-            Self::RemoveGreedyAcceptance { site, kinds } => format!(
-                "remove {} from #[greedy(...)] at {site}, or the whole attribute; no caller FOLLOW overlap produces them",
-                kinds.join(", ")
-            ),
-            Self::DeclareGreedyKinds { site, kinds } => format!(
-                "add {} to #[greedy(...)] at {site}, or separate them from caller FOLLOW",
-                kinds.join(", ")
-            ),
             Self::UseMechanicalFixedTokenClass { class } => {
                 format!("use the mechanically derived fixed-token class {class}")
             }
@@ -1031,7 +903,7 @@ impl RecursaDiagnostic {
             )
             | (
                 DiagnosticEvidenceSchema::AnalysisWitness,
-                DiagnosticEvidence::Analysis { .. } | DiagnosticEvidence::SemanticWitness { .. },
+                DiagnosticEvidence::SemanticWitness { .. },
             )
             | (
                 DiagnosticEvidenceSchema::InternalInvariant,
@@ -1108,17 +980,7 @@ fn remedy_matches_schema(schema: DiagnosticRemedySchema, remedy: &DiagnosticReme
             remedy,
             DiagnosticRemedy::CorrectSource
                 | DiagnosticRemedy::CorrectReference
-                | DiagnosticRemedy::BreakRecursion { .. }
                 | DiagnosticRemedy::DisambiguateAlternatives { .. }
-                | DiagnosticRemedy::RestructureSharedPrefix { .. }
-                | DiagnosticRemedy::DisambiguatePrattVariants { .. }
-                | DiagnosticRemedy::RestructurePrattSharedPrefix { .. }
-                | DiagnosticRemedy::RaiseMaxLookahead { .. }
-                | DiagnosticRemedy::MakeSiteRequired { .. }
-                | DiagnosticRemedy::ReviewNullableFollow { .. }
-                | DiagnosticRemedy::ReviewPrattFollow { .. }
-                | DiagnosticRemedy::RemoveGreedyAcceptance { .. }
-                | DiagnosticRemedy::DeclareGreedyKinds { .. }
         ),
         DiagnosticRemedySchema::CorrectAuthoredInput => matches!(
             remedy,

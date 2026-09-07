@@ -9,15 +9,12 @@
 //! (`%nonassoc BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA`, `gram.y:837`), which is what the block
 //! below does, and what makes `ROWS BETWEEN . NOT_LA` decidable.
 //!
-//! The integration test generates this file as written, with the parser style flipped to
-//! `recursive_descent`, and with `NOT_LA` removed from the `precedence` block, and compares
-//! what the parsers produce.
+//! The historical integration test generated this file as written and with `NOT_LA` removed
+//! from the `precedence` block, then compared the results.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 3,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 

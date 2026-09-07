@@ -1,5 +1,4 @@
-//! The two FOLLOW-pollution shapes of #125 under both parser styles, `rd` (the default) and
-//! `lr` (`parsers::lr::input`).
+//! The two FOLLOW-pollution shapes of #125 through the sole LR parser.
 //!
 //! `Statement` is the shared-helper shape: `Option<X>` lowers to one `opt(X)` helper used by
 //! `A` (followed by `c`) and by `B` (followed by `d`), while `A2` and `B2` read `Y -> X` with
@@ -11,16 +10,13 @@
 //! are two content tokens over one pattern, and every root reaches the one LR(0) state
 //! `{ColIdText -> IDENT ., TypeFunctionNameText -> IDENT .}` with the end marker on both
 //! reductions. The construction takes the earliest-declared wrapper, `ColIdText`. `Expr`
-//! continues past the wrapper (`( )` selects the call) or ends in `ColId`, so both parsers
-//! agree on every `Expr` input. `FuncName` can end only in `TypeFunctionName`, so on a bare
-//! `foo` the `lr` parser reduces `ColIdText`, looks for `.`, and reports an unexpected end
-//! where `rd` accepts `Plain`: the documented limit of the declaration-order rule.
+//! continues past the wrapper (`( )` selects the call) or ends in `ColId`. `FuncName` can end
+//! only in `TypeFunctionName`, so on a bare `foo` the parser reduces `ColIdText`, looks for `.`,
+//! and reports an unexpected end: the documented limit of the declaration-order rule.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 3,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 

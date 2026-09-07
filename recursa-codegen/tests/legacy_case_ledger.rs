@@ -3,13 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const FROZEN_REVISION: &str = "b410d2f123cd7510a8a40e9e5b971936a2fd8463";
-const DIRECT_EXECUTION_TARGETS: [&str; 5] = [
-    "--lib",
-    "analysis_parity",
-    "analysis_diagnostics",
-    "analysis_conflicts",
-    "analysis_pratt_conflicts",
-];
+const DIRECT_EXECUTION_TARGETS: [&str; 2] = ["--lib", "normalized_analysis"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Identity<'a> {

@@ -1,5 +1,5 @@
-//! Drives the merged-kind precedence grammar and prints what the test compares between the
-//! parser styles and between the grammar with and without `NOT_LA` in its `precedence` block:
+//! Drives the merged-kind precedence grammar and prints what the test compares for the LR parser
+//! with and without `NOT_LA` in its `precedence` block:
 //! the Debug value of every positive parse with the cursor it leaves, the Pretty rendering,
 //! and for every failing input the error and the restored cursor.
 
@@ -63,7 +63,7 @@ macro_rules! drive {
         // The input the merged kind's level decides: `ROWS BETWEEN . NOT_LA`, where the
         // reduce takes `between` as the column a `not like` test follows and the shift takes
         // it as the frame keyword. gram.y's `%nonassoc` makes the tie an error, so the
-        // table-driven parser rejects it, as PostgreSQL does; recursive descent reaches the
+        // The LR parser rejects it, as PostgreSQL does; the retired predictive parser reached the
         // same verdict by reading on.
         let source = "rows between not like a preceding;";
         let lexed = grammar::lex(source);
@@ -95,16 +95,12 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    // lr-parser-start: the integration test removes this block when it generates the grammar
-    // with the recursive-descent parser alone.
-    drive!("lr", grammar::parsers::lr::input);
-    // lr-parser-end
+    drive!("lr", parser_input);
     println!("lookahead-precedence-ok");
 }

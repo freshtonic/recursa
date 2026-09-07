@@ -1,7 +1,6 @@
 recursa::grammar! {
     module = crate::r#type,
     keyword_matching = sensitive,
-    max_lookahead = 1,
     derives(Visit, VisitMut),
 }
 

@@ -3,7 +3,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use crate::dispatch::{DispatchTable, decode_target};
 use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord, TriviaRecord};
 use crate::{FollowSet, GrammarInfo, HasSpan, ParseError, Span};
 
@@ -549,7 +548,7 @@ impl<'input, T> Parsed<'input, T> {
     /// `synthetic` or `uncaptured` for a parse without provenance, otherwise the captured window
     /// followed by the root occurrence. An occurrence is `(span: children ; separators)`, with
     /// `-` for an occurrence whose span was not retained, `_` for an absent child, and the
-    /// separator list present only for repetitions that retained one. Two parsers agree on
+    /// separator list present only for repetitions that retained one. Two parses agree on
     /// provenance exactly when their renderings are equal.
     pub fn debug_provenance(&self) -> DebugProvenance<'_> {
         DebugProvenance {
@@ -1048,10 +1047,10 @@ impl IntoIterator for Occurrences {
     }
 }
 
-/// Move-owned semantic value and occurrence produced by recursive generated parsing.
+/// Move-owned semantic value and occurrence produced by generated table parsing.
 #[doc(hidden)]
 pub struct ParsedNode<T> {
-    /// Recursively constructed semantic value.
+    /// Semantic value constructed by reduce actions.
     value: T,
     /// Opaque occurrence sidecar for parent assembly.
     occurrence: Occurrence,
@@ -1063,16 +1062,9 @@ impl<T> ParsedNode<T> {
         Self { value, occurrence }
     }
 
-    /// Transforms a recursive semantic result without detaching its occurrence.
-    pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> ParsedNode<U> {
-        ParsedNode {
-            value: transform(self.value),
-            occurrence: self.occurrence,
-        }
-    }
-
-    /// Separates a child value from its opaque occurrence for parent assembly.
-    pub fn into_parts(self) -> (T, Occurrence) {
+    /// Separates a value from its opaque occurrence for runtime tests.
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (T, Occurrence) {
         (self.value, self.occurrence)
     }
 }
@@ -1081,18 +1073,6 @@ impl<T> ParsedNode<T> {
 pub(crate) struct ProvenanceCollector;
 
 impl ProvenanceCollector {
-    /// Finishes provenance for a non-repetition grammar occurrence.
-    pub(crate) fn finish(
-        &self,
-        source: &str,
-        policy: CapturePolicy,
-        request: CaptureRequest,
-        span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-    ) -> Result<Occurrence, ()> {
-        self.finish_repeated(source, policy, request, span, children, std::iter::empty())
-    }
-
     /// Finishes provenance while retaining separators outside child ordinals.
     pub(crate) fn finish_repeated(
         &self,
@@ -1154,15 +1134,16 @@ impl ProvenanceCollector {
     }
 }
 
-/// Recursive generated-parser context.
+/// Generated table-parser context.
 ///
-/// The input, caller FOLLOW, capture policy/request, and provenance collector
-/// remain within the matching-version ABI.
+/// The input, root FOLLOW, capture policy/request, and provenance collector remain within the
+/// matching-version ABI. Generated reduce actions interact through [`crate::lr::Reduction`]; this
+/// context owns the grammar-erased state shared by the LR loop and its diagnostics.
 #[doc(hidden)]
 pub struct ParseContext<'context, 'input, A> {
     /// Grammar-bound cursor and caller construction state.
     input: &'context mut Input<'input, A>,
-    /// Caller FOLLOW composed for this recursive site.
+    /// FOLLOW supplied for this root invocation.
     follow: &'context FollowSet,
     /// Grammar-selected capture policy.
     policy: CapturePolicy,
@@ -1173,7 +1154,7 @@ pub struct ParseContext<'context, 'input, A> {
 }
 
 impl<'context, 'input, A> ParseContext<'context, 'input, A> {
-    /// Binds one recursive parse invocation to input, FOLLOW, and capture state.
+    /// Binds one table parse invocation to input, root FOLLOW, and capture state.
     fn new(
         input: &'context mut Input<'input, A>,
         follow: &'context FollowSet,
@@ -1190,32 +1171,32 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     }
 
     /// Returns the complete parse source.
-    pub fn source(&self) -> &'input str {
+    pub(crate) fn source(&self) -> &'input str {
         self.input.source()
     }
 
     /// Returns matching static grammar metadata.
-    pub fn grammar(&self) -> &'static GrammarInfo {
+    pub(crate) fn grammar(&self) -> &'static GrammarInfo {
         self.input.grammar()
     }
 
     /// Returns mutable caller construction state.
-    pub fn builder(&mut self) -> &mut A {
+    pub(crate) fn builder(&mut self) -> &mut A {
         self.input.builder()
     }
 
     /// Returns one token record at lookahead distance without consuming it.
-    pub fn peek(&self, distance: usize) -> Option<TokenRecord> {
+    pub(crate) fn peek(&self, distance: usize) -> Option<TokenRecord> {
         self.input.peek(distance)
     }
 
     /// Consumes and returns the next token record.
-    pub fn advance(&mut self) -> Option<TokenRecord> {
+    pub(crate) fn advance(&mut self) -> Option<TokenRecord> {
         self.input.advance()
     }
 
     /// Returns the current absolute token cursor.
-    pub fn cursor(&self) -> usize {
+    pub(crate) fn cursor(&self) -> usize {
         self.input.cursor()
     }
 
@@ -1234,7 +1215,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.policy.captures(self.request)
     }
 
-    /// The error recursive descent raises for a token span that leaves the source.
+    /// Reports a shifted token span that leaves the source.
     pub(crate) fn invalid_token_span(&self, span: Span) -> ParseError {
         ParseError::invalid_token_span(self.input, span, None)
     }
@@ -1265,496 +1246,34 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
             })
     }
 
-    /// Returns the source extent consumed since a saved token cursor.
-    pub fn consumed_span_from(&self, start: usize) -> Option<Span> {
-        let end = self.input.cursor();
-        let first = self.input.record(start)?;
-        let last = self.input.record(end.checked_sub(1)?)?;
-        Span::new(first.span.start() as usize, last.span.end() as usize).ok()
-    }
-
-    /// Returns the caller FOLLOW set for this recursive parse site.
-    pub fn follow(&self) -> &FollowSet {
-        self.follow
-    }
-
-    /// Returns the caller FOLLOW with the context lifetime.
-    ///
-    /// The returned borrow does not hold `self`, so generated code can pass it to a
-    /// child parse that needs `&mut self` without cloning the set first.
-    pub fn caller_follow(&self) -> &'context FollowSet {
+    /// Returns the FOLLOW supplied for this root invocation.
+    pub(crate) fn follow(&self) -> &FollowSet {
         self.follow
     }
 
     /// Returns the grammar-selected provenance capture policy.
-    pub const fn capture_policy(&self) -> CapturePolicy {
+    pub(crate) const fn capture_policy(&self) -> CapturePolicy {
         self.policy
     }
 
     /// Constructs an unexpected-input diagnostic at the current cursor.
-    pub fn unexpected(&self, expected: &FollowSet) -> ParseError {
+    pub(crate) fn unexpected(&self, expected: &FollowSet) -> ParseError {
         ParseError::unexpected(self.input, expected)
     }
 
-    /// Constructs an unexpected-input diagnostic at lookahead distance.
-    pub fn unexpected_at(&self, distance: usize, expected: &FollowSet) -> ParseError {
-        ParseError::unexpected_at(self.input, expected, distance)
-    }
-
-    /// Reports the dynamic D3 ambiguity at the current Pratt extender.
-    pub fn pratt_ambiguity(&self, expected: &FollowSet) -> ParseError {
-        ParseError::pratt_ambiguity(self.input, expected)
-    }
-
-    /// Reports whether the next token belongs to `expected`.
-    pub fn next_is(&self, expected: &FollowSet) -> bool {
-        self.peek(0)
-            .is_some_and(|record| expected.contains(record.kind))
-    }
-
-    /// Reports whether the next token belongs to the nearest static Pratt boundary.
-    pub fn next_is_pratt_boundary(&self) -> bool {
-        self.peek(0)
-            .is_some_and(|record| self.follow.pratt_boundary_contains(record.kind))
-    }
-
-    /// Reports whether a `#[greedy(...)]` acceptance covers the next token at this site.
-    ///
-    /// A Pratt loop consults this only after [`Self::next_is_pratt_boundary`] and the
-    /// bounded-lookahead viability of the selected extension, so an accepted kind
-    /// extends the expression exactly where the loop would otherwise report `RCA4102`.
-    pub fn next_is_greedy_extension(&self) -> bool {
-        self.peek(0)
-            .is_some_and(|record| self.follow.greedy_contains(record.kind))
-    }
-
-    /// Reports whether no token remains.
-    pub fn is_eof(&self) -> bool {
-        self.peek(0).is_none()
-    }
-
-    /// Consumes one fixed element and returns its occurrence provenance.
-    pub fn parse_fixed(
-        &mut self,
-        expected: &FollowSet,
-        policy: CapturePolicy,
-    ) -> Result<Occurrence, ParseError> {
-        let Some(record) = self.peek(0) else {
-            return Err(self.unexpected(expected));
-        };
-        if !expected.contains(record.kind) {
-            return Err(self.unexpected(expected));
-        }
-        self.advance();
-        self.provenance
-            .finish(
-                self.input.source(),
-                policy,
-                self.request,
-                Some(record.span),
-                std::iter::empty(),
-            )
-            .map_err(|()| ParseError::invalid_token_span(self.input, record.span, None))
-    }
-
-    /// Consumes one fixed repetition separator into its dedicated provenance
-    /// channel. Separator source text remains available to Pretty regardless
-    /// of the semantic Node capture policy.
-    pub fn parse_repetition_separator(
-        &mut self,
-        expected: &FollowSet,
-    ) -> Result<RepetitionSeparatorOccurrence, ParseError> {
-        let Some(record) = self.peek(0) else {
-            return Err(self.unexpected(expected));
-        };
-        if !expected.contains(record.kind) {
-            return Err(self.unexpected(expected));
-        }
-        self.input
-            .source()
-            .get(record.span.range())
-            .ok_or_else(|| ParseError::invalid_token_span(self.input, record.span, None))?;
-        self.advance();
-        Ok(RepetitionSeparatorOccurrence {
-            node: RepetitionSeparatorNode { span: record.span },
-        })
-    }
-
     /// Converts a matched record into borrowed content-token text.
-    pub fn matched_text(&self, record: TokenRecord) -> Result<ContentText<'input>, ParseError> {
+    pub(crate) fn matched_text(
+        &self,
+        record: TokenRecord,
+    ) -> Result<ContentText<'input>, ParseError> {
         ContentText::matched(self.input.source(), record.span).ok_or_else(|| {
             ParseError::invalid_token_span(self.input, record.span, Some(record.kind))
         })
     }
-
-    /// Completes a leaf Node with its semantic value and captured span.
-    pub fn finish<T>(&self, value: T, span: Span) -> Result<ParsedNode<T>, ParseError> {
-        let occurrence = self
-            .provenance
-            .finish(
-                self.input.source(),
-                self.policy,
-                self.request,
-                Some(span),
-                std::iter::empty(),
-            )
-            .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
-        Ok(ParsedNode { value, occurrence })
-    }
-
-    /// Completes a parent while retaining successful child occurrences.
-    pub fn finish_with_children<T>(
-        &self,
-        value: T,
-        span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-    ) -> Result<ParsedNode<T>, ParseError> {
-        let occurrence = self
-            .provenance
-            .finish(
-                self.input.source(),
-                self.policy,
-                self.request,
-                span,
-                children,
-            )
-            .map_err(|()| {
-                ParseError::invalid_token_span(
-                    self.input,
-                    span.expect("only a concrete invalid span can fail validation"),
-                    None,
-                )
-            })?;
-        Ok(ParsedNode { value, occurrence })
-    }
-
-    /// Completes a locally overridden Node/variant capture boundary.
-    pub fn finish_with_children_policy<T>(
-        &self,
-        value: T,
-        span: Option<Span>,
-        policy: CapturePolicy,
-        children: impl IntoIterator<Item = Occurrence>,
-    ) -> Result<ParsedNode<T>, ParseError> {
-        let occurrence = self
-            .provenance
-            .finish(self.input.source(), policy, self.request, span, children)
-            .map_err(|()| {
-                ParseError::invalid_token_span(
-                    self.input,
-                    span.expect("only a concrete invalid span can fail validation"),
-                    None,
-                )
-            })?;
-        Ok(ParsedNode { value, occurrence })
-    }
-
-    /// Completes one authored element slot, including repeated child occurrences.
-    pub fn finish_group(
-        &self,
-        policy: CapturePolicy,
-        span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-    ) -> Result<Occurrence, ParseError> {
-        self.provenance
-            .finish(self.input.source(), policy, self.request, span, children)
-            .map_err(|()| {
-                ParseError::invalid_token_span(
-                    self.input,
-                    span.expect("only a concrete invalid span can fail validation"),
-                    None,
-                )
-            })
-    }
-
-    /// Completes one repeated authored element while keeping fixed separator
-    /// occurrences separate from the semantic child sequence.
-    pub fn finish_repeated_group(
-        &self,
-        policy: CapturePolicy,
-        span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
-    ) -> Result<Occurrence, ParseError> {
-        self.provenance
-            .finish_repeated(
-                self.input.source(),
-                policy,
-                self.request,
-                span,
-                children,
-                separators,
-            )
-            .map_err(|()| {
-                ParseError::invalid_token_span(
-                    self.input,
-                    span.expect("only a concrete invalid span can fail validation"),
-                    None,
-                )
-            })
-    }
-
-    /// Invokes a generated child parser with its own FOLLOW and capture policy.
-    pub fn parse_node<T>(
-        &mut self,
-        follow: &FollowSet,
-        policy: CapturePolicy,
-    ) -> Result<ParsedNode<T>, ParseError>
-    where
-        T: GeneratedParse<'input, A>,
-    {
-        if !std::ptr::eq(self.input.grammar(), T::grammar()) {
-            return Err(ParseError::grammar_mismatch(self.input));
-        }
-        let mut child = ParseContext::new(&mut *self.input, follow, policy, self.request);
-        T::parse(&mut child)
-    }
-
-    /// Parses one required direct child element and wraps it in its element group.
-    ///
-    /// When the child fails without consuming input and its error sits on the current
-    /// token (or at end of input), the failure is reported as the element's required
-    /// expectation instead, exactly as the expanded generated form did.
-    pub fn parse_direct_child<T>(
-        &mut self,
-        follow: &FollowSet,
-        child_policy: CapturePolicy,
-        group_policy: CapturePolicy,
-        required_failure: &FollowSet,
-    ) -> Result<(T, Occurrence), ParseError>
-    where
-        T: GeneratedParse<'input, A>,
-    {
-        let element_start = self.cursor();
-        let parsed = match self.parse_node::<T>(follow, child_policy) {
-            Ok(parsed) => parsed,
-            Err(error)
-                if self.cursor() == element_start
-                    && self.peek(0).map_or_else(
-                        || error.span().start() as usize == self.source().len(),
-                        |record| error.span() == record.span,
-                    ) =>
-            {
-                return Err(self.unexpected(required_failure));
-            }
-            Err(error) => return Err(error),
-        };
-        let (value, child_occurrence) = parsed.into_parts();
-        let element_span = self.consumed_span_from(element_start);
-        let occurrence = self.finish_group(group_policy, element_span, [child_occurrence])?;
-        Ok((value, occurrence))
-    }
-
-    /// Parses one variant whose only element is a required direct child under the
-    /// caller FOLLOW, then constructs the variant around the child value.
-    pub fn parse_wrapping_variant<T, C>(
-        &mut self,
-        child_policy: CapturePolicy,
-        group_policy: CapturePolicy,
-        required_failure: &FollowSet,
-        wrap: fn(C) -> T,
-    ) -> Result<ParsedNode<T>, ParseError>
-    where
-        C: GeneratedParse<'input, A>,
-    {
-        let start = self.cursor();
-        let follow = self.follow;
-        let (value, occurrence) =
-            self.parse_direct_child::<C>(follow, child_policy, group_policy, required_failure)?;
-        let span = self.consumed_span_from(start);
-        self.finish_with_children(wrap(value), span, [occurrence])
-    }
-
-    /// Parses one variant made only of fixed tokens under the inherited capture
-    /// policy and constructs its unit value.
-    pub fn parse_fixed_variant<T, const N: usize>(
-        &mut self,
-        expected: [&FollowSet; N],
-        value: T,
-    ) -> Result<ParsedNode<T>, ParseError> {
-        let start = self.cursor();
-        let policy = self.policy;
-        let mut occurrences: [Option<Occurrence>; N] = [const { None }; N];
-        for (slot, expected) in occurrences.iter_mut().zip(expected) {
-            *slot = Some(self.parse_fixed(expected, policy)?);
-        }
-        let span = self.consumed_span_from(start);
-        self.finish_with_children(value, span, occurrences.into_iter().flatten())
-    }
-
-    /// Walks one frozen predictive dispatch graph and returns the selected branch.
-    ///
-    /// The terminal rules are the ones the generated inline walker used: an immediate
-    /// target selects at once; a caller-FOLLOW target selects at end of input or when the
-    /// lookahead belongs to the caller FOLLOW; edges are tried in frozen order; a
-    /// fallback target selects after every edge failed; otherwise the failure names the
-    /// state's expectation, unioned with the caller FOLLOW for caller-FOLLOW targets.
-    pub fn select_predictive(
-        &self,
-        table: &DispatchTable,
-        root: usize,
-        initial_depth: usize,
-    ) -> Result<usize, ParseError> {
-        let mut state = root;
-        let mut depth = initial_depth;
-        loop {
-            let [target, _, _, expected_index] = table.state::<4>(state);
-            let expected = &table.expected()[expected_index];
-            let target = decode_target(target);
-            if let Some((variant, mode)) = target {
-                if mode == 0
-                    || self.peek(depth).is_none()
-                    || (mode == 1
-                        && self
-                            .peek(depth)
-                            .is_some_and(|record| self.follow.contains(record.kind)))
-                {
-                    return Ok(variant);
-                }
-            }
-            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
-                state = next;
-                depth += 1;
-                continue;
-            }
-            if let Some((variant, 2)) = target {
-                return Ok(variant);
-            }
-            if target.is_some_and(|(_, mode)| mode == 1) {
-                let expected = expected
-                    .union(self.follow)
-                    .expect("matching generated dispatch/FOLLOW widths");
-                return Err(self.unexpected_at(depth, expected));
-            }
-            return Err(self.unexpected_at(depth, expected));
-        }
-    }
-
-    /// Walks one frozen Pratt selection graph and returns the selected branch, if any,
-    /// with the lookahead depth reached.
-    pub fn select_pratt(
-        &self,
-        table: &DispatchTable,
-        root: usize,
-        caller_follow: &FollowSet,
-    ) -> (Option<usize>, usize) {
-        let mut state = root;
-        let mut depth = 0usize;
-        loop {
-            let [target, _, _] = table.state::<3>(state);
-            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
-                state = next;
-                depth += 1;
-                continue;
-            }
-            if let Some((variant, mode)) = decode_target(target) {
-                if mode != 1
-                    || self.peek(depth).is_none()
-                    || self
-                        .peek(depth)
-                        .is_some_and(|record| caller_follow.contains(record.kind))
-                {
-                    return (Some(variant), depth);
-                }
-            }
-            return (None, depth);
-        }
-    }
-
-    /// Walks one frozen optional consume-vs-skip decision graph.
-    ///
-    /// `Some(true)` consumes, `Some(false)` skips, and `None` defers to the container's
-    /// root kind selector.
-    pub fn select_optional(&self, table: &DispatchTable, root: usize) -> Option<bool> {
-        let mut state = root;
-        let mut depth = 0usize;
-        loop {
-            let [caller_action, unconditional_action, _, _] = table.state::<4>(state);
-            if let Some(next) = table.follow_edge(state, self.peek(depth), self.source()) {
-                state = next;
-                depth += 1;
-                continue;
-            }
-            if caller_action != 0
-                && (self.peek(depth).is_none()
-                    || self
-                        .peek(depth)
-                        .is_some_and(|record| self.follow.contains(record.kind)))
-            {
-                return Some(caller_action == 1);
-            }
-            if unconditional_action != 0 {
-                return Some(unconditional_action == 1);
-            }
-            return None;
-        }
-    }
-
-    /// Runs one generated recursive parser with its planned FOLLOW and capture policy.
-    pub fn parse_generated<T>(
-        &mut self,
-        follow: &FollowSet,
-        policy: CapturePolicy,
-        parse: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<T>, ParseError>,
-    ) -> Result<ParsedNode<T>, ParseError> {
-        let mut child = ParseContext::new(&mut *self.input, follow, policy, self.request);
-        parse(&mut child)
-    }
 }
-
+/// Matching-version table parsing protocol implemented by generated code.
 #[doc(hidden)]
-/// Seal implemented only by Recursa's own parser-style markers.
-pub mod parser_marker_seal {
-    /// Prevents external parser-style markers; the set of styles is fixed by
-    /// the matching Recursa version.
-    pub trait Sealed {}
-}
-
-/// Parser-style marker that distinguishes the generated parsers over one AST.
-///
-/// Trait coherence allows one [`GeneratedParse`] impl per type, so every
-/// generated parser names its marker as the trait's third parameter and the
-/// generated grammar-local input names the parser it drives through
-/// [`GeneratedInput::Parser`]. The blanket [`Parse`] facade joins the two.
-#[doc(hidden)]
-pub trait ParserMarker: parser_marker_seal::Sealed + 'static {}
-
-/// Marker for the recursive-descent parser style.
-///
-/// This is the default of the [`GeneratedParse`] marker parameter and the
-/// implicit style when a generation names no parser, so existing generated
-/// code compiles against it unchanged.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug)]
-pub struct RecursiveDescent;
-
-impl parser_marker_seal::Sealed for RecursiveDescent {}
-
-impl ParserMarker for RecursiveDescent {}
-
-/// Marker for the table-driven parser style.
-///
-/// A generation's table-driven parser renders its [`GeneratedParse`] impls
-/// against this marker and names it as the [`GeneratedInput::Parser`] of the
-/// grammar-local input that selects it (the root `Input` when it is the
-/// default parser, `parsers::<name>::Input` otherwise), so the same blanket
-/// [`Parse`] facade selects the LALR(1) loop in [`crate::lr`]. One generation
-/// carries at most one parser per style, so the two style markers are the
-/// only markers.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug)]
-pub struct TableDriven;
-
-impl parser_marker_seal::Sealed for TableDriven {}
-
-impl ParserMarker for TableDriven {}
-
-/// Matching-version recursive parsing protocol implemented by generated code.
-///
-/// `P` names the parser style whose generated body this impl carries; the
-/// default keeps every recursive-descent generation source-compatible.
-#[doc(hidden)]
-pub trait GeneratedParse<'input, A = (), P: ParserMarker = RecursiveDescent>: Node + Sized {
+pub trait GeneratedParse<'input, A = ()>: Node + Sized {
     /// Grammar-fixed provenance capture policy for this Node.
     const CAPTURE_POLICY: CapturePolicy;
 
@@ -1764,7 +1283,7 @@ pub trait GeneratedParse<'input, A = (), P: ParserMarker = RecursiveDescent>: No
     /// Returns the caller FOLLOW used by this Node as a root.
     fn root_follow() -> &'static FollowSet;
 
-    /// Runs the generated recursive parser under a matching context.
+    /// Runs the generated LR parser under a matching context.
     fn parse(context: &mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<Self>, ParseError>;
 }
 
@@ -1778,9 +1297,6 @@ pub trait GeneratedInput {
     /// The runtime input wrapped by the generated grammar-local type.
     type Inner: ?Sized;
 
-    /// The parser style this input selects through the [`Parse`] facade.
-    type Parser: ParserMarker;
-
     /// Exposes the wrapped runtime input.
     fn __recursa_inner(&mut self) -> &mut Self::Inner;
 }
@@ -1788,87 +1304,78 @@ pub trait GeneratedInput {
 impl<'input, A, I, T> parse_seal::Sealed<I> for T
 where
     I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
-    T: GeneratedParse<'input, A, I::Parser>,
+    T: GeneratedParse<'input, A>,
 {
 }
 
 impl<'input, A, I, T> Parse<I> for T
 where
     I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
-    T: GeneratedParse<'input, A, I::Parser>,
+    T: GeneratedParse<'input, A>,
 {
     type Output = Parsed<'input, T>;
 
     fn parse(input: &mut I) -> Result<Self::Output, ParseError> {
-        parse::<T, A, I::Parser>(input.__recursa_inner())
+        parse::<T, A>(input.__recursa_inner())
     }
 }
 
 /// Runs the generated root parser with the default capture request.
 ///
-/// `P` selects which generated parser of `T` runs; call sites bound by a
-/// single [`GeneratedParse`] impl leave it to inference.
 #[doc(hidden)]
-pub fn parse<'input, T, A, P>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
+pub fn parse<'input, T, A>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A, P>,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A>,
 {
-    parse_with_request::<T, A, P>(input, CaptureRequest::Default)
+    parse_with_request::<T, A>(input, CaptureRequest::Default)
 }
 
 /// Runs the generated root parser with the explicit span-capture request.
 ///
-/// `P` selects which generated parser of `T` runs, exactly as for [`parse`].
 #[doc(hidden)]
-pub fn parse_spanned<'input, T, A, P>(
+pub fn parse_spanned<'input, T, A>(
     input: &mut Input<'input, A>,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A, P>,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A>,
 {
-    parse_with_request::<T, A, P>(input, CaptureRequest::Spanned)
+    parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
 
 /// Runs the generated root parser with one generated caller FOLLOW.
 ///
 /// Document framing uses this seam to keep its separator outside the authored
-/// root while preserving ordinary transactional parse behavior. `P` is the
-/// generated grammar's selected default parser marker.
+/// root while preserving ordinary transactional parse behavior.
 #[cfg(feature = "explorer")]
-pub(crate) fn parse_spanned_with_root_follow<'input, T, A, P>(
+pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
     input: &mut Input<'input, A>,
     follow: &FollowSet,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A, P>,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A>,
 {
-    parse_with_request_and_follow::<T, A, P>(input, CaptureRequest::Spanned, follow)
+    parse_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
 }
 
 /// Runs a root parser transactionally under one capture request.
-fn parse_with_request<'input, T, A, P>(
+fn parse_with_request<'input, T, A>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A, P>,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A>,
 {
-    parse_with_request_and_follow::<T, A, P>(input, request, T::root_follow())
+    parse_with_request_and_follow::<T, A>(input, request, T::root_follow())
 }
 
 /// Runs a root parser transactionally under an explicit caller FOLLOW.
-fn parse_with_request_and_follow<'input, T, A, P>(
+fn parse_with_request_and_follow<'input, T, A>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
     follow: &FollowSet,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A, P>,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A>,
 {
     if !std::ptr::eq(input.grammar(), T::grammar()) {
         return Err(ParseError::grammar_mismatch(input));
@@ -1951,6 +1458,10 @@ mod tests {
         lexical_error_kind: LEXICAL_ERROR,
     };
     static WORD_START: FollowSet = FollowSet::from_static(2, &[1 << WORD], &[ExpectedAtomId(0)]);
+    static WORD_TABLES: crate::lr::LrTables = crate::lr::LrTables::new(
+        1, b"BBAA", b"BD", b"BB", b"BACB", b"BA", b"BC", b"BAA", b"BBB", b"BAA", b"BB", b"B",
+        b"BAAAAAA", b"BAA", false,
+    );
 
     #[derive(Clone, Copy)]
     struct TokenView<'view, T> {
@@ -1968,6 +1479,25 @@ mod tests {
         fn value(&self) -> &Self::Value {
             self.value
         }
+    }
+
+    trait WordValue<'input> {
+        fn from_text(text: ContentText<'input>) -> Self;
+    }
+
+    fn reduce_word<'input, T: WordValue<'input>>(
+        rule: u32,
+        reduction: &mut crate::lr::Reduction<'_, '_, 'input, ()>,
+    ) -> Result<(), ParseError> {
+        match rule {
+            1 => {
+                let record = reduction.token();
+                let text = reduction.matched_text(record)?;
+                reduction.push(T::from_text(text));
+            }
+            other => panic!("rule {other} is not reduced by the test table"),
+        }
+        Ok(())
     }
 
     macro_rules! test_token {
@@ -2005,15 +1535,13 @@ mod tests {
                 fn parse(
                     context: &mut ParseContext<'_, 'input, ()>,
                 ) -> Result<ParsedNode<Self>, ParseError> {
-                    let Some(record) = context.peek(0) else {
-                        return Err(context.unexpected(&WORD_START));
-                    };
-                    if record.kind != WORD {
-                        return Err(context.unexpected(&WORD_START));
-                    }
-                    context.advance();
-                    let text = context.matched_text(record)?;
-                    context.finish(Self { text }, record.span)
+                    crate::lr::run(context, &WORD_TABLES, 0, 0, reduce_word::<Self>)
+                }
+            }
+
+            impl<'input> WordValue<'input> for $name<'input> {
+                fn from_text(text: ContentText<'input>) -> Self {
+                    Self { text }
                 }
             }
         };
@@ -2022,40 +1550,6 @@ mod tests {
     test_token!(OffToken, Off);
     test_token!(OptionalToken, Optional);
     test_token!(MandatoryToken, Mandatory);
-
-    #[derive(Debug)]
-    struct FailsAfterOccurrence;
-
-    impl NodeViewFactory for FailsAfterOccurrence {
-        type View<'view> = TokenView<'view, Self>;
-
-        fn view<'view>(&'view self, cursor: ViewCursor<'view>) -> Self::View<'view> {
-            TokenView {
-                value: self,
-                cursor,
-            }
-        }
-    }
-
-    impl<'input> GeneratedParse<'input> for FailsAfterOccurrence {
-        const CAPTURE_POLICY: CapturePolicy = CapturePolicy::Mandatory;
-
-        fn grammar() -> &'static GrammarInfo {
-            &GRAMMAR
-        }
-
-        fn root_follow() -> &'static FollowSet {
-            &WORD_START
-        }
-
-        fn parse(
-            context: &mut ParseContext<'_, 'input, ()>,
-        ) -> Result<ParsedNode<Self>, ParseError> {
-            let record = context.advance().expect("fixture has a first token");
-            let _partial = context.finish(Self, record.span)?;
-            Err(context.unexpected(&WORD_START))
-        }
-    }
 
     fn one_word(source: &str) -> LexResult<'_> {
         LexResult::new(
@@ -2118,12 +1612,11 @@ mod tests {
         assert!(!retained[3].is_captured());
     }
 
-    /// Test-only grammar-local input that names its parser like a generated `Input` does.
+    /// Test-only grammar-local input matching the generated `Input` protocol.
     struct GrammarInput<'input>(Input<'input, ()>);
 
     impl<'input> GeneratedInput for GrammarInput<'input> {
         type Inner = Input<'input, ()>;
-        type Parser = RecursiveDescent;
 
         fn __recursa_inner(&mut self) -> &mut Self::Inner {
             &mut self.0
@@ -2131,10 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_input_selects_the_parse_facade_through_its_parser_marker() {
-        fn assert_marker<I: GeneratedInput<Parser = RecursiveDescent>>() {}
-        assert_marker::<GrammarInput<'_>>();
-
+    fn generated_input_exposes_the_parse_facade() {
         let lexed = one_word("word");
         let mut input = GrammarInput(lexed.input(&GRAMMAR));
         let parsed = <OptionalToken<'_> as Parse<GrammarInput<'_>>>::parse(&mut input).unwrap();
@@ -2148,9 +1638,9 @@ mod tests {
                 let lexed = one_word("word");
                 let mut input = lexed.input(&GRAMMAR);
                 let parsed = if $spanned {
-                    parse_spanned::<$token<'_>, _, _>(&mut input).unwrap()
+                    parse_spanned::<$token<'_>, _>(&mut input).unwrap()
                 } else {
-                    parse::<$token<'_>, _, _>(&mut input).unwrap()
+                    parse::<$token<'_>, _>(&mut input).unwrap()
                 };
                 assert_eq!(parsed.source().is_some(), $captured);
                 assert_eq!(parsed.root().span().is_some(), $captured);
@@ -2179,7 +1669,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse_spanned::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
+        let error = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::InvalidTokenSpan);
         assert_eq!(error.code(), "RCA4103");
@@ -2202,7 +1692,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
         assert_eq!(error.code(), "RCA4001");
@@ -2225,7 +1715,7 @@ mod tests {
         );
         let mut input = lexed.input(&GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
         assert_eq!(error.code(), "RCA4000");
@@ -2237,50 +1727,10 @@ mod tests {
         let lexed = one_word("word");
         let mut input = lexed.input(&OTHER_GRAMMAR);
 
-        let error = parse::<OptionalToken<'_>, _, _>(&mut input).unwrap_err();
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::GrammarMismatch);
         assert_eq!(error.code(), "RCA4104");
         assert_eq!(error.anchor(), Span::new(0, 4).unwrap());
-    }
-
-    #[test]
-    fn pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor() {
-        let lexed = one_word("word");
-        let input = lexed.input(&GRAMMAR);
-
-        let error = ParseError::pratt_ambiguity(&input, &WORD_START);
-
-        assert_eq!(error.kind(), ParseErrorKind::PrattAmbiguity);
-        assert_eq!(error.code(), "RCA4102");
-        assert_eq!(error.span(), Span::new(0, 4).unwrap());
-        assert_eq!(error.anchor(), Span::new(0, 4).unwrap());
-    }
-
-    #[test]
-    fn failed_parses_publish_no_partial_occurrence_provenance() {
-        let lexed = LexResult::new(
-            "a b",
-            vec![
-                TokenRecord {
-                    kind: WORD,
-                    span: Span::new(0, 1).unwrap(),
-                    diagnostic: None,
-                },
-                TokenRecord {
-                    kind: WORD,
-                    span: Span::new(2, 3).unwrap(),
-                    diagnostic: None,
-                },
-            ],
-            None,
-        );
-        let mut input = lexed.input(&GRAMMAR);
-
-        assert!(parse::<FailsAfterOccurrence, _, _>(&mut input).is_err());
-        let parsed = parse_spanned::<OptionalToken<'_>, _, _>(&mut input).unwrap();
-
-        assert_eq!(parsed.root().value().text.as_str(), "a");
-        assert_eq!(parsed.root().span(), Some(Span::new(0, 1).unwrap()));
     }
 }

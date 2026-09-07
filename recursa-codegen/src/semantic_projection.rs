@@ -12,7 +12,6 @@
 
 use std::fmt::Write as _;
 
-use crate::decision_plan::{ExpectedRecipe, FollowRecipe};
 use crate::ir::ContainerCardinality;
 use crate::materialization::{
     AttachmentUnitCorrelation, LoweredGrammar, MaterializedFieldLowering,
@@ -20,31 +19,22 @@ use crate::materialization::{
 use crate::resolution::ResolvedNodeBody;
 use crate::source_analysis::AnalyzedGrammar;
 use crate::source_model::TokenDefinitionKind;
-use crate::{FirstPosition, GrammarDescription, KindSet, PrattPosition, SiteId, TypeShape};
+use crate::{GrammarDescription, KindSet, SiteId, TypeShape};
 
 /// Renders semantic projection in canonical order.
 pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> String {
     // Project only source-independent meaning and sort map-like facts so the artifact remains location and ID neutral.
     let lowered = &analyzed.lowered;
     let grammar = &lowered.grammar;
-    let output = analyzed
-        .analysis
-        .output
-        .as_ref()
-        .expect("an AnalyzedGrammar contains successful semantic analysis output");
-    let reporting_sequences = output
-        .first_by_type()
-        .iter()
-        .all(|facts| facts.sequences.is_empty())
-        .then(|| crate::analysis::materialize_type_sequences(grammar));
+    let atom_kinds = crate::lr::lowering::expand_atoms(grammar);
+    let (first, nullable) = crate::lr::lowering::first_sets(grammar, &atom_kinds);
     let mut rendered = String::from("recursa-semantic-projection-v1\n");
     let build = &lowered.source_modeled.resolved().build_inputs;
     writeln!(
         rendered,
-        "grammar edition={:?} anchor={} max_lookahead={} equivalence={:?}",
+        "grammar edition={:?} anchor={} equivalence={:?}",
         build.discovery.edition,
         build.module_anchor.segments.join("::"),
-        build.max_lookahead,
         build.text_equivalence,
     )
     .expect("writing to a String cannot fail");
@@ -168,127 +158,15 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .collect::<Vec<_>>();
     facts.sort_unstable();
     for (name, index) in facts {
-        let first = &output.first_by_type()[index];
-        let sequences = reporting_sequences
-            .as_ref()
-            .map_or(first.sequences.as_slice(), |sequences| {
-                sequences[index].as_slice()
-            });
-        let extenders = output.extenders_by_type()[index].as_ref().map_or_else(
-            || "-".to_owned(),
-            |facts| render_kinds(facts.kinds(), grammar),
-        );
-        let follow = &output.follow_by_type()[index];
         writeln!(
             rendered,
-            "facts {name} first=[{}] nullable={} extenders=[{}] follow=[{}] first^k={}",
-            render_kinds(first.kinds(), grammar),
-            first.nullable,
-            extenders,
-            render_follow_facts(follow, grammar),
-            render_first_sequences(sequences, grammar),
+            "facts {name} first=[{}] nullable={}",
+            render_kinds(&first[index], grammar),
+            nullable[index],
         )
         .expect("writing to a String cannot fail");
     }
 
-    rendered.push_str("\n[decisions]\n");
-    for dispatch in output.decisions().dispatches() {
-        writeln!(rendered, "{}", dispatch.canonical_facts(grammar))
-            .expect("writing to a String cannot fail");
-    }
-    for (index, recipe) in output
-        .decisions()
-        .follow_recipes_by_site()
-        .iter()
-        .enumerate()
-    {
-        let site = SiteId::new(index as u32);
-        if let Some((attachment, _)) = attachment_outer_for_inner(site, lowered) {
-            if direct_attachment_unit(attachment.outer, lowered).is_some() {
-                continue;
-            }
-            writeln!(
-                rendered,
-                "follow {} {}",
-                projected_site_name(site, lowered),
-                render_follow_recipe(recipe, grammar),
-            )
-            .expect("writing to a String cannot fail");
-            continue;
-        }
-        if let Some(inner) = direct_attachment_unit(site, lowered) {
-            for inner_site in inner {
-                writeln!(
-                    rendered,
-                    "follow {} {}",
-                    projected_site_name(*inner_site, lowered),
-                    render_follow_recipe(
-                        &output.decisions().follow_recipes_by_site()[inner_site.index()],
-                        grammar,
-                    ),
-                )
-                .expect("writing to a String cannot fail");
-            }
-        } else {
-            writeln!(
-                rendered,
-                "follow {} {}",
-                projected_site_name(site, lowered),
-                render_follow_recipe(recipe, grammar),
-            )
-            .expect("writing to a String cannot fail");
-        }
-    }
-    for machine in output.decisions().container_machines() {
-        if let Some((attachment, _)) = attachment_outer_for_inner(machine.site(), lowered) {
-            if direct_attachment_unit(attachment.outer, lowered).is_some() {
-                continue;
-            }
-            render_container_machine(&mut rendered, machine, lowered, true);
-            continue;
-        }
-        if let Some(inner) = direct_attachment_unit(machine.site(), lowered) {
-            for inner_site in inner {
-                let inner_machine = output
-                    .decisions()
-                    .container_machines()
-                    .iter()
-                    .find(|candidate| candidate.site() == *inner_site)
-                    .expect("attachment unit site has a frozen container machine");
-                render_container_machine(&mut rendered, inner_machine, lowered, true);
-            }
-            continue;
-        }
-        render_container_machine(&mut rendered, machine, lowered, false);
-    }
-
-    rendered.push_str("\n[failures]\n");
-    for edge in output.decisions().failure_edges() {
-        if let Some(site) = edge.site()
-            && let Some((attachment, _)) = attachment_outer_for_inner(site, lowered)
-        {
-            if direct_attachment_unit(attachment.outer, lowered).is_none() {
-                render_failure_edge(&mut rendered, edge, lowered, true);
-            }
-            continue;
-        }
-        if let Some(site) = edge.site()
-            && let Some(inner) = direct_attachment_unit(site, lowered)
-        {
-            for inner_site in inner {
-                for inner_edge in output
-                    .decisions()
-                    .failure_edges()
-                    .iter()
-                    .filter(|candidate| candidate.site() == Some(*inner_site))
-                {
-                    render_failure_edge(&mut rendered, inner_edge, lowered, true);
-                }
-            }
-            continue;
-        }
-        render_failure_edge(&mut rendered, edge, lowered, false);
-    }
     rendered
 }
 
@@ -303,113 +181,6 @@ fn projected_field_site(
         return outer;
     };
     attachment.sites[attachment.semantic_index]
-}
-
-/// Appends a container state machine to the canonical semantic projection.
-fn render_container_machine(
-    rendered: &mut String,
-    machine: &crate::decision_plan::ContainerMachine,
-    lowered: &LoweredGrammar,
-    _projected_attachment: bool,
-) {
-    let grammar = &lowered.grammar;
-    writeln!(
-        rendered,
-        "container {} {:?} element=[{}] separator={} separator-first=[{}] trailing={} stop={}",
-        projected_site_name(machine.site(), lowered),
-        machine.operation(),
-        render_positions(machine.element_first(), grammar),
-        machine
-            .separator()
-            .map_or("-", |separator| grammar.types[separator.type_id.index()]
-                .name
-                .as_str()),
-        render_positions(machine.separator_first(), grammar),
-        machine.optional_trailing(),
-        render_follow_recipe(machine.stop(), grammar),
-    )
-    .expect("writing to a String cannot fail");
-    for transition in machine.transitions() {
-        writeln!(
-            rendered,
-            "  transition {:?} --{:?}/{}--> {:?}",
-            transition.from(),
-            transition.action(),
-            render_expected(transition.selector(), grammar),
-            transition.to(),
-        )
-        .expect("writing to a String cannot fail");
-    }
-    if let Some(decision) = machine.optional_viability_decision() {
-        write!(
-            rendered,
-            "  optional-viability depth={} trie=",
-            decision.required_lookahead(),
-        )
-        .expect("writing to a String cannot fail");
-        render_optional_viability_decision_node(rendered, decision.trie(), grammar);
-        rendered.push('\n');
-    }
-}
-
-/// Appends one optional consume-vs-skip trie in canonical semantic order.
-fn render_optional_viability_decision_node(
-    rendered: &mut String,
-    node: &crate::OptionalViabilityDecisionNode,
-    grammar: &crate::GrammarDescription,
-) {
-    rendered.push_str("(terminals=[");
-    for (index, terminal) in node.terminals().iter().enumerate() {
-        if index != 0 {
-            rendered.push(',');
-        }
-        write!(rendered, "{:?}", terminal.action()).expect("writing to a String cannot fail");
-        if terminal.on_caller_follow() {
-            rendered.push_str("@caller-follow");
-        }
-    }
-    rendered.push_str("] edges=[");
-    for (index, edge) in node.edges().iter().enumerate() {
-        if index != 0 {
-            rendered.push(',');
-        }
-        let kinds = edge
-            .position()
-            .kinds()
-            .iter()
-            .map(|kind| grammar.kinds[kind.index()].name.as_str())
-            .collect::<Vec<_>>()
-            .join("|");
-        rendered.push_str(&kinds);
-        if let Some(predicate) = edge.position().text_predicate() {
-            write!(rendered, "@{predicate:?}").expect("writing to a String cannot fail");
-        }
-        rendered.push_str("=>");
-        render_optional_viability_decision_node(rendered, edge.next(), grammar);
-    }
-    rendered.push_str("])");
-}
-
-/// Appends one parser failure edge and its expectation recipe.
-fn render_failure_edge(
-    rendered: &mut String,
-    edge: &crate::decision_plan::FailureEdge,
-    lowered: &LoweredGrammar,
-    _projected_attachment: bool,
-) {
-    let grammar = &lowered.grammar;
-    let site_name = edge
-        .site()
-        .map_or_else(|| "-".to_owned(), |site| projected_site_name(site, lowered));
-    writeln!(
-        rendered,
-        "failure {} {} {:?} expected={}",
-        projected_owner_name(edge.owner(), lowered),
-        site_name,
-        edge.kind(),
-        render_expected(edge.expected(), grammar),
-    )
-    .expect("writing to a String cannot fail");
 }
 
 /// Returns the authored field name, falling back to its positional index.
@@ -622,7 +393,7 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     )
 }
 
-/// Appends a token-kind set in stable identity order.
+/// Renders a token-kind set in stable identity order.
 fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
     let mut names = kinds
         .iter()
@@ -630,98 +401,6 @@ fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
         .collect::<Vec<_>>();
     names.sort_unstable();
     names.join(",")
-}
-
-/// Appends FOLLOW membership and EOF state.
-fn render_follow_facts(follow: &crate::FollowFacts, grammar: &GrammarDescription) -> String {
-    let mut facts = follow
-        .kinds()
-        .iter()
-        .map(|kind| grammar.kinds[kind.index()].name.clone())
-        .collect::<Vec<_>>();
-    facts.sort();
-    if follow.eof() {
-        facts.push("EOF".to_owned());
-    }
-    facts.join(",")
-}
-
-/// Appends FIRST positions and exact-text predicates in canonical order.
-fn render_positions(positions: &[FirstPosition], grammar: &GrammarDescription) -> String {
-    positions
-        .iter()
-        .map(|position| {
-            let kinds = render_kinds(&position.kinds, grammar);
-            position.text_predicate.map_or(kinds.clone(), |predicate| {
-                format!("{kinds}@{:?}", grammar.text_predicates[predicate.index()])
-            })
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-/// Appends bounded FIRST sequences used by predictive dispatch.
-fn render_first_sequences(
-    sequences: &[crate::FirstSequence],
-    grammar: &GrammarDescription,
-) -> String {
-    sequences
-        .iter()
-        .map(|sequence| {
-            let mut rendered = sequence
-                .positions
-                .iter()
-                .map(|position| render_positions(std::slice::from_ref(position), grammar))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if sequence.ends() {
-                rendered.push_str(" -> caller-follow");
-            }
-            if rendered.is_empty() {
-                rendered.push_str("<empty> -> caller-follow");
-            }
-            rendered
-        })
-        .collect::<Vec<_>>()
-        .join(" | ")
-}
-
-/// Appends the static and caller components of a FOLLOW recipe.
-fn render_follow_recipe(recipe: &FollowRecipe, grammar: &GrammarDescription) -> String {
-    match recipe {
-        FollowRecipe::Caller => "caller".to_owned(),
-        FollowRecipe::Static { first } => {
-            format!("static[{}]", render_positions(first, grammar))
-        }
-        FollowRecipe::StaticAndCaller { first } => {
-            format!("static+caller[{}]", render_positions(first, grammar))
-        }
-    }
-}
-
-/// Appends an expected-token recipe used by a failure edge.
-fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> String {
-    match expected {
-        ExpectedRecipe::Static(first) => format!("static[{}]", render_positions(first, grammar)),
-        ExpectedRecipe::Follow(recipe) => render_follow_recipe(recipe, grammar),
-        ExpectedRecipe::ContinueOrStop { continuation, stop } => format!(
-            "continue[{}] or stop[{}]",
-            render_positions(continuation, grammar),
-            render_follow_recipe(stop, grammar),
-        ),
-        ExpectedRecipe::PrattExtendersAtOrAboveMinBp { branches } => format!(
-            "pratt-extenders[{}]",
-            branches
-                .iter()
-                .map(|branch| format!(
-                    "{}:{:?}",
-                    declaration_name(branch.declaration(), grammar),
-                    branch.position().unwrap_or(PrattPosition::Atom),
-                ))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
 }
 
 /// Resolves a normalized declaration identity to its stable projected name.
@@ -824,7 +503,6 @@ fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
     }
     semantic_site_name(site, grammar)
 }
-
 /// Maps a nested semantic index to its expanded source element position.
 fn expanded_site_index(
     siblings: &[SiteId],

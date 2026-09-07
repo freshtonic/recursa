@@ -19,9 +19,9 @@
 //! Three behaviours are decisions of the design document and are pinned by this module's tests:
 //! default reductions are taken before any lookahead is read, so a state that can only reduce
 //! never asks for a token; a root parse accepts greedily, reducing its accept rule as soon as the
-//! lookahead has no shift action while a shiftable lookahead always shifts, which is the boundary
-//! recursive descent produces; and a failed parse restores the input cursor and drops every
-//! partially built value through the value stack's drop stack.
+//! lookahead has no shift action while a shiftable lookahead always shifts; and a failed parse
+//! restores the input cursor and drops every partially built value through the value stack's drop
+//! stack.
 
 use crate::ParseError;
 use crate::input::TokenRecord;
@@ -126,13 +126,13 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
 /// `accept_rule` is the type's start rule `S'(T) -> T`; reducing it ends the parse, with the
 /// single value on the value stack as the root. `reduce` is the generation's dispatcher for
 /// every other rule. On failure the input cursor is restored and every partial value dropped,
-/// and the error names the token the automaton could not act on, which is the token recursive
-/// descent fails on; its expected set is computed by lookahead correction ([`lac`]) from the
-/// state stack as it was before that token triggered any reduction.
+/// and the error names the token the automaton could not act on. Its expected set is computed by
+/// lookahead correction ([`lac`]) from the state stack as it was before that token triggered any
+/// reduction.
 ///
 /// The occurrence stack exists only when the context captures (the request or the root's
-/// policy asks for spans) or the grammar has a mandatory site; otherwise no occurrence work
-/// runs and the root is returned without provenance, as recursive descent returns it.
+/// policy asks for spans) or the grammar has a mandatory site; otherwise no occurrence work runs
+/// and the root is returned without provenance.
 pub fn run<'input, T, A>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
@@ -189,12 +189,11 @@ fn unexpected_here<A>(
 
 /// The automaton loop proper; `run` wraps it with the transactional restore.
 ///
-/// `tail` tracks whether recursive descent would decide the end of what has been parsed so far
-/// by its caller FOLLOW: after the last shift the reductions up to acceptance are exactly the
-/// spine of last symbols, so one flag set by the rules' `tail` table (a one-token enum
-/// alternative or a repetition tail sets it, a Pratt rule clears it) tells at acceptance whether
-/// a following token outside the root FOLLOW is an error, as it is for recursive descent, or
-/// leaves the greedy prefix accepted.
+/// `tail` tracks whether the current reduction spine requires a following token to belong to the
+/// root FOLLOW. After the last shift, reductions up to acceptance are exactly the spine of last
+/// symbols, so one flag set by the rules' `tail` table (a one-token enum alternative or repetition
+/// tail sets it, while a Pratt rule clears it) decides whether an outside token is an error or the
+/// parsed prefix may be accepted.
 fn drive<'input, T, A>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
@@ -653,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn a_capturing_parse_folds_the_occurrence_tree_recursive_descent_would_build() {
+    fn a_capturing_parse_folds_the_generated_occurrence_tree() {
         // With capture requested every reduce sees the stack and the textbook folds build the
         // tree: each rule a node over the rule's extent whose children are its sites, a
         // nonterminal site grouped around the child's node, a terminal site a leaf, and

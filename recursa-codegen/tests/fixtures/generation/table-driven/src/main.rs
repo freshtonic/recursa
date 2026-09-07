@@ -1,7 +1,5 @@
-//! Drives the tracer grammar and prints what the test compares between the two parser styles:
-//! the Debug value of every positive parse with the cursor it leaves, where a root parse stops
-//! when tokens follow it, and for every failing input the error with its expected set, the
-//! restored cursor and the number of heap allocations still live after the error is dropped.
+//! Drives the sole Recursa parser through positive and failing inputs, recording values,
+//! provenance, cursors, expected sets, and allocation cleanup.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -39,14 +37,12 @@ unsafe impl GlobalAlloc for LiveCounting {
 static ALLOCATOR: LiveCounting = LiveCounting;
 
 /// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// builds the Recursa parser's input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -90,8 +86,7 @@ macro_rules! drive {
 
         // Capture off allocates nothing for provenance: a parse with the default request allocates
         // strictly less than the same parse with capture requested, whose occurrence tree is heap
-        // allocated in both styles. (The recursive-descent parser interns FOLLOW sets on first use,
-        // so both counts are taken on warm parses.)
+        // Both counts are taken on warm parses so one-time initialization is excluded.
         let lexed = grammar::lex("print(!!false);");
         let allocations = |spanned: bool| {
             let mut input = $input(&lexed);
@@ -183,8 +178,7 @@ macro_rules! drive {
         ] {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-            // those records by design, so the live count is taken on a warm second parse.
+            // Take the live count after a warm failure so it covers only this parse's values.
             drop(grammar::Statement::parse(&mut input).expect_err("failing input fails"));
             // The expected names are `'static`; the vector that collects them is allocated before
             // the baseline so that it is not counted as a leak of the error.
@@ -205,14 +199,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("table-driven-ok");
 }
 

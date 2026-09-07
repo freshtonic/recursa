@@ -27,9 +27,10 @@ pub(super) struct ReusedGeneration {
 ///
 /// The key covers the compiled generator and protocol, the codegen capabilities, the edition
 /// and Cargo configuration, the values of every environment variable discovery depends on, the
-/// discovered file set, and the active items of every logical module as token text. Token text
-/// carries no comments and no spans, so a comment-only edit keeps the key; a doc comment is an
-/// attribute and changes it.
+/// discovered file set and text, and the active items of every logical module as token text.
+/// Exact source text matters even when Rust meaning does not: generated Node loader anchors
+/// include authored line and column positions, so whitespace or comment edits can require a new
+/// loader map.
 pub(super) fn reuse_key(discovered: &DiscoveredSourceTree, cfg: &CargoCfgSnapshot) -> String {
     let inputs = &discovered.discovery_inputs;
     let mut canonical = format!(
@@ -49,6 +50,14 @@ pub(super) fn reuse_key(discovered: &DiscoveredSourceTree, cfg: &CargoCfgSnapsho
     }
     for file in &inputs.source_files {
         canonical.push_str(&format!(";file={}", file.display()));
+    }
+    for file in &discovered.tree.files {
+        canonical.push_str(&format!(
+            ";source={:?}:{}:{:016x}",
+            file.id,
+            file.path.display(),
+            stable_hash(file.text.as_bytes()),
+        ));
     }
     for inclusion in &discovered.tree.inclusions {
         let items = &inclusion.items;
@@ -84,7 +93,12 @@ pub(super) fn reuse_published(
         return Ok(None);
     }
     let published = out_dir.join("recursa-generations").join(&identity);
-    if !published.join("root.rs").is_file() || !published.join("loader-map").is_file() {
+    if !published.join("root.rs").is_file()
+        || !published.join("loader-map").is_file()
+        || LR_TABLE_ASSET_NAMES
+            .iter()
+            .any(|name| !published.join(name).is_file())
+    {
         return Ok(None);
     }
     let Ok(selector) = fs::read_to_string(entry.join(SELECTOR_FILE)) else {
@@ -164,7 +178,7 @@ mod tests {
         };
     }
     focused_case!(unchanged_sources_reuse_the_published_generation_without_analysis);
-    focused_case!(comment_only_edits_reuse_the_published_generation);
+    focused_case!(comment_only_edits_regenerate_loader_anchors);
     focused_case!(semantic_edits_do_not_reuse_the_published_generation);
     focused_case!(missing_or_incomplete_generations_are_not_reused);
     focused_case!(debug_directory_requests_bypass_reuse);

@@ -1,10 +1,10 @@
 #![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
-//! Binding-power precedence: the [`ConflictResolver`] of the table-driven style.
+//! Binding-power precedence for the Recursa parser's [`ConflictResolver`].
 //!
-//! A shift/reduce conflict between a Pratt rule and an operator token is the decision the
-//! recursive Pratt loop takes with binding powers, so the resolver takes it the same way, in
-//! bison's terms. The reducing rule's precedence is its level: `lbp` for an infix rule, `bp`
+//! A shift/reduce conflict between a Pratt rule and an operator token is resolved with the
+//! grammar's binding-power semantics, expressed in bison's terms. The reducing rule's precedence
+//! is its level: `lbp` for an infix rule, `bp`
 //! for a prefix or postfix rule, and an interleaved shape (`BETWEEN a AND b`) carries the
 //! binding powers of its leading operator. The lookahead's precedence is the level of the infix
 //! or postfix operator it introduces in the reducing rule's nonterminal. The higher precedence
@@ -16,8 +16,8 @@
 //!
 //! Bison declares one precedence per token; here it is read off the rules, and a terminal may
 //! introduce several operators of one nonterminal at different levels (`/` starts both `a / b`
-//! and `a / ANY (...)` in pg-sql, which recursive descent tells apart with a second token). The
-//! resolver then takes the verdict every level agrees on, and leaves the conflict when the
+//! and `a / ANY (...)` in pg-sql). The resolver takes the verdict every level agrees on, and
+//! leaves the conflict when the
 //! levels straddle the rule's, because no one-token decision reproduces the Pratt parse there.
 //!
 //! The token precedences are read per nonterminal, so an exclusion clone (`Expr[excl In]`) and
@@ -58,8 +58,7 @@ pub struct BindingPowerPrecedence {
     /// The levels of `(nonterminal, terminal)`: the `lbp` of each infix and the `bp` of each
     /// postfix rule of `nonterminal` whose tail starts with `terminal`, directly or through the
     /// FIRST set of a leading nonterminal such as an operator admission set. Usually one level;
-    /// several, in ascending order, when the terminal starts operators that recursive descent
-    /// tells apart with a second token.
+    /// several, in ascending order, when the terminal starts operators at distinct levels.
     tokens: BTreeMap<(NonterminalId, TerminalId), Vec<u8>>,
 }
 

@@ -3,7 +3,6 @@
 recursa::grammar! {
     module = crate::arith,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

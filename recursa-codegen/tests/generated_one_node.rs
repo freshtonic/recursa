@@ -163,7 +163,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_26", "protocol_999");
+        .replace("protocol_27", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -234,7 +234,6 @@ fn a_view_variant_and_intrinsic_content_token_value_traits_compile_together() {
         r#"recursa::grammar! {
     module = crate::r#type,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {}
@@ -276,7 +275,6 @@ fn local_visit_traits_traverse_content_tokens_without_changing_token_defaults() 
         r#"recursa::grammar! {
     module = crate::r#type,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {}
@@ -490,7 +488,6 @@ fn generated_pretty_keeps_content_repetition_separators_and_closing_delimiters_t
     module = crate::r#type,
     derives(Pretty),
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {
@@ -621,7 +618,6 @@ fn generated_pretty_honors_bilateral_repetition_separator_spacing() {
     module = crate::r#type,
     derives(Pretty),
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

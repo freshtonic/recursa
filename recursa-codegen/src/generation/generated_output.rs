@@ -177,11 +177,6 @@ mod tests {
     fn checked_rendering_retains_invalid_rust_diagnostics() {
         test_support::checked_rendering_retains_invalid_rust_diagnostics();
     }
-
-    #[test]
-    fn generated_expectations_use_one_grammar_wide_pool() {
-        test_support::generated_expectations_use_one_grammar_wide_pool();
-    }
 }
 
 /// Folds one canonical spelling into the byte key used by the generated perfect-hash map.
@@ -309,6 +304,8 @@ fn render_word_classifiers(
 pub(super) struct RenderedGeneration {
     /// Structural root source shared by every Node loader.
     pub(super) root: String,
+    /// Non-Rust binary payloads referenced by the structural root.
+    pub(super) assets: Vec<(String, Vec<u8>)>,
     /// Node filenames and sources in parse-plan order.
     pub(super) nodes: Vec<(String, String)>,
     /// Loader anchors positionally aligned with [`Self::nodes`].
@@ -362,20 +359,22 @@ impl RenderingPlan for EmissionPlan {
     }
 }
 
-/// Renders every logical file of a recursive-descent generation without performing filesystem
-/// publication.
-pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
-    render_generation(plan, &ParserSet::recursive_descent())
-}
-
-/// Renders every logical file of a generation with declared parsers: the LALR(1) analysis runs
-/// first for a table-driven parser and any conflict fails the generation.
+/// Renders every logical file of a generation after constructing the LALR(1) parser.
 pub(super) fn render_declared(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<RenderedGeneration, String> {
     let parsers = ParserSet::declared(plan.emission_plan(), lowered)?;
     render_generation(plan, &parsers)
+}
+
+#[cfg(test)]
+/// Renders a unit-test plan with the LR lowering captured when the plan was joined.
+pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
+    let identity = &plan.emission_plan().identity;
+    let lowered = test_lowered(identity)
+        .ok_or_else(|| format!("unit-test LR lowering is missing for generation {identity}"))?;
+    render_declared(plan, &lowered)
 }
 
 /// Renders every logical file without performing filesystem publication; `parsers` names the
@@ -394,23 +393,16 @@ fn render_generation(
     let root_tokens = apply_generated_lint_boundary(root_tokens, "root")
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
     let root = root_tokens.to_string();
-    let mut instrumentation = RenderInstrumentation::default();
     let mut nodes = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let name = format!("node-{index}.rs");
-        let tokens = render_node(plan, node, index, &mut instrumentation, parsers)?;
+        let tokens = render_node(plan, node, index, parsers)?;
         rendering
             .validate_rendered_rust(&tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         let tokens = apply_generated_lint_boundary(tokens, &format!("node_{index}"))
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         nodes.push((name, tokens.to_string()));
-    }
-    if parsers.renders_recursive_descent()
-        && instrumentation.frozen_dispatch_nodes_rendered
-            != plan.instrumentation.frozen_dispatch_nodes_consumed
-    {
-        return Err("the renderer did not consume exactly the frozen dispatch trie".to_owned());
     }
     let selected_root = format!("/recursa-generations/{}/root.rs", plan.identity);
     let selector_tokens = quote! {
@@ -427,6 +419,10 @@ fn render_generation(
     let diagram_plan = None;
     Ok(RenderedGeneration {
         root,
+        assets: parsers
+            .table_driven()
+            .map(TableDrivenRendering::assets)
+            .unwrap_or_default(),
         nodes,
         node_anchors: plan
             .nodes
@@ -439,13 +435,10 @@ fn render_generation(
     })
 }
 
-/// Renders one grammar-local input newtype: the struct under the `doc` attribute tokens, its
-/// `GeneratedInput` impl naming the parser it selects, and its accessors. The root `Input` and
-/// every extra parser's `Input` are this shape.
+/// Renders the grammar-local input newtype and its private cursor accessor.
 pub(super) fn render_input_newtype(
     plan: &EmissionPlan,
     doc: &proc_macro2::TokenStream,
-    marker: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let accessors = input_accessors();
@@ -457,7 +450,6 @@ pub(super) fn render_input_newtype(
 
         impl<'input, A> #facade::__private::GeneratedInput for Input<'input, A> {
             type Inner = #facade::__private::Input<'input, A>;
-            type Parser = #marker;
             fn __recursa_inner(&mut self) -> &mut Self::Inner {
                 &mut self.inner
             }
@@ -1078,7 +1070,6 @@ pub(super) fn render_root(
     plan: &EmissionPlan,
     parsers: &ParserSet,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let parser_marker = parsers.default_parser().marker(plan);
     let lr_items = parsers
         .default_parser()
         .tables()
@@ -1090,7 +1081,6 @@ pub(super) fn render_root(
         &quote! {
             /// A cursor bound to this generated grammar's token identities.
         },
-        &parser_marker,
     );
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -1157,30 +1147,9 @@ pub(super) fn render_root(
         render_word_classifiers(&plan.word_classifiers, word_candidate_kinds, facade);
     let lexical_machine = render_lexical_machine(plan, facade)
         .expect("the emission plan carries a renderable lexical machine");
-    // Recursive descent selects and transports frozen FOLLOW sets. The LALR
-    // runtime computes its error expectations from its own tables and needs
-    // only the facade's width-independent empty root FOLLOW, so a
-    // table-driven-only generation has no use for this grammar-wide pool.
-    let recursive_expectations = parsers.renders_recursive_descent().then(|| {
-        let empty_words = vec![0_u64; kind_count.div_ceil(64)];
-        let expected_set_count = plan.expected_sets.values().len();
-        let expected_sets = plan
-            .expected_sets
-            .values()
-            .iter()
-            .map(|expected| render_expected_value(expected, plan, facade));
-        quote! {
-            static __RECURSA_EMPTY_FOLLOW: #facade::__private::FollowSet =
-                #facade::__private::follow_set(
-                    #kind_count as u32,
-                    &[#(#empty_words),*],
-                    &[],
-                );
-            static __RECURSA_EXPECTED_SETS: [#facade::__private::FollowSet; #expected_set_count] = [
-                #(#expected_sets),*
-            ];
-        }
-    });
+    // The LR runtime computes error expectations from its tables and needs only
+    // the facade's width-independent empty root FOLLOW, so generated output has
+    // no use for a grammar-wide FOLLOW pool.
     let token_items = plan
         .tokens
         .iter()
@@ -1315,7 +1284,6 @@ pub(super) fn render_root(
                 &[#(#atom_names),*],
                 #lexical_error_kind,
             );
-        #recursive_expectations
         #framing_root
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1837,10 +1805,8 @@ pub(super) fn render_node(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     node_index: usize,
-    instrumentation: &mut RenderInstrumentation,
     parsers: &ParserSet,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let parser_argument = parsers.default_parser().marker_argument(plan);
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
@@ -1861,60 +1827,22 @@ pub(super) fn render_node(
     } else {
         quote!(<#input_lifetime, A>)
     };
-    // With extra parsers declared, the inherent entry points accept every input type of the
-    // generation, so `Foo::parse(&mut parsers::lr::input(&lexed))` selects the `lr` parser
-    // exactly as `Foo::parse(&mut lexed.input())` selects the default one; the blanket
-    // `Parse<I>` facade does the same selection. A single-parser generation keeps the entry
-    // points over its root `Input` alone, spelled exactly as before.
-    let entry_points = if parsers.extras().next().is_some() {
-        let input_generics = if node_has_lifetime {
-            quote!(<A, I>)
-        } else {
-            quote!(<#input_lifetime, A, I>)
-        };
-        let generated_input = quote!(#facade::__private::GeneratedInput);
-        quote! {
-            pub fn parse #input_generics(
-                input: &mut I,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                I: #generated_input<Inner = #facade::__private::Input<#input_lifetime, A>>,
-                Self: #facade::__private::Parse<#input_lifetime, A, <I as #generated_input>::Parser>,
-            {
-                #facade::__private::parse::<Self, A, <I as #generated_input>::Parser>(
-                    input.__recursa_inner(),
-                )
-            }
-            pub fn parse_spanned #input_generics(
-                input: &mut I,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                I: #generated_input<Inner = #facade::__private::Input<#input_lifetime, A>>,
-                Self: #facade::__private::Parse<#input_lifetime, A, <I as #generated_input>::Parser>,
-            {
-                #facade::__private::parse_spanned::<Self, A, <I as #generated_input>::Parser>(
-                    input.__recursa_inner(),
-                )
-            }
+    let entry_points = quote! {
+        pub fn parse #inherent_method_generics(
+            input: &mut #module_anchor::Input<#input_lifetime, A>,
+        ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+        where
+            Self: #facade::__private::Parse<#input_lifetime, A>,
+        {
+            #facade::__private::parse(&mut input.inner)
         }
-    } else {
-        quote! {
-            pub fn parse #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
-            {
-                #facade::__private::parse(&mut input.inner)
-            }
-            pub fn parse_spanned #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-            where
-                Self: #facade::__private::Parse<#input_lifetime, A #parser_argument>,
-            {
-                #facade::__private::parse_spanned(&mut input.inner)
-            }
+        pub fn parse_spanned #inherent_method_generics(
+            input: &mut #module_anchor::Input<#input_lifetime, A>,
+        ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+        where
+            Self: #facade::__private::Parse<#input_lifetime, A>,
+        {
+            #facade::__private::parse_spanned(&mut input.inner)
         }
     };
     let metadata = render_metadata(plan, node, node_index);
@@ -1924,14 +1852,25 @@ pub(super) fn render_node(
         .parse_applications
         .iter()
         .flat_map(|application| parsers.iter().map(move |parser| (application, parser)))
-        .map(|(application, parser)| match parser.tables() {
-            Some(lr) => render_node_application(plan, node, application, lr, parser),
-            None => Ok(render_node_parse_application(
+        .map(|(application, parser)| {
+            // A closed application can borrow the parser input through one of its
+            // type arguments even when the node family itself only declares type
+            // parameters.  For example, `Atom<T>` is materialized as
+            // `Atom<IdentAtom<'__recursa_input>>`.  The LR reducer helper is an
+            // inherent impl on that concrete application, so its impl must bind
+            // the materialization lifetime.  Keep the authored node generics
+            // unchanged for every other generated capability, and add the
+            // synthetic lifetime only to the parse renderer's private view.
+            let parse_node = parse_node_with_application_lifetime(node, &application.ty);
+            render_node_application(
                 plan,
-                node,
+                &parse_node,
                 application,
-                instrumentation,
-            )),
+                parser
+                    .tables()
+                    .expect("the sole parser always has LR tables"),
+                parser,
+            )
         })
         .collect::<Result<Vec<_>, String>>()?;
     let token_bindings = if plan.nodes[..node_index]
@@ -2005,4 +1944,46 @@ pub(super) fn render_node(
             #entry_points
         }
     })
+}
+
+/// Gives the table-driven renderer a lifetime parameter when a closed application
+/// mentions the generated input lifetime through a nested type argument.
+///
+/// This is deliberately a rendering-only adjustment: `NodeParsePlan::generics`
+/// describes the authored declaration and must not acquire a parameter that the
+/// source Node does not declare.  The adjustment is needed for inherent reducer
+/// impls, whose self type is the *materialized application* rather than the open
+/// node family.
+fn parse_node_with_application_lifetime(
+    node: &NodeParsePlan,
+    application_ty: &Type,
+) -> NodeParsePlan {
+    if node.generics.lifetimes().next().is_some() {
+        return node.clone();
+    }
+
+    struct InputLifetimeUse {
+        found: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for InputLifetimeUse {
+        fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+            if lifetime.ident == "__recursa_input" {
+                self.found = true;
+            }
+        }
+    }
+
+    let mut input_lifetime = InputLifetimeUse { found: false };
+    syn::visit::Visit::visit_type(&mut input_lifetime, application_ty);
+    if !input_lifetime.found {
+        return node.clone();
+    }
+
+    let mut parse_node = node.clone();
+    parse_node
+        .generics
+        .params
+        .insert(0, syn::parse_quote!('__recursa_input));
+    parse_node
 }

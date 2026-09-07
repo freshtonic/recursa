@@ -40,7 +40,6 @@ the source.
 | --- | --- |
 | `RCA4100` | `UnexpectedToken` |
 | `RCA4101` | `UnexpectedEof` |
-| `RCA4102` | `PrattAmbiguity` |
 | `RCA4103` | `InvalidTokenSpan` |
 | `RCA4104` | `GrammarMismatch` |
 

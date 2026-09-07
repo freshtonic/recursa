@@ -1640,6 +1640,26 @@ pub(super) fn explorer_variant_pattern_and_bindings(
     (pattern, bindings)
 }
 
+/// Matches a variant only to select its static Explorer schema.
+///
+/// Unlike [`explorer_variant_pattern_and_bindings`], this deliberately does
+/// not bind semantic fields: the occurrence node only needs the selected
+/// variant schema, while the field accessor owns the bindings.  Keeping that
+/// match binding-free matters for large enum-heavy grammars, where emitting
+/// the same unused bindings in both methods substantially inflates the
+/// generated crate.
+fn explorer_variant_schema_pattern(
+    node_ident: &Ident,
+    variant: &VariantParsePlan,
+) -> proc_macro2::TokenStream {
+    let variant_ident = &variant.ident;
+    match variant.style {
+        ResolvedFieldStyle::Named => quote!(#node_ident::#variant_ident { .. }),
+        ResolvedFieldStyle::Unnamed => quote!(#node_ident::#variant_ident(..)),
+        ResolvedFieldStyle::Unit => quote!(#node_ident::#variant_ident),
+    }
+}
+
 /// Renders occurrence access and eligible root adapters for one Node.
 pub(super) fn render_node_explorer(
     plan: &EmissionPlan,
@@ -1714,8 +1734,9 @@ pub(super) fn render_node_application_explorer(
                     .iter()
                     .find(|variant| Some(variant.resolved_variant) == explorer.variant)
                     .expect("typed explorer enum variant retains its parse shape");
-                let (pattern, bindings) =
+                let (field_pattern, bindings) =
                     explorer_variant_pattern_and_bindings(node_ident, variant);
+                let schema_pattern = explorer_variant_schema_pattern(node_ident, variant);
                 let bindings = bindings
                     .into_iter()
                     .map(|binding| binding.map(|binding| quote!(#binding)))
@@ -1723,11 +1744,19 @@ pub(super) fn render_node_application_explorer(
                 let active = explorer_schema_static(node_index, Some(variant_index));
                 let field =
                     render_explorer_variant_field(facade, explorer, &variant.elements, &bindings);
-                node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
-                field_arms.push(quote!(#pattern => #field,));
+                node_arms.push(quote!(#schema_pattern => Some(&#module_anchor::#active),));
+                field_arms.push(quote!(#field_pattern => #field,));
             }
             (
-                quote!(match self { #(#node_arms)* }),
+                quote!({
+                    let active = match self { #(#node_arms)* };
+                    #facade::__private::explorer_node(
+                        self,
+                        &#module_anchor::#base,
+                        active,
+                        cursor,
+                    )
+                }),
                 quote!(match self { #(#field_arms)* }),
             )
         }
@@ -1753,8 +1782,9 @@ pub(super) fn render_node_application_explorer(
                     variant.elements.insert(0, branch.lhs.clone());
                     variant
                 };
-                let (pattern, bindings) =
+                let (field_pattern, bindings) =
                     explorer_variant_pattern_and_bindings(node_ident, &variant);
+                let schema_pattern = explorer_variant_schema_pattern(node_ident, &variant);
                 let bindings = bindings
                     .into_iter()
                     .map(|binding| binding.map(|binding| quote!(#binding)))
@@ -1762,11 +1792,19 @@ pub(super) fn render_node_application_explorer(
                 let active = explorer_schema_static(node_index, Some(variant_index));
                 let field =
                     render_explorer_variant_field(facade, explorer, &variant.elements, &bindings);
-                node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
-                field_arms.push(quote!(#pattern => #field,));
+                node_arms.push(quote!(#schema_pattern => Some(&#module_anchor::#active),));
+                field_arms.push(quote!(#field_pattern => #field,));
             }
             (
-                quote!(match self { #(#node_arms)* }),
+                quote!({
+                    let active = match self { #(#node_arms)* };
+                    #facade::__private::explorer_node(
+                        self,
+                        &#module_anchor::#base,
+                        active,
+                        cursor,
+                    )
+                }),
                 quote!(match self { #(#field_arms)* }),
             )
         }
@@ -1778,7 +1816,6 @@ pub(super) fn render_node_application_explorer(
         .iter()
         .find(|root| root.node == node.node && root.application == application.application);
     let entry = root.map(|root| {
-        let default_parser = default_parser_marker(plan);
         let root_schema = explorer_schema_static(node_index, None);
         let grammar_tables = explorer_grammar_tables_static();
         let explorer_lex = explorer_lex_function();
@@ -1819,7 +1856,7 @@ pub(super) fn render_node_application_explorer(
                         #facade::framing::CompleteFrame<'__recursa_input, Self>,
                         #facade::framing::FrameFailure<'__recursa_input>,
                     > {
-                        #facade::__private::frame_document::<Self, #default_parser>(
+                        #facade::__private::frame_document::<Self>(
                             source,
                             #module_anchor::__recursa_lexical::__recursa_frame_lex,
                             &#module_anchor::__RECURSA_FRAMING_PLAN,
@@ -1851,7 +1888,6 @@ pub(super) fn render_node_application_explorer(
             }
 
             unsafe impl #facade::__private::ExplorerRootFamily for #static_ty {
-                type Parser = #default_parser;
                 type Root<'__recursa_input> = #ty;
             }
 

@@ -1,7 +1,7 @@
 //! Lookahead correction: the expected set of a table-driven parse error.
 //!
-//! LALR(1) with default reductions detects an error at the same token as recursive descent, but
-//! only after the reductions that token triggered, so the failing state's row names fewer
+//! LALR(1) with default reductions may detect an error only after reductions triggered by the
+//! failing token, so the final state's row can name fewer
 //! continuations than were possible: after `( id + id` the end of input reduces `T -> F` and
 //! `E -> E + T` before failing in `F -> ( E . )`, whose row is `+` and `)`, although `*` could
 //! have continued `T -> T . * F`. Bison's lookahead correction (`parse.lac`) answers this by
@@ -14,9 +14,8 @@
 //! read (default reductions taken without a lookahead do not depend on the token, so replaying
 //! them is exact), then simulates every terminal of the grammar on a scratch copy of that stack
 //! until it is shifted, accepted or rejected. The terminals that are shifted or accepted form
-//! the expected set; each is named by the canonical atom of its token kind, the vocabulary
-//! recursive descent's expected sets use, so [`ParseError::expected`](crate::ParseError::expected)
-//! renders the same names under both styles. The end marker is not explored: it has no atom
+//! the expected set; each is named by the canonical atom of its token kind, so
+//! [`ParseError::expected`](crate::ParseError::expected) renders stable names. The end marker is not explored: it has no atom
 //! and no kind bit, so nothing could report it. A terminal whose exploration reaches the accept
 //! rule counts as a continuation, since the parse would have ended without an error on it.
 
@@ -45,7 +44,7 @@ pub struct ErrorSite {
     /// Whether reaching the accept rule counts as continuing the parse. It does for an error
     /// the automaton raised, where the accepted prefix would have ended the parse before the
     /// token; it does not for a token rejected after acceptance, whose expected set is what
-    /// could have been shifted instead, as recursive descent's dispatch names it.
+    /// could have been shifted instead.
     pub accepts: bool,
 }
 

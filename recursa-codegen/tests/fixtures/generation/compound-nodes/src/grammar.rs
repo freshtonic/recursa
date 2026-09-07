@@ -2,7 +2,6 @@ recursa::grammar! {
     module = crate::grammar,
     derives(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize),
     keyword_matching = ascii_insensitive,
-    max_lookahead = 3,
 }
 
 recursa::tokens! {

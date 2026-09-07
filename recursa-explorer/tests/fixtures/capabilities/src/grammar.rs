@@ -3,7 +3,6 @@ recursa::grammar! {
     diagrams,
     derives(Debug, Clone, Pretty, Visit, Arbitrary),
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

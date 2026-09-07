@@ -1,11 +1,9 @@
-//! FOLLOW pollution (#125) under both parser styles in one generation. The fixture's grammar
+//! FOLLOW pollution (#125) through the sole LR parser. The fixture's grammar
 //! holds the two shapes the ticket names: a shared `opt(X)` helper whose merged lookaheads are a
 //! reduce/reduce conflict that a per-site copy removes, and two token wrappers over one pattern
-//! that compete on the end marker and are settled by declaration order. The `rd` and `lr`
-//! parsers print the same values, cursors, provenance and Pretty renderings for every input,
-//! and the same failing token, span and kind for every error; expected sets may differ
-//! (`docs/table-driven-parsing.md`, section 6). The one documented difference is the bare
-//! `FuncName` root at the end of input, where the declaration-order rule reaches its limit.
+//! that compete on the end marker and are settled by declaration order. The documented limit is
+//! the bare `FuncName` root at the end of input, where the declaration-order rule picks the
+//! wrapper that cannot complete that root.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,19 +14,15 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/generation/follow-pollution";
 
 #[test]
-fn both_parsers_agree_on_every_input_but_the_documented_wrapper_limit() {
+fn sole_lr_parser_handles_follow_pollution_and_reports_the_documented_wrapper_limit() {
     let package = scaffold_fixture();
-    let rd = run_bin(&package, "recursa-generated-follow-pollution");
-    assert_success(&rd);
-    let rd_stdout = String::from_utf8(rd.stdout).unwrap();
-    assert!(rd_stdout.ends_with("rd-ok\n"), "{rd_stdout}");
-    let lr = run_bin(&package, "lr");
-    assert_success(&lr);
-    let lr_stdout = String::from_utf8(lr.stdout).unwrap();
-    assert!(lr_stdout.ends_with("lr-ok\n"), "{lr_stdout}");
+    let output = run_bin(&package, "recursa-generated-follow-pollution");
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("follow-pollution-ok\n"), "{stdout}");
 
-    // The shared-helper shape: every sentence parses to its own derivation under both styles,
-    // so the helper copy the construction made changed nothing observable.
+    // The shared-helper shape: every sentence parses to its own derivation after the construction
+    // copies the helper by use-site class.
     for line in [
         "ok Statement \"a 1 c\" => A(A { x: Some(",
         "ok Statement \"a 1 d\" => A2(A2 { y: Y { x: X {",
@@ -42,57 +36,26 @@ fn both_parsers_agree_on_every_input_but_the_documented_wrapper_limit() {
         "ok Expr \"foo()\" => Call(FuncCall { name: TypeFunctionName {",
         "ok FuncName \"foo.bar\" => Qualified(QualifiedName { first: ColId {",
     ] {
-        assert!(rd_stdout.contains(line), "rd lacks {line}\n{rd_stdout}");
-        assert!(lr_stdout.contains(line), "lr lacks {line}\n{lr_stdout}");
+        assert!(stdout.contains(line), "parser lacks {line}\n{stdout}");
     }
 
     // The limit of the declaration-order rule: `FuncName` can end only in the later-declared
-    // wrapper, so at the end of input the `lr` parser reduces `ColIdText`, looks for `.` and
-    // reports an unexpected end where `rd` accepts `Plain`.
+    // wrapper, so at the end of input the parser reduces `ColIdText`, looks for `.`, and reports
+    // an unexpected end.
     assert!(
-        rd_stdout.contains("ok FuncName \"foo\" => Plain(TypeFunctionName {"),
-        "{rd_stdout}"
-    );
-    assert!(
-        lr_stdout.contains("err FuncName \"foo\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 3, end: 3 } found=None cursor=0 expected=["),
-        "{lr_stdout}"
+        stdout.contains("err FuncName \"foo\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 3, end: 3 } found=None cursor=0 expected=["),
+        "{stdout}"
     );
 
-    // Everything else is equal line for line once expected sets are set aside.
-    let rd_lines = comparable_lines(&rd_stdout, "rd-ok");
-    let lr_lines = comparable_lines(&lr_stdout, "lr-ok");
-    assert_eq!(lr_lines, rd_lines);
     assert!(
-        rd_lines
-            .iter()
-            .any(|line| line.starts_with("prov Statement \"a 1 c\" => captured")),
-        "{rd_lines:?}"
+        stdout.contains("prov Statement \"a 1 c\" => captured"),
+        "{stdout}"
     );
     assert!(
-        rd_lines.iter().any(
-            |line| line.starts_with("err Statement \"a 1\" => code=RCA4101 kind=UnexpectedEof")
-        ),
-        "{rd_lines:?}"
+        stdout.contains("err Statement \"a 1\" => code=RCA4101 kind=UnexpectedEof"),
+        "{stdout}"
     );
-    assert!(
-        rd_lines
-            .iter()
-            .any(|line| line.starts_with("err Statement \"b 1 x\" => ")),
-        "{rd_lines:?}"
-    );
-}
-
-/// Every printed line except the parser's own final marker and the documented `FuncName`
-/// difference, with expected sets removed from error lines.
-fn comparable_lines(stdout: &str, marker: &str) -> Vec<String> {
-    stdout
-        .lines()
-        .filter(|line| *line != marker && !line.contains(" FuncName \"foo\" "))
-        .map(|line| match line.find(" expected=") {
-            Some(index) if line.starts_with("err ") => line[..index].to_owned(),
-            _ => line.to_owned(),
-        })
-        .collect()
+    assert!(stdout.contains("err Statement \"b 1 x\" => "), "{stdout}");
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -108,7 +71,6 @@ fn scaffold_fixture() -> TempDir {
     copy(&fixture, package.path(), "src/lib.rs");
     copy(&fixture, package.path(), "src/grammar.rs");
     copy(&fixture, package.path(), "src/main.rs");
-    copy(&fixture, package.path(), "src/bin/lr.rs");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
         .expect("read generated grammar fixture manifest")

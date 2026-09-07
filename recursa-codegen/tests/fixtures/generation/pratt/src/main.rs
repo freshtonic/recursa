@@ -141,7 +141,7 @@ fn assert_pretty_multi_token_operators() {
     assert_eq!(formatted, "a LIKE b ESCAPE marker");
     assert_eq!(parse(&formatted).render(), formatted);
     match parse(&formatted).into_ast() {
-        grammar::Expr::Like(_, _, Some(escape)) => {
+        grammar::Expr::Like(_, _, grammar::LikeSuffix::Escaped(escape)) => {
             assert_eq!(escape.value.value.text(), "marker");
         }
         _ => panic!("optional non-recursive Pratt attachment must be preserved"),
@@ -150,7 +150,7 @@ fn assert_pretty_multi_token_operators() {
     assert_eq!(formatted, "a LIKE b");
     assert!(matches!(
         parse(&formatted).into_ast(),
-        grammar::Expr::Like(_, _, None)
+        grammar::Expr::Like(_, _, grammar::LikeSuffix::Plain)
     ));
 
     let formatted = parse("NEVER EXISTS a").render();
@@ -332,7 +332,21 @@ fn main() {
     let error = expect_error(grammar::Expr::parse(&mut input));
     assert_eq!(error.kind(), ParseErrorKind::UnexpectedEof);
     assert_eq!(error.span(), recursa::Span::new(6, 6).unwrap());
-    assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:]"]);
+    assert_eq!(
+        error.expected().collect::<Vec<_>>(),
+        [
+            "fixed:IS",
+            "fixed:HAS",
+            "fixed:LIKE",
+            "fixed:+",
+            "fixed:*",
+            "fixed:^",
+            "fixed:!",
+            "fixed:::",
+            "fixed:]",
+            "content:\"[~@]+\":priority=None",
+        ]
+    );
 
     let wrong_rhs = grammar::lex("1 + ]");
     let mut input = wrong_rhs.input();
@@ -349,46 +363,6 @@ fn main() {
             "fixed:[",
             "content:\"[0-9]+\":priority=None",
             "content:\"[A-Za-z_][A-Za-z0-9_]*\":priority=None",
-        ]
-    );
-
-    let ambiguous = grammar::lex("1 + 2");
-    let mut input = ambiguous.input();
-    let error = expect_error(grammar::Followed::parse(&mut input));
-    assert_eq!(error.kind(), ParseErrorKind::PrattAmbiguity);
-    assert_eq!(error.span(), recursa::Span::new(2, 3).unwrap());
-    assert_eq!(error.found(), Some("fixed:+"));
-    assert_eq!(
-        error.expected().collect::<Vec<_>>(),
-        [
-            "fixed:IS",
-            "fixed:HAS",
-            "fixed:LIKE",
-            "fixed:+",
-            "fixed:*",
-            "fixed:^",
-            "fixed:!",
-            "fixed:::",
-            "content:\"[~@]+\":priority=None",
-        ],
-        "the ambiguity guard at min_bp 0 keeps every extender expectation"
-    );
-
-    let nested_ambiguous = grammar::lex("1 + 2 * 3");
-    let mut input = nested_ambiguous.input();
-    let error = expect_error(grammar::NestedFollowed::parse(&mut input));
-    assert_eq!(error.kind(), ParseErrorKind::PrattAmbiguity);
-    assert_eq!(error.span(), recursa::Span::new(6, 7).unwrap());
-    assert_eq!(error.found(), Some("fixed:*"));
-    assert_eq!(
-        error.expected().collect::<Vec<_>>(),
-        [
-            "fixed:HAS",
-            "fixed:*",
-            "fixed:^",
-            "fixed:!",
-            "fixed:::",
-            "content:\"[~@]+\":priority=None",
         ]
     );
 

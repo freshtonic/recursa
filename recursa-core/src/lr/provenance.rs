@@ -1,27 +1,22 @@
 //! The occurrence stack of the table-driven parser: provenance folded on reduce (#118).
 //!
 //! When a parse captures provenance, every state-stack frame has one entry here, pushed on
-//! shift with the token's span and folded on reduce into the occurrence recursive descent
-//! builds for the same rule, so that `parse_spanned` yields the same tree under both parser
-//! styles. When capture is off the stack does not exist, and the loop in [`super`] never
-//! touches it.
+//! shift with the token's span and folded on reduce into the occurrence described by the rule's
+//! generated provenance data. When capture is off the stack does not exist, and the loop in
+//! [`super`] never touches it.
 //!
 //! The fold of a rule is data, not code: a [`RuleFold`] decoded from the packed `folds` table
 //! codegen renders from the same site forms its reduce actions come from. A construction rule
-//! folds to one node whose children are its sites in grammar-element order; each site kind
-//! names the shape the recursive-descent helper for that element produces (`parse_fixed`,
-//! `parse_direct_child`, the optional and presence renderers, `finish_repeated_group`). Helper
-//! rules (`opt(...)`, `presence(...)`, `list(...)`) fold to the occurrence their inlined form
-//! would have produced, so a site that delegates to a helper passes the helper's entry through.
-//! Every span is computed as `ParseContext::consumed_span_from` computes it, including the
-//! zero-width extent recursive descent records for an element that consumed no token, and every
-//! occurrence goes through the same collector, so compaction and validation are identical.
+//! folds to one node whose children are its sites in grammar-element order; each site kind names
+//! the leaf, group, presence, repetition, or pass-through shape for that element. Helper rules
+//! (`opt(...)`, `presence(...)`, `list(...)`) fold to the occurrence their inlined form denotes,
+//! so a site that delegates to a helper passes the helper's entry through. Every occurrence goes
+//! through the same collector, so compaction and span validation stay centralized.
 //!
-//! A site's capture policy is resolved as the generated recursive-descent code resolves it: an
-//! explicit policy stands, and an inherited one is the parse context's policy, which for a
-//! table-driven root is the entry type's `CAPTURE_POLICY`. A grammar whose nodes override the
-//! policy below the root is rejected at generation time (`RCA0406`), because a child rule is
-//! reduced before the site that would pass the override down is known.
+//! A site's explicit capture policy stands, while an inherited policy uses the root entry type's
+//! `CAPTURE_POLICY`. A grammar whose nodes override the policy below the root is rejected at
+//! generation time (`RCA0406`), because a child rule is reduced before the consuming site is
+//! known.
 
 use std::ops::Range;
 
@@ -33,8 +28,7 @@ use crate::{ParseError, Span};
 /// The capture policy a fold applies to one occurrence, as the packed table encodes it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FoldPolicy {
-    /// The parse context's policy, which is what `context.capture_policy()` reads in generated
-    /// recursive-descent code.
+    /// The parse context's root policy.
     Inherited,
     /// [`CapturePolicy::Off`].
     Off,
@@ -175,8 +169,8 @@ pub struct FoldTable {
     pub rules: Vec<RuleFold>,
     /// The sites of every node fold, contiguous per rule.
     pub sites: Vec<SiteFold>,
-    /// Whether any fold carries a mandatory policy, in which case recursive descent retains
-    /// provenance even when the root's policy does not capture, and so must the stack.
+    /// Whether any fold carries a mandatory policy, in which case the stack retains provenance
+    /// even when the root's policy does not capture.
     pub mandatory: bool,
 }
 
@@ -227,7 +221,7 @@ enum Payload {
     Folded(Occurrence),
     /// A list helper: the items and separators gathered so far, not yet a group.
     List {
-        /// The item occurrences, accumulated as the recursive-descent loop accumulates them.
+        /// Item occurrences accumulated in source order.
         items: Occurrences,
         /// The separators shifted between and after the items.
         separators: Vec<RepetitionSeparatorOccurrence>,

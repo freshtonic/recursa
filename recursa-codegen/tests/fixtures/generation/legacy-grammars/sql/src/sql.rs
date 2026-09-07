@@ -3,7 +3,6 @@
 recursa::grammar! {
     module = crate::sql,
     keyword_matching = sensitive,
-    max_lookahead = 2,
 }
 
 recursa::tokens! {

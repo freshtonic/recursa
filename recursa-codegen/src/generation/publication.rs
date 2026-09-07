@@ -104,6 +104,10 @@ pub(super) fn stage_and_publish(
     fs::write(staging.join("root.rs"), &rendered.root)
         .map_err(|error| format!("cannot stage generated root: {error}"))?;
     after_root()?;
+    for (name, bytes) in &rendered.assets {
+        fs::write(staging.join(name), bytes)
+            .map_err(|error| format!("cannot stage generated asset `{name}`: {error}"))?;
+    }
     for (name, node) in &rendered.nodes {
         fs::write(staging.join(name), node)
             .map_err(|error| format!("cannot stage generated Node `{name}`: {error}"))?;
@@ -149,6 +153,16 @@ fn validate_reusable_generation(
         let actual = fs::read_to_string(&path)
             .map_err(|_| "an existing published Generation is incomplete".to_owned())?;
         if actual != expected {
+            return Err(format!(
+                "Generation identity collision: generated payload `{name}` differs from the existing immutable payload"
+            ));
+        }
+    }
+    for (name, expected) in &rendered.assets {
+        let path = published.join(name);
+        let actual = fs::read(&path)
+            .map_err(|_| "an existing published Generation is incomplete".to_owned())?;
+        if actual != *expected {
             return Err(format!(
                 "Generation identity collision: generated payload `{name}` differs from the existing immutable payload"
             ));

@@ -2,7 +2,6 @@ recursa::grammar! {
     module = crate::grammar,
     derives(Pretty, Visit, VisitMut),
     keyword_matching = ascii_insensitive,
-    max_lookahead = 1,
     spans = __RECURSA_SPANS_MODE__,
 }
 
@@ -88,85 +87,68 @@ pub struct InheritedCapture<'input> {
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(NODE_OFF, this)]
 pub struct NodeOff<'input> {
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(optional)]
 #[tok(NODE_OPTIONAL, this)]
 pub struct NodeOptional<'input> {
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(mandatory)]
 #[tok(NODE_MANDATORY, this)]
 pub struct NodeMandatory<'input> {
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(FIELD_MANDATORY, this)]
 pub struct FieldMandatory<'input> {
-    #[spanned(mandatory)]
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(mandatory)]
 #[tok(FIELD_OFF, this)]
 pub struct FieldOff<'input> {
-    #[spanned(off)]
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(mandatory)]
 #[tok(FIELD_OPTIONAL, this)]
 pub struct FieldOptional<'input> {
-    #[spanned(optional)]
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
 pub enum VariantCapture<'input> {
-    #[spanned(off)]
     #[tok(VARIANT_OFF, this)]
     Off { value: Box<Item<'input>> },
-    #[spanned(mandatory)]
     #[tok(VARIANT_MANDATORY, this)]
     Mandatory { value: Box<Item<'input>> },
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(PARENT_OFF, this)]
 pub struct ParentOff<'input> {
     pub child: Box<NodeMandatory<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(mandatory)]
 #[tok(PARENT_FIELD_OFF, this)]
 pub struct ParentFieldOff<'input> {
-    #[spanned(off)]
     pub child: Box<NodeMandatory<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(DESCENDANT, this)]
 pub struct DescendantMandatory<'input> {
-    #[spanned(mandatory)]
     pub value: Box<Item<'input>>,
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(DESCENDANTS, this)]
 pub struct RepeatedDescendants<'input> {
     #[sep(COMMA)]
@@ -175,16 +157,13 @@ pub struct RepeatedDescendants<'input> {
 
 #[derive(recursa::Node)]
 pub enum MixedCapture {
-    #[spanned(off)]
     #[tok(MIX_OFF)]
     Off,
-    #[spanned(mandatory)]
     #[tok(MIX_ON)]
     On,
 }
 
 #[derive(recursa::Node)]
-#[spanned(off)]
 #[tok(MIXED, this)]
 pub struct MixedMany {
     #[sep(COMMA)]

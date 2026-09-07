@@ -8,11 +8,6 @@
 //! `LIKE` as `NOT_LA`, the token the test rules shift, so `Subject` reduces on `NOT_LA` and
 //! `Operand` on `NOT`.
 //!
-//! Recursive descent decides `Cond` by its third token and never at a caller-FOLLOW boundary:
-//! its dispatch commits to a shorter alternative as soon as the lookahead is in the caller
-//! FOLLOW, so the plain juxtaposition `cond cond` with unary `NOT` would make it read `a not
-//! between` as `a` and `not between`. That boundary is the Pratt loop's job in pg-sql.
-//!
 //! `ExprRule` is gram.y's `a_expr` shape: a `#[pratt]` enum with prefix `NOT`, infix `LIKE`
 //! and the tests `NOT LIKE`, `NOT BETWEEN` and `NOT IN`, over a name that admits `like` and
 //! `between` the way `ColId` admits `BETWEEN` and `func_name` admits `LIKE`. The operand of
@@ -20,15 +15,11 @@
 //! emitted twice, `NOT expr | NOT_LA expr`, as gram.y writes `NOT a_expr | NOT_LA a_expr` by
 //! hand; the filter itself is what lets `a NOT LIKE b` be a test while `NOT a` is a negation.
 //!
-//! The integration test generates this file as written, with the parser style flipped to
-//! `recursive_descent`, and with the `lookahead` block removed, and compares what the parsers
-//! produce.
+//! The integration test exercises this grammar through Recursa's sole LR parser.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 3,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 

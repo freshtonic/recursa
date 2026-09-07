@@ -55,7 +55,13 @@ pub(super) fn checked_rendering_retains_invalid_rust_diagnostics() {
 pub(super) fn debug_directory_environment_is_always_tracked_by_cargo() {
     let mut cargo = Vec::new();
     emit_debug_directory_invalidation(&mut cargo);
-    assert_eq!(cargo, ["cargo::rerun-if-env-changed=RECURSA_DEBUG_DIR"]);
+    assert_eq!(
+        cargo,
+        [
+            "cargo::rerun-if-env-changed=RECURSA_DEBUG_DIR",
+            "cargo::rerun-if-env-changed=RECURSA_PROFILE",
+        ]
+    );
 }
 
 pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neutral() {
@@ -109,11 +115,21 @@ pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neut
         "intrinsic content-token value traits are indexed separately from configured recipes",
     );
     for line in index.lines().skip(2) {
-        let [_, _, private_name] = line.split('\t').collect::<Vec<_>>()[..] else {
+        let [role, _, private_name] = line.split('\t').collect::<Vec<_>>()[..] else {
             panic!("debug index row is malformed: {line}");
         };
         let source = fs::read_to_string(published.join(private_name)).unwrap();
-        let syntax = syn::parse_file(&source).expect("every logical view is parseable Rust");
+        if role == "automaton" {
+            assert_eq!(
+                Some(source.as_str()),
+                rendered.automaton_dump.as_deref(),
+                "the indexed automaton is the authoritative LR dump",
+            );
+            continue;
+        }
+        let syntax = syn::parse_file(&source).unwrap_or_else(|error| {
+            panic!("logical view {private_name} is not parseable Rust: {error}\n{source}")
+        });
         assert_eq!(
             prettyplease::unparse(&syntax),
             source,
@@ -315,761 +331,6 @@ pub(super) fn fixed_accessor_names_remain_valid_for_numeric_spellings() {
     );
 }
 
-pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_products() {
-    let position = DispatchPositionPlan {
-        expected: ExpectedSet {
-            words: vec![1],
-            atoms: vec![0],
-        },
-        text_predicate: None,
-    };
-    let root = DispatchStateId::new(1);
-    let states = vec![
-        DispatchTrieNodePlan {
-            target: Some(DispatchTargetPlan {
-                variant: 0,
-                mode: crate::DispatchTerminalMode::Immediate,
-            }),
-            edges: Vec::new(),
-        },
-        DispatchTrieNodePlan {
-            target: None,
-            edges: vec![DispatchTrieEdgePlan {
-                position,
-                next: DispatchStateId::new(0),
-            }],
-        },
-    ];
-    let mut dispatch = PredictiveDispatchPlan {
-        frozen_identity: predictive_dispatch_identity(root, &states),
-        root,
-        states,
-        frozen_sequence_count: 1,
-        frozen_node_count: 2,
-        balanced: None,
-    };
-    assert_eq!(validate_predictive_dispatch(&dispatch, 1).unwrap(), 2);
-    dispatch.states[0].target.as_mut().unwrap().variant = 1;
-    assert_eq!(
-        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
-        "frozen predictive dispatch references an unknown variant",
-    );
-
-    dispatch.states[0].target.as_mut().unwrap().variant = 0;
-    dispatch.states[0].target.as_mut().unwrap().mode =
-        crate::DispatchTerminalMode::FallbackAfterEdges;
-    assert_eq!(
-        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
-        "frozen predictive dispatch fallback lacks competitor edges",
-    );
-    dispatch.states[0].target.as_mut().unwrap().mode = crate::DispatchTerminalMode::Immediate;
-    dispatch.states[dispatch.root.index()].target = Some(DispatchTargetPlan {
-        variant: 0,
-        mode: crate::DispatchTerminalMode::Immediate,
-    });
-    assert_eq!(
-        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
-        "frozen predictive dispatch extends an immediate terminal",
-    );
-    dispatch.states[dispatch.root.index()].target = None;
-    dispatch.states[dispatch.root.index()].edges[0]
-        .position
-        .text_predicate = Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
-    assert_eq!(
-        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
-        "the joined predictive plan diverges from its frozen identity",
-    );
-}
-
-pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
-    let (_package, mut plan) = joined_pratt_fixture();
-    let expected = |kind: usize| {
-        let mut expected = ExpectedSet::empty(plan.kind_count);
-        expected.words[kind / 64] |= 1 << (kind % 64);
-        expected
-    };
-    let positions = [
-        DispatchPositionPlan {
-            expected: expected(0),
-            text_predicate: Some(PlannedTextPredicate::Exact("SELECT".to_owned())),
-        },
-        DispatchPositionPlan {
-            expected: expected(0),
-            text_predicate: Some(PlannedTextPredicate::NotIn(vec!["SELECT".to_owned()])),
-        },
-        DispatchPositionPlan {
-            expected: expected(1),
-            text_predicate: Some(PlannedTextPredicate::OneOf(vec![
-                "FROM".to_owned(),
-                "WHERE".to_owned(),
-            ])),
-        },
-        DispatchPositionPlan {
-            expected: expected(1),
-            text_predicate: Some(PlannedTextPredicate::NotIn(vec![
-                "FROM".to_owned(),
-                "WHERE".to_owned(),
-            ])),
-        },
-    ];
-    let mut states = vec![DispatchTrieNodePlan {
-        target: Some(DispatchTargetPlan {
-            variant: 0,
-            mode: crate::DispatchTerminalMode::Immediate,
-        }),
-        edges: Vec::new(),
-    }];
-    for state in 1..=128 {
-        states.push(DispatchTrieNodePlan {
-            target: None,
-            edges: positions
-                .iter()
-                .cloned()
-                .map(|position| DispatchTrieEdgePlan {
-                    position,
-                    next: DispatchStateId::new(state - 1),
-                })
-                .collect(),
-        });
-    }
-    let root = DispatchStateId::new(states.len() - 1);
-    let dispatch = PredictiveDispatchPlan {
-        frozen_identity: predictive_dispatch_identity(root, &states),
-        root,
-        frozen_sequence_count: positions.len(),
-        frozen_node_count: states.len(),
-        states,
-        balanced: None,
-    };
-    assert_eq!(
-        validate_predictive_dispatch(&dispatch, 1).unwrap(),
-        dispatch.states.len(),
-    );
-    plan.expected_sets = ExpectedSetPool::from_values([expected(0), expected(1)]);
-
-    let mut expected_index = 2_000_000;
-    let mut instrumentation = RenderInstrumentation::default();
-    let (selection, items) = render_predictive_selection(
-        &plan,
-        9_000,
-        &dispatch,
-        &quote!(context.follow()),
-        &mut expected_index,
-        &mut instrumentation,
-    );
-    let rendered = quote!(#items #selection).to_string();
-
-    assert_eq!(instrumentation.frozen_dispatch_nodes_rendered, 129);
-    assert!(
-        rendered.contains("static __RECURSA_PRATT_9000_2000000 : recursa :: __private :: DispatchTable = recursa :: __private :: dispatch_table (b\""),
-        "large Pratt state tables must be one packed literal rather than one HIR tuple per row",
-    );
-    assert!(
-        !rendered.contains("fn __recursa_decode_pratt_"),
-        "packed Pratt tables decode through the runtime walker, not a generated decoder",
-    );
-    assert!(
-        !rendered.contains("type __RecursaPrattStateRow"),
-        "packed Pratt tables must not reconstruct the tuple-row blowup",
-    );
-    assert_eq!(
-        rendered.matches("fn __recursa_pratt_position_").count(),
-        0,
-        "Pratt positions are data rows rather than separately typechecked functions",
-    );
-    assert_eq!(
-        rendered
-            .matches("fn __recursa_pratt_match_position_")
-            .count(),
-        0,
-        "the runtime table walker matches Pratt positions; no per-table matcher is generated",
-    );
-    assert!(
-        rendered.contains("context . select_pratt (& __RECURSA_PRATT_9000_2000000 ,"),
-        "Pratt selection walks its table through the runtime",
-    );
-}
-
-pub(super) fn pratt_branches_are_typechecked_in_isolated_helpers() {
-    let (_package, plan) = joined_pratt_fixture();
-    let rendered = render(&plan).expect("the Pratt fixture renders");
-    let expr_index = plan
-        .nodes
-        .iter()
-        .position(|node| node.ident == "Expr")
-        .expect("the fixture contains its Pratt Expr");
-    let expr = &rendered.nodes[expr_index].1;
-    let pratt = plan.nodes[expr_index]
-        .parse_applications
-        .iter()
-        .find_map(|application| match &application.body {
-            NodeBodyPlan::Pratt(pratt) => Some(pratt),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
-        })
-        .expect("Expr has one materialized Pratt application");
-
-    assert_eq!(
-        expr.matches("fn __recursa_parse_pratt_nud_").count(),
-        pratt.nud.len(),
-        "each Pratt nud branch has exactly one separately typechecked function item",
-    );
-    assert_eq!(
-        expr.matches("fn __recursa_parse_pratt_led_").count(),
-        pratt.led.len(),
-        "each Pratt led branch has exactly one separately typechecked function item",
-    );
-    assert_eq!(
-        expr.matches("Self :: __recursa_parse_pratt_nud_").count(),
-        pratt.nud.len(),
-        "the Pratt control loop calls each isolated nud helper exactly once",
-    );
-    assert_eq!(
-        expr.matches("Self :: __recursa_parse_pratt_led_").count(),
-        pratt.led.len(),
-        "the Pratt control loop calls each isolated led helper exactly once",
-    );
-    let dispatcher_start = expr
-        .find("fn __recursa_parse_bp")
-        .expect("the Pratt dispatcher is rendered");
-    let helper_start = expr[dispatcher_start..]
-        .find("fn __recursa_parse_pratt_nud_")
-        .map(|offset| dispatcher_start + offset)
-        .expect("the first isolated helper follows the dispatcher");
-    assert!(
-        helper_start - dispatcher_start < 20_000,
-        "the fixture Pratt dispatcher remains a bounded control function",
-    );
-}
-
-pub(super) fn predictive_variants_are_typechecked_in_isolated_helpers() {
-    let source = r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-
-recursa::tokens! {
-    keywords { ALPHA => "ALPHA", BETA => "BETA", GAMMA => "GAMMA" }
-}
-
-#[derive(recursa::Node)]
-enum Choice {
-    #[tok(ALPHA)]
-    Alpha,
-    #[tok(BETA)]
-    Beta,
-}
-
-#[derive(recursa::Node)]
-enum Wrapped {
-    Choice(Choice),
-    #[tok(GAMMA)]
-    Prefixed(Choice),
-}
-"#;
-    let (_package, plan) = joined_pratt_fixture_from(source);
-    let rendered = render(&plan).expect("the predictive fixture renders");
-    let node = |name: &str| {
-        let index = plan
-            .nodes
-            .iter()
-            .position(|node| node.ident == name)
-            .unwrap_or_else(|| panic!("the fixture contains {name}"));
-        &rendered.nodes[index].1
-    };
-    let choice = node("Choice");
-
-    assert_eq!(
-        choice.matches("fn __recursa_parse_variant_").count(),
-        0,
-        "fixed-only variants parse through the runtime without a helper function",
-    );
-    assert_eq!(
-        choice.matches("context . parse_fixed_variant (").count(),
-        2,
-        "predictive dispatch calls the fixed-variant runtime helper per fixed-only variant",
-    );
-
-    let wrapped = node("Wrapped");
-    assert_eq!(
-        wrapped
-            .matches("context . parse_wrapping_variant ::")
-            .count(),
-        1,
-        "a single direct-child variant parses through the wrapping runtime helper",
-    );
-    assert!(
-        wrapped.contains("Self :: Choice ,)"),
-        "the tuple constructor is passed as the wrapping function",
-    );
-    assert_eq!(
-        wrapped.matches("fn __recursa_parse_variant_").count(),
-        1,
-        "a variant with fixed tokens around its child keeps its typechecked helper",
-    );
-    assert_eq!(
-        wrapped.matches("context . parse_direct_child ::").count(),
-        1,
-        "the helper parses its direct child through the runtime element transaction",
-    );
-    assert!(
-        !wrapped.contains("follow () . clone ()"),
-        "generated parsers borrow the caller FOLLOW instead of cloning it",
-    );
-}
-
-pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
-    let (_package, mut plan) = joined_pratt_fixture();
-    let expected = |kind: usize| {
-        let mut expected = ExpectedSet::empty(plan.kind_count);
-        expected.words[kind / 64] |= 1 << (kind % 64);
-        expected
-    };
-    let positions = [
-        DispatchPositionPlan {
-            expected: expected(0),
-            text_predicate: Some(PlannedTextPredicate::Exact("SELECT".to_owned())),
-        },
-        DispatchPositionPlan {
-            expected: expected(0),
-            text_predicate: Some(PlannedTextPredicate::NotIn(vec!["SELECT".to_owned()])),
-        },
-        DispatchPositionPlan {
-            expected: expected(1),
-            text_predicate: Some(PlannedTextPredicate::OneOf(vec![
-                "FROM".to_owned(),
-                "WHERE".to_owned(),
-            ])),
-        },
-        DispatchPositionPlan {
-            expected: expected(1),
-            text_predicate: Some(PlannedTextPredicate::NotIn(vec![
-                "FROM".to_owned(),
-                "WHERE".to_owned(),
-            ])),
-        },
-    ];
-    let mut states = vec![DispatchTrieNodePlan {
-        target: Some(DispatchTargetPlan {
-            variant: 0,
-            mode: crate::DispatchTerminalMode::Immediate,
-        }),
-        edges: Vec::new(),
-    }];
-    for state in 1..=128 {
-        states.push(DispatchTrieNodePlan {
-            target: None,
-            edges: positions
-                .iter()
-                .cloned()
-                .map(|position| DispatchTrieEdgePlan {
-                    position,
-                    next: DispatchStateId::new(state - 1),
-                })
-                .collect(),
-        });
-    }
-    let root = DispatchStateId::new(states.len() - 1);
-    let root_extra = expected(2);
-    let mut all_edges = expected(0);
-    all_edges.union_assign(&expected(1));
-    let mut root_failure = all_edges.clone();
-    root_failure.union_assign(&root_extra);
-    plan.expected_sets = ExpectedSetPool::from_values([
-        ExpectedSet::empty(plan.kind_count),
-        expected(0),
-        expected(1),
-        all_edges,
-        root_extra.clone(),
-        root_failure,
-    ]);
-    let mut expected_index = 1_000_000;
-    let (selection, items) = render_predictive_graph_selection(
-        &plan,
-        9_001,
-        root,
-        &states,
-        &quote!(0usize),
-        Some(&root_extra),
-        &mut expected_index,
-    );
-    let rendered = quote!(#items #selection).to_string();
-    assert!(
-        rendered.contains("static __RECURSA_DISPATCH_9001_1000000 : recursa :: __private :: DispatchTable = recursa :: __private :: dispatch_table (b\""),
-        "ordinary dispatch must use one packed state literal; inline bytes={}",
-        rendered.len(),
-    );
-    assert!(
-        !rendered.contains("type __RecursaDispatchStateRow"),
-        "ordinary dispatch must not emit one HIR tuple per state",
-    );
-    assert!(
-        rendered.contains("context . select_predictive (& __RECURSA_DISPATCH_9001_1000000 ,"),
-        "ordinary dispatch selects through the runtime table walker",
-    );
-    assert_eq!(
-        rendered.matches("fn __recursa_dispatch_position_").count(),
-        0,
-        "ordinary positions are data rows rather than separately typechecked functions",
-    );
-    assert_eq!(
-        rendered
-            .matches("fn __recursa_dispatch_match_position_")
-            .count(),
-        0,
-        "the runtime table walker matches positions; no per-table matcher is generated",
-    );
-    assert!(!rendered.contains("fn __recursa_decode_dispatch_"));
-    assert!(
-        rendered.len() < 40_000,
-        "a 129-state graph must remain compact; bytes={}",
-        rendered.len(),
-    );
-}
-
-pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
-    let (_package, mut plan) = joined_pratt_fixture();
-    plan.expected_sets = ExpectedSetPool::from_values([ExpectedSet::empty(plan.kind_count)]);
-    let states = vec![DispatchTrieNodePlan {
-        target: Some(DispatchTargetPlan {
-            variant: 0,
-            mode: crate::DispatchTerminalMode::Immediate,
-        }),
-        edges: Vec::new(),
-    }];
-    let mut expected_index = 3_000_000;
-    let (selection, items) = render_predictive_graph_selection(
-        &plan,
-        9_002,
-        DispatchStateId::new(0),
-        &states,
-        &quote!(0usize),
-        None,
-        &mut expected_index,
-    );
-    let rendered = quote!(#items #selection).to_string();
-
-    assert!(
-        rendered.contains(", & [] , 1usize , 4usize , 1usize , &")
-            && rendered.contains(":: __RECURSA_EXPECTED_SETS ,)"),
-        "a single-digit table records width 1 and no spellings: {rendered}",
-    );
-    assert!(!rendered.contains("fn __recursa_decode_dispatch_"));
-    assert!(rendered.contains(
-        "context . select_predictive (& __RECURSA_DISPATCH_9002_3000000 , 0usize , 0usize) ?"
-    ));
-}
-
-pub(super) fn grammar_wide_expected_set_pool_is_canonical() {
-    let (_package, plan) = joined_pratt_fixture();
-    let values = plan.expected_sets.values();
-    assert!(
-        values.windows(2).all(|pair| pair[0] < pair[1]),
-        "grammar-wide expectation identities must be strictly canonical",
-    );
-
-    let plus = plan
-        .nodes
-        .iter()
-        .flat_map(|node| &node.parse_applications)
-        .find_map(|application| {
-            let NodeBodyPlan::Pratt(pratt) = &application.body else {
-                return None;
-            };
-            pratt.led.iter().find_map(|branch| {
-                branch
-                    .variant
-                    .elements
-                    .iter()
-                    .find_map(|element| match &element.kind {
-                        ElementParseKind::Fixed {
-                            expected, spelling, ..
-                        } if spelling == "+" => Some(expected.clone()),
-                        _ => None,
-                    })
-            })
-        })
-        .expect("the Pratt fixture emits a PLUS expectation");
-    let plus_id = plan
-        .expected_sets
-        .id(&plus)
-        .expect("the emitted PLUS expectation belongs to the grammar-wide pool");
-    assert_eq!(values[plus_id], plus);
-}
-
-pub(super) fn stale_grammar_wide_expected_set_pool_fails_before_rendering() {
-    let (_package, mut plan) = joined_pratt_fixture();
-    plan.expected_sets = ExpectedSetPool::from_plans(&[], &[], plan.kind_count);
-
-    let detail = match render(&plan) {
-        Err(detail) => detail,
-        Ok(_) => panic!("a stale grammar-wide expectation pool cannot render"),
-    };
-    assert!(
-        detail.contains("grammar-wide expectation pool"),
-        "pool corruption must retain its invariant role: {detail}",
-    );
-}
-
-pub(super) fn balanced_root_failure_belongs_to_grammar_wide_expected_set_pool() {
-    let (_package, plan) = joined_pratt_fixture_from(include_str!(
-        "../../tests/fixtures/generation/predictive/src/grammar.rs"
-    ));
-    let dispatch = plan
-        .nodes
-        .iter()
-        .flat_map(|node| &node.parse_applications)
-        .find_map(|application| match &application.body {
-            NodeBodyPlan::Enum { dispatch, .. } if dispatch.balanced.is_some() => Some(dispatch),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
-                None
-            }
-        })
-        .expect("the predictive fixture contains balanced enum dispatch");
-    let balanced = dispatch.balanced.as_ref().unwrap();
-    let mut ordinary_root = ExpectedSet::empty(plan.kind_count);
-    for edge in &dispatch.states[dispatch.root.index()].edges {
-        ordinary_root.union_assign(&edge.position.expected);
-    }
-    let mut balanced_root = ordinary_root.clone();
-    balanced_root.union_assign(&balanced.open);
-    assert_ne!(ordinary_root, balanced_root);
-    assert!(
-        plan.expected_sets.id(&balanced_root).is_some(),
-        "the failure set rendered at a balanced ordinary root must be pooled",
-    );
-    render(&plan).expect("every balanced dispatch expectation resolves through the pool");
-}
-
-pub(super) fn generated_expectations_use_one_grammar_wide_pool() {
-    let (_package, plan) = joined_pratt_fixture();
-    let rendered = render(&plan).expect("render the pooled-expectation fixture");
-    assert_eq!(
-        rendered
-            .root
-            .matches("static __RECURSA_EXPECTED_SETS")
-            .count(),
-        1,
-        "the generated root owns one grammar-wide expectation pool",
-    );
-    assert_eq!(
-        rendered.root.matches("__private :: follow_set").count(),
-        plan.expected_sets.values().len() + 1,
-        "the root emits one initializer per unique expectation plus root FOLLOW",
-    );
-    assert!(
-        !rendered.root.contains("__RECURSA_TOKEN_START"),
-        "content-token starts are addressed through the shared pool",
-    );
-    assert!(
-        rendered
-            .nodes
-            .iter()
-            .all(|(_, source)| !source.contains("__private :: follow_set")),
-        "Node shards contain references, not local expectation definitions",
-    );
-    let references = rendered.root.matches("__RECURSA_EXPECTED_SETS").count()
-        + rendered
-            .nodes
-            .iter()
-            .map(|(_, source)| source.matches("__RECURSA_EXPECTED_SETS").count())
-            .sum::<usize>();
-    assert!(
-        references > plan.expected_sets.values().len(),
-        "the fixture must exercise reuse across more sites than unique pooled values",
-    );
-}
-
-pub(super) fn large_expected_set_batch_uses_canonical_atom_index() {
-    const KIND_COUNT: usize = 2_048;
-    const POSITION_COUNT: usize = 4_096;
-
-    let mut grammar = crate::GrammarDescription::new(
-        "large expected-set lookup",
-        KIND_COUNT,
-        1,
-        TextEquivalence::Sensitive,
-    );
-    for index in 0..KIND_COUNT {
-        let declaration = crate::DeclId::new(index as u32);
-        let kind = grammar.push_kind(crate::KindDescription::new(
-            format!("K{index}"),
-            declaration,
-        ));
-        grammar.push_atom(crate::AtomDescription::new(
-            format!("A{index}"),
-            declaration,
-            AtomExpression::Kind(kind),
-        ));
-    }
-
-    let atom_index = ExpectedAtomIndex::from_grammar(&grammar)
-        .expect("the grammar's canonical atom identities fit the runtime width");
-    let last_kind = crate::KindId::new((KIND_COUNT - 1) as u16);
-    let mut kinds = KindSet::empty(KIND_COUNT);
-    kinds.insert(last_kind).unwrap();
-    let positions = [FirstPosition {
-        kinds,
-        text_predicate: None,
-    }];
-
-    let mut expected = ExpectedSet::empty(KIND_COUNT);
-    for _ in 0..POSITION_COUNT {
-        expected = ExpectedSet::from_positions(&positions, &atom_index, KIND_COUNT)
-            .expect("indexed expectation planning succeeds");
-    }
-    assert_eq!(expected.atoms, vec![(KIND_COUNT - 1) as u32]);
-
-    let legacy_atom_inspections = POSITION_COUNT * KIND_COUNT;
-    let indexed_operations = grammar.atoms.len() + POSITION_COUNT;
-    assert_eq!(legacy_atom_inspections, 8_388_608);
-    assert_eq!(indexed_operations, 6_144);
-    assert!(
-        legacy_atom_inspections / indexed_operations > 1_000,
-        "one grammar-wide build plus direct lookups must replace repeated linear atom scans",
-    );
-}
-
-pub(super) fn overlapping_rectangles_commit_unique_routes_at_their_first_token() {
-    let (_package, plan) = joined_pratt_fixture_from(include_str!(
-        "../../tests/fixtures/generation/predictive/src/grammar.rs"
-    ));
-    let dispatch = plan
-        .nodes
-        .iter()
-        .find(|node| node.ident == "OverlappingRectangles")
-        .and_then(|node| {
-            node.parse_applications
-                .iter()
-                .find_map(|application| match &application.body {
-                    NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
-                    NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
-                })
-        })
-        .expect("the predictive fixture contains OverlappingRectangles dispatch");
-
-    // `A` and `C` are one-token rows that commit, `B C` and `B D` are the shared route.
-    assert_eq!(dispatch.frozen_sequence_count, 4);
-    assert_eq!(dispatch.frozen_node_count, 6);
-    assert_eq!(dispatch.states.len(), 6);
-    assert_eq!(
-        validate_predictive_dispatch(dispatch, 2).unwrap(),
-        6,
-        "the two unique leaves and the shared two-token route have six unique states",
-    );
-
-    let root = &dispatch.states[dispatch.root.index()];
-    assert!(root.target.is_none());
-    assert_eq!(root.edges.len(), 3);
-
-    // `A` only starts `First` and `C` only starts `Second`, so the dispatch commits at
-    // that token and leaves the rest of the route to the selected variant's parser
-    // (#127). `B` starts both, so the second token decides under the caller-FOLLOW guard.
-    let mut immediate_variants = Vec::new();
-    let mut shared_routes = Vec::new();
-    for edge in &root.edges {
-        let child = &dispatch.states[edge.next.index()];
-        match child.target {
-            Some(target) => {
-                assert!(
-                    matches!(target.mode, crate::DispatchTerminalMode::Immediate),
-                    "a route only one variant can derive commits immediately",
-                );
-                assert!(child.edges.is_empty());
-                immediate_variants.push(target.variant);
-            }
-            None => {
-                for suffix in &child.edges {
-                    let terminal = &dispatch.states[suffix.next.index()];
-                    let target = terminal
-                        .target
-                        .expect("every complete two-token rectangle route is terminal");
-                    assert!(terminal.edges.is_empty());
-                    assert!(
-                        matches!(target.mode, crate::DispatchTerminalMode::CallerFollow),
-                        "complete shared routes retain the caller-FOLLOW guard before selection",
-                    );
-                    shared_routes.push(target.variant);
-                }
-            }
-        }
-    }
-
-    immediate_variants.sort_unstable();
-    shared_routes.sort_unstable();
-    assert_eq!(immediate_variants, [0, 1]);
-    assert_eq!(shared_routes, [0, 1]);
-}
-
-pub(super) fn corrupted_joined_dispatch_fails_before_publication_with_rca9105() {
-    let package = tempfile::tempdir().expect("temporary predictive plan fixture");
-    fs::write(
-        package.path().join("grammar.rs"),
-        r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-
-#[derive(recursa::Node)]
-enum Root { A(A), B(B) }
-
-#[derive(recursa::Node)]
-#[tok("a")]
-struct A;
-
-#[derive(recursa::Node)]
-#[tok("b")]
-struct B;
-"#,
-    )
-    .expect("write predictive plan fixture");
-    let cfg = CargoCfgSnapshot::default();
-    let success = analyze_source_tree(
-        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
-        &mut Vec::new(),
-    )
-    .expect("analyze predictive plan fixture");
-    let mut plan = EmissionPlan::join_for_test(&success.analyzed, &cfg)
-        .expect("join a complete predictive Emission plan");
-    assert!(plan.instrumentation.frozen_dispatch_nodes_consumed > 0);
-    render(&plan).expect("the renderer consumes every frozen trie node");
-
-    let dispatch = plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| &mut node.parse_applications)
-        .find_map(|application| match &mut application.body {
-            NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
-        })
-        .expect("fixture contains one predictive dispatch");
-    dispatch.states[dispatch.root.index()].edges[0]
-        .position
-        .text_predicate = Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
-
-    let detail = match render(&plan) {
-        Err(detail) => detail,
-        Ok(_) => panic!("corrupt joined plans cannot reach publication"),
-    };
-    let error = failure(Path::new("grammar.rs"), &detail);
-    let [diagnostic] = error.report().diagnostics() else {
-        panic!("one pre-publication invariant diagnostic is required");
-    };
-    assert_eq!(diagnostic.code().as_str(), "RCA9105");
-    assert!(!package.path().join(SELECTED_GENERATION).exists());
-}
-
-fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
-    joined_pratt_fixture_from(include_str!(
-        "../../tests/fixtures/generation/pratt/src/grammar.rs"
-    ))
-}
-
-#[cfg(feature = "diagrams")]
-fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
-    let source = include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs").replacen(
-        "module = crate::grammar,",
-        "module = crate::grammar,\n    diagrams,",
-        1,
-    );
-    joined_pratt_fixture_from(&source)
-}
-
 #[cfg(feature = "diagrams")]
 pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs() {
     let (_package, plan) = joined_pratt_diagram_fixture();
@@ -1131,6 +392,7 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
 }
 
 #[cfg(feature = "diagrams")]
+#[cfg(feature = "diagrams")]
 pub(super) fn semantic_diagrams_preserve_generic_applications_and_repetition_topology() {
     let (_package, plan) = joined_pratt_fixture_from(include_str!(
         "../../tests/fixtures/generation/generic-applications/src/grammar.rs"
@@ -1154,6 +416,22 @@ pub(super) fn semantic_diagrams_preserve_generic_applications_and_repetition_top
         topology.contains("Optional"),
         "Vec is zero-or-more: {topology}"
     );
+}
+
+fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    joined_pratt_fixture_from(include_str!(
+        "../../tests/fixtures/generation/pratt/src/grammar.rs"
+    ))
+}
+
+#[cfg(feature = "diagrams")]
+fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    let source = include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs").replacen(
+        "module = crate::grammar,",
+        "module = crate::grammar,\n    diagrams,",
+        1,
+    );
+    joined_pratt_fixture_from(&source)
 }
 
 fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
@@ -1182,89 +460,6 @@ fn assert_corrupt_pratt_plan_is_unselectable(package: &Path, plan: &EmissionPlan
     assert_eq!(diagnostic.code().as_str(), "RCA9105");
     assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
     assert!(!package.join(SELECTED_GENERATION).exists());
-}
-
-pub(super) fn corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication() {
-    let (package, mut missing_plan) = joined_pratt_fixture();
-    let pratt = missing_plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| &mut node.parse_applications)
-        .find_map(|application| match &mut application.body {
-            NodeBodyPlan::Pratt(pratt) => Some(pratt),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
-        })
-        .expect("fixture contains a Pratt plan");
-    pratt.nud.clear();
-    assert_corrupt_pratt_plan_is_unselectable(package.path(), &missing_plan);
-
-    let (package, mut branch_plan) = joined_pratt_fixture();
-    let pratt = branch_plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| &mut node.parse_applications)
-        .find_map(|application| match &mut application.body {
-            NodeBodyPlan::Pratt(pratt) => Some(pratt),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
-        })
-        .expect("fixture contains a Pratt plan");
-    let variant_count = pratt.nud.len();
-    let target = pratt
-        .nud_dispatch
-        .states
-        .iter_mut()
-        .find_map(|node| node.target.as_mut())
-        .expect("nud dispatch contains a terminal");
-    target.variant = (target.variant + 1) % variant_count;
-    assert_corrupt_pratt_plan_is_unselectable(package.path(), &branch_plan);
-
-    let (package, mut follow_plan) = joined_pratt_fixture();
-    let pratt = follow_plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| &mut node.parse_applications)
-        .find_map(|application| match &mut application.body {
-            NodeBodyPlan::Pratt(pratt) => Some(pratt),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
-        })
-        .expect("fixture contains a Pratt plan");
-    let follow = pratt
-        .led
-        .iter_mut()
-        .flat_map(|branch| &mut branch.variant.elements)
-        .find_map(|element| match &mut element.kind {
-            ElementParseKind::Semantic { projection, .. } => match projection.as_mut() {
-                SemanticParseProjection::Direct {
-                    container,
-                    pratt_min_bp: Some(_),
-                    ..
-                } => match container.as_mut() {
-                    PlannedContainer::Direct { child_follow, .. } => Some(child_follow),
-                    PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => None,
-                },
-                SemanticParseProjection::Direct { .. }
-                | SemanticParseProjection::FixedPresence { .. } => None,
-            },
-            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
-                None
-            }
-        })
-        .expect("fixture contains a recursive Pratt operand FOLLOW");
-    *follow = PlannedFollow::Caller;
-    assert_corrupt_pratt_plan_is_unselectable(package.path(), &follow_plan);
-
-    let (package, mut failure_plan) = joined_pratt_fixture();
-    let pratt = failure_plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| &mut node.parse_applications)
-        .find_map(|application| match &mut application.body {
-            NodeBodyPlan::Pratt(pratt) => Some(pratt),
-            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
-        })
-        .expect("fixture contains a Pratt plan");
-    pratt.nud_failure = PlannedFollow::Caller;
-    assert_corrupt_pratt_plan_is_unselectable(package.path(), &failure_plan);
 }
 
 pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
@@ -1552,6 +747,36 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
         !schema_source.contains("'static"),
         "static schema aggregate references must use their inferred static lifetime"
     );
+
+    let expr = plan
+        .nodes
+        .iter()
+        .find(|node| node.ident == "Expr")
+        .expect("fixture has the Pratt expression Node");
+    let application = expr
+        .parse_applications
+        .first()
+        .expect("Pratt expression has a materialized application");
+    let node_source = render_node_application_explorer(
+        &plan,
+        plan.explorer
+            .as_ref()
+            .expect("Visit fixture has an explorer plan"),
+        expr,
+        application,
+    )
+    .to_string();
+    let (node_dispatch, _) = node_source
+        .split_once("fn __recursa_explorer_field")
+        .expect("Explorer implementation has a field dispatch method");
+    assert!(
+        node_dispatch.contains("Expr :: Add (..) => Some"),
+        "enum schema dispatch must use a binding-free variant pattern: {node_dispatch}"
+    );
+    assert!(
+        !node_dispatch.contains("__recursa_explorer_field_"),
+        "enum schema dispatch must not duplicate field bindings: {node_dispatch}"
+    );
 }
 
 #[cfg(feature = "explorer")]
@@ -1838,7 +1063,6 @@ pub(super) fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path
                     module = crate::grammar,
                     derives(Pretty),
                     keyword_matching = sensitive,
-                    max_lookahead = 1,
                 }
                 recursa::tokens! {
                     ignore = r"[ \t\n\r]+",
@@ -1947,6 +1171,45 @@ pub(super) fn pretty_pratt_variants_are_typechecked_in_isolated_helpers() {
         variant_count,
         "the compact Pratt Pretty dispatcher must call every isolated variant helper",
     );
+}
+
+pub(super) fn generated_pretty_scopes_do_not_emit_callback_boundaries() {
+    let package = tempfile::tempdir().expect("temporary generated Pretty scope fixture");
+    let source = include_str!("../../tests/fixtures/source-analysis/json/grammar.rs").replacen(
+        "recursa::grammar! {",
+        "recursa::grammar! {\n    derives(Pretty),",
+        1,
+    );
+    fs::write(package.path().join("grammar.rs"), source)
+        .expect("write generated Pretty scope fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze generated Pretty scope fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join generated Pretty scope fixture");
+    let rendered = render(&plan).expect("render generated Pretty scope fixture");
+    let nodes = rendered
+        .nodes
+        .iter()
+        .map(|(_, node)| node.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for callback in [
+        "context . with_child (",
+        "context . with_opaque_child (",
+        "context . without_provenance (",
+        "context . with_repetition_style (",
+    ] {
+        assert!(
+            !nodes.contains(callback),
+            "generated Pretty must not emit callback scope `{callback}`",
+        );
+    }
+    assert!(nodes.contains("context . child_scope ("));
+    assert!(nodes.contains("context . repetition_scope_style ("));
 }
 
 pub(super) fn pretty_pratt_grouping_follows_a_unique_authored_helper_path() {
@@ -2753,7 +2016,6 @@ pub(super) fn ascii_insensitive_word_separators_share_canonical_pretty_family_au
                     module = crate::grammar,
                     derives(Pretty),
                     keyword_matching = ascii_insensitive,
-                    max_lookahead = 1,
                 }
 
                 recursa::tokens! {
@@ -2867,7 +2129,6 @@ pub(super) fn generic_top_level_breaks_keep_typed_family_and_closed_application_
                     module = crate::grammar,
                     derives(Pretty),
                     keyword_matching = sensitive,
-                    max_lookahead = 1,
                 }
 
                 recursa::tokens! {
@@ -2991,6 +2252,7 @@ pub(super) fn incomplete_staging_is_unselectable() {
     fs::create_dir(&staging).unwrap();
     let rendered = RenderedGeneration {
         root: "fn root() {}".to_owned(),
+        assets: vec![("asset.bin".to_owned(), vec![1, 2, 3])],
         nodes: vec![("node-0.rs".to_owned(), "fn node() {}".to_owned())],
         node_anchors: vec!["anchor-0".to_owned()],
         selector: "fn selected() {}".to_owned(),
@@ -3030,11 +2292,19 @@ pub(super) fn same_identity_cannot_reuse_a_different_generated_payload() {
         selected_generation(output.path()).as_deref(),
         Some("g_same")
     );
+
+    invalidate_selection(output.path()).unwrap();
+    let mut changed = publication_fixture("g_same");
+    changed.assets[0].1.push(4);
+    let error = publish(output.path(), "g_same", &changed).unwrap_err();
+    assert!(error.contains("Generation identity collision"));
+    assert_eq!(selected_generation(output.path()), None);
 }
 
 fn publication_fixture(identity: &str) -> RenderedGeneration {
     RenderedGeneration {
         root: format!("// {identity} root"),
+        assets: vec![("asset.bin".to_owned(), identity.as_bytes().to_vec())],
         nodes: vec![("node-0.rs".to_owned(), format!("// {identity} node"))],
         node_anchors: vec!["anchor-0".to_owned()],
         selector: format!(
@@ -3146,65 +2416,6 @@ pub(super) fn filesystem_rename_failures_leave_no_loadable_or_staged_generation(
     assert_no_transaction_staging(output.path());
 }
 
-pub(super) fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
-    let package = tempfile::tempdir().unwrap();
-    fs::write(
-        package.path().join("grammar.rs"),
-        r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-recursa::tokens! { keywords { SELECT => "SELECT" } }
-
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Select;
-
-#[derive(recursa::Node)]
-struct Inner { maybe: Option<Select> }
-
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(SELECT)]
-    items: Vec<Inner>,
-}
-"#,
-    )
-    .unwrap();
-    let success = analyze_source_tree(
-        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
-        &mut Vec::new(),
-    )
-    .expect("warnings retain analyzable output");
-    assert!(success.build_report.warnings().next().is_some());
-    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default()).unwrap();
-    let rendered = render(&plan).unwrap();
-    let output = tempfile::tempdir().unwrap();
-    publish(output.path(), &plan.identity, &rendered).unwrap();
-
-    let generation = Generation {
-        report: success.build_report,
-        reused: false,
-    };
-    assert!(generation.report().warnings().next().is_some());
-    assert_eq!(
-        selected_generation(output.path()).as_deref(),
-        Some(plan.identity.as_str())
-    );
-    let published = output
-        .path()
-        .join("recursa-generations")
-        .join(&plan.identity);
-    assert!(published.join("root.rs").is_file());
-    assert!(published.join("loader-map").is_file());
-    assert_eq!(
-        fs::read_dir(published)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("node-"))
-            .count(),
-        rendered.nodes.len()
-    );
-}
-
 fn assert_no_transaction_staging(out_dir: &Path) {
     let mut pending = vec![out_dir.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -3234,9 +2445,9 @@ fn assert_no_transaction_staging(out_dir: &Path) {
     }
 }
 
-/// Grammar whose analysis reports warnings, so reuse must replay them.
+/// Small conflict-free grammar used to exercise generation reuse.
 const REUSE_GRAMMAR: &str = r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "SELECT" } }
 
 #[derive(recursa::Node)]
@@ -3244,12 +2455,8 @@ recursa::tokens! { keywords { SELECT => "SELECT" } }
 struct Select;
 
 #[derive(recursa::Node)]
-struct Inner { maybe: Option<Select> }
-
-#[derive(recursa::Node)]
 struct Root {
-    #[sep(SELECT)]
-    items: Vec<Inner>,
+    items: Vec<Select>,
 }
 "#;
 
@@ -3296,9 +2503,9 @@ pub(super) fn unchanged_sources_reuse_the_published_generation_without_analysis(
 
     let (first, first_cargo) = generate_reuse_fixture(package.path(), output.path(), None);
     assert!(!first.reused());
-    assert!(first.report().warnings().next().is_some());
+    assert!(first.report().warnings().next().is_none());
     let identity = selected_generation(output.path()).expect("first run selects a Generation");
-    assert!(!warning_lines(&first_cargo).is_empty());
+    assert!(warning_lines(&first_cargo).is_empty());
     assert!(output.path().join("recursa-reuse").is_dir());
 
     let (second, second_cargo) = generate_reuse_fixture(package.path(), output.path(), None);
@@ -3324,7 +2531,7 @@ pub(super) fn unchanged_sources_reuse_the_published_generation_without_analysis(
     assert_no_transaction_staging(output.path());
 }
 
-pub(super) fn comment_only_edits_reuse_the_published_generation() {
+pub(super) fn comment_only_edits_regenerate_loader_anchors() {
     let package = tempfile::tempdir().unwrap();
     let grammar = package.path().join("grammar.rs");
     fs::write(&grammar, REUSE_GRAMMAR).unwrap();
@@ -3337,12 +2544,13 @@ pub(super) fn comment_only_edits_reuse_the_published_generation() {
     fs::write(&grammar, edited).unwrap();
     let (second, _) = generate_reuse_fixture(package.path(), output.path(), None);
     assert!(
-        second.reused(),
-        "comment-only edits must reuse the Generation"
+        !second.reused(),
+        "comment-only edits can move declaration spans and must regenerate loader anchors"
     );
-    assert_eq!(
+    assert_ne!(
         selected_generation(output.path()).as_deref(),
-        Some(identity.as_str())
+        Some(identity.as_str()),
+        "moved declaration spans must select a distinct Generation"
     );
 }
 
@@ -3384,6 +2592,7 @@ pub(super) fn missing_or_incomplete_generations_are_not_reused() {
     let published = output.path().join("recursa-generations").join(&identity);
 
     // A Generation directory that lost its loader map is never re-selected.
+    let loader_map = fs::read(published.join("loader-map")).unwrap();
     fs::remove_file(published.join("loader-map")).unwrap();
     invalidate_selection(output.path()).unwrap();
     let key = fs::read_dir(output.path().join("recursa-reuse"))
@@ -3393,6 +2602,15 @@ pub(super) fn missing_or_incomplete_generations_are_not_reused() {
         .expect("the first run recorded a reuse entry");
     assert!(reuse_published(output.path(), &key).unwrap().is_none());
     assert!(!output.path().join(SELECTED_GENERATION).exists());
+
+    // The binary LR tables are part of the same completeness barrier.
+    fs::write(published.join("loader-map"), loader_map).unwrap();
+    let asset = published.join(LR_TABLE_ASSET_NAMES[0]);
+    let bytes = fs::read(&asset).unwrap();
+    fs::remove_file(&asset).unwrap();
+    assert!(reuse_published(output.path(), &key).unwrap().is_none());
+    assert!(!output.path().join(SELECTED_GENERATION).exists());
+    fs::write(asset, bytes).unwrap();
 
     // A missing Generation directory falls through to a fresh publication.
     fs::remove_dir_all(&published).unwrap();
@@ -3428,7 +2646,7 @@ pub(super) fn debug_directory_requests_bypass_reuse() {
         !second.reused(),
         "a debug bundle request must run the complete pipeline"
     );
-    assert!(second.report().warnings().next().is_some());
+    assert!(second.report().warnings().next().is_none());
 
     let (third, _) = generate_reuse_fixture(package.path(), output.path(), None);
     assert!(third.reused());

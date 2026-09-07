@@ -53,7 +53,6 @@ u32_id!(AtomId);
 u32_id!(DeclId);
 u32_id!(LocationId);
 u32_id!(PrecedenceLevelId);
-u32_id!(ProofId);
 u32_id!(SiteId);
 u32_id!(SourceId);
 u32_id!(TextPredicateId);

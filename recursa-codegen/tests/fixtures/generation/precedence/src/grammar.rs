@@ -14,17 +14,12 @@
 //! - `set session . characteristics`: the literal scope keyword against the transaction form
 //!   (two keywords outside the operator hierarchy).
 //!
-//! Recursive descent ignores the declaration and settles each choice by reading on to the
-//! token that decides it, which agrees with the declaration on all but six of the driver's
-//! inputs; on those six the integration test pins what each parser makes of the input, and
-//! the declared outcome is PostgreSQL's. The test compares the two parsers of one generation
-//! and the recursive-descent generation with and without the declaration.
+//! The integration test pins the LR result for each conflict family. The declared outcome
+//! matches PostgreSQL's grammar.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 5,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 
@@ -161,8 +156,8 @@ pub enum Expr<'input> {
 /// literal, as PostgreSQL's is in practice, so the clause ends where the literal ends and the
 /// only decision is whether `ESCAPE` opens the clause or names a bare label. The declared
 /// precedence of `ESCAPE` (6) above `LIKE` (5) makes the table-driven parser shift it;
-/// recursive descent decides by the token after `ESCAPE`, so it reads a bare `escape` before
-/// `;` as a label, which PostgreSQL and the table-driven parser reject.
+/// the retired predictive parser decided by the token after `ESCAPE`, so it read a bare
+/// `escape` before `;` as a label, which PostgreSQL and the LR parser reject.
 #[derive(recursa::Node, Debug, Clone)]
 #[tok(ESCAPE, this)]
 pub struct EscapeClause<'input> {
@@ -172,7 +167,6 @@ pub struct EscapeClause<'input> {
 /// `json_predicate_type_constraint: JSON %prec UNBOUNDED | JSON VALUE_P`.
 #[derive(recursa::Node, Debug, Clone)]
 pub enum IsJsonTail {
-    #[greedy(VALUE)]
     #[tok(JSON, VALUE)]
     JsonValue,
     #[parse(prec = UNBOUNDED)]

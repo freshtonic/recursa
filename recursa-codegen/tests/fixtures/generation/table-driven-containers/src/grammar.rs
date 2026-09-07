@@ -2,9 +2,6 @@
 //! model accepts, each in the form that lowers to inlined alternatives and in the form that
 //! lowers to a shared helper nonterminal, plus admission sets and fixed-token attachments.
 //!
-//! The integration test generates this file twice, once as written and once with the parser
-//! style flipped to `recursive_descent`, and compares what the two parsers produce.
-//!
 //! The keywords `AS`, `ONLY` and `TEMP` are admitted as names and `IN` and `OUT` as callees. An
 //! optional whose first token can be one of them (`Option<Alias>`, `Option<Mode>`, lists of
 //! `Value`) is inlined into its parent's alternatives; an optional that starts elsewhere
@@ -15,8 +12,6 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 
@@ -139,7 +134,7 @@ pub struct Args<'input> {
 }
 
 /// A list whose following optional tail owns the same comma. `VARIADIC` cannot begin `Value`,
-/// so both parser styles can leave that comma for the tail without backtracking.
+/// so the LR parser can leave that comma for the tail without backtracking.
 #[derive(recursa::Node, Debug, Clone)]
 #[tok(VTAIL, this, SEMI)]
 pub struct FunctionTail<'input> {

@@ -1,5 +1,5 @@
-//! Predictive dispatch over enum variants that share a long suffix (#127): the frozen
-//! trie commits where the variants part instead of walking into the suffix's language.
+//! LR parsing of enum variants that share a long suffix (#127): the automaton separates
+//! the variants where their tokens part instead of walking into the suffix's language.
 
 use std::fs;
 use std::path::{Path, PathBuf};

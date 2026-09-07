@@ -828,7 +828,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_26", "protocol_999"))
+    fs::write(&root, source.replace("protocol_27", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
@@ -1295,7 +1295,7 @@ fn semantic_source_edits_select_a_fresh_generation_in_the_same_build_directory()
 }
 
 #[test]
-fn semantically_neutral_source_edits_reuse_the_published_generation() {
+fn comment_only_source_edits_regenerate_without_relocating_the_generation() {
     let package = scaffold_fixture();
     let first = run_fixture(&package);
     assert!(
@@ -1326,8 +1326,8 @@ fn semantically_neutral_source_edits_reuse_the_published_generation() {
     );
     assert_eq!(
         reuse_markers(&target_dir(&package)),
-        BTreeSet::from(["true".to_owned()]),
-        "a comment-only edit must reuse the published Generation without analyzing again"
+        BTreeSet::from(["false".to_owned()]),
+        "a comment-only edit must regenerate because source-position loader anchors can move"
     );
 }
 

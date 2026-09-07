@@ -1,8 +1,5 @@
-//! End-to-end proof of the Pratt shapes gram.y writes (#122, #123, #124): the `pratt-shapes`
-//! fixture generates once with `parsers(rd = recursive_descent, lr = table_driven)` and
-//! everything the `lr` parser's consumer observes (values, cursors, provenance, elements,
-//! Pretty renderings, failing tokens and restored cursors) equals what the `rd` parser of the
-//! same generation produces.
+//! End-to-end proof of the Pratt shapes gram.y writes (#122, #123, #124) through the sole
+//! Recursa parser, including values, cursors, provenance, Pretty output, and failures.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +15,7 @@ fn name(text: &str) -> String {
 }
 
 #[test]
-fn an_attached_optional_operand_parses_alike_under_both_parsers() {
+fn an_attached_optional_operand_parses_through_the_recursa_parser() {
     let package = scaffold(FIXTURE);
     let debug = tempfile::tempdir().unwrap();
 
@@ -26,15 +23,11 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("pratt-shapes-ok\n"), "{stdout}");
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
     let root = read_selected_root(&package);
     assert!(
         root.contains("__recursa_lr"),
         "root carries the tables and dispatcher"
-    );
-    assert!(
-        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
-        "one generation carries both parsers"
     );
 
     // The escape operand takes the operand minimum: `+` binds inside it, `like` and `and` do
@@ -110,23 +103,17 @@ fn an_attached_optional_operand_parses_alike_under_both_parsers() {
     assert!(dump.contains("-> ESCAPE grammar::Expr[min 6]"), "{dump}");
     assert!(dump.contains("resolved by precedence (shift)."), "{dump}");
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
-
-    // The recursive-descent parser of the same generation prints the same lines.
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
-    );
 }
 
 #[test]
-fn a_content_token_operator_on_a_prefix_variant_parses_alike_under_both_parsers() {
+fn a_content_token_operator_on_a_prefix_variant_parses_through_the_recursa_parser() {
     let package = scaffold(FIXTURE);
     let debug = tempfile::tempdir().unwrap();
 
     let output = run_fixture(&package, Some(debug.path()));
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
 
     // The prefix operator takes its binding power: its operand binds `+` and `*` and stops
     // before `like` and `and`; the infix operator of the same class is left-associative at
@@ -214,22 +201,17 @@ fn a_content_token_operator_on_a_prefix_variant_parses_alike_under_both_parsers(
         "{dump}"
     );
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
-
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
-    );
 }
 
 #[test]
-fn an_exclusion_of_atoms_parses_alike_under_both_parsers() {
+fn an_exclusion_of_atoms_parses_through_the_recursa_parser() {
     let package = scaffold(FIXTURE);
     let debug = tempfile::tempdir().unwrap();
 
     let output = run_fixture(&package, Some(debug.path()));
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
 
     // `default` starts the second alternative only, because the first one's operand excludes
     // the atom; inside the parentheses of an atom the full language returns; an excluded
@@ -322,11 +304,6 @@ fn an_exclusion_of_atoms_parses_alike_under_both_parsers() {
         "{dump}"
     );
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
-
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
-    );
 }
 
 /// Copies the fixture package into a temporary directory.
@@ -353,21 +330,17 @@ fn scaffold(fixture: &str) -> TempDir {
     package
 }
 
-/// Splits the fixture's output into the lines of the two parsers, each without its tag and
-/// terminated by a newline so that the assertions can match whole lines.
-fn split_by_parser(stdout: &str) -> (String, String) {
-    let mut rd = String::new();
-    let mut lr = String::new();
+/// Selects the sole parser's tagged fixture lines and terminates each with a newline so the
+/// assertions can match whole lines.
+fn parser_lines(stdout: &str) -> String {
+    let mut parser = String::new();
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("rd ") {
-            rd.push_str(rest);
-            rd.push('\n');
-        } else if let Some(rest) = line.strip_prefix("lr ") {
-            lr.push_str(rest);
-            lr.push('\n');
+        if let Some(rest) = line.strip_prefix("lr ") {
+            parser.push_str(rest);
+            parser.push('\n');
         }
     }
-    (rd, lr)
+    parser
 }
 
 fn read_selected_root(package: &TempDir) -> String {

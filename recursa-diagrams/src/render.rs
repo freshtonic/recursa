@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn annotations_render_as_hover_titles_without_inline_text() {
         let annotated = DiagramNode::Annotated {
-            note: "greedy(SELECT, WITH)".into(),
+            note: "precedence(SELECT, WITH)".into(),
             body: Box::new(DiagramNode::NonTerminal {
                 label: "Query".into(),
                 link: Some("struct.Query.html".into()),
@@ -518,11 +518,11 @@ mod tests {
         };
         let svg = diagram_svg(&annotated, "Root");
         assert!(
-            svg.contains("<g class=\"annotated\"><title>greedy(SELECT, WITH)</title>"),
+            svg.contains("<g class=\"annotated\"><title>precedence(SELECT, WITH)</title>"),
             "the note becomes the group's hover title:\n{svg}"
         );
         assert!(
-            !svg.contains(">greedy(SELECT, WITH)</text>"),
+            !svg.contains(">precedence(SELECT, WITH)</text>"),
             "the note never becomes drawn diagram text:\n{svg}"
         );
         assert!(svg.contains("cursor: help"), "svg:\n{svg}");
@@ -536,7 +536,10 @@ mod tests {
         );
         assert_eq!(
             (svg_attribute(&svg, "width"), svg_attribute(&svg, "height")),
-            (svg_attribute(&bare, "width"), svg_attribute(&bare, "height")),
+            (
+                svg_attribute(&bare, "width"),
+                svg_attribute(&bare, "height")
+            ),
             "an annotation leaves the diagram geometry unchanged",
         );
     }

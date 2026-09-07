@@ -18,8 +18,6 @@ pub(super) struct TokenParsePlan {
     pub(super) kind_variant: Ident,
     /// Reclaimable fixed kinds accepted as this content token.
     pub(super) accepted_kind_variants: Vec<Ident>,
-    /// Diagnostic atom describing this token at parse failures.
-    pub(super) expected: ExpectedSet,
     /// Whether values retain exact matched source text.
     pub(super) capture: PlannedCapturePolicy,
     /// Deterministic synthesized spelling used by generated `Arbitrary`.
@@ -190,6 +188,24 @@ pub(super) fn render_token(
     index: usize,
     parsers: &ParserSet,
 ) -> proc_macro2::TokenStream {
+    render_token_impl(plan, token, index, Some(parsers))
+}
+
+/// Renders a content token for the non-authoritative debug capability bundle.
+pub(super) fn render_token_capabilities(
+    plan: &EmissionPlan,
+    token: &TokenParsePlan,
+    index: usize,
+) -> proc_macro2::TokenStream {
+    render_token_impl(plan, token, index, None)
+}
+
+fn render_token_impl(
+    plan: &EmissionPlan,
+    token: &TokenParsePlan,
+    index: usize,
+    parsers: Option<&ParserSet>,
+) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let ident = &token.ident;
@@ -225,42 +241,15 @@ pub(super) fn render_token(
             }
         }
     };
-    // The expectation guard in the generated parse method admits only the accepted kinds,
-    // so the grammar-wide `__recursa_typed_kind` table yields exactly the accepted variant.
-    // Sharing that table avoids one kind-to-variant match per content-token type.
-    let parsed_kind = stores_kind.then(
-        || quote!(kind: #module_anchor::__recursa_lexical::__recursa_typed_kind(record.kind),),
-    );
-    let expected = render_expected_set(plan, &token.expected);
-    let capture = token.capture.render(facade);
-    let parse_impls = parsers.iter().map(|parser| match parser.tables() {
-        Some(lr) => render_token_items(plan, token, lr, parser),
-        None => quote! {
-            impl<'input, A> #facade::__private::Parse<'input, A, #facade::__private::RecursiveDescent>
-                for #ident<'input>
-            {
-                const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
-                fn grammar() -> &'static #facade::__private::GrammarInfo {
-                    &#module_anchor::__RECURSA_GRAMMAR
-                }
-                fn root_follow() -> &'static #facade::__private::FollowSet {
-                    &#module_anchor::__RECURSA_EMPTY_FOLLOW
-                }
-                fn parse(
-                    context: &mut #facade::__private::ParseContext<'_, 'input, A>,
-                ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
-                    let Some(record) = context.peek(0) else {
-                        return Err(context.unexpected(&#expected));
-                    };
-                    if !#expected.contains(record.kind) {
-                        return Err(context.unexpected(&#expected));
-                    }
-                    context.advance();
-                    let text = context.matched_text(record)?;
-                    context.finish(Self { text, #parsed_kind }, record.span)
-                }
-            }
-        },
+    let parse_impls = parsers.into_iter().flat_map(ParserSet::iter).map(|parser| {
+        render_token_items(
+            plan,
+            token,
+            parser
+                .tables()
+                .expect("the sole parser always has LR tables"),
+            parser,
+        )
     });
     let parse_impl = quote!(#(#parse_impls)*);
     let mut standard_derives = token

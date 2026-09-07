@@ -1,8 +1,8 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
 use crate::input::TokenRecord;
+use crate::parsed::GeneratedParse;
 use crate::parsed::ViewCursor;
-use crate::parsed::{GeneratedParse, ParserMarker};
 use crate::{
     ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap, Span,
 };
@@ -78,8 +78,6 @@ pub enum ParseDiagnosticKind {
     UnexpectedToken,
     /// Required syntax remains after the final token.
     UnexpectedEof,
-    /// A Pratt extender is also admitted by the caller's FOLLOW set.
-    PrattAmbiguity,
     /// A generated token record contains an invalid source range.
     InvalidTokenSpan,
     /// Parser input belongs to different grammar metadata.
@@ -173,7 +171,6 @@ pub(crate) fn parse_failure_from_error<'input>(
     let kind = match error.kind() {
         ParseErrorKind::UnexpectedToken => ParseDiagnosticKind::UnexpectedToken,
         ParseErrorKind::UnexpectedEof => ParseDiagnosticKind::UnexpectedEof,
-        ParseErrorKind::PrattAmbiguity => ParseDiagnosticKind::PrattAmbiguity,
         ParseErrorKind::LexicalError => ParseDiagnosticKind::LexicalError,
         ParseErrorKind::InvalidTokenSpan => ParseDiagnosticKind::InvalidTokenSpan,
         ParseErrorKind::GrammarMismatch => ParseDiagnosticKind::GrammarMismatch,
@@ -1239,10 +1236,8 @@ pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
 /// `Root` must be the same generated Node type for every lifetime.
 #[doc(hidden)]
 pub unsafe trait ExplorerRootFamily: 'static {
-    /// The parser style selected by this generation's default input.
-    type Parser: ParserMarker;
     /// The root Node type for one input lifetime.
-    type Root<'input>: GeneratedParse<'input, (), Self::Parser> + ExplorerRoot + 'input;
+    type Root<'input>: GeneratedParse<'input> + ExplorerRoot + 'input;
 }
 
 /// Tests one complete strict root against a generated static variant identity.
@@ -1449,7 +1444,7 @@ pub fn parse_root<'input, F: ExplorerRootFamily>(
     source: &'input str,
 ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>> {
     let lexed = lex(source);
-    let grammar = <F::Root<'input> as GeneratedParse<'input, (), F::Parser>>::grammar();
+    let grammar = <F::Root<'input> as GeneratedParse<'input>>::grammar();
     let lexical_errors = lexed
         .records()
         .iter()
@@ -1457,7 +1452,7 @@ pub fn parse_root<'input, F: ExplorerRootFamily>(
         .map(|record| record.span)
         .collect::<Vec<_>>();
     let mut input = lexed.input(grammar);
-    parse_document::<F::Root<'input>, (), F::Parser>(&mut input, lexical_errors)
+    parse_document::<F::Root<'input>, ()>(&mut input, lexical_errors)
 }
 
 /// Produces one root family's deterministic synthetic document.
@@ -1493,15 +1488,12 @@ pub fn pretty_root<T: crate::Pretty>(
 /// Lexical errors take precedence and are all retained. A successful root
 /// parse must also consume every token before its typed value is erased.
 ///
-/// The explorer adapter belongs to the default parser, so the root runs
-/// through the parser marker selected by the generated root family.
-fn parse_document<'input, T, A, P>(
+fn parse_document<'input, T, A>(
     input: &mut Input<'input, A>,
     lexical_errors: impl IntoIterator<Item = Span>,
 ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>
 where
-    T: GeneratedParse<'input, A, P> + ExplorerRoot + 'input,
-    P: ParserMarker,
+    T: GeneratedParse<'input, A> + ExplorerRoot + 'input,
 {
     let source = input.source();
     let lexical_diagnostics = lexical_errors
@@ -1522,7 +1514,7 @@ where
         });
     }
 
-    let parsed = crate::parsed::parse_spanned::<T, A, P>(input)
+    let parsed = crate::parsed::parse_spanned::<T, A>(input)
         .map_err(|error| parse_failure_from_error(source, error))?;
 
     if let Some(record) = input.peek(0) {

@@ -42,9 +42,42 @@ use super::grammar::{
 };
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
 use crate::{
-    ContainerShape, DeclId, GrammarDescription, KindSet, PrattPosition, PrattVariant,
-    RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
+    AtomExpression, AtomId, ContainerShape, DeclId, GrammarDescription, KindSet, PrattPosition,
+    PrattVariant, RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
 };
+
+/// Expands atom membership into concrete token-kind sets for LR lowering.
+pub(crate) fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
+    fn expand(id: AtomId, grammar: &GrammarDescription, cache: &mut [Option<KindSet>]) -> KindSet {
+        if let Some(cached) = &cache[id.index()] {
+            return cached.clone();
+        }
+        let mut result = KindSet::empty(grammar.kind_count);
+        match &grammar.atoms[id.index()].expression {
+            AtomExpression::Kind(kind) => {
+                result.insert(*kind).expect("validated kind ID");
+            }
+            AtomExpression::Category(members) | AtomExpression::Class(members) => {
+                for member in members {
+                    result.union_assign(&expand(*member, grammar, cache));
+                }
+            }
+            AtomExpression::Target { base, admits } => {
+                result.union_assign(&expand(*base, grammar, cache));
+                for admitted in admits {
+                    result.union_assign(&expand(*admitted, grammar, cache));
+                }
+            }
+        }
+        cache[id.index()] = Some(result.clone());
+        result
+    }
+
+    let mut cache = vec![None; grammar.atoms.len()];
+    (0..grammar.atoms.len())
+        .map(|index| expand(AtomId::new(index as u32), grammar, &mut cache))
+        .collect()
+}
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// A distinct Pratt language: a Pratt type minus some of its variants, of any position (a
@@ -250,7 +283,7 @@ fn text_predicate_diagnostics(grammar: &GrammarDescription) -> Vec<LrDiagnostic>
             code: TEXT_PREDICATE,
             message: format!(
                 "token type `{}` matches {rendered}; text predicates are not supported by the \
-                 table-driven parser style",
+                 Recursa parser",
                 description.name
             ),
             path: String::new(),
@@ -621,7 +654,10 @@ fn strip_boxes(shape: &ContainerShape) -> (u32, &ContainerShape) {
 }
 
 /// Computes the FIRST kinds and nullability of every normalized type by fixpoint.
-fn first_sets(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> (Vec<KindSet>, Vec<bool>) {
+pub(crate) fn first_sets(
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> (Vec<KindSet>, Vec<bool>) {
     let kind_count = grammar.kind_count;
     let mut first = vec![KindSet::empty(kind_count); grammar.types.len()];
     let mut nullable = vec![false; grammar.types.len()];
@@ -698,16 +734,258 @@ fn first_sets(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> (Vec<Kind
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The facts needed from a language's prefixes of at most two tokens.
+///
+/// The separated-tail test uses only the union at each position and whether a complete
+/// derivation has length zero or one. Keeping those facts symbolically avoids materializing the
+/// Cartesian product of token-kind pairs for every normalized type.
+struct PrefixSummary {
+    /// Whether the language has any productive derivation.
+    productive: bool,
+    /// Whether the language has an empty derivation.
+    nullable: bool,
+    /// Whether the language has a complete one-token derivation.
+    one_token: bool,
+    /// Token kinds that occur in the first position of a productive derivation.
+    first: KindSet,
+    /// Token kinds that occur in the second position of a productive derivation.
+    second: KindSet,
+}
+
+impl PrefixSummary {
+    /// Creates the empty language for one grammar width.
+    fn empty(kind_count: usize) -> Self {
+        Self {
+            productive: false,
+            nullable: false,
+            one_token: false,
+            first: KindSet::empty(kind_count),
+            second: KindSet::empty(kind_count),
+        }
+    }
+
+    /// Creates the language containing only the empty derivation.
+    fn epsilon(kind_count: usize) -> Self {
+        Self {
+            productive: true,
+            nullable: true,
+            ..Self::empty(kind_count)
+        }
+    }
+
+    /// Creates a one-token language from its possible token kinds.
+    fn tokens(kinds: &KindSet) -> Self {
+        Self {
+            productive: !kinds.is_empty(),
+            nullable: false,
+            one_token: !kinds.is_empty(),
+            first: kinds.clone(),
+            second: KindSet::empty(kinds.kind_count()),
+        }
+    }
+
+    /// Adds another alternative of the same grammar width.
+    fn union_assign(&mut self, other: &Self) {
+        self.productive |= other.productive;
+        self.nullable |= other.nullable;
+        self.one_token |= other.one_token;
+        self.first.union_assign(&other.first);
+        self.second.union_assign(&other.second);
+    }
+}
+
+/// Concatenates two languages while retaining their symbolic two-token prefix facts.
+fn concat_summaries(left: &PrefixSummary, right: &PrefixSummary) -> PrefixSummary {
+    if !left.productive || !right.productive {
+        return PrefixSummary::empty(left.first.kind_count());
+    }
+    let mut first = left.first.clone();
+    let mut second = left.second.clone();
+    if left.nullable {
+        first.union_assign(&right.first);
+        second.union_assign(&right.second);
+    }
+    if left.one_token {
+        second.union_assign(&right.first);
+    }
+    PrefixSummary {
+        productive: true,
+        nullable: left.nullable && right.nullable,
+        one_token: (left.one_token && right.nullable) || (left.nullable && right.one_token),
+        first,
+        second,
+    }
+}
+
+/// Applies one normalized container shape to a target's symbolic prefix summary.
+fn container_summary(
+    shape: &ContainerShape,
+    target: &PrefixSummary,
+    types: &[PrefixSummary],
+) -> PrefixSummary {
+    match shape {
+        ContainerShape::Direct => target.clone(),
+        ContainerShape::Boxed(inner) => container_summary(inner, target, types),
+        ContainerShape::Optional(inner) => {
+            let mut result = container_summary(inner, target, types);
+            result.union_assign(&PrefixSummary::epsilon(target.first.kind_count()));
+            result
+        }
+        ContainerShape::Repeat {
+            element,
+            cardinality,
+            separator,
+        } => {
+            let element = container_summary(element, target, types);
+            let continuation = if let Some(separator) = separator {
+                concat_summaries(&types[separator.type_id.index()], &element)
+            } else {
+                element.clone()
+            };
+            let mut result = element.clone();
+            loop {
+                let expanded = concat_summaries(&result, &continuation);
+                let mut next = result.clone();
+                next.union_assign(&expanded);
+                if next == result {
+                    break;
+                }
+                result = next;
+            }
+            if *cardinality == RepetitionCardinality::ZeroOrMore {
+                result.union_assign(&PrefixSummary::epsilon(target.first.kind_count()));
+            }
+            result
+        }
+    }
+}
+
+/// Computes the symbolic two-token prefix facts of every normalized type.
+fn two_token_summaries(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Vec<PrefixSummary> {
+    fn sites(
+        ids: &[SiteId],
+        grammar: &GrammarDescription,
+        previous: &[PrefixSummary],
+    ) -> PrefixSummary {
+        let mut result = PrefixSummary::epsilon(grammar.kind_count);
+        for id in ids {
+            let site = &grammar.sites[id.index()];
+            let next = container_summary(&site.container, &previous[site.target.index()], previous);
+            result = concat_summaries(&result, &next);
+        }
+        result
+    }
+
+    let mut summaries = vec![PrefixSummary::empty(grammar.kind_count); grammar.types.len()];
+    loop {
+        let previous = summaries.clone();
+        for (index, description) in grammar.types.iter().enumerate() {
+            summaries[index] = match &description.shape {
+                TypeShape::Token { atom, .. } => PrefixSummary::tokens(&atom_kinds[atom.index()]),
+                TypeShape::Alias { site } => sites(std::slice::from_ref(site), grammar, &previous),
+                TypeShape::Sequence { sites: sequence } => sites(sequence, grammar, &previous),
+                TypeShape::Enum { alternatives } => {
+                    let mut summary = PrefixSummary::empty(grammar.kind_count);
+                    for alternative in alternatives {
+                        summary.union_assign(&sites(&alternative.sites, grammar, &previous));
+                    }
+                    summary
+                }
+                TypeShape::Pratt { variants } => {
+                    let mut summary = PrefixSummary::empty(grammar.kind_count);
+                    for variant in variants.iter().filter(|variant| {
+                        matches!(
+                            variant.position,
+                            PrattPosition::Atom | PrattPosition::Prefix { .. }
+                        )
+                    }) {
+                        summary.union_assign(&sites(&variant.sites, grammar, &previous));
+                    }
+                    summary
+                }
+            };
+        }
+        if summaries == previous {
+            return summaries;
+        }
+    }
+}
+
+/// Finds optional suffixes that must inline after a separated list so the suffix can own the
+/// shared separator without an epsilon reduction.
+fn separated_tail_sites(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> BTreeSet<SiteId> {
+    let prefixes = two_token_summaries(grammar, atom_kinds);
+    let mut tails = vec![None; grammar.sites.len()];
+    let mut record = |sequence: &[SiteId]| {
+        for pair in sequence.windows(2) {
+            tails[pair[0].index()] = Some(pair[1]);
+        }
+    };
+    for description in &grammar.types {
+        match &description.shape {
+            TypeShape::Alias { .. } | TypeShape::Token { .. } => {}
+            TypeShape::Sequence { sites } => record(sites),
+            TypeShape::Enum { alternatives } => {
+                for alternative in alternatives {
+                    record(&alternative.sites);
+                }
+            }
+            TypeShape::Pratt { variants } => {
+                for variant in variants {
+                    record(&variant.sites);
+                }
+            }
+        }
+    }
+
+    grammar
+        .sites
+        .iter()
+        .enumerate()
+        .filter_map(|(index, site)| {
+            let semantics = site.container.semantics()?;
+            if !semantics.cardinality.is_repeated() {
+                return None;
+            }
+            let separator = semantics
+                .separator
+                .filter(|separator| !separator.optional_trailing)?;
+            let tail = tails[index]?;
+            let tail_site = &grammar.sites[tail.index()];
+            if tail_site.container.semantics()?.cardinality
+                != crate::ir::ContainerCardinality::Optional
+            {
+                return None;
+            }
+            let separator_prefixes = &prefixes[separator.type_id.index()];
+            if !separator_prefixes.productive || separator_prefixes.nullable {
+                return None;
+            }
+            let tail_prefixes = &prefixes[tail_site.target.index()];
+            if !tail_prefixes.productive || tail_prefixes.nullable || tail_prefixes.one_token {
+                return None;
+            }
+            if tail_prefixes.first != separator_prefixes.first {
+                return None;
+            }
+            let element_first = &prefixes[site.target.index()].first;
+            (!element_first.is_empty()
+                && !tail_prefixes
+                    .second
+                    .intersects(element_first)
+                    .expect("prefix facts share one grammar width"))
+            .then_some(tail)
+        })
+        .collect()
+}
+
 impl<'a> Lowering<'a> {
     /// Creates the terminals and one nonterminal per type that needs one.
     fn new(grammar: &'a GrammarDescription, roles: &'a TypeRoles) -> Self {
-        let atom_kinds = crate::analysis::expand_atoms(grammar);
+        let atom_kinds = expand_atoms(grammar);
         let (first, _) = first_sets(grammar, &atom_kinds);
-        let separated_tail_sites = crate::analysis::FirstSequenceAnalysis::for_grammar(grammar)
-            .separated_list_continuations()
-            .into_iter()
-            .map(|continuation| continuation.tail)
-            .collect();
+        let separated_tail_sites = separated_tail_sites(grammar, &atom_kinds);
         let kind_count = grammar.kind_count;
         let mut content_kinds = KindSet::empty(kind_count);
         let mut fixed_kinds = KindSet::empty(kind_count);
@@ -1152,7 +1430,7 @@ impl<'a> Lowering<'a> {
                     code: NO_PRECEDENCE_EQUIVALENT,
                     message: format!(
                         "Pratt variant `{}` has lbp = {lbp} and rbp = {rbp}, which no rule \
-                         precedence reproduces; the table-driven parser style needs rbp = lbp + 1 \
+                         precedence reproduces; the Recursa parser needs rbp = lbp + 1 \
                          (left-associative), rbp = lbp or rbp = lbp - 1 (right-associative)",
                         self.grammar.declarations[variant.declaration.index()].name
                     ),
@@ -1204,8 +1482,7 @@ impl<'a> Lowering<'a> {
             }
             break;
         }
-        // A repetition that ends the rule stops only before the caller FOLLOW, so recursive
-        // descent decides the rule's end by it.
+        // A final repetition lowers to a rejecting tail action until its LR reduction applies.
         let tail = if matches!(
             lowerings.last(),
             Some(SiteLowering::OneOrMore { .. } | SiteLowering::ZeroOrMore { .. })

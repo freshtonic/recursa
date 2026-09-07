@@ -36,8 +36,8 @@ use crate::source_model::{
     AttachedFixedSyntax, ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement,
     MaterializedPrettyBoundary, NodeBody, PrattExtensionFilter, PrettyBoundaryProver,
     PrettyPatternCatalogId, SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar,
-    SourcePrattPosition, SourcePrattVariant, TokenDefinitionKind,
-    materialized_pretty_boundary_changes_lexing, materialized_pretty_lexical_patterns,
+    SourcePrattPosition, SourcePrattVariant, materialized_pretty_boundary_changes_lexing,
+    materialized_pretty_lexical_patterns,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -1144,14 +1144,7 @@ impl Materializer {
     }
 
     /// Derives the kind for definition while materializing grammar applications and container shapes.
-    /// Describes the authored item a site came from and attaches the `#[greedy(...)]`
-    /// acceptance that covers it, if any.
-    ///
-    /// A field attribute wins over its variant's, and a variant's over its Node's. The
-    /// acceptance identity is the attribute's index in the source model, so every site
-    /// materialized from the same authored attribute (across generic applications, across the
-    /// fields of one variant, or across every variant of a Node) shares one identity and is
-    /// matched as one group.
+    /// Describes the authored item a site came from.
     fn with_greedy(
         &self,
         application: &MaterializedNodeApplication,
@@ -1199,38 +1192,13 @@ impl Materializer {
                 .find(|candidate| candidate.id == variant)
                 .map(|candidate| candidate.ident.clone());
         }
-        let declaration = declaration.with_authored(crate::AuthoredSite {
+        declaration.with_authored(crate::AuthoredSite {
             node: node.ident.clone(),
             variant: variant_ident,
             field: field_name,
             index,
             role,
-        });
-        let Some((position, greedy)) = self
-            .source_model()
-            .greedy
-            .iter()
-            .enumerate()
-            .filter(|(_, greedy)| greedy.owner.covers(application.node, variant_id, field))
-            .min_by_key(|(_, greedy)| greedy.owner.specificity())
-        else {
-            return declaration;
-        };
-        let id = u32::try_from(position).expect("greedy acceptance count fits u32");
-        match &greedy.kinds {
-            crate::source_model::GreedyKindNames::All => {
-                declaration.with_greedy(crate::GreedyAcceptance::all(id))
-            }
-            crate::source_model::GreedyKindNames::Exact(definitions) => {
-                let mut kinds = definitions
-                    .iter()
-                    .map(|definition| self.kind_for_definition(*definition))
-                    .collect::<Vec<_>>();
-                kinds.sort_unstable();
-                kinds.dedup();
-                declaration.with_greedy(crate::GreedyAcceptance::new(id, kinds))
-            }
-        }
+        })
     }
 
     /// Attaches the `#[parse(prec = NAME)]` override of the Node or variant `owner` to its
@@ -3304,7 +3272,6 @@ impl Materializer {
                 .segments
                 .join("::"),
             self.lexical_plan().token_kinds.len(),
-            self.resolved().build_inputs.max_lookahead,
             self.resolved().build_inputs.text_equivalence,
         );
         grammar.source_count = self
@@ -3316,7 +3283,6 @@ impl Materializer {
             .expect("source count overflow");
         let mut kind_atoms = Vec::with_capacity(self.lexical_plan().token_kinds.len());
         let mut fixed_types = BTreeMap::new();
-        let mut fixed_kinds_by_spelling = BTreeMap::new();
         for kind_plan in &self.lexical_plan().token_kinds {
             // A merged kind has no token definition; its evidence is the `lookahead` declaration.
             if let crate::lexical::TokenKindIdentity::Merged(merged) = &kind_plan.identity {
@@ -3378,10 +3344,6 @@ impl Materializer {
                 kind_plan.identity,
                 crate::lexical::TokenKindIdentity::Fixed(_)
             ) {
-                let TokenDefinitionKind::Fixed(fixed) = &source_definition.kind else {
-                    unreachable!("a fixed lexical kind has a fixed source definition")
-                };
-                fixed_kinds_by_spelling.insert(fixed.spelling.as_str(), kind);
                 let ty = grammar.push_type(TypeDescription::new(
                     &name,
                     declaration,
@@ -3391,14 +3353,6 @@ impl Materializer {
                     },
                 ));
                 fixed_types.insert(kind, ty);
-            }
-        }
-        for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
-            if let (Some(open), Some(close)) = (
-                fixed_kinds_by_spelling.get(open),
-                fixed_kinds_by_spelling.get(close),
-            ) {
-                grammar.push_balanced_delimiter(*open, *close);
             }
         }
         grammar.lookahead_filters = self
@@ -5976,7 +5930,6 @@ recursa::grammar! { module = crate::invalid }
             r#"
 recursa::grammar! {
     module = crate::arith,
-    max_lookahead = 3,
     keyword_matching = ascii_insensitive,
 }
 #[derive(recursa::Node)]
@@ -5997,12 +5950,10 @@ struct Expression<'input> {
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let materialized = report.lowered.unwrap();
         let build_inputs = &materialized.source_modeled.resolved().build_inputs;
-        assert_eq!(build_inputs.max_lookahead, 3);
         assert_eq!(
             build_inputs.text_equivalence,
             crate::TextEquivalence::AsciiInsensitive,
         );
-        assert_eq!(materialized.grammar.max_lookahead, 3);
         assert_eq!(
             materialized.grammar.text_equivalence,
             crate::TextEquivalence::AsciiInsensitive,
@@ -6031,13 +5982,12 @@ struct Expression<'input> {
             materialized.grammar.types[correlation.lowered.index()].name,
             "arith::Binary<arith::Number>",
         );
-        let analysis = crate::analyze(&materialized.grammar);
-        assert!(
-            analysis.diagnostics.is_empty(),
-            "{:?}",
-            analysis.diagnostics
-        );
-        assert!(analysis.output.is_some());
+        let analysis = crate::lr::LrAnalysis::from_lowered(
+            &materialized,
+            crate::lr::AutomatonOptions::default(),
+        )
+        .expect("materialized generic applications lower to LR");
+        assert!(analysis.diagnostics.is_empty());
         assert!(materialized.lowering_map.fields.iter().all(|correlation| {
             materialized
                 .source_modeled
@@ -7085,16 +7035,9 @@ struct Root {
             lowered.grammar.sites[site.index()].container,
             ContainerShape::Direct
         )));
-        let analysis = crate::analyze(&lowered.grammar);
-        assert!(
-            analysis.diagnostics.is_empty(),
-            "{:?}",
-            analysis.diagnostics
-        );
         let projection = crate::semantic_projection::canonical_semantic_projection(
             &crate::source_analysis::AnalyzedGrammar {
                 lowered: lowered.clone(),
-                analysis: analysis.clone(),
             },
         );
         assert!(
@@ -7105,16 +7048,10 @@ struct Root {
             projection.contains("target=attachment("),
             "non-direct attachment decisions remain visible anonymously",
         );
-        let output = analysis.output.unwrap();
-        assert_eq!(
-            output.first(attachment_type).unwrap().kinds(),
-            output
-                .first(lowered.grammar.sites[unit_sites[0].index()].target)
-                .unwrap()
-                .kinds(),
-            "FIRST for the field container begins at its attached fixed prefix",
-        );
-        assert!(!output.first(attachment_type).unwrap().nullable);
+        let lr =
+            crate::lr::LrAnalysis::from_lowered(&lowered, crate::lr::AutomatonOptions::default())
+                .expect("the attachment grammar lowers to LR");
+        assert!(lr.diagnostics.is_empty());
         let field = root.parsed_fields().next().unwrap();
         let MaterializedElement::SemanticField {
             attachment: Some(attachment),
@@ -7144,14 +7081,8 @@ struct Root {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let lowered = report.lowered.expect("named grammar materializes");
-        let analysis = crate::analyze(&lowered.grammar);
-        assert!(
-            analysis.diagnostics.is_empty(),
-            "{:?}",
-            analysis.diagnostics
-        );
         let projection = crate::semantic_projection::canonical_semantic_projection(
-            &crate::source_analysis::AnalyzedGrammar { lowered, analysis },
+            &crate::source_analysis::AnalyzedGrammar { lowered },
         );
         assert!(projection.contains("type named::__recursa_attachment = sequence("));
         assert!(projection.contains("target=named::__recursa_attachment"));
@@ -7180,14 +7111,8 @@ struct Root {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let lowered = report.lowered.expect("ordinal grammar materializes");
-        let analysis = crate::analyze(&lowered.grammar);
-        assert!(
-            analysis.diagnostics.is_empty(),
-            "{:?}",
-            analysis.diagnostics
-        );
         let projection = crate::semantic_projection::canonical_semantic_projection(
-            &crate::source_analysis::AnalyzedGrammar { lowered, analysis },
+            &crate::source_analysis::AnalyzedGrammar { lowered },
         );
         for ordinal in 0..9 {
             assert!(

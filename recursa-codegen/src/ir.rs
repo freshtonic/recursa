@@ -25,12 +25,8 @@ pub struct GrammarDescription {
     pub name: String,
     /// Number of grammar-local token kinds representable by each [`KindSet`](crate::KindSet).
     pub kind_count: usize,
-    /// Maximum token prefix semantic analysis may retain for dispatch.
-    pub max_lookahead: usize,
     /// Grammar-wide equivalence relation for exact-text predicates.
     pub text_equivalence: TextEquivalence,
-    /// Fixed token-kind pairs whose nesting may be scanned structurally during dispatch.
-    pub balanced_delimiters: Vec<BalancedDelimiter>,
     /// Number of source identities accepted by [`Location`] values.
     pub source_count: u32,
     /// Root types whose FOLLOW set is seeded with end-of-input.
@@ -54,8 +50,8 @@ pub struct GrammarDescription {
     /// The `precedence { ... }` declaration: levels from lowest to highest binding power,
     /// indexed by [`PrecedenceLevelId`]; empty without one.
     pub precedence: Vec<PrecedenceLevel>,
-    /// Authored resolutions for specific unresolved LR conflict cells. Recursive descent ignores
-    /// these declarations; table-driven analysis validates them after precedence resolution.
+    /// Authored resolutions for specific unresolved LR conflict cells, validated after precedence
+    /// resolution.
     pub lr_conflict_resolutions: Vec<LrConflictResolution>,
 }
 
@@ -116,8 +112,7 @@ pub enum PrecedenceAssociativity {
 /// Only the table-driven lowering reads it: every kind at the level, as a lookahead, has the
 /// level's binding power and associativity, and a rule outside the Pratt hierarchy takes the
 /// level of its last such terminal, or of the level its declaration's
-/// [`precedence`](Declaration::precedence) override names. Recursive descent ignores the
-/// declaration.
+/// [`precedence`](Declaration::precedence) override names.
 pub struct PrecedenceLevel {
     /// The level's associativity.
     pub associativity: PrecedenceAssociativity,
@@ -131,9 +126,9 @@ pub struct PrecedenceLevel {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One `lookahead { MERGED = TOKEN before { TRIGGER, ... } }` declaration over token kinds.
 ///
-/// Only a table-driven parser's token feed produces `merged`, when a `token` record is followed
-/// by a `triggers` record; LR lowering substitutes `merged` for `token` at every rule position a
-/// trigger can follow. Recursive descent ignores the declaration.
+/// The parser's token feed produces `merged` when a `token` record is followed by a `triggers`
+/// record; LR lowering substitutes `merged` for `token` at every rule position a trigger can
+/// follow.
 pub struct LookaheadFilter {
     /// The merged kind, which exists in the kind table but has no lexical rule.
     pub merged: KindId,
@@ -148,15 +143,12 @@ impl GrammarDescription {
     pub fn new(
         name: impl Into<String>,
         kind_count: usize,
-        max_lookahead: usize,
         text_equivalence: TextEquivalence,
     ) -> Self {
         Self {
             name: name.into(),
             kind_count,
-            max_lookahead,
             text_equivalence,
-            balanced_delimiters: Vec::new(),
             source_count: 1,
             entry_types: Vec::new(),
             kinds: Vec::new(),
@@ -240,24 +232,6 @@ impl GrammarDescription {
         self.types.push(description);
         id
     }
-
-    /// Registers one fixed opening and closing token-kind pair for structural dispatch.
-    pub fn push_balanced_delimiter(&mut self, open: KindId, close: KindId) {
-        let delimiter = BalancedDelimiter { open, close };
-        if !self.balanced_delimiters.contains(&delimiter) {
-            self.balanced_delimiters.push(delimiter);
-            self.balanced_delimiters.sort_unstable();
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// One fixed delimiter pair whose nested occurrences have balanced structural meaning.
-pub struct BalancedDelimiter {
-    /// Opening token kind.
-    pub open: KindId,
-    /// Closing token kind.
-    pub close: KindId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,8 +257,6 @@ pub struct Declaration {
     pub name: String,
     /// Authored location that introduced the declaration.
     pub location: LocationId,
-    /// Accepted greedy FOLLOW overlap declared by `#[greedy(...)]` at this declaration.
-    pub greedy: Option<GreedyAcceptance>,
     /// The `precedence` level a `#[parse(prec = NAME)]` at this declaration names, bison's
     /// `%prec`: the rules lowered from the declaration take that level's precedence.
     pub precedence: Option<PrecedenceLevelId>,
@@ -298,7 +270,6 @@ impl Declaration {
         Self {
             name: name.into(),
             location,
-            greedy: None,
             precedence: None,
             authored: None,
         }
@@ -317,53 +288,6 @@ impl Declaration {
         self.authored = Some(authored);
         self
     }
-
-    /// Attaches one `#[greedy(...)]` acceptance to this declaration.
-    #[must_use]
-    pub fn with_greedy(mut self, acceptance: GreedyAcceptance) -> Self {
-        self.greedy = Some(acceptance);
-        self
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// One authored `#[greedy(KIND, ...)]` acceptance of a caller-FOLLOW overlap.
-///
-/// Every parse site whose declaration carries the same `id` belongs to one acceptance: an
-/// attribute on a variant covers every semantic site of that variant. Analysis requires the
-/// union of the overlaps found at those sites to equal `kinds` exactly.
-pub struct GreedyAcceptance {
-    /// Identity shared by every declaration that one authored attribute covers.
-    pub id: u32,
-    /// Kinds the author accepts as consumed greedily at this site.
-    pub kinds: GreedyKinds,
-}
-
-impl GreedyAcceptance {
-    /// Declares one acceptance identity over exactly the given kinds.
-    pub fn new(id: u32, kinds: Vec<KindId>) -> Self {
-        Self {
-            id,
-            kinds: GreedyKinds::Exact(kinds),
-        }
-    }
-
-    /// Declares one acceptance identity over whatever overlap analysis finds.
-    pub fn all(id: u32) -> Self {
-        Self {
-            id,
-            kinds: GreedyKinds::All,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// The kinds one `#[greedy(...)]` acceptance names.
-pub enum GreedyKinds {
-    /// The overlap must contain exactly these kinds.
-    Exact(Vec<KindId>),
-    /// `#[greedy(all)]`: any non-empty overlap is accepted, the deliberate opt-out of exactness.
-    All,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

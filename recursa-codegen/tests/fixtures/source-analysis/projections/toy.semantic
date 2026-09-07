@@ -1,7 +1,7 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/toy.rs description=src/descriptions/toy.rs
 transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
 recursa-semantic-projection-v1
-grammar edition=Rust2024 anchor=toy max_lookahead=1 equivalence=Sensitive
+grammar edition=Rust2024 anchor=toy equivalence=Sensitive
 
 [lexical]
 equivalence Sensitive
@@ -40,22 +40,10 @@ type toy::IdentHolder = sequence(toy::IdentHolder::element0:toy::IdentHolder tar
 field toy::IdentHolder::ident -> parse-site(toy::IdentHolder::element0)
 
 [analysis]
-facts Ident first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts fixed:( first=[fixed:(] nullable=false extenders=[-] follow=[] first^k=fixed:( -> caller-follow
-facts fixed:) first=[fixed:)] nullable=false extenders=[-] follow=[] first^k=fixed:) -> caller-follow
-facts fixed:, first=[fixed:,] nullable=false extenders=[-] follow=[] first^k=fixed:, -> caller-follow
-facts fixed:; first=[fixed:;] nullable=false extenders=[-] follow=[EOF] first^k=fixed:; -> caller-follow
-facts toy::IdentHolder first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts toy::SemicolonStmt first=[fixed:;] nullable=false extenders=[-] follow=[EOF] first^k=fixed:; -> caller-follow
-
-[decisions]
-follow toy::SemicolonStmt::element0 caller
-follow toy::IdentHolder::element0 caller
-container toy::SemicolonStmt::element0 Direct element=[fixed:;] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[fixed:;]--> Done
-container toy::IdentHolder::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
-
-[failures]
-failure toy::SemicolonStmt toy::SemicolonStmt::element0 RequiredSite expected=static[fixed:;]
-failure toy::IdentHolder toy::IdentHolder::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+facts Ident first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false
+facts fixed:( first=[fixed:(] nullable=false
+facts fixed:) first=[fixed:)] nullable=false
+facts fixed:, first=[fixed:,] nullable=false
+facts fixed:; first=[fixed:;] nullable=false
+facts toy::IdentHolder first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false
+facts toy::SemicolonStmt first=[fixed:;] nullable=false
