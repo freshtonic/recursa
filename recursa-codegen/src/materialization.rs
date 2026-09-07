@@ -1221,6 +1221,7 @@ impl Materializer {
         }
     }
 
+    /// Resolves the lowered lexical kind corresponding to a source token definition.
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
         self.lexical_plan()
             .lowering_map

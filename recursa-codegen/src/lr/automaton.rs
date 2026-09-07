@@ -919,15 +919,15 @@ fn closure(grammar: &LrGrammar, kernel: &[Item]) -> Vec<Item> {
     let mut added = vec![false; grammar.nonterminal_count()];
     let mut cursor = 0;
     while cursor < items.len() {
-        if let Some(Symbol::Nonterminal(nonterminal)) = items[cursor].next_symbol(grammar) {
-            if !added[nonterminal.index()] {
-                added[nonterminal.index()] = true;
-                for rule in grammar.rules_of(nonterminal) {
-                    items.push(Item {
-                        rule: *rule,
-                        dot: 0,
-                    });
-                }
+        if let Some(Symbol::Nonterminal(nonterminal)) = items[cursor].next_symbol(grammar)
+            && !added[nonterminal.index()]
+        {
+            added[nonterminal.index()] = true;
+            for rule in grammar.rules_of(nonterminal) {
+                items.push(Item {
+                    rule: *rule,
+                    dot: 0,
+                });
             }
         }
         cursor += 1;
@@ -969,7 +969,7 @@ fn compute_lookaheads(
     for (index, (_, _, target)) in transitions.iter().enumerate() {
         let target_state = &lr0.states[target.index()];
         let mut set = TerminalSet::empty(width);
-        for (symbol, _) in &target_state.transitions {
+        for symbol in target_state.transitions.keys() {
             match symbol {
                 Symbol::Terminal(terminal) => set.insert(*terminal),
                 Symbol::Nonterminal(nonterminal) => {
@@ -1004,11 +1004,11 @@ fn compute_lookaheads(
             }
             let mut state = *origin;
             for (position, symbol) in rule.rhs.iter().enumerate() {
-                if let Symbol::Nonterminal(inner) = symbol {
-                    if nullable_suffix[position + 1] {
-                        let inner_index = transition_index[&(state, *inner)];
-                        includes[inner_index].push(index as u32);
-                    }
+                if let Symbol::Nonterminal(inner) = symbol
+                    && nullable_suffix[position + 1]
+                {
+                    let inner_index = transition_index[&(state, *inner)];
+                    includes[inner_index].push(index as u32);
                 }
                 state = lr0.states[state.index()].transitions[symbol];
             }

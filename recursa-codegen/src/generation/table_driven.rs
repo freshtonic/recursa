@@ -58,7 +58,7 @@ use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
 use crate::{KindId, TypeId};
 
 /// Binary table files published beside generated Rust.
-pub(super) const LR_TABLE_ASSET_NAMES: [&str; 13] = [
+pub(super) const LR_TABLE_ASSET_NAMES: [&str; 14] = [
     "lr-pact.bin",
     "lr-table.bin",
     "lr-check.bin",
@@ -68,6 +68,7 @@ pub(super) const LR_TABLE_ASSET_NAMES: [&str; 13] = [
     "lr-r1.bin",
     "lr-r2.bin",
     "lr-value-pops.bin",
+    "lr-reduce-actions.bin",
     "lr-expected-atoms.bin",
     "lr-lookahead.bin",
     "lr-folds.bin",
@@ -92,10 +93,6 @@ struct DispatchArm {
     last: u32,
     /// Where the block's rules are reduced.
     target: DispatchTarget,
-    /// The index of `first` in the target's own rule list: a type's rules need not be one
-    /// block (an exclusion clone's rules come later, a cloned attachment or a helper created in
-    /// the middle of them splits them), so each block carries its own base.
-    local_base: u32,
 }
 
 /// The table facts one grammar type's parse impl needs.
@@ -112,8 +109,8 @@ pub(super) struct StartTables {
 pub(super) struct ApplicationTables {
     /// The start facts, absent for a type without a nonterminal.
     pub(super) start: Option<StartTables>,
-    /// The rules, local index order.
-    pub(super) rules: Vec<Rule>,
+    /// The application's rules, paired with their grammar-wide identities.
+    pub(super) rules: Vec<(u32, Rule)>,
 }
 
 /// Everything the renderers need from the LR analysis of one generation.
@@ -138,6 +135,8 @@ pub(super) struct TableDrivenRendering {
     carries_value: Vec<bool>,
     /// Whether each grammar type's symbol carries a value; a type inlined as a terminal does not.
     type_carries_value: HashMap<TypeId, bool>,
+    /// Whether each grammar-wide rule must run generated semantic code.
+    reduce_actions: EncodedTable,
     /// Node applications by normalized type, for spelling element types in helper actions.
     application_by_type: HashMap<TypeId, MaterializedApplicationId>,
     /// Content tokens by normalized type, for spelling element types in helper actions.
@@ -210,6 +209,7 @@ impl TableDrivenRendering {
             );
         }
         let mut root_rules = Vec::new();
+        let mut reduce_actions = Vec::with_capacity(grammar.rules().len());
         for (index, rule) in grammar.rules().iter().enumerate() {
             let index = index as u32;
             let target = match &rule.action {
@@ -248,18 +248,19 @@ impl TableDrivenRendering {
                 }
             };
             let Some(target) = target else {
+                reduce_actions.push(u32::from(rule_has_reduce_action(
+                    rule,
+                    &application_by_type,
+                )));
                 continue;
             };
-            let local_base = match target {
-                DispatchTarget::Application(application) => {
-                    let tables = applications
-                        .get_mut(&application)
-                        .expect("every application was indexed");
-                    tables.rules.push(rule.clone());
-                    tables.rules.len() as u32 - 1
-                }
-                DispatchTarget::Token(_) => 0,
-            };
+            reduce_actions.push(1);
+            if let DispatchTarget::Application(application) = target {
+                let tables = applications
+                    .get_mut(&application)
+                    .expect("every application was indexed");
+                tables.rules.push((index, rule.clone()));
+            }
             match arms.last_mut() {
                 Some(arm) if arm.last + 1 == index && same_target(arm.target, target) => {
                     arm.last = index;
@@ -268,7 +269,6 @@ impl TableDrivenRendering {
                     first: index,
                     last: index,
                     target,
-                    local_base,
                 }),
             }
         }
@@ -292,6 +292,7 @@ impl TableDrivenRendering {
                 .map(|nonterminal| nonterminal.carries_value)
                 .collect(),
             type_carries_value,
+            reduce_actions: EncodedTable::unsigned(&reduce_actions),
             application_by_type,
             token_by_type,
             root_rules,
@@ -314,6 +315,7 @@ impl TableDrivenRendering {
             &tables.r1,
             &tables.r2,
             &tables.value_pops,
+            &self.reduce_actions,
             &self.expected_atoms,
             &tables.lookahead,
             &tables.folds,
@@ -344,6 +346,32 @@ impl TableDrivenRendering {
     }
 }
 
+/// One semantically distinct action of a node application and all grammar-wide rules using it.
+struct ApplicationReduceAction<'a> {
+    /// Grammar-wide rule identities routed to this action.
+    rules: Vec<u32>,
+    /// One representative rule from which the action body is rendered.
+    rule: &'a Rule,
+}
+
+/// Coalesces context-cloned rules that execute the same node construction.
+fn application_reduce_actions(tables: &ApplicationTables) -> Vec<ApplicationReduceAction<'_>> {
+    let mut positions = HashMap::<&RuleAction, usize>::new();
+    let mut actions = Vec::<ApplicationReduceAction<'_>>::new();
+    for (global_rule, rule) in &tables.rules {
+        if let Some(position) = positions.get(&rule.action).copied() {
+            actions[position].rules.push(*global_rule);
+        } else {
+            positions.insert(&rule.action, actions.len());
+            actions.push(ApplicationReduceAction {
+                rules: vec![*global_rule],
+                rule,
+            });
+        }
+    }
+    actions
+}
+
 /// Encodes the canonical atom of every token kind, in terminal order, as the atom index plus
 /// one or `0` for a kind without a direct atom.
 fn expected_atoms(grammar: &crate::GrammarDescription) -> Result<EncodedTable, String> {
@@ -363,6 +391,33 @@ fn same_target(left: DispatchTarget, right: DispatchTarget) -> bool {
         (DispatchTarget::Application(a), DispatchTarget::Application(b)) => a == b,
         (DispatchTarget::Token(a), DispatchTarget::Token(b)) => a == b,
         _ => false,
+    }
+}
+
+/// Reports whether reducing `rule` must execute generated semantic code.
+///
+/// State, occurrence and goto bookkeeping remains in the LR loop for every rule. This flag only
+/// skips the generated callback for rules whose semantic value is passed through unchanged or
+/// which exist solely to recognize syntax.
+fn rule_has_reduce_action(
+    rule: &Rule,
+    application_by_type: &HashMap<TypeId, MaterializedApplicationId>,
+) -> bool {
+    match &rule.action {
+        RuleAction::Accept { .. }
+        | RuleAction::FixedSequence { .. }
+        | RuleAction::Attachment { .. }
+        | RuleAction::ListTrailing => false,
+        RuleAction::Token { .. }
+        | RuleAction::Envelope { .. }
+        | RuleAction::ListEmpty { .. }
+        | RuleAction::ListFirst { .. }
+        | RuleAction::ListPush { .. }
+        | RuleAction::ListFromNonEmpty { .. } => true,
+        RuleAction::Construct { type_id, .. } => application_by_type.contains_key(type_id),
+        RuleAction::OptionalAbsent { content } | RuleAction::OptionalPresent { content } => {
+            !matches!(content, OptionalContent::Erased)
+        }
     }
 }
 
@@ -438,8 +493,8 @@ impl TableDrivenRendering {
         Ok(ElementRendering { ty, value })
     }
 
-    /// Renders the reduce action of one helper or envelope rule in the root dispatcher.
-    fn render_root_arm(
+    /// Renders the reduce action of one helper or envelope rule.
+    fn render_root_action(
         &self,
         plan: &EmissionPlan,
         index: u32,
@@ -525,11 +580,7 @@ impl TableDrivenRendering {
                 ));
             }
         };
-        if body.is_empty() {
-            Ok(quote!(#index => Ok(()),))
-        } else {
-            Ok(quote!(#index => { #body Ok(()) }))
-        }
+        Ok(body)
     }
 }
 
@@ -557,6 +608,7 @@ pub(super) fn render_root_items(
         r1,
         r2,
         value_pops,
+        reduce_actions,
         expected_atoms,
         lookahead,
         folds,
@@ -568,44 +620,65 @@ pub(super) fn render_root_items(
         .iter()
         .map(|token| (token.semantic, &token.ident))
         .collect();
-    let application_reducers: HashMap<MaterializedApplicationId, syn::Path> = plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.parse_applications.iter())
-        .map(|application| {
-            Ok((
-                application.application,
-                application_reducer_path(application)?,
-            ))
-        })
-        .collect::<Result<_, String>>()?;
-    let arms = lr.arms.iter().map(|arm| {
-        let (first, last, base) = (arm.first, arm.last, arm.local_base);
+    let arms = lr.arms.iter().filter_map(|arm| {
+        let (first, last) = (arm.first, arm.last);
         match arm.target {
-            DispatchTarget::Application(application) => {
-                let reducer = &application_reducers[&application];
-                let local_rule = if base == 0 {
-                    quote!(rule - #first)
-                } else {
-                    quote!(rule - #first + #base)
-                };
-                quote! {
-                    #first..=#last => #reducer(#local_rule, reduction),
-                }
-            }
+            DispatchTarget::Application(_) => None,
             DispatchTarget::Token(token) => {
                 let ident = token_idents[&token];
-                quote! {
+                Some(quote! {
                     #first..=#last => <#module_anchor::__recursa_content_tokens::#ident<#input_lifetime>>::__recursa_reduce_lr(reduction),
-                }
+                })
             }
         }
     });
-    let root_arms = lr
+    let mut application_arms = Vec::new();
+    for application in plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.parse_applications.iter())
+    {
+        for (action_index, action) in
+            application_reduce_actions(lr.application(application.application))
+                .iter()
+                .enumerate()
+        {
+            let reducer = application_action_reducer_path(application, action_index)?;
+            let rules = &action.rules;
+            application_arms.push(quote! {
+                #(#rules)|* => #reducer(reduction),
+            });
+        }
+    }
+    let root_actions = lr
         .root_rules
         .iter()
-        .map(|(index, rule)| lr.render_root_arm(plan, *index, rule))
+        .map(|(index, rule)| {
+            let body = lr.render_root_action(plan, *index, rule)?;
+            let ident = format_ident!("__recursa_reduce_root_{index}");
+            let arm = if body.is_empty() {
+                quote!(#index => Ok(()),)
+            } else {
+                quote!(#index => #ident(reduction),)
+            };
+            let function = (!body.is_empty()).then(|| {
+                quote! {
+                    #[inline(never)]
+                    fn #ident<#input_lifetime, A>(
+                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                    ) -> Result<(), #facade::ParseError> {
+                        #body
+                        Ok(())
+                    }
+                }
+            });
+            Ok::<_, String>((arm, function))
+        })
         .collect::<Result<Vec<_>, _>>()?;
+    let root_arms = root_actions.iter().map(|(arm, _)| arm);
+    let root_functions = root_actions
+        .iter()
+        .filter_map(|(_, function)| function.as_ref());
     let safety = "Reduce actions of the helper nonterminals and presence envelopes. SAFETY: each \
                   `pop` names the type the child rule's action pushed for the same grammar \
                   symbol, spelled through the element's node type or content-token path.";
@@ -614,27 +687,35 @@ pub(super) fn render_root_items(
         pub(crate) mod __recursa_lr {
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
-                #expected_atoms, #lookahead, #folds, #tail, #mandatory,
+                #reduce_actions, #expected_atoms, #lookahead, #folds, #tail, #mandatory,
             );
 
             #[doc = #safety]
+            #[allow(clippy::manual_range_patterns)]
+            #[inline(always)]
             pub(crate) fn __recursa_reduce<#input_lifetime, A>(
                 rule: u32,
                 reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
             ) -> Result<(), #facade::ParseError> {
                 match rule {
                     #(#arms)*
+                    #(#application_arms)*
                     #(#root_arms)*
                     _ => Ok(()),
                 }
             }
+
+            #(#root_functions)*
         }
     })
 }
 
 /// Names the declaration-local reducer shim for one materialized node application.
-fn application_reducer_ident(application: &NodeApplicationParsePlan) -> Ident {
-    format_ident!("__recursa_reduce_lr_{}", application.parse_index)
+fn application_action_reducer_ident(
+    application: &NodeApplicationParsePlan,
+    action: usize,
+) -> Ident {
+    format_ident!("__recursa_reduce_lr_{}_{}", application.parse_index, action)
 }
 
 /// Resolves the declaration-local reducer shim without exposing the node type to its ancestors.
@@ -643,7 +724,10 @@ fn application_reducer_ident(application: &NodeApplicationParsePlan) -> Ident {
 /// Replacing the final type segment with the application-unique shim keeps the call at the same
 /// module while removing both the private declaration and its generic arguments from the root
 /// dispatcher's name resolution.
-fn application_reducer_path(application: &NodeApplicationParsePlan) -> Result<syn::Path, String> {
+fn application_action_reducer_path(
+    application: &NodeApplicationParsePlan,
+    action: usize,
+) -> Result<syn::Path, String> {
     let Type::Path(type_path) = &application.ty else {
         return Err("a materialized node application must have a path type".to_owned());
     };
@@ -655,8 +739,9 @@ fn application_reducer_path(application: &NodeApplicationParsePlan) -> Result<sy
         .pop()
         .ok_or_else(|| "a materialized node application path is empty".to_owned())?;
     path.segments
-        .push(syn::PathSegment::from(application_reducer_ident(
+        .push(syn::PathSegment::from(application_action_reducer_ident(
             application,
+            action,
         )));
     Ok(path)
 }
@@ -689,7 +774,7 @@ fn render_parse_impl(
             fn parse(
                 context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
-                #facade::__private::lr_run::<Self, A>(
+                #facade::__private::lr_run::<Self, A, _>(
                     context,
                     &#tables_module::TABLES,
                     #start_state,
@@ -730,124 +815,54 @@ pub(super) fn render_node_application(
     } else {
         quote!(<#input_lifetime, A>)
     };
-    let reducer_ident = application_reducer_ident(application);
-    let actions = tables
-        .rules
-        .iter()
-        .enumerate()
-        .map(|(index, rule)| {
-            render_reduce_body(plan, node, application, lr, rule).map(|body| (index as u32, body))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let coalesced = coalesce_reduce_actions(actions);
-    let effective = coalesced
-        .into_iter()
-        .filter(|action| !is_empty_reduce_body(&action.body))
-        .collect::<Vec<_>>();
-    let reduce_dispatch = if effective.len() == 1 {
-        let action = &effective[0];
-        let indices = &action.indices;
-        let body = &action.body;
-        quote! {
-            if false #(|| rule == #indices)* {
-                #body
-            }
-        }
-    } else {
-        let arms = effective.into_iter().map(|action| {
-            let indices = action.indices;
-            let body = action.body;
-            render_reduce_arm(&indices, &body)
-        });
-        quote! {
-            match rule {
-                #(#arms)*
-                _ => {}
-            }
-        }
-    };
     let safety = "Reduce actions of the table-driven parser. SAFETY: each `pop` names, through \
                   the constructed field's type, the type the child rule's action pushed for the \
                   same grammar symbol, and pops happen in reverse right-hand-side order.";
+    let action_groups = application_reduce_actions(tables);
+    let actions = action_groups
+        .iter()
+        .enumerate()
+        .map(|(action_index, action)| {
+            let reducer_ident = application_action_reducer_ident(application, action_index);
+            let method_ident = format_ident!(
+                "__recursa_reduce_lr_action_{}_{}",
+                application.parse_index,
+                action_index
+            );
+            let body = render_reduce_body(plan, node, application, lr, action.rule)?;
+            let shim = quote! {
+                #[doc = #safety]
+                #[inline(always)]
+                pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                ) -> Result<(), #facade::ParseError> {
+                    <#ty>::#method_ident(reduction)
+                }
+            };
+            let method = quote! {
+                #[doc = #safety]
+                #[inline(never)]
+                fn #method_ident #helper_method_generics(
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                ) -> Result<(), #facade::ParseError> {
+                    #body
+                    Ok(())
+                }
+            };
+            Ok::<_, String>((shim, method))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let shims = actions.iter().map(|(shim, _)| shim);
+    let methods = actions.iter().map(|(_, method)| method);
     Ok(quote! {
         #parse_impl
 
-        #[doc = #safety]
-        pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
-            rule: u32,
-            reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
-        ) -> Result<(), #facade::ParseError> {
-            <#ty>::__recursa_reduce_lr(rule, reduction)
-        }
+        #(#shims)*
 
         impl #helper_impl_generics #ty #helper_where_clause {
-            #[doc = #safety]
-            pub(crate) fn __recursa_reduce_lr #helper_method_generics(
-                rule: u32,
-                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
-            ) -> Result<(), #facade::ParseError> {
-                #reduce_dispatch
-                Ok(())
-            }
+            #(#methods)*
         }
     })
-}
-
-/// Returns whether a reduction body has no semantic effect.
-fn is_empty_reduce_body(body: &proc_macro2::TokenStream) -> bool {
-    syn::parse2::<syn::Block>(body.clone())
-        .map(|block| block.stmts.is_empty())
-        .unwrap_or(false)
-}
-
-/// One semantically distinct node-local reduce action and every local rule index that uses it.
-///
-/// LR lowering deliberately clones rules for contexts such as Pratt minimum binding powers. The
-/// clones still need distinct grammar-wide rules and table entries, but frequently construct the
-/// exact same authored value. Keeping one rendered body behind an or-pattern avoids making rustc
-/// parse, type-check and optimize the same reducer many times.
-struct CoalescedReduceAction {
-    indices: Vec<u32>,
-    body: proc_macro2::TokenStream,
-}
-
-/// Renders one node-local reducer arm without wrapping a single statement in an unnecessary
-/// block. Generated fixtures compile with warnings denied, so a unit construction such as
-/// `reduction.push(Self)` must be emitted directly as the arm expression.
-fn render_reduce_arm(indices: &[u32], body: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-    let pattern = quote!(#(#indices)|*);
-    if let Ok(block) = syn::parse2::<syn::Block>(body.clone())
-        && let [syn::Stmt::Expr(expression, _)] = block.stmts.as_slice()
-    {
-        quote!(#pattern => #expression,)
-    } else {
-        quote!(#pattern => #body)
-    }
-}
-
-/// Coalesces textually identical node-local reduce actions in first-occurrence order.
-///
-/// All actions in one call are methods on the same concrete node application, so equal rendered
-/// Rust has the same input and output types. Rule-specific stack/state accounting remains in the
-/// LR binary tables; only the node construction executed after that accounting is shared here.
-fn coalesce_reduce_actions(
-    actions: Vec<(u32, proc_macro2::TokenStream)>,
-) -> Vec<CoalescedReduceAction> {
-    let mut positions = HashMap::<String, usize>::new();
-    let mut unique = Vec::<CoalescedReduceAction>::new();
-    for (index, body) in actions {
-        let key = body.to_string();
-        if let Some(position) = positions.get(&key).copied() {
-            unique[position].indices.push(index);
-        } else {
-            positions.insert(key, unique.len());
-            unique.push(CoalescedReduceAction {
-                indices: vec![index],
-                body,
-            });
-        }
-    }
-    unique
 }
 
 /// Renders one reduce body: pops for the rule's value-carrying elements and the construction.
@@ -1211,108 +1226,16 @@ mod nested {
         assert!(
             rendered
                 .root
-                .contains("crate :: nested :: __recursa_reduce_lr_0"),
-            "the grammar-root dispatcher must call the declaration-local reducer shim: {}",
+                .contains("crate :: nested :: __recursa_reduce_lr_0_0"),
+            "the grammar-root dispatcher must call the declaration-local action shim: {}",
             rendered.root,
         );
         assert!(
             rendered.nodes[0]
                 .1
-                .contains("pub (in crate) fn __recursa_reduce_lr_0"),
-            "the Node output must expose its reducer shim to the grammar root: {}",
+                .contains("pub (in crate) fn __recursa_reduce_lr_0_0"),
+            "the Node output must expose its action shim to the grammar root: {}",
             rendered.nodes[0].1,
         );
-    }
-
-    #[test]
-    fn identical_node_reduce_bodies_share_one_match_arm() {
-        let actions = vec![
-            (
-                0,
-                quote!({
-                    reduction.push(Node::Value);
-                }),
-            ),
-            (
-                1,
-                quote!({
-                    reduction.push(Node::Other);
-                }),
-            ),
-            (
-                4,
-                quote!({
-                    reduction.push(Node::Value);
-                }),
-            ),
-            (
-                7,
-                quote!({
-                    reduction.push(Node::Value);
-                }),
-            ),
-        ];
-
-        let coalesced = coalesce_reduce_actions(actions);
-
-        assert_eq!(coalesced.len(), 2);
-        assert_eq!(coalesced[0].indices, vec![0, 4, 7]);
-        assert_eq!(coalesced[1].indices, vec![1]);
-        assert!(coalesced[0].body.to_string().contains("Node :: Value"));
-        assert!(coalesced[1].body.to_string().contains("Node :: Other"));
-    }
-
-    #[test]
-    fn reduce_body_coalescing_keeps_first_occurrence_order() {
-        let actions = vec![
-            (
-                2,
-                quote!({
-                    reduction.push(Node::Second);
-                }),
-            ),
-            (
-                3,
-                quote!({
-                    reduction.push(Node::First);
-                }),
-            ),
-            (
-                8,
-                quote!({
-                    reduction.push(Node::Second);
-                }),
-            ),
-        ];
-
-        let coalesced = coalesce_reduce_actions(actions);
-
-        assert_eq!(coalesced[0].indices, vec![2, 8]);
-        assert_eq!(coalesced[1].indices, vec![3]);
-        assert!(coalesced[0].body.to_string().contains("Node :: Second"));
-        assert!(coalesced[1].body.to_string().contains("Node :: First"));
-    }
-
-    #[test]
-    fn singleton_reduce_arms_do_not_emit_unnecessary_braces() {
-        let arm = render_reduce_arm(
-            &[0],
-            &quote!({
-                reduction.push(Node::Value);
-            }),
-        );
-        assert_eq!(
-            arm.to_string(),
-            "0u32 => reduction . push (Node :: Value) ,"
-        );
-
-        let arm = render_reduce_arm(
-            &[1],
-            &quote!({
-                let value = reduction.pop();
-                reduction.push(Node { value });
-            }),
-        );
-        assert!(arm.to_string().contains("1u32 => { let value"));
     }
 }

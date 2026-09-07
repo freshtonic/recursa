@@ -749,7 +749,14 @@ fn split_generated_items(tokens: proc_macro2::TokenStream) -> Result<Vec<RawItem
             let Some(token) = trees.get(keyword) else {
                 return Err(no_terminator(keyword));
             };
-            if is_ident(token, "unsafe") || is_ident(token, "async") || is_ident(token, "default") {
+            if is_ident(token, "unsafe")
+                || is_ident(token, "async")
+                || is_ident(token, "default")
+                || (is_ident(token, "const")
+                    && trees
+                        .get(keyword + 1)
+                        .is_some_and(|next| is_ident(next, "fn")))
+            {
                 keyword += 1;
             } else if is_ident(token, "extern")
                 && trees
@@ -761,12 +768,6 @@ fn split_generated_items(tokens: proc_macro2::TokenStream) -> Result<Vec<RawItem
                 && trees
                     .get(keyword + 1)
                     .is_some_and(|next| is_ident(next, "fn") || is_ident(next, "crate"))
-            {
-                keyword += 1;
-            } else if is_ident(token, "const")
-                && trees
-                    .get(keyword + 1)
-                    .is_some_and(|next| is_ident(next, "fn"))
             {
                 keyword += 1;
             } else {

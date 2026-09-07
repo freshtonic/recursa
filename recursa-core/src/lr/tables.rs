@@ -1,7 +1,8 @@
 //! The packed LALR(1) tables and their decoder.
 //!
 //! The tables mirror bison's `yypact`, `yytable`, `yycheck`, `yydefact`, `yypgoto`, `yydefgoto`,
-//! `yyr1` and `yyr2`, plus Recursa's `value_pops` per rule, `expected_atoms` per terminal
+//! `yyr1` and `yyr2`, plus Recursa's `value_pops` and `reduce_actions` per rule,
+//! `expected_atoms` per terminal
 //! (the symbolic expectation the error path names a terminal by) and its `lookahead` filter
 //! table, the flat `(token, merged, trigger)` triples of the grammar's `lookahead`
 //! declarations, which [`DecodedTables::merged_terminal`] applies to the token feed. Codegen
@@ -63,6 +64,8 @@ pub struct LrTables {
     r2: &'static [u8],
     /// Packed `value_pops`.
     value_pops: &'static [u8],
+    /// Packed `reduce_actions`: `1` when reducing the rule must run generated semantic code.
+    reduce_actions: &'static [u8],
     /// Packed `expected_atoms`: per terminal, its canonical atom plus one, or `0` for none.
     expected_atoms: &'static [u8],
     /// Packed `lookahead`.
@@ -106,6 +109,8 @@ pub struct DecodedTables {
     pub r2: Vec<u32>,
     /// Value-carrying right-hand-side symbols of each rule.
     pub value_pops: Vec<u32>,
+    /// Whether each rule has generated semantic work.
+    pub reduce_actions: Vec<u32>,
     /// Lookahead filters as flat `(token, merged, trigger)` triples.
     pub lookahead: Vec<u32>,
     /// The tail decision of each rule; see [`LrTables::new`].
@@ -138,6 +143,7 @@ impl LrTables {
         r1: &'static [u8],
         r2: &'static [u8],
         value_pops: &'static [u8],
+        reduce_actions: &'static [u8],
         expected_atoms: &'static [u8],
         lookahead: &'static [u8],
         folds: &'static [u8],
@@ -155,6 +161,7 @@ impl LrTables {
             r1,
             r2,
             value_pops,
+            reduce_actions,
             expected_atoms,
             lookahead,
             folds,
@@ -197,6 +204,7 @@ impl LrTables {
             r1: decode_unsigned(self.r1),
             r2: decode_unsigned(self.r2),
             value_pops: decode_unsigned(self.value_pops),
+            reduce_actions: decode_unsigned(self.reduce_actions),
             lookahead: decode_unsigned(self.lookahead),
             tail: decode_unsigned(self.tail),
         })
@@ -223,7 +231,9 @@ impl DecodedTables {
             return kind;
         };
         self.lookahead
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .find(|triple| triple[0] == kind && triple[2] == next)
             .map_or(kind, |triple| triple[1])
     }
@@ -406,6 +416,7 @@ pub(super) mod tests {
         b"BBAACCDD",
         b"BBDBDBDB",
         b"BBCBCBBA",
+        b"BABABAAB",
         b"BBCDEF",
         b"B",
         TEXTBOOK_FOLDS,
@@ -427,6 +438,7 @@ pub(super) mod tests {
         b"BBAACCDD",
         b"BBDBDBDB",
         b"BBCBCBBA",
+        b"BABABAAB",
         b"BBCDEF",
         b"BCED",
         TEXTBOOK_FOLDS,
@@ -448,6 +460,7 @@ pub(super) mod tests {
         b"BBAACCDD",
         b"BBDBDBDB",
         b"BBCBCBBA",
+        b"BABABAAB",
         b"BBCDEF",
         b"BDEA",
         TEXTBOOK_FOLDS,
@@ -469,6 +482,7 @@ pub(super) mod tests {
             r1: vec![1, 0, 0, 2, 2, 3, 3],
             r2: vec![1, 3, 1, 3, 1, 3, 1],
             value_pops: vec![1, 2, 1, 2, 1, 1, 0],
+            reduce_actions: vec![0, 1, 0, 1, 0, 0, 1],
             lookahead: Vec::new(),
             tail: vec![0; 7],
         }
@@ -535,6 +549,7 @@ pub(super) mod tests {
             r1: Vec::new(),
             r2: Vec::new(),
             value_pops: Vec::new(),
+            reduce_actions: Vec::new(),
             lookahead: vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7],
             tail: Vec::new(),
         };

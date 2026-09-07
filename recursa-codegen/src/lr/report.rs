@@ -336,10 +336,10 @@ fn render_state(
         .collect();
     let mut wrote_action = false;
     for (terminal, action) in state.actions() {
-        if let Action::Reduce(rule) = action {
-            if state.default_reduction() == Some(*rule) {
-                continue;
-            }
+        if let Action::Reduce(rule) = action
+            && state.default_reduction() == Some(*rule)
+        {
+            continue;
         }
         let name = grammar.terminal_name(*terminal);
         let _ = writeln!(text, "    {name:<12}{}", render_action(grammar, *action));

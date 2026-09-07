@@ -927,8 +927,8 @@ fn diagram_semantic_element(
     container: &PlannedContainer,
 ) -> Result<DiagramNode, String> {
     match container {
-        PlannedContainer::Direct { .. } if separator.is_none() => Ok(node),
-        PlannedContainer::Optional { .. } if separator.is_none() => {
+        PlannedContainer::Direct if separator.is_none() => Ok(node),
+        PlannedContainer::Optional if separator.is_none() => {
             Ok(DiagramNode::Optional(Box::new(node)))
         }
         PlannedContainer::Repeated {

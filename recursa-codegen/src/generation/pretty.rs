@@ -2082,13 +2082,13 @@ pub(super) fn render_pratt_node_pretty(
                                 // nothing, attachment included.
                                 let optional = matches!(
                                     container.as_ref(),
-                                    PlannedContainer::Optional { .. }
+                                    PlannedContainer::Optional
                                 );
                                 assert!(
                                     (optional
                                         || matches!(
                                             container.as_ref(),
-                                            PlannedContainer::Direct { .. }
+                                            PlannedContainer::Direct
                                         ))
                                         && wrappers.iter().all(|wrapper| {
                                             matches!(wrapper, FieldWrapper::Boxed)

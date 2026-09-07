@@ -5507,6 +5507,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Lowers and validates one authored LR precedence override.
     fn lower_precedence_override(
         &mut self,
         origin: SourceOrigin,
@@ -6679,15 +6680,14 @@ impl TokenCatalog {
                 ));
             }
             let token = self.fixed_by_name.get(&filter.token.name).copied();
-            match token {
-                None => failures.push((
+            if token.is_none() {
+                failures.push((
                     vec![filter.token.site.clone()],
                     format!(
                         "lookahead filter `{name}` merges `{}`, which is not a fixed token",
                         filter.token.name
                     ),
-                )),
-                Some(_) => {}
+                ));
             }
             let mut triggers = Vec::new();
             for trigger in &filter.triggers {
@@ -9360,17 +9360,17 @@ fn parse_precedence_block(
         if !options.is_empty() {
             return Err(options.error("a precedence level takes exactly `bp = N`"));
         }
-        if let Some(previous) = levels.last() {
-            if binding_power <= previous.binding_power {
-                return Err(syn::Error::new(
-                    literal.span(),
-                    format!(
-                        "precedence levels are declared from lowest to highest binding power; \
-                         bp = {binding_power} does not exceed the previous level's bp = {}",
-                        previous.binding_power
-                    ),
-                ));
-            }
+        if let Some(previous) = levels.last()
+            && binding_power <= previous.binding_power
+        {
+            return Err(syn::Error::new(
+                literal.span(),
+                format!(
+                    "precedence levels are declared from lowest to highest binding power; \
+                     bp = {binding_power} does not exceed the previous level's bp = {}",
+                    previous.binding_power
+                ),
+            ));
         }
         let members;
         syn::braced!(members in body);

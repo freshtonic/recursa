@@ -464,7 +464,7 @@ fn encode_signed(values: &[i32]) -> EncodedTable {
 /// Decodes unsigned cells.
 fn decode_unsigned(encoded: &EncodedTable) -> Result<Vec<u32>, DecodeError> {
     let bytes = encoded.text.as_bytes();
-    if encoded.width == 0 || bytes.len() % encoded.width != 0 {
+    if encoded.width == 0 || !bytes.len().is_multiple_of(encoded.width) {
         return Err(DecodeError::RaggedText);
     }
     bytes

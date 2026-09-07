@@ -546,17 +546,17 @@ where
     {
         return false;
     }
-    for index in 0..decisions.len() {
-        if !related(&decisions[index]) {
+    for decision in decisions.iter_mut() {
+        if !related(decision) {
             continue;
         }
-        if !decisions[index]
+        if !decision
             .interior_fence
             .is_some_and(|(start, _)| start < candidate.len())
         {
             continue;
         }
-        if fence_is_consumed::<Token>(source, offset, &mut decisions[index], plan) {
+        if fence_is_consumed::<Token>(source, offset, decision, plan) {
             return true;
         }
     }
