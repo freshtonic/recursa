@@ -1158,6 +1158,10 @@ impl<'document> ExplorerField<'document> {
 pub trait ExplorerSeq {
     /// Number of child values.
     fn len(&self) -> usize;
+    /// Whether there are no child values.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// One child value by repetition ordinal.
     fn get(&self, index: usize) -> Option<&dyn ExplorerNode>;
 }

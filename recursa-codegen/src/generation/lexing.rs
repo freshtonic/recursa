@@ -200,6 +200,7 @@ pub(super) fn render_token_capabilities(
     render_token_impl(plan, token, index, None)
 }
 
+/// Renders either the executable or capability-only implementation for one token.
 fn render_token_impl(
     plan: &EmissionPlan,
     token: &TokenParsePlan,

@@ -69,6 +69,41 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
                 "helper copies: {helper_copies}; reduce/reduce conflicts on $end resolved by declaration order: {}",
                 automaton.end_marker_resolutions().len()
             );
+            let mut nonterminals_by_origin = [0usize; 5];
+            for nonterminal in grammar.nonterminals() {
+                let bucket = match nonterminal.origin {
+                    NonterminalOrigin::Type(_) => 0,
+                    NonterminalOrigin::Start(_) => 1,
+                    NonterminalOrigin::Helper => 2,
+                    NonterminalOrigin::HelperCopy { .. } => 3,
+                    NonterminalOrigin::Restriction { .. } => 4,
+                };
+                nonterminals_by_origin[bucket] += 1;
+            }
+            let mut rules_by_origin = [0usize; 5];
+            for rule in grammar.rules() {
+                let bucket = match grammar.nonterminal(rule.lhs).origin {
+                    NonterminalOrigin::Type(_) => 0,
+                    NonterminalOrigin::Start(_) => 1,
+                    NonterminalOrigin::Helper => 2,
+                    NonterminalOrigin::HelperCopy { .. } => 3,
+                    NonterminalOrigin::Restriction { .. } => 4,
+                };
+                rules_by_origin[bucket] += 1;
+            }
+            println!(
+                "nonterminals by origin: type {} start {} helper {} helper-copy {} restriction {}; rules: type {} start {} helper {} helper-copy {} restriction {}",
+                nonterminals_by_origin[0],
+                nonterminals_by_origin[1],
+                nonterminals_by_origin[2],
+                nonterminals_by_origin[3],
+                nonterminals_by_origin[4],
+                rules_by_origin[0],
+                rules_by_origin[1],
+                rules_by_origin[2],
+                rules_by_origin[3],
+                rules_by_origin[4],
+            );
             let encoded = tables.encode();
             println!(
                 "tables: pact {} table {} check {} defact {} pgoto {} defgoto {} r1 {} r2 {} value_pops {} start_states {} = {} cells, {} encoded bytes",

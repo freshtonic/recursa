@@ -6,6 +6,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Hash)]
+/// Complete generated parsing plan for one node.
 pub(super) struct NodeParsePlan {
     /// Stable node identity used to join semantic and generation plans.
     pub(super) node: NodeId,
@@ -810,7 +811,7 @@ fn close_lr_semantic_element(
     else {
         return Err("materialized direct LR field disagrees with its declaration".to_owned());
     };
-    *terminal = Box::new(terminal_type(ty, lowered, input_lifetime)?);
+    **terminal = terminal_type(ty, lowered, input_lifetime)?;
     *wrappers = field_wrappers(ty)?;
     *terminal_application = closed_terminal_application(ty);
     *terminal_node = terminal_application.and_then(|application| {
@@ -822,21 +823,19 @@ fn close_lr_semantic_element(
     });
     *explorer = explorer_terminal(ty)?;
     *opaque_provenance = false;
-    if let Some(application) = *terminal_application {
-        if separator.as_deref() == Some(";")
-            && matches!(
-                declaration_container_operation(wrappers),
-                ContainerOperation::ZeroOrMore
-                    | ContainerOperation::OneOrMore
-                    | ContainerOperation::OptionalOneOrMore
-            )
-            && lowered.applications.iter().any(|candidate| {
-                candidate.id == application
-                    && matches!(candidate.body, MaterializedNodeBody::Enum(_))
-            })
-        {
-            *repetition_break = PlannedRepetitionBreak::TopLevelStatement(application);
-        }
+    if let Some(application) = *terminal_application
+        && separator.as_deref() == Some(";")
+        && matches!(
+            declaration_container_operation(wrappers),
+            ContainerOperation::ZeroOrMore
+                | ContainerOperation::OneOrMore
+                | ContainerOperation::OptionalOneOrMore
+        )
+        && lowered.applications.iter().any(|candidate| {
+            candidate.id == application && matches!(candidate.body, MaterializedNodeBody::Enum(_))
+        })
+    {
+        *repetition_break = PlannedRepetitionBreak::TopLevelStatement(application);
     }
     Ok(())
 }

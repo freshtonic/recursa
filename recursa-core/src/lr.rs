@@ -49,11 +49,6 @@ struct Frame {
     token: u32,
 }
 
-/// The reduce dispatcher of one generation: builds the value of `rule` from the reduction
-/// context and pushes it, or returns the error a content token's text raised.
-pub type ReduceFn<'input, A> =
-    fn(rule: u32, reduction: &mut Reduction<'_, '_, 'input, A>) -> Result<(), ParseError>;
-
 /// What one reduce action sees: the value stack, the frames its rule popped, and the parse
 /// context for token text and the caller's builder.
 ///
@@ -133,23 +128,26 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
 /// The occurrence stack exists only when the context captures (the request or the root's
 /// policy asks for spans) or the grammar has a mandatory site; otherwise no occurrence work runs
 /// and the root is returned without provenance.
-pub fn run<'input, T, A>(
+pub fn run<'input, T, A, F>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
-    reduce: ReduceFn<'input, A>,
-) -> Result<ParsedNode<T>, ParseError> {
+    mut reduce: F,
+) -> Result<ParsedNode<T>, ParseError>
+where
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, A>) -> Result<(), ParseError>,
+{
     let checkpoint = context.cursor();
     let mut values = ValueStack::new();
     let mut occurrences =
         (context.captures() || tables.mandatory_provenance()).then(OccurrenceStack::new);
-    match drive::<T, A>(
+    match drive::<T, A, _>(
         context,
         tables,
         start_state,
         accept_rule,
-        reduce,
+        &mut reduce,
         &mut values,
         &mut occurrences,
     ) {
@@ -194,15 +192,18 @@ fn unexpected_here<A>(
 /// symbols, so one flag set by the rules' `tail` table (a one-token enum alternative or repetition
 /// tail sets it, while a Pratt rule clears it) decides whether an outside token is an error or the
 /// parsed prefix may be accepted.
-fn drive<'input, T, A>(
+fn drive<'input, T, A, F>(
     context: &mut ParseContext<'_, 'input, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
-    reduce: ReduceFn<'input, A>,
+    reduce: &mut F,
     values: &mut ValueStack,
     occurrences: &mut Option<OccurrenceStack>,
-) -> Result<(T, Occurrence), ParseError> {
+) -> Result<(T, Occurrence), ParseError>
+where
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, A>) -> Result<(), ParseError>,
+{
     let decoded = tables.decoded();
     let end_marker = tables.end_marker();
     // The one thing the error path needs from the hot path: where this parse began, so that
@@ -283,7 +284,9 @@ fn drive<'input, T, A>(
                     context,
                     capturing: occurrences.is_some(),
                 };
-                reduce(rule, &mut reduction)?;
+                if decoded.reduce_actions[rule as usize] != 0 {
+                    reduce(rule, &mut reduction)?;
+                }
                 debug_assert!(
                     values.depth() == depth - value_pops
                         || values.depth() == depth - value_pops + 1,
@@ -380,7 +383,6 @@ mod tests {
                     let live = reduction.builder().clone();
                     reduction.push(Value::new(number, &live));
                 }
-                2 | 4 | 5 => {}
                 6 => {
                     let record = reduction.token();
                     let text = reduction.matched_text(record)?;
@@ -388,7 +390,7 @@ mod tests {
                     let live = reduction.builder().clone();
                     reduction.push(Value::new(number, &live));
                 }
-                other => panic!("rule {other} is not reduced by the dispatcher"),
+                other => panic!("rule {other} has no semantic reduce action"),
             }
         }
         Ok(())
@@ -423,7 +425,7 @@ mod tests {
         let lexed = lex(source);
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, evaluate)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, evaluate)
                 .map(|node| node.into_parts().0.number)
         });
         let cursor = input.cursor();
@@ -525,7 +527,7 @@ mod tests {
         let lexed = lex("()");
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
+            run::<Value, _, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
                 .map(|node| node.into_parts().0.number)
         });
         assert_eq!(result.unwrap(), 2);
@@ -535,7 +537,7 @@ mod tests {
         let lexed = lex("(+");
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
+            run::<Value, _, _>(context, &FILTERED_TEXTBOOK, 0, 0, record_kinds)
                 .map(|node| node.into_parts().0.number)
         });
         let error = result.unwrap_err();
@@ -545,7 +547,7 @@ mod tests {
         let lexed = lex("()");
         let mut input = lexed.input_with_builder(&GRAMMAR, live);
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, record_kinds)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, record_kinds)
                 .map(|node| node.into_parts().0.number)
         });
         assert_eq!(result.unwrap_err().found(), Some(")"));
@@ -560,7 +562,7 @@ mod tests {
         let lexed = lex("(2)+3");
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &FALLBACK_FILTERED_TEXTBOOK, 0, 0, evaluate)
+            run::<Value, _, _>(context, &FALLBACK_FILTERED_TEXTBOOK, 0, 0, evaluate)
                 .map(|node| node.into_parts().0.number)
         });
         assert_eq!(result.unwrap(), 5);
@@ -645,7 +647,7 @@ mod tests {
         let lexed = lex("(2+3)*4");
         let mut input = lexed.input_with_builder(&GRAMMAR, live);
         let occurrence = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_off).map(|node| node.into_parts().1)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_off).map(|node| node.into_parts().1)
         })
         .unwrap();
         assert!(!occurrence.is_captured());
@@ -668,7 +670,7 @@ mod tests {
         let lexed = lex("2+3*4");
         let mut input = lexed.input_with_builder(&GRAMMAR, live);
         let occurrence = crate::parsed::test_context_spanned(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|node| node.into_parts().1)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|node| node.into_parts().1)
         })
         .unwrap();
         assert_eq!(
@@ -679,7 +681,7 @@ mod tests {
         let lexed = lex("2+3*+");
         let mut input = lexed.input_with_builder(&GRAMMAR, Rc::new(Cell::new(0)));
         let error = crate::parsed::test_context_spanned(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|_| ())
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|_| ())
         })
         .unwrap_err();
         assert_eq!(error.span(), Span::new(4, 5).unwrap());
@@ -713,7 +715,7 @@ mod tests {
         );
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, evaluate)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, evaluate)
                 .map(|node| node.into_parts().0.number)
         });
         assert_eq!(result.unwrap_err().kind(), ParseErrorKind::InvalidTokenSpan);

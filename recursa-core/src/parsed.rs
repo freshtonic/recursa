@@ -1459,8 +1459,8 @@ mod tests {
     };
     static WORD_START: FollowSet = FollowSet::from_static(2, &[1 << WORD], &[ExpectedAtomId(0)]);
     static WORD_TABLES: crate::lr::LrTables = crate::lr::LrTables::new(
-        1, b"BBAA", b"BD", b"BB", b"BACB", b"BA", b"BC", b"BAA", b"BBB", b"BAA", b"BB", b"B",
-        b"BAAAAAA", b"BAA", false,
+        1, b"BBAA", b"BD", b"BB", b"BACB", b"BA", b"BC", b"BAA", b"BBB", b"BAA", b"BAB", b"BB",
+        b"B", b"BAAAAAA", b"BAA", false,
     );
 
     #[derive(Clone, Copy)]

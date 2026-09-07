@@ -244,9 +244,7 @@ fn an_exclusion_of_atoms_parses_through_the_recursa_parser() {
         ),
         (
             "xmlnamespaces((default) as b)",
-            format!(
-                "Xmlnamespaces(Named {{ uri: Parenthesized(Default), label: Name {{ text: __RecursaContentToken0 {{ text: ContentText(\"b\") }} }} }})"
-            ),
+            "Xmlnamespaces(Named { uri: Parenthesized(Default), label: Name { text: __RecursaContentToken0 { text: ContentText(\"b\") } } })".to_owned(),
         ),
         (
             "index ((a + (select b)))",

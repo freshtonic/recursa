@@ -83,9 +83,7 @@ pub mod __private {
         LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
         lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
     };
-    pub use crate::lr::{
-        LrTables, ReduceFn as LrReduceFn, Reduction as LrReduction, run as lr_run,
-    };
+    pub use crate::lr::{LrTables, Reduction as LrReduction, run as lr_run};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
