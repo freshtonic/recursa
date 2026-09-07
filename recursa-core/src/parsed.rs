@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
@@ -28,6 +29,25 @@ pub trait Parse<I: ?Sized>: parse_seal::Sealed<I> {
     fn parse(input: &mut I) -> Result<Self::Output, ParseError>;
 }
 
+/// Safe arena-backed parsing capability implemented by matching Recursa generations.
+pub trait ArenaParse<I: ?Sized>: arena_parse_seal::Sealed<I> {
+    /// Lifetime-parametric family owned by the returned parse wrapper.
+    type Family: ArenaAstFamily;
+
+    /// Self-contained parsed wrapper returned for this generated input lifetime.
+    type Output;
+
+    /// Parses one root transactionally into a self-contained arena owner.
+    fn parse_arena(input: &mut I) -> Result<Self::Output, ParseError>;
+}
+
+/// Sealed implementation detail for [`ArenaParse`].
+#[doc(hidden)]
+pub mod arena_parse_seal {
+    /// Prevents external implementations of the safe arena parsing facade.
+    pub trait Sealed<I: ?Sized> {}
+}
+
 /// A parsed semantic value together with its immutable occurrence provenance.
 ///
 /// Mutating access is deliberately unavailable: consume the wrapper with
@@ -37,6 +57,115 @@ pub struct Parsed<'input, T> {
     ast: T,
     /// Parsed, uncaptured, or synthetic occurrence provenance.
     origin: Origin<'input>,
+}
+
+/// Type constructor for one generated arena-backed AST application.
+///
+/// # Safety
+///
+/// Implementations are generated alongside [`ArenaGeneratedParse`] and must use one
+/// lifetime-parametric AST type whose layout does not depend on the chosen lifetime.
+#[doc(hidden)]
+pub unsafe trait ArenaAstFamily {
+    /// The authored AST application borrowing one parse-owned arena.
+    type Ast<'arena>;
+}
+
+/// A parsed arena-backed AST whose allocator lifetime is confined to this wrapper.
+///
+/// Callers borrow the authored tree with [`ArenaParsed::ast`]. Moving the AST out is deliberately
+/// unsupported because its boxes and vectors borrow the arena owned by this value.
+pub struct ArenaParsed<'input, F: ArenaAstFamily> {
+    /// Parse-owned arena, erased semantic root, and occurrence sidecar.
+    cell: ArenaParseCell<'input>,
+    /// Complete input source while a public capture or retained document needs it.
+    source: Option<&'input str>,
+    /// Absolute source window of this parse.
+    bounds: Option<Span>,
+    /// Opted-in lexical records used for document gap views.
+    document: Option<RetainedDocument>,
+    /// Selects the generated AST family without storing a value of it outside the cell.
+    family: PhantomData<F>,
+}
+
+impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
+    /// Borrows the authored AST for at most as long as this wrapper is borrowed.
+    pub fn ast(&self) -> &F::Ast<'_> {
+        // SAFETY: `parse_arena_with_request_and_follow` constructs the erased pointer from exactly
+        // `F::Ast<'arena>`. The returned lifetime is shortened to the borrow of this cell, so no
+        // arena-backed value can outlive its owner.
+        unsafe { self.cell.borrow_dependent().ast.cast::<F>() }
+    }
+
+    /// Projects the captured provenance retained beside the arena-backed root.
+    fn view_cursor(&self) -> ViewCursor<'_> {
+        ViewCursor {
+            occurrence: self.cell.borrow_dependent().root.as_ref(),
+            source: self.source,
+            bounds: self.bounds,
+            records: self
+                .document
+                .as_ref()
+                .map(|document| document.records.as_ref()),
+            trivia: self
+                .document
+                .as_ref()
+                .map(|document| document.trivia.as_ref()),
+        }
+    }
+
+    /// Returns the complete source when this parse retained provenance.
+    pub fn source(&self) -> Option<&str> {
+        self.source?.get(self.bounds?.range())
+    }
+
+    /// Returns the absolute source-coordinate window retained by this parse.
+    pub fn source_bounds(&self) -> Option<Span> {
+        self.source?;
+        self.bounds
+    }
+
+    /// Translates an absolute captured span into the bounded source slice.
+    pub fn local_source_range(&self, span: Span) -> Option<std::ops::Range<usize>> {
+        let source = self.source?;
+        let bounds = self.bounds?;
+        if span.start() < bounds.start() || span.end() > bounds.end() {
+            return None;
+        }
+        source.get(span.range())?;
+        Some(
+            usize::try_from(span.start() - bounds.start()).ok()?
+                ..usize::try_from(span.end() - bounds.start()).ok()?,
+        )
+    }
+}
+
+#[cfg(feature = "explorer")]
+impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
+    /// Exposes the typed root and occurrence cursor to the erased Explorer ABI.
+    pub(crate) fn explorer_parts(&self) -> (&F::Ast<'_>, ViewCursor<'_>) {
+        (self.ast(), self.view_cursor())
+    }
+}
+
+impl<F> fmt::Debug for ArenaParsed<'_, F>
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.ast().fmt(formatter)
+    }
+}
+
+impl<F> crate::Pretty for ArenaParsed<'_, F>
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: crate::Pretty,
+{
+    fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
+        context.with_cursor(self.view_cursor(), |context| self.ast().pretty(context))
+    }
 }
 
 impl<T: fmt::Debug> fmt::Debug for Parsed<'_, T> {
@@ -150,6 +279,74 @@ self_cell::self_cell! {
 
         #[covariant]
         dependent: Provenance,
+    }
+}
+
+/// Type-erased root stored in the same self cell as its allocator.
+struct ErasedArenaAst<'arena> {
+    /// Root allocation inside the parse arena.
+    pointer: NonNull<()>,
+    /// Drops the root and its recursively owned values before the arena releases its chunks.
+    drop: unsafe fn(NonNull<()>),
+    /// Binds the erased allocation to the arena borrow.
+    marker: PhantomData<&'arena ()>,
+}
+
+impl<'arena> ErasedArenaAst<'arena> {
+    /// Allocates and erases one generated AST root.
+    fn new<T>(value: T, arena: &'arena Bump) -> Self {
+        let pointer = NonNull::from(arena.alloc(value)).cast();
+        unsafe fn drop_value<T>(pointer: NonNull<()>) {
+            // SAFETY: `pointer` was produced by `Bump::alloc::<T>` in `new` and is dropped once,
+            // before the owning bump arena.
+            unsafe { pointer.cast::<T>().as_ptr().drop_in_place() };
+        }
+        Self {
+            pointer,
+            drop: drop_value::<T>,
+            marker: PhantomData,
+        }
+    }
+
+    /// Borrows the exact generated family used to construct this erased root.
+    unsafe fn cast<F: ArenaAstFamily>(&self) -> &F::Ast<'_> {
+        // SAFETY: upheld by the generated `ArenaGeneratedParse::Family` association and the
+        // caller's construction path; the borrow cannot outlive this erased owner.
+        unsafe { &*self.pointer.cast::<F::Ast<'_>>().as_ptr() }
+    }
+}
+
+impl Drop for ErasedArenaAst<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `new` installs the matching monomorphized destructor and the self cell drops its
+        // dependent before its arena owner.
+        unsafe { (self.drop)(self.pointer) };
+    }
+}
+
+/// Arena-borrowing semantic root and occurrence provenance for one successful parse.
+struct ArenaParseStorage<'arena> {
+    /// Erased authored AST root.
+    ast: ErasedArenaAst<'arena>,
+    /// Root occurrence whose descendants follow generated child ordinals.
+    root: Option<OccurrenceNode<'arena>>,
+}
+
+/// Arena owner retains the input lifetime that every borrowed token text is shortened from.
+struct ArenaOwner<'input> {
+    /// Allocator shared by semantic AST containers and provenance.
+    arena: Bump,
+    /// Establishes that source borrowed into the dependent outlives the cell.
+    source: &'input str,
+}
+
+self_cell::self_cell! {
+    /// Move-owned AST/provenance arena and both trees allocated inside it.
+    struct ArenaParseCell<'input> {
+        owner: ArenaOwner<'input>,
+
+        #[covariant]
+        dependent: ArenaParseStorage,
     }
 }
 
@@ -1079,7 +1276,7 @@ impl<'arena, T> ParsedNode<'arena, T> {
     }
 }
 
-/// Stateless builder that validates and compacts occurrence provenance.
+/// Stateless builder that compacts occurrence provenance.
 pub(crate) struct ProvenanceCollector<'arena> {
     /// Arena that owns every occurrence node and child sequence for this parse.
     arena: &'arena Bump,
@@ -1092,30 +1289,33 @@ impl<'arena> ProvenanceCollector<'arena> {
     }
 
     /// Finishes provenance while retaining separators outside child ordinals.
+    ///
+    /// Every concrete span reaching this method belongs to a token that the LR occurrence stack
+    /// validated on shift, or is an extent assembled from the boundaries of those validated
+    /// tokens. Construction therefore stays infallible and does not repeat UTF-8 range checks for
+    /// every enclosing occurrence.
     pub(crate) fn finish_repeated(
         &self,
-        source: &str,
         policy: CapturePolicy,
         request: CaptureRequest,
         span: Option<Span>,
         children: BumpVec<'arena, Occurrence<'arena>>,
         repetition_separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
-    ) -> Result<Occurrence<'arena>, ()> {
-        if let Some(span) = span {
-            source.get(span.range()).ok_or(())?;
-        }
+    ) -> Occurrence<'arena> {
         let span = policy.captures(request).then_some(span).flatten();
-        let child_captured = children.iter().any(Occurrence::is_captured);
-        if span.is_none() && !child_captured && repetition_separators.is_empty() {
-            return Ok(Occurrence::absent());
+        if span.is_none()
+            && !children.iter().any(Occurrence::is_captured)
+            && repetition_separators.is_empty()
+        {
+            return Occurrence::absent();
         }
-        Ok(Occurrence {
+        Occurrence {
             node: Some(OccurrenceNode {
                 span,
                 children,
                 repetition_separators,
             }),
-        })
+        }
     }
 }
 
@@ -1206,35 +1406,26 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
         self.provenance.arena
     }
 
+    /// Returns the arena shared by generated AST containers and provenance.
+    pub fn arena(&self) -> &'arena Bump {
+        self.provenance.arena
+    }
+
     /// Reports a shifted token span that leaves the source.
     pub(crate) fn invalid_token_span(&self, span: Span) -> ParseError {
         ParseError::invalid_token_span(self.input, span, None)
     }
 
-    /// Runs the collector for the table-driven fold with this context's source and request.
+    /// Runs the collector for a table-driven fold whose token spans were validated on shift.
     pub(crate) fn collect_occurrence(
         &self,
         policy: CapturePolicy,
         span: Option<Span>,
         children: BumpVec<'arena, Occurrence<'arena>>,
         separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
-    ) -> Result<Occurrence<'arena>, ParseError> {
+    ) -> Occurrence<'arena> {
         self.provenance
-            .finish_repeated(
-                self.input.source(),
-                policy,
-                self.request,
-                span,
-                children,
-                separators,
-            )
-            .map_err(|()| {
-                ParseError::invalid_token_span(
-                    self.input,
-                    span.expect("only a concrete invalid span can fail validation"),
-                    None,
-                )
-            })
+            .finish_repeated(policy, self.request, span, children, separators)
     }
 
     /// Returns the FOLLOW supplied for this root invocation.
@@ -1261,6 +1452,20 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
             ParseError::invalid_token_span(self.input, record.span, Some(record.kind))
         })
     }
+
+    /// Converts a matched record into content text whose borrow is shortened to the AST arena.
+    pub fn matched_text_in_arena(
+        &self,
+        record: TokenRecord,
+    ) -> Result<ContentText<'arena>, ParseError>
+    where
+        'input: 'arena,
+    {
+        let source: &'arena str = self.input.source();
+        ContentText::matched(source, record.span).ok_or_else(|| {
+            ParseError::invalid_token_span(self.input, record.span, Some(record.kind))
+        })
+    }
 }
 /// Matching-version table parsing protocol implemented by generated code.
 #[doc(hidden)]
@@ -1278,6 +1483,29 @@ pub trait GeneratedParse<'input, A = ()>: Node + Sized {
     fn parse<'arena>(
         context: &mut ParseContext<'_, 'input, 'arena, A>,
     ) -> Result<ParsedNode<'arena, Self>, ParseError>;
+}
+
+/// Matching-version parsing protocol for one arena-backed AST family.
+#[doc(hidden)]
+pub trait ArenaGeneratedParse<'input, A = ()>: Sized {
+    /// Lifetime-parametric authored AST produced by this root application.
+    type Family: ArenaAstFamily;
+
+    /// Grammar-fixed provenance capture policy for this root.
+    const CAPTURE_POLICY: CapturePolicy;
+
+    /// Returns the exact grammar metadata that must own parser input.
+    fn grammar() -> &'static GrammarInfo;
+
+    /// Returns the caller FOLLOW used by this root.
+    fn root_follow() -> &'static FollowSet;
+
+    /// Runs the generated LR parser with semantic containers borrowing the parse arena.
+    fn parse_arena<'arena>(
+        context: &mut ParseContext<'_, 'input, 'arena, A>,
+    ) -> Result<ParsedNode<'arena, <Self::Family as ArenaAstFamily>::Ast<'arena>>, ParseError>
+    where
+        'input: 'arena;
 }
 
 /// Grammar-local input wrapper generated for one grammar.
@@ -1313,6 +1541,26 @@ where
     }
 }
 
+impl<'input, A, I, T> arena_parse_seal::Sealed<I> for T
+where
+    I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
+    T: ArenaGeneratedParse<'input, A>,
+{
+}
+
+impl<'input, A, I, T> ArenaParse<I> for T
+where
+    I: GeneratedInput<Inner = Input<'input, A>> + ?Sized,
+    T: ArenaGeneratedParse<'input, A>,
+{
+    type Family = T::Family;
+    type Output = ArenaParsed<'input, T::Family>;
+
+    fn parse_arena(input: &mut I) -> Result<Self::Output, ParseError> {
+        parse_arena::<T, A>(input.__recursa_inner())
+    }
+}
+
 /// Runs the generated root parser with the default capture request.
 ///
 #[doc(hidden)]
@@ -1335,6 +1583,81 @@ where
     parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
 
+/// Runs one generated arena-backed root parser with the default capture request.
+#[doc(hidden)]
+pub fn parse_arena<'input, T, A>(
+    input: &mut Input<'input, A>,
+) -> Result<ArenaParsed<'input, T::Family>, ParseError>
+where
+    T: ArenaGeneratedParse<'input, A>,
+{
+    parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Default, T::root_follow())
+}
+
+/// Runs one generated arena-backed root parser with explicit span capture.
+#[doc(hidden)]
+pub fn parse_arena_spanned<'input, T, A>(
+    input: &mut Input<'input, A>,
+) -> Result<ArenaParsed<'input, T::Family>, ParseError>
+where
+    T: ArenaGeneratedParse<'input, A>,
+{
+    parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, T::root_follow())
+}
+
+/// Owns an arena-backed semantic root and provenance under one transactional parse.
+fn parse_arena_with_request_and_follow<'input, T, A>(
+    input: &mut Input<'input, A>,
+    request: CaptureRequest,
+    follow: &FollowSet,
+) -> Result<ArenaParsed<'input, T::Family>, ParseError>
+where
+    T: ArenaGeneratedParse<'input, A>,
+{
+    if !std::ptr::eq(input.grammar(), T::grammar()) {
+        return Err(ParseError::grammar_mismatch(input));
+    }
+    let checkpoint = input.cursor();
+    let source = input.source();
+    let bounds = input.bounds();
+    let cell = match ArenaParseCell::try_new(
+        ArenaOwner {
+            arena: Bump::new(),
+            source,
+        },
+        |owner| {
+            let arena = &owner.arena;
+            debug_assert!(std::ptr::eq(owner.source, source));
+            let mut context = ParseContext::new(input, follow, T::CAPTURE_POLICY, request, arena);
+            let ParsedNode { value, occurrence } = T::parse_arena(&mut context)?;
+            Ok::<_, ParseError>(ArenaParseStorage {
+                ast: ErasedArenaAst::new(value, arena),
+                root: occurrence.node,
+            })
+        },
+    ) {
+        Ok(cell) => cell,
+        Err(error) => {
+            input.restore(checkpoint);
+            return Err(error);
+        }
+    };
+    let document = input.retained_document();
+    let public_capture = cell
+        .borrow_dependent()
+        .root
+        .as_ref()
+        .is_some_and(OccurrenceNode::has_public_capture);
+    let retains_source = public_capture || document.is_some();
+    Ok(ArenaParsed {
+        cell,
+        source: retains_source.then_some(source),
+        bounds: retains_source.then_some(bounds),
+        document,
+        family: PhantomData,
+    })
+}
+
 /// Runs the generated root parser with one generated caller FOLLOW.
 ///
 /// Document framing uses this seam to keep its separator outside the authored
@@ -1348,6 +1671,18 @@ where
     T: GeneratedParse<'input, A>,
 {
     parse_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
+}
+
+/// Runs an arena-backed generated root parser with one framing caller FOLLOW.
+#[cfg(feature = "explorer")]
+pub(crate) fn parse_arena_spanned_with_root_follow<'input, T, A>(
+    input: &mut Input<'input, A>,
+    follow: &FollowSet,
+) -> Result<ArenaParsed<'input, T::Family>, ParseError>
+where
+    T: ArenaGeneratedParse<'input, A>,
+{
+    parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
 }
 
 /// Runs a root parser transactionally under one capture request.

@@ -113,6 +113,9 @@ pub struct DecodedTables {
     pub reduce_actions: Vec<u32>,
     /// Lookahead filters as flat `(token, merged, trigger)` triples.
     pub lookahead: Vec<u32>,
+    /// First lookahead triple for each filtered source terminal, or `u32::MAX` when the terminal
+    /// has no filter. Triples for one source terminal are contiguous in the generated table.
+    lookahead_index: Vec<u32>,
     /// The tail decision of each rule; see [`LrTables::new`].
     pub tail: Vec<u32>,
 }
@@ -194,19 +197,23 @@ impl LrTables {
     ///
     /// The literals are generated, so a malformed one is a generation bug and panics.
     pub fn decoded(&self) -> &DecodedTables {
-        self.decoded.get_or_init(|| DecodedTables {
-            pact: decode_signed(self.pact),
-            table: decode_signed(self.table),
-            check: decode_signed(self.check),
-            defact: decode_unsigned(self.defact),
-            pgoto: decode_signed(self.pgoto),
-            defgoto: decode_unsigned(self.defgoto),
-            r1: decode_unsigned(self.r1),
-            r2: decode_unsigned(self.r2),
-            value_pops: decode_unsigned(self.value_pops),
-            reduce_actions: decode_unsigned(self.reduce_actions),
-            lookahead: decode_unsigned(self.lookahead),
-            tail: decode_unsigned(self.tail),
+        self.decoded.get_or_init(|| {
+            let lookahead = decode_unsigned(self.lookahead);
+            DecodedTables {
+                pact: decode_signed(self.pact),
+                table: decode_signed(self.table),
+                check: decode_signed(self.check),
+                defact: decode_unsigned(self.defact),
+                pgoto: decode_signed(self.pgoto),
+                defgoto: decode_unsigned(self.defgoto),
+                r1: decode_unsigned(self.r1),
+                r2: decode_unsigned(self.r2),
+                value_pops: decode_unsigned(self.value_pops),
+                reduce_actions: decode_unsigned(self.reduce_actions),
+                lookahead_index: build_lookahead_index(&lookahead, self.end_marker),
+                lookahead,
+                tail: decode_unsigned(self.tail),
+            }
         })
     }
 
@@ -230,12 +237,26 @@ impl DecodedTables {
         let Some(next) = next else {
             return kind;
         };
-        self.lookahead
+        let Some(start) = self.lookahead_index.get(kind as usize).copied() else {
+            return kind;
+        };
+        if start == u32::MAX {
+            return kind;
+        }
+        self.lookahead[start as usize..]
             .as_chunks::<3>()
             .0
             .iter()
+            .take_while(|triple| triple[0] == kind)
             .find(|triple| triple[0] == kind && triple[2] == next)
             .map_or(kind, |triple| triple[1])
+    }
+
+    /// Reports whether this source terminal can be rewritten by one-token lookahead.
+    pub fn requires_lookahead(&self, kind: u32) -> bool {
+        self.lookahead_index
+            .get(kind as usize)
+            .is_some_and(|start| *start != u32::MAX)
     }
 
     /// Reports whether a state acts without reading a lookahead.
@@ -385,6 +406,21 @@ fn decode_signed(literal: &[u8]) -> Vec<i32> {
         .collect()
 }
 
+/// Builds the constant-time source-terminal index for generated lookahead triples.
+fn build_lookahead_index(lookahead: &[u32], terminal_count: u32) -> Vec<u32> {
+    let mut index = vec![u32::MAX; terminal_count as usize];
+    for (triple, values) in lookahead.as_chunks::<3>().0.iter().enumerate() {
+        let token = values[0] as usize;
+        let entry = index
+            .get_mut(token)
+            .expect("a lookahead filter names a grammar terminal");
+        if *entry == u32::MAX {
+            *entry = (triple * 3) as u32;
+        }
+    }
+    index
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -484,6 +520,7 @@ pub(super) mod tests {
             value_pops: vec![1, 2, 1, 2, 1, 1, 0],
             reduce_actions: vec![0, 1, 0, 1, 0, 0, 1],
             lookahead: Vec::new(),
+            lookahead_index: vec![u32::MAX; 5],
             tail: vec![0; 7],
         }
     }
@@ -539,6 +576,7 @@ pub(super) mod tests {
         // distinct merged terminals with actions; the third selects an
         // explicit error. The fourth selects a merged terminal absent from
         // this row and therefore falls back to the source terminal.
+        let lookahead = vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7];
         let tables = DecodedTables {
             pact: vec![0],
             table: vec![10, 11, 12, TABLE_NINF],
@@ -550,7 +588,8 @@ pub(super) mod tests {
             r2: Vec::new(),
             value_pops: Vec::new(),
             reduce_actions: Vec::new(),
-            lookahead: vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7],
+            lookahead_index: build_lookahead_index(&lookahead, 9),
+            lookahead,
             tail: Vec::new(),
         };
 

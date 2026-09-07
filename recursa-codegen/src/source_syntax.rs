@@ -184,6 +184,8 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) derives: Vec<Path>,
     /// Whether generation should publish railroad diagrams.
     pub(crate) diagrams: bool,
+    /// Whether generated semantic boxes and vectors borrow one parse-owned bump arena.
+    pub(crate) arena_ast: bool,
     /// Grammar-wide Pretty layout defaults.
     pub(crate) pretty: PrettyDefaults,
     /// Optional generated exact-source document framing declaration.
@@ -586,6 +588,7 @@ impl Parse for GrammarConfigSyntax {
         let mut spans = None;
         let mut derives = None;
         let mut diagrams = false;
+        let mut arena_ast = false;
         let mut pretty = None;
         let mut framing = None;
         while !input.is_empty() {
@@ -604,6 +607,11 @@ impl Parse for GrammarConfigSyntax {
                     return Err(syn::Error::new(key.span(), "duplicate diagrams setting"));
                 }
                 diagrams = true;
+            } else if key == "arena_ast" {
+                if arena_ast {
+                    return Err(syn::Error::new(key.span(), "duplicate arena_ast setting"));
+                }
+                arena_ast = true;
             } else if key == "pretty" {
                 reject_duplicate(&pretty, key.span(), "pretty")?;
                 let content;
@@ -678,6 +686,7 @@ impl Parse for GrammarConfigSyntax {
             spans: spans.unwrap_or(CaptureMode::Optional),
             derives: derives.unwrap_or_default(),
             diagrams,
+            arena_ast,
             pretty: pretty.unwrap_or_default(),
             framing,
         })

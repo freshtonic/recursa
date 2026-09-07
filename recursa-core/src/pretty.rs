@@ -1235,6 +1235,12 @@ impl<T: Pretty + ?Sized> Pretty for Box<T> {
     }
 }
 
+impl<T: Pretty + ?Sized> Pretty for bumpalo::boxed::Box<'_, T> {
+    fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+        (**self).pretty(context)
+    }
+}
+
 impl<T: Pretty> Pretty for Option<T> {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
         if let Some(value) = self {
@@ -1250,7 +1256,19 @@ impl<T: Pretty> Pretty for Vec<T> {
     }
 }
 
+impl<T: Pretty> Pretty for bumpalo::collections::Vec<'_, T> {
+    fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+        context.render_repeated(self.iter())
+    }
+}
+
 impl<T: Pretty> Pretty for crate::Vec1<T> {
+    fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+        context.render_repeated(self.iter())
+    }
+}
+
+impl<T: Pretty> Pretty for crate::ArenaVec1<'_, T> {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
         context.render_repeated(self.iter())
     }

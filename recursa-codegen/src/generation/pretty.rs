@@ -79,6 +79,18 @@ pub(super) fn render_content_token_pretty_helper(plan: &EmissionPlan) -> proc_ma
             }
         }
 
+        impl<T> __RecursaPrettyWith for #facade::ArenaBox<'_, T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                (**self).__recursa_pretty_with(context)
+            }
+        }
+
         impl<T> __RecursaPrettyWith for Option<T>
         where
             T: __RecursaPrettyWith,
@@ -108,7 +120,36 @@ pub(super) fn render_content_token_pretty_helper(plan: &EmissionPlan) -> proc_ma
             }
         }
 
+        impl<T> __RecursaPrettyWith for #facade::ArenaVec<'_, T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                context.render_repeated_by(self.iter(), |context, value| {
+                    value.__recursa_pretty_with(context)
+                })
+            }
+        }
+
         impl<T> __RecursaPrettyWith for #facade::Vec1<T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                context.render_repeated_by(self.iter(), |context, value| {
+                    value.__recursa_pretty_with(context)
+                })
+            }
+        }
+
+
+        impl<T> __RecursaPrettyWith for #facade::ArenaVec1<'_, T>
         where
             T: __RecursaPrettyWith,
         {

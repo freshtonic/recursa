@@ -917,6 +917,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         text_equivalence: configuration.syntax.text_equivalence,
         spans: configuration.syntax.spans,
         diagrams: configuration.syntax.diagrams,
+        arena_ast: configuration.syntax.arena_ast,
         pretty: configuration.syntax.pretty,
     };
     let mut resolver = Resolver {
@@ -3521,7 +3522,11 @@ fn catalog_path(names: &[String], facade: &str) -> Option<CatalogType> {
         {
             Some(CatalogType::Vec)
         }
-        [root, name] if root == facade && name == "Vec1" => Some(CatalogType::Vec1),
+        [root, name] if root == facade && (name == "Vec1" || name == "ArenaVec1") => {
+            Some(CatalogType::Vec1)
+        }
+        [root, name] if root == facade && name == "ArenaBox" => Some(CatalogType::Box),
+        [root, name] if root == facade && name == "ArenaVec" => Some(CatalogType::Vec),
         _ => None,
     }
 }

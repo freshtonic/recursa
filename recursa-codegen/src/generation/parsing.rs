@@ -558,7 +558,12 @@ pub(super) fn plan_lr_node(
             GenericParam::Type(_) | GenericParam::Const(_) => None,
         })
         .unwrap_or_else(|| syn::parse_quote!('__recursa_input));
-    let materialization_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
+    let materialization_lifetime: syn::Lifetime =
+        if lowered.source_modeled.resolved().build_inputs.arena_ast {
+            syn::parse_quote!('__recursa_arena)
+        } else {
+            syn::parse_quote!('__recursa_input)
+        };
     let body = structural_body(node, source_node, &application.body, lowered, kind_count)?;
     let mut application_body = body.clone();
     materialize_lr_body(
@@ -2000,7 +2005,13 @@ pub(super) fn closed_type(
         }
         ClosedType::Boxed(inner) => {
             let inner = closed_type(inner, lowered, input_lifetime)?;
-            syn::parse_quote!(Box<#inner>)
+            if lowered.source_modeled.resolved().build_inputs.arena_ast {
+                let facade =
+                    emitted_ident(&lowered.source_modeled.resolved().build_inputs.facade.ident)?;
+                syn::parse_quote!(#facade::ArenaBox<#input_lifetime, #inner>)
+            } else {
+                syn::parse_quote!(Box<#inner>)
+            }
         }
         ClosedType::Optional(inner) => {
             let inner = closed_type(inner, lowered, input_lifetime)?;
@@ -2008,11 +2019,21 @@ pub(super) fn closed_type(
         }
         ClosedType::ZeroOrMore(inner) => {
             let inner = closed_type(inner, lowered, input_lifetime)?;
-            syn::parse_quote!(Vec<#inner>)
+            if lowered.source_modeled.resolved().build_inputs.arena_ast {
+                let facade =
+                    emitted_ident(&lowered.source_modeled.resolved().build_inputs.facade.ident)?;
+                syn::parse_quote!(#facade::ArenaVec<#input_lifetime, #inner>)
+            } else {
+                syn::parse_quote!(Vec<#inner>)
+            }
         }
         ClosedType::OneOrMore(inner) => {
             let inner = closed_type(inner, lowered, input_lifetime)?;
-            syn::parse_quote!(#facade::Vec1<#inner>)
+            if lowered.source_modeled.resolved().build_inputs.arena_ast {
+                syn::parse_quote!(#facade::ArenaVec1<#input_lifetime, #inner>)
+            } else {
+                syn::parse_quote!(#facade::Vec1<#inner>)
+            }
         }
     })
 }
@@ -2059,6 +2080,23 @@ pub(super) fn render_wrapped_type(
             FieldWrapper::Optional => syn::parse_quote!(Option<#ty>),
             FieldWrapper::ZeroOrMore => syn::parse_quote!(Vec<#ty>),
             FieldWrapper::OneOrMore => syn::parse_quote!(#facade::Vec1<#ty>),
+        })
+}
+
+/// Applies arena-backed authored storage wrappers to a parsed value type.
+pub(super) fn render_arena_wrapped_type(
+    facade: &Ident,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+) -> Type {
+    wrappers
+        .iter()
+        .rev()
+        .fold(terminal.clone(), |ty, wrapper| match wrapper {
+            FieldWrapper::Boxed => syn::parse_quote!(#facade::ArenaBox<'_, #ty>),
+            FieldWrapper::Optional => syn::parse_quote!(Option<#ty>),
+            FieldWrapper::ZeroOrMore => syn::parse_quote!(#facade::ArenaVec<'_, #ty>),
+            FieldWrapper::OneOrMore => syn::parse_quote!(#facade::ArenaVec1<'_, #ty>),
         })
 }
 

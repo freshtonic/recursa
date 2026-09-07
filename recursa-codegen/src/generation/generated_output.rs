@@ -1218,6 +1218,25 @@ pub(super) fn render_root(
                 )))
             },
         );
+        let framing_exports = if plan.arena_ast {
+            quote! {
+                pub use #facade::framing::{
+                    ArenaCompleteFrame as CompleteFrame,
+                    ArenaCompleteIsland as CompleteIsland,
+                    FramePart as CompletePart,
+                    FrameDiagnostic, FrameDiagnosticKind, FrameError, FrameFailure,
+                    FrameRejection, PayloadRegion, SourceRegion,
+                };
+            }
+        } else {
+            quote! {
+                pub use #facade::framing::{
+                    CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
+                    FrameDiagnosticKind, FrameError, FrameFailure, FrameRejection,
+                    PayloadRegion, SourceRegion,
+                };
+            }
+        };
         quote! {
             static __RECURSA_FRAMING_BOUNDARY_FOLLOW: #facade::__private::FollowSet =
                 #facade::__private::follow_set(
@@ -1236,11 +1255,7 @@ pub(super) fn render_root(
                     &__RECURSA_FRAMING_BOUNDARY_FOLLOW,
                 );
 
-            pub use #facade::framing::{
-                CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
-                FrameDiagnosticKind, FrameError, FrameFailure, FrameRejection,
-                PayloadRegion, SourceRegion,
-            };
+            #framing_exports
         }
     });
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
@@ -1828,22 +1843,55 @@ pub(super) fn render_node(
     } else {
         quote!(<#input_lifetime, A>)
     };
-    let entry_points = quote! {
-        pub fn parse #inherent_method_generics(
-            input: &mut #module_anchor::Input<#input_lifetime, A>,
-        ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-        where
-            Self: #facade::__private::Parse<#input_lifetime, A>,
-        {
-            #facade::__private::parse(&mut input.inner)
+    let entry_points = if plan.arena_ast {
+        quote! {
+            pub fn parse #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<
+                #facade::ArenaParsed<
+                    #input_lifetime,
+                    <Self as #facade::__private::ArenaGeneratedParse<#input_lifetime, A>>::Family,
+                >,
+                #facade::ParseError,
+            >
+            where
+                Self: #facade::__private::ArenaGeneratedParse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_arena::<Self, A>(&mut input.inner)
+            }
+            pub fn parse_spanned #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<
+                #facade::ArenaParsed<
+                    #input_lifetime,
+                    <Self as #facade::__private::ArenaGeneratedParse<#input_lifetime, A>>::Family,
+                >,
+                #facade::ParseError,
+            >
+            where
+                Self: #facade::__private::ArenaGeneratedParse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_arena_spanned::<Self, A>(&mut input.inner)
+            }
         }
-        pub fn parse_spanned #inherent_method_generics(
-            input: &mut #module_anchor::Input<#input_lifetime, A>,
-        ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
-        where
-            Self: #facade::__private::Parse<#input_lifetime, A>,
-        {
-            #facade::__private::parse_spanned(&mut input.inner)
+    } else {
+        quote! {
+            pub fn parse #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A>,
+            {
+                #facade::__private::parse(&mut input.inner)
+            }
+            pub fn parse_spanned #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_spanned(&mut input.inner)
+            }
         }
     };
     let metadata = render_metadata(plan, node, node_index);

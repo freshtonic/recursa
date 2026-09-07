@@ -32,6 +32,8 @@ pub(super) fn emission_plan_validation_count() -> usize {
 /// structure and correlations to already-frozen semantic decisions; validation must succeed
 /// before rendering, debug staging, or publication begins.
 pub(super) struct EmissionPlan {
+    /// Whether semantic boxes and vectors borrow the parse-owned arena.
+    pub(super) arena_ast: bool,
     /// Generation identity over canonical lowered content and emitter protocol.
     pub(super) identity: String,
     /// Authored facade mapping used by all generated Rust paths.
@@ -964,8 +966,14 @@ impl EmissionPlan {
         #[cfg(not(feature = "diagrams"))]
         canonical.push_str(";capabilities=core");
         canonical.push_str(&format!(";lr_plan_identity={frozen_parse_identity:016x}"));
+        canonical.push_str(if resolved.build_inputs.arena_ast {
+            ";arena_ast=true"
+        } else {
+            ";arena_ast=false"
+        });
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
+            arena_ast: resolved.build_inputs.arena_ast,
             identity,
             facade,
             module_anchor,

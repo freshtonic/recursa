@@ -1824,10 +1824,11 @@ pub(super) fn render_node_application_explorer(
         let pretty_method = pretty.then(|| {
             quote! {
                 fn __recursa_explorer_pretty(
-                    parsed: &#facade::Parsed<'_, Self>,
+                    value: &Self,
+                    cursor: #facade::__private::ViewCursor<'_>,
                     config: &#facade::PrettyConfig,
                 ) -> Option<#facade::explorer::PrettyOutput> {
-                    #facade::__private::explorer_pretty_root(parsed, config)
+                    #facade::__private::explorer_pretty_root(value, cursor, config)
                 }
             }
         });
@@ -1847,7 +1848,29 @@ pub(super) fn render_node_application_explorer(
                 } else {
                     quote!()
                 };
-                quote! {
+                if plan.arena_ast {
+                    quote! {
+                        /// Partitions exact source into strict arena-backed typed islands.
+                        pub fn frame #method_generics(
+                            source: &'__recursa_input str,
+                        ) -> Result<
+                            #facade::framing::ArenaCompleteFrame<
+                                '__recursa_input,
+                                <Self as #facade::__private::ArenaGeneratedParse<
+                                    '__recursa_input,
+                                >>::Family,
+                            >,
+                            #facade::framing::FrameFailure<'__recursa_input>,
+                        > {
+                            #facade::__private::frame_arena_document::<Self>(
+                                source,
+                                #module_anchor::__recursa_lexical::__recursa_frame_lex,
+                                &#module_anchor::__RECURSA_FRAMING_PLAN,
+                            )
+                        }
+                    }
+                } else {
+                    quote! {
                     /// Partitions exact source into strict typed islands, or rejects
                     /// the document at its first failing island.
                     pub fn frame #method_generics(
@@ -1862,12 +1885,13 @@ pub(super) fn render_node_application_explorer(
                             &#module_anchor::__RECURSA_FRAMING_PLAN,
                         )
                     }
+                    }
                 }
             });
         // The sample gate expands to `(false, None)` unless the facade enables both
         // `explorer` and `arbitrary`, so the generic sample path is named only when
         // the runtime provides it.
-        let sample_binding = if arbitrary {
+        let sample_binding = if arbitrary && !plan.arena_ast {
             quote! {
                 let (arbitrary, sample): (bool, Option<#facade::__private::ExplorerSampleFn>) =
                     __recursa_explorer_sample!(
@@ -1880,6 +1904,34 @@ pub(super) fn render_node_application_explorer(
                     (false, None);
             }
         };
+        let family_impl = if plan.arena_ast {
+            quote! {
+                unsafe impl #facade::__private::ArenaExplorerRootFamily for #static_ty {
+                    type Root<'__recursa_input> = #ty;
+
+                    fn parse<'__recursa_input>(
+                        lex: #facade::__private::ExplorerRawLexFn,
+                        source: &'__recursa_input str,
+                    ) -> Result<
+                        #facade::explorer::ExplorerDocument<'__recursa_input>,
+                        #facade::explorer::ParseFailure<'__recursa_input>,
+                    > {
+                        #facade::__private::explorer_parse_arena_typed_root::<#ty>(lex, source)
+                    }
+                }
+            }
+        } else {
+            quote! {
+                unsafe impl #facade::__private::ExplorerRootFamily for #static_ty {
+                    type Root<'__recursa_input> = #ty;
+                }
+            }
+        };
+        let parse_root = if plan.arena_ast {
+            quote!(#facade::__private::explorer_parse_arena_root::<#static_ty>)
+        } else {
+            quote!(#facade::__private::explorer_parse_root::<#static_ty>)
+        };
         quote! {
             unsafe impl #entry_impl_generics #facade::__private::ExplorerRoot
                 for #ty #entry_where_clause
@@ -1887,9 +1939,7 @@ pub(super) fn render_node_application_explorer(
                 #pretty_method
             }
 
-            unsafe impl #facade::__private::ExplorerRootFamily for #static_ty {
-                type Root<'__recursa_input> = #ty;
-            }
+            #family_impl
 
             impl #entry_impl_generics #ty #entry_where_clause {
                 /// Returns this source-visible Node family's opaque explorer adapter.
@@ -1906,7 +1956,7 @@ pub(super) fn render_node_application_explorer(
                             arbitrary,
                             #module_anchor::#explorer_lex,
                             #module_anchor::__recursa_lexical::#raw_lex,
-                            #facade::__private::explorer_parse_root::<#static_ty>,
+                            #parse_root,
                             sample,
                         )
                     }

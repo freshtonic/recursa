@@ -182,7 +182,7 @@ pub(super) fn render_accessors(
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
             let methods = elements.iter().enumerate().filter_map(|(index, element)| {
-                render_accessor(facade, self_type, element, index, None)
+                render_accessor(facade, self_type, element, index, None, plan.arena_ast)
             });
             quote!(#(#methods)*)
         }
@@ -199,6 +199,7 @@ pub(super) fn render_accessors(
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
+                            plan.arena_ast,
                         )
                     })
             });
@@ -218,6 +219,7 @@ pub(super) fn render_accessors(
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
+                            plan.arena_ast,
                         )
                     })
             });
@@ -233,6 +235,7 @@ pub(super) fn render_accessors(
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
+                            plan.arena_ast,
                         )
                     })
             });
@@ -254,6 +257,7 @@ pub(super) fn render_accessor(
     element: &ElementParsePlan,
     element_index: usize,
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
+    arena_ast: bool,
 ) -> Option<proc_macro2::TokenStream> {
     match &element.kind {
         ElementParseKind::Fixed { accessor, .. }
@@ -328,6 +332,7 @@ pub(super) fn render_accessor(
                         element_index,
                         variant,
                         attachment.as_deref(),
+                        arena_ast,
                     ));
                 }
                 let is_optional = wrappers
@@ -451,10 +456,15 @@ pub(super) fn render_repeated_accessor(
     element_index: usize,
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
     attachment: Option<&FixedAttachmentParsePlan>,
+    arena_ast: bool,
 ) -> proc_macro2::TokenStream {
     let outer = &wrappers[..repeat_index];
     let inner = &wrappers[repeat_index + 1..];
-    let item_type = render_wrapped_type(facade, terminal, inner);
+    let item_type = if arena_ast {
+        render_arena_wrapped_type(facade, terminal, inner)
+    } else {
+        render_wrapped_type(facade, terminal, inner)
+    };
     let project = render_terminal_reference(quote!(value), inner, true);
     let cursor = quote!(self.cursor.child(#element_index));
     let repeated = |collection: proc_macro2::TokenStream| {

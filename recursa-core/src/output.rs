@@ -1,5 +1,8 @@
 use std::ops::Deref;
 
+use bumpalo::Bump;
+use bumpalo::collections::Vec as BumpVec;
+
 use crate::Span;
 
 #[doc(hidden)]
@@ -80,6 +83,83 @@ impl<T> Vec1<T> {
 }
 
 impl<T> Deref for Vec1<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+/// An arena-backed contiguous vector that always contains at least one value.
+///
+/// Generated arena parsers use this instead of [`Vec1`], whose standard vector cannot allocate
+/// inside the parse-owned [`Bump`].
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ArenaVec1<'bump, T> {
+    /// Contiguous arena storage whose first entry is never removed by this API.
+    values: BumpVec<'bump, T>,
+}
+
+impl<'bump, T> ArenaVec1<'bump, T> {
+    /// Creates a non-empty sequence containing `first` in `bump`.
+    pub fn new_in(first: T, bump: &'bump Bump) -> Self {
+        let mut values = BumpVec::new_in(bump);
+        values.push(first);
+        Self { values }
+    }
+
+    /// Adds one value while preserving non-emptiness.
+    pub fn push(&mut self, value: T) {
+        self.values.push(value);
+    }
+
+    /// Moves a possibly empty tail onto this non-empty sequence.
+    pub fn append(&mut self, values: &mut BumpVec<'bump, T>) {
+        self.values.append(values);
+    }
+
+    /// Releases the values as an arena vector, which is never empty.
+    pub fn into_vec(self) -> BumpVec<'bump, T> {
+        self.values
+    }
+
+    /// Returns the value whose presence establishes the invariant.
+    pub fn first(&self) -> &T {
+        &self.values[0]
+    }
+
+    /// Returns the final value.
+    pub fn last(&self) -> &T {
+        self.values.last().expect("ArenaVec1 is never empty")
+    }
+
+    /// Returns the number of stored values, which is always at least one.
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Returns `false`; provided for collection-compatible APIs.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Borrows all values as one contiguous slice.
+    pub fn as_slice(&self) -> &[T] {
+        &self.values
+    }
+
+    /// Iterates over values in insertion order.
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.values.iter()
+    }
+
+    /// Mutably iterates without permitting removal of the first value.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.values.iter_mut()
+    }
+}
+
+impl<'bump, T> Deref for ArenaVec1<'bump, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
