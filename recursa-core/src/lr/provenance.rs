@@ -54,6 +54,7 @@ impl FoldPolicy {
     }
 
     /// Resolves the policy against the parse context.
+    #[inline(always)]
     fn resolve<A>(self, context: &ParseContext<'_, '_, '_, A>) -> CapturePolicy {
         match self {
             Self::Inherited => context.capture_policy(),
@@ -301,18 +302,23 @@ impl<'arena> OccurrenceStack<'arena> {
             FoldKind::Absent => Payload::Folded(Occurrence::absent()),
             FoldKind::Node => {
                 let sites = &folds.sites[fold.sites.clone()];
-                let mut children = BumpVec::with_capacity_in(sites.len(), self.arena);
+                let policy = fold.policy.resolve(context);
+                let captures_span = context.captures_policy(policy);
+                let mut children =
+                    Occurrences::with_capacity_in(self.arena, sites.len(), captures_span);
                 for site in sites {
                     children.push(fold_site(context, popped, end, site));
                 }
-                let span = consumed_span(context, first, end);
-                let policy = fold.policy.resolve(context);
-                Payload::Folded(context.collect_occurrence(
-                    policy,
-                    span,
-                    children,
-                    BumpVec::new_in(self.arena),
-                ))
+                Payload::Folded(
+                    context.collect_occurrence(
+                        policy,
+                        captures_span
+                            .then(|| consumed_span(context, first, end))
+                            .flatten(),
+                        children.into_retained(),
+                        BumpVec::new_in(self.arena),
+                    ),
+                )
             }
             FoldKind::Group | FoldKind::Repetition => {
                 let site = SiteFold {
@@ -476,41 +482,55 @@ fn fold_site<'arena, A>(
         }
         SiteKind::Group => {
             let (first, end) = extent(popped);
-            let mut children = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
+            let captures_span = context.captures_policy(policy);
+            let mut children = Occurrences::with_capacity_in(
+                context.provenance_arena(),
+                range.len(),
+                captures_span,
+            );
             for entry in &mut popped[range] {
                 children.push(item_occurrence(context, site.policy, take(entry)));
             }
-            let span = consumed_span(context, first, end);
             context.collect_occurrence(
                 policy,
-                span,
-                children,
+                captures_span
+                    .then(|| consumed_span(context, first, end))
+                    .flatten(),
+                children.into_retained(),
                 BumpVec::new_in(context.provenance_arena()),
             )
         }
         SiteKind::Presence => {
             let (first, end) = extent(popped);
-            let span = consumed_span(context, first, end);
+            let captures_span = context.captures_policy(policy);
+            let span = captures_span
+                .then(|| consumed_span(context, first, end))
+                .flatten();
             let inner = if range.is_empty() {
                 Occurrence::absent()
             } else {
-                let mut leaves = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
+                let mut leaves = Occurrences::with_capacity_in(
+                    context.provenance_arena(),
+                    range.len(),
+                    captures_span,
+                );
                 for entry in &mut popped[range] {
                     leaves.push(item_occurrence(context, site.policy, take(entry)));
                 }
                 context.collect_occurrence(
                     policy,
                     span,
-                    leaves,
+                    leaves.into_retained(),
                     BumpVec::new_in(context.provenance_arena()),
                 )
             };
-            let mut children = BumpVec::with_capacity_in(1, context.provenance_arena());
+            let mut children =
+                Occurrences::with_capacity_in(context.provenance_arena(), 1, captures_span);
             children.push(inner);
             context.collect_occurrence(
                 policy,
                 span,
-                children,
+                children.into_retained(),
                 BumpVec::new_in(context.provenance_arena()),
             )
         }

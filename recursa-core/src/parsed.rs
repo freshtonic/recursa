@@ -100,7 +100,7 @@ impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
     /// Projects the captured provenance retained beside the arena-backed root.
     fn view_cursor(&self) -> ViewCursor<'_> {
         ViewCursor {
-            occurrence: self.cell.borrow_dependent().root.as_ref(),
+            occurrence: self.cell.borrow_dependent().root,
             source: self.source,
             bounds: self.bounds,
             records: self
@@ -256,7 +256,7 @@ impl Origin<'_> {
                 provenance,
                 document,
             } => ViewCursor {
-                occurrence: provenance.borrow_dependent().root.as_ref(),
+                occurrence: provenance.borrow_dependent().root,
                 source: Some(*source),
                 bounds: Some(*bounds),
                 records: document.as_ref().map(|document| document.records.as_ref()),
@@ -269,7 +269,7 @@ impl Origin<'_> {
 /// Arena-borrowing occurrence provenance for one parsed root.
 struct Provenance<'arena> {
     /// Root occurrence whose descendants follow generated child ordinals.
-    root: Option<OccurrenceNode<'arena>>,
+    root: Option<&'arena OccurrenceNode<'arena>>,
 }
 
 self_cell::self_cell! {
@@ -329,7 +329,7 @@ struct ArenaParseStorage<'arena> {
     /// Erased authored AST root.
     ast: ErasedArenaAst<'arena>,
     /// Root occurrence whose descendants follow generated child ordinals.
-    root: Option<OccurrenceNode<'arena>>,
+    root: Option<&'arena OccurrenceNode<'arena>>,
 }
 
 /// Arena owner retains the input lifetime that every borrowed token text is shortened from.
@@ -645,7 +645,7 @@ impl OccurrenceNode<'_> {
             formatter.write_str(":")?;
             for child in &self.children {
                 formatter.write_str(" ")?;
-                match &child.node {
+                match child.node {
                     Some(node) => node.render(formatter)?,
                     None => formatter.write_str("_")?,
                 }
@@ -678,7 +678,7 @@ impl OccurrenceNode<'_> {
             || self
                 .children
                 .iter()
-                .filter_map(|child| child.node.as_ref())
+                .filter_map(|child| child.node)
                 .any(Self::has_public_capture)
     }
 }
@@ -737,7 +737,6 @@ impl<'input, T> Parsed<'input, T> {
                 || provenance
                     .borrow_dependent()
                     .root
-                    .as_ref()
                     .is_some_and(OccurrenceNode::has_public_capture) =>
             {
                 source.get(bounds.range())?;
@@ -963,7 +962,7 @@ impl<'view> ViewCursor<'view> {
             occurrence: self
                 .occurrence
                 .and_then(|occurrence| occurrence.children.get(index))
-                .and_then(|occurrence| occurrence.node.as_ref()),
+                .and_then(|occurrence| occurrence.node),
             source: self.source,
             bounds: self.bounds,
             records: self.records,
@@ -989,7 +988,7 @@ impl<'view> ViewCursor<'view> {
             .iter()
             .map(|child| {
                 ViewCursor {
-                    occurrence: child.node.as_ref(),
+                    occurrence: child.node,
                     source: self.source,
                     bounds: self.bounds,
                     records: self.records,
@@ -1164,11 +1163,12 @@ impl CapturePolicy {
 #[doc(hidden)]
 pub struct Occurrence<'arena> {
     /// Retained sidecar node, absent when this subtree captured nothing.
-    node: Option<OccurrenceNode<'arena>>,
+    node: Option<&'arena OccurrenceNode<'arena>>,
 }
 
 impl<'arena> Occurrence<'arena> {
     /// Represents an authored element that has no active occurrence.
+    #[inline(always)]
     pub fn absent() -> Self {
         Self { node: None }
     }
@@ -1179,7 +1179,7 @@ impl<'arena> Occurrence<'arena> {
         struct Render<'occurrence, 'arena>(&'occurrence Occurrence<'arena>);
         impl fmt::Display for Render<'_, '_> {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match &self.0.node {
+                match self.0.node {
                     Some(node) => node.render(formatter),
                     None => formatter.write_str("_"),
                 }
@@ -1189,6 +1189,7 @@ impl<'arena> Occurrence<'arena> {
     }
 
     /// Whether this occurrence retains any captured extent or descendant.
+    #[inline(always)]
     pub fn is_captured(&self) -> bool {
         self.node.is_some()
     }
@@ -1225,6 +1226,9 @@ pub struct Occurrences<'arena> {
 }
 
 impl<'arena> Occurrences<'arena> {
+    /// Sentinel selecting eager retention of every child ordinal.
+    const RETAIN_ALL: usize = usize::MAX;
+
     /// Creates an empty lazy occurrence accumulator.
     pub fn new_in(arena: &'arena Bump) -> Self {
         Self {
@@ -1233,8 +1237,34 @@ impl<'arena> Occurrences<'arena> {
         }
     }
 
+    /// Creates an accumulator for a fixed-size generated child sequence.
+    ///
+    /// When the enclosing occurrence captures its own span, every child ordinal must be
+    /// retained even if every child is absent. Otherwise leading absent ordinals remain lazy
+    /// until a captured descendant makes them observable.
+    #[inline(always)]
+    pub(crate) fn with_capacity_in(
+        arena: &'arena Bump,
+        capacity: usize,
+        retain_absent: bool,
+    ) -> Self {
+        Self {
+            leading_absent: if retain_absent { Self::RETAIN_ALL } else { 0 },
+            retained: if retain_absent {
+                BumpVec::with_capacity_in(capacity, arena)
+            } else {
+                BumpVec::new_in(arena)
+            },
+        }
+    }
+
     /// Appends one ordinal while delaying leading absent allocation.
+    #[inline(always)]
     pub fn push(&mut self, occurrence: Occurrence<'arena>) {
+        if self.leading_absent == Self::RETAIN_ALL {
+            self.retained.push(occurrence);
+            return;
+        }
         if occurrence.is_captured() {
             if self.retained.is_empty() {
                 self.retained
@@ -1249,6 +1279,7 @@ impl<'arena> Occurrences<'arena> {
     }
 
     /// Consumes the accumulator into its materialized occurrence ordinals.
+    #[inline(always)]
     pub(crate) fn into_retained(self) -> BumpVec<'arena, Occurrence<'arena>> {
         self.retained
     }
@@ -1294,6 +1325,7 @@ impl<'arena> ProvenanceCollector<'arena> {
     /// validated on shift, or is an extent assembled from the boundaries of those validated
     /// tokens. Construction therefore stays infallible and does not repeat UTF-8 range checks for
     /// every enclosing occurrence.
+    #[inline(always)]
     pub(crate) fn finish_repeated(
         &self,
         policy: CapturePolicy,
@@ -1303,18 +1335,21 @@ impl<'arena> ProvenanceCollector<'arena> {
         repetition_separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
     ) -> Occurrence<'arena> {
         let span = policy.captures(request).then_some(span).flatten();
+        // Default-policy callers keep leading absent ordinals lazy, so their common uncaptured
+        // path stops at `is_empty`. Spanned empty productions at EOF can still carry eagerly
+        // retained absent ordinals without a concrete span and need the fallback scan.
         if span.is_none()
-            && !children.iter().any(Occurrence::is_captured)
+            && (children.is_empty() || !children.iter().any(Occurrence::is_captured))
             && repetition_separators.is_empty()
         {
             return Occurrence::absent();
         }
         Occurrence {
-            node: Some(OccurrenceNode {
+            node: Some(self.arena.alloc(OccurrenceNode {
                 span,
                 children,
                 repetition_separators,
-            }),
+            })),
         }
     }
 }
@@ -1399,6 +1434,12 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
     /// Reports whether this context's own policy retains spans under the root request.
     pub(crate) fn captures(&self) -> bool {
         self.policy.captures(self.request)
+    }
+
+    /// Reports whether one resolved fold policy retains its own span for this parse.
+    #[inline(always)]
+    pub(crate) fn captures_policy(&self, policy: CapturePolicy) -> bool {
+        policy.captures(self.request)
     }
 
     /// Returns the arena backing provenance retained by this parse.
@@ -1646,7 +1687,6 @@ where
     let public_capture = cell
         .borrow_dependent()
         .root
-        .as_ref()
         .is_some_and(OccurrenceNode::has_public_capture);
     let retains_source = public_capture || document.is_some();
     Ok(ArenaParsed {
@@ -1731,7 +1771,7 @@ where
     };
     let value = value.expect("a successful parse always constructs its semantic root");
     let document = input.retained_document();
-    let root = provenance.borrow_dependent().root.as_ref();
+    let root = provenance.borrow_dependent().root;
     let origin = if root.is_some() || document.is_some() {
         debug_assert!(root.is_none_or(OccurrenceNode::is_captured));
         Origin::Captured {
@@ -1944,11 +1984,11 @@ mod tests {
         assert_eq!(occurrences.retained.capacity(), 0);
 
         occurrences.push(Occurrence {
-            node: Some(OccurrenceNode {
+            node: Some(arena.alloc(OccurrenceNode {
                 span: Some(Span::new(4, 5).unwrap()),
                 children: BumpVec::new_in(&arena),
                 repetition_separators: BumpVec::new_in(&arena),
-            }),
+            })),
         });
         occurrences.push(Occurrence::absent());
 
@@ -1958,6 +1998,23 @@ mod tests {
         assert!(!retained[1].is_captured());
         assert!(retained[2].is_captured());
         assert!(!retained[3].is_captured());
+    }
+
+    #[test]
+    fn occurrence_handles_are_pointer_sized_and_eager_sequences_keep_absent_ordinals() {
+        assert_eq!(
+            std::mem::size_of::<Occurrence<'_>>(),
+            std::mem::size_of::<usize>()
+        );
+
+        let arena = Bump::new();
+        let mut occurrences = Occurrences::with_capacity_in(&arena, 2, true);
+        occurrences.push(Occurrence::absent());
+        occurrences.push(Occurrence::absent());
+
+        let retained = occurrences.into_retained();
+        assert_eq!(retained.len(), 2);
+        assert!(retained.iter().all(|occurrence| !occurrence.is_captured()));
     }
 
     /// Test-only grammar-local input matching the generated `Input` protocol.
