@@ -16,23 +16,24 @@
 //!
 //! - `next` holds no trigger: the position keeps `TOKEN`.
 //! - `next` holds only triggers: the position becomes `MERGED`.
-//! - `next` holds both: the position is twinned. The rule is emitted twice, once with `TOKEN`
-//!   and once with `MERGED` at that position, as gram.y writes `NOT a_expr | NOT_LA a_expr` by
-//!   hand beside `a_expr NOT_LA LIKE a_expr`. The twins are conflict-free by construction: the
-//!   automaton chooses between them by the terminal it shifts, never by a lookahead, and every
-//!   state a twin leads to has the items of the state the original leads to, so what FOLLOW or
-//!   FIRST cannot tell apart is decided at run time by the feed, which is exactly what the
-//!   declaration promises. Because every grammar type is an entry point, `$end` is in the
-//!   FOLLOW of every type nonterminal, so a rule of a type that ends in `TOKEN` gets its twin
-//!   whenever a trigger can follow the type at all.
+//! - `next` holds both: the position is twinned. The rule is emitted once for `TOKEN` and once
+//!   for each applicable merged kind at that position, as gram.y writes `NOT a_expr |
+//!   NOT_LA a_expr` by hand beside `a_expr NOT_LA LIKE a_expr`. If several disjoint filters merge
+//!   the same source token, every applicable merged kind gets a sibling as well. The twins are
+//!   conflict-free by construction: the automaton chooses between them by the terminal it shifts,
+//!   never by a lookahead, and every state a twin leads to has the items of the state the original
+//!   leads to, so what FOLLOW or FIRST cannot tell apart is decided at run time by the feed, which
+//!   is exactly what the declaration promises. Because every grammar type is an entry point,
+//!   `$end` is in the FOLLOW of every type nonterminal, so a rule of a type that ends in `TOKEN`
+//!   gets its twin whenever a trigger can follow the type at all.
 //!
 //! A twin is a clone of its original: same action, value pops, precedence, fold and tail
 //! decision, so the reduce dispatcher and the renderer treat it as one more rule of the same
 //! type, and it needs no site provenance of its own. Twins follow their original directly so a
-//! type's rules stay contiguous. A rule with `k` twinned positions is emitted once per
-//! combination, `2^k` rules: the original (every position `TOKEN`) first, then the combinations
-//! in binary order with the leftmost twinned position as the low bit, so that a rule with one
-//! twinned position is `original, twin` and the order is a function of the rule alone.
+//! type's rules stay contiguous. A rule with `k` twinned positions is emitted once per Cartesian
+//! combination of the source and merged choices. The first choice at every position is emitted
+//! first, then combinations in mixed-radix order with the leftmost position changing fastest;
+//! with one filter this remains `original, twin`, and the order is a function of the rule alone.
 //!
 //! No position is ambiguous, so the pass has no diagnostic: whichever kind the feed produces,
 //! one twin shifts it. A grammar that needs more than the trigger to choose (`a NOT like`
@@ -71,14 +72,14 @@ pub(super) fn apply(
         return;
     }
     let width = grammar.terminal_count();
-    let mut filter_of: Vec<Option<usize>> = vec![None; width];
+    let mut filter_of: Vec<Vec<usize>> = vec![Vec::new(); width];
     let mut filters = Vec::new();
     for filter in &description.lookahead_filters {
         let mut triggers = TerminalSet::empty(width);
         for trigger in &filter.triggers {
             triggers.insert(TerminalId::new(u32::from(trigger.get())));
         }
-        filter_of[usize::from(filter.token.get())] = Some(filters.len());
+        filter_of[usize::from(filter.token.get())].push(filters.len());
         filters.push(Filter {
             merged: TerminalId::new(u32::from(filter.merged.get())),
             triggers,
@@ -88,30 +89,48 @@ pub(super) fn apply(
     let nullable = grammar.nullable_nonterminals();
     let first = first_sets(grammar, &nullable);
     let follow = follow_sets(grammar, &nullable, &first, start_nonterminals);
-
     let mut rules = Vec::with_capacity(grammar.rules().len());
     for rule in grammar.rules() {
         let mut substituted = rule.clone();
-        // The twinned positions of the rule, in rule order, each with its merged terminal.
-        let mut twinned: Vec<(usize, TerminalId)> = Vec::new();
+        // The twinned positions of the rule, in rule order, each with all terminals the feed can
+        // present there. The source token is included when an unfiltered continuation is also
+        // possible; disjoint filters contribute one merged choice apiece.
+        let mut twinned: Vec<(usize, Vec<TerminalId>)> = Vec::new();
         for (position, symbol) in rule.rhs.iter().enumerate() {
             let Symbol::Terminal(terminal) = symbol else {
                 continue;
             };
-            let Some(filter) = filter_of[terminal.index()].map(|index| &filters[index]) else {
+            let filter_indexes = &filter_of[terminal.index()];
+            if filter_indexes.is_empty() {
                 continue;
-            };
+            }
             let (mut next, rest_nullable) =
                 first_of_sequence(&rule.rhs[position + 1..], &nullable, &first, width);
             if rest_nullable {
                 next.union_assign(&follow[rule.lhs.index()]);
             }
-            let has_trigger = next.intersects(&filter.triggers);
-            let has_other = next.iter().any(|candidate| !filter.triggers.contains(candidate));
-            match (has_trigger, has_other) {
-                (false, _) => {}
-                (true, false) => substituted.rhs[position] = Symbol::Terminal(filter.merged),
-                (true, true) => twinned.push((position, filter.merged)),
+            let mut choices = Vec::new();
+            let mut trigger_union = TerminalSet::empty(width);
+            for index in filter_indexes {
+                let filter = &filters[*index];
+                if next.intersects(&filter.triggers) {
+                    choices.push(filter.merged);
+                    trigger_union.union_assign(&filter.triggers);
+                }
+            }
+            if choices.is_empty() {
+                continue;
+            }
+            let has_base = next
+                .iter()
+                .any(|candidate| !trigger_union.contains(candidate));
+            if choices.len() == 1 && !has_base {
+                substituted.rhs[position] = Symbol::Terminal(choices[0]);
+            } else {
+                if has_base {
+                    choices.insert(0, *terminal);
+                }
+                twinned.push((position, choices));
             }
         }
         rules.extend(twins(&substituted, &twinned));
@@ -134,17 +153,22 @@ pub(super) fn apply(
     );
 }
 
-/// The rule and its twins: one rule per combination of the `twinned` positions, the original
-/// first and the combinations in binary order with the leftmost position as the low bit. A rule
-/// with no twinned position is itself alone.
-fn twins(rule: &Rule, twinned: &[(usize, TerminalId)]) -> Vec<Rule> {
-    (0..1usize << twinned.len())
-        .map(|combination| {
+/// The rule and its twins: one rule per Cartesian combination of the choices at every twinned
+/// position. The first choice at each position is emitted first, and the leftmost position is
+/// the fastest-changing digit. A rule with no twinned position is itself alone.
+fn twins(rule: &Rule, twinned: &[(usize, Vec<TerminalId>)]) -> Vec<Rule> {
+    let combinations = twinned.iter().fold(1usize, |count, (_, choices)| {
+        count
+            .checked_mul(choices.len())
+            .expect("lookahead-filter twin count overflow")
+    });
+    (0..combinations)
+        .map(|mut combination| {
             let mut twin = rule.clone();
-            for (bit, (position, merged)) in twinned.iter().enumerate() {
-                if combination & (1 << bit) != 0 {
-                    twin.rhs[*position] = Symbol::Terminal(*merged);
-                }
+            for (position, choices) in twinned {
+                let choice = combination % choices.len();
+                combination /= choices.len();
+                twin.rhs[*position] = Symbol::Terminal(choices[choice]);
             }
             twin
         })
@@ -233,11 +257,11 @@ mod tests {
     //! twinned positions multiply out, and the packed tables carry the filter.
 
     use super::super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
-    use super::super::precedence::BindingPowerPrecedence;
-    use super::super::{LrGrammar, RuleId, TerminalId};
     use super::super::lowering::{TypeRoles, lower};
+    use super::super::precedence::BindingPowerPrecedence;
     use super::super::report::LrDiagnostic;
     use super::super::tables::{LrTables, simulate};
+    use super::super::{LrGrammar, RuleId, TerminalId};
     use crate::materialization::LoweredGrammar;
     use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
 
@@ -259,8 +283,12 @@ mod tests {
 
     /// A small grammar over the fixture's tokens, for the inside-a-rule and end-of-rule shapes.
     fn small_grammar(nodes: &str) -> String {
-        let tokens_start = FIXTURE.find("recursa::tokens! {").expect("the fixture declares tokens");
-        let tokens_end = FIXTURE.find("#[derive(recursa::Node, Debug, Clone)]").expect("the fixture has nodes");
+        let tokens_start = FIXTURE
+            .find("recursa::tokens! {")
+            .expect("the fixture declares tokens");
+        let tokens_end = FIXTURE
+            .find("#[derive(recursa::Node, Debug, Clone)]")
+            .expect("the fixture has nodes");
         format!(
             "recursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 3 }}\n{}{nodes}\n\
              #[derive(recursa::Node)]\npub struct Name<'input> {{\n    #[lex(pattern = r\"[A-Za-z_][A-Za-z0-9_]*\")]\n    pub text: NameText<'input>,\n}}\n\
@@ -300,7 +328,11 @@ mod tests {
             .unwrap_or_else(|| {
                 panic!(
                     "no nonterminal named {name} among {:?}",
-                    grammar.nonterminals().iter().map(|nonterminal| &nonterminal.name).collect::<Vec<_>>()
+                    grammar
+                        .nonterminals()
+                        .iter()
+                        .map(|nonterminal| &nonterminal.name)
+                        .collect::<Vec<_>>()
                 )
             });
         grammar
@@ -315,7 +347,11 @@ mod tests {
         let indexes: Vec<usize> = (0..grammar.rules().len())
             .filter(|index| grammar.render_rule(RuleId::new(*index as u32)) == text)
             .collect();
-        assert_eq!(indexes.len(), 1, "one rule renders as `{text}`: {indexes:?}");
+        assert_eq!(
+            indexes.len(),
+            1,
+            "one rule renders as `{text}`: {indexes:?}"
+        );
         indexes[0]
     }
 
@@ -323,7 +359,11 @@ mod tests {
     /// `original` and is its clone but for the right-hand side.
     fn assert_twin_follows(grammar: &LrGrammar, original: &str, twin: &str) {
         let index = rule_index(grammar, original);
-        assert_eq!(rule_index(grammar, twin), index + 1, "`{twin}` directly follows `{original}`");
+        assert_eq!(
+            rule_index(grammar, twin),
+            index + 1,
+            "`{twin}` directly follows `{original}`"
+        );
         let (original, twin) = (&grammar.rules()[index], &grammar.rules()[index + 1]);
         assert_eq!(original.lhs, twin.lhs);
         assert_eq!(original.rhs.len(), twin.rhs.len());
@@ -365,12 +405,120 @@ mod tests {
         // The merged kind is the last kind and no grammar type matches it.
         assert_eq!(kind("NOT_LA").index(), grammar.kinds.len() - 1);
         assert_eq!(grammar.kinds[kind("NOT_LA").index()].name, "merged:NOT_LA");
-        assert!(grammar.types.iter().all(|description| match &description.shape {
-            crate::TypeShape::Token { atom, .. } => {
-                grammar.atoms[atom.index()].expression != crate::AtomExpression::Kind(kind("NOT_LA"))
-            }
-            _ => true,
-        }));
+        assert!(
+            grammar
+                .types
+                .iter()
+                .all(|description| match &description.shape {
+                    crate::TypeShape::Token { atom, .. } => {
+                        grammar.atoms[atom.index()].expression
+                            != crate::AtomExpression::Kind(kind("NOT_LA"))
+                    }
+                    _ => true,
+                })
+        );
+    }
+
+    #[test]
+    fn a_content_trigger_rewrites_a_token_in_a_synthesized_attachment_rule() {
+        let source = r#"
+recursa::grammar! {
+    module = crate,
+    keyword_matching = sensitive,
+    max_lookahead = 2,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+pub enum Expr<'input> {
+    Unicode(UnicodeString<'input>),
+}
+
+#[derive(recursa::Node)]
+pub struct UnicodeString<'input> {
+    #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
+    pub literal: UnicodeStringLit<'input>,
+    pub suffix: Option<UescapeSuffix<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct UescapeSuffix<'input> {
+    #[tok(UESCAPE, this)]
+    pub escape: StringLit<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct LiteralBindings<'input> {
+    #[lex(pattern = r"'[^']*'")]
+    pub string: StringLit<'input>,
+}
+
+// Deliberately declared after the content-token field. Source-order normalization moves the
+// content definition ahead of this fixed token, so every pending name index must be remapped.
+recursa::tokens! {
+    keywords { UESCAPE => "uescape" }
+    lookahead { UESCAPE_LA = UESCAPE before { StringLit } }
+}
+"#;
+        let (_, grammar) = lr(source);
+        let grammar = grammar.expect("the attachment fixture lowers");
+        let rendered = grammar
+            .rules()
+            .iter()
+            .enumerate()
+            .map(|(index, _)| grammar.render_rule(RuleId::new(index as u32)))
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|rule| rule.contains("UESCAPE_LA") && rule.contains("StringLit")),
+            "the attachment must consume the merged token before its content trigger: {rendered:#?}",
+        );
+        assert!(
+            rendered
+                .iter()
+                .all(|rule| !(rule.contains("UESCAPE ") && rule.contains("StringLit"))),
+            "the raw token cannot precede an always-triggering content kind: {rendered:#?}",
+        );
+    }
+
+    #[test]
+    fn a_fixed_trigger_rewrites_a_token_in_synthesized_presence_rules() {
+        let source = r#"
+recursa::grammar! { module = crate, keyword_matching = sensitive }
+
+recursa::tokens! {
+    keywords { WITH => "with", ORDINALITY => "ordinality", SELECT => "select" }
+    lookahead { WITH_LA = WITH before { ORDINALITY } }
+}
+
+#[derive(recursa::Node)]
+#[tok(SELECT, this)]
+pub struct Root {
+    #[presence(WITH, ORDINALITY)]
+    pub ordinality: bool,
+}
+"#;
+        let (_, grammar) = lr(source);
+        let grammar = grammar.expect("the presence fixture lowers");
+        let rendered = grammar
+            .rules()
+            .iter()
+            .enumerate()
+            .map(|(index, _)| grammar.render_rule(RuleId::new(index as u32)))
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|rule| rule.contains("WITH_LA ORDINALITY")),
+            "the presence must consume the merged token before its fixed trigger: {rendered:#?}",
+        );
+        assert!(
+            rendered
+                .iter()
+                .all(|rule| !rule.contains("WITH ORDINALITY")),
+            "the raw token cannot precede an always-triggering fixed kind: {rendered:#?}",
+        );
     }
 
     #[test]
@@ -381,41 +529,112 @@ mod tests {
         let not = terminal(&without, "NOT");
         assert!(
             automaton.conflicts().iter().any(|conflict| {
-                conflict.lookahead == not && matches!(conflict.kind, ConflictKind::ReduceReduce { .. })
+                conflict.lookahead == not
+                    && matches!(conflict.kind, ConflictKind::ReduceReduce { .. })
             }),
             "without the filter, `Subject` and `Operand` both reduce on `NOT`: {:?}",
             automaton.conflicts()
         );
-        assert_eq!(rules_of(&without, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Subject NOT BETWEEN grammar::Number AND grammar::Number"]);
+        assert_eq!(
+            rules_of(&without, "grammar::NotBetween"),
+            [
+                "grammar::NotBetween -> grammar::Subject NOT BETWEEN grammar::Number AND grammar::Number"
+            ]
+        );
 
         let (_, with) = lr(&not_between_grammar(true));
         let with = with.expect("the fixture lowers with the filter");
-        let precedence = BindingPowerPrecedence::new(&with).expect("the fixture's binding powers have precedence equivalents");
+        let precedence = BindingPowerPrecedence::new(&with)
+            .expect("the fixture's binding powers have precedence equivalents");
         let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
-        assert_eq!(rules_of(&with, "grammar::NotBetween"), ["grammar::NotBetween -> grammar::Subject NOT_LA BETWEEN grammar::Number AND grammar::Number"]);
-        assert_eq!(rules_of(&with, "grammar::NotIn"), ["grammar::NotIn -> grammar::Subject NOT_LA IN LPAREN grammar::Number RPAREN"]);
-        assert_eq!(rules_of(&with, "grammar::NotLike"), ["grammar::NotLike -> grammar::Subject NOT_LA LIKE grammar::Name"]);
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
+        assert_eq!(
+            rules_of(&with, "grammar::NotBetween"),
+            [
+                "grammar::NotBetween -> grammar::Subject NOT_LA BETWEEN grammar::Number AND grammar::Number"
+            ]
+        );
+        assert_eq!(
+            rules_of(&with, "grammar::NotIn"),
+            ["grammar::NotIn -> grammar::Subject NOT_LA IN LPAREN grammar::Number RPAREN"]
+        );
+        assert_eq!(
+            rules_of(&with, "grammar::NotLike"),
+            ["grammar::NotLike -> grammar::Subject NOT_LA LIKE grammar::Name"]
+        );
         // `NOT` before a condition, which never begins with a trigger, stays `NOT`; so does the
         // unary mark, which ends its rule and is followed only by a condition.
-        assert_eq!(rules_of(&with, "grammar::AndNot"), ["grammar::AndNot -> grammar::Operand NOT grammar::Cond"]);
-        assert_eq!(rules_of(&with, "grammar::NotMark"), ["grammar::NotMark -> NOT"]);
+        assert_eq!(
+            rules_of(&with, "grammar::AndNot"),
+            ["grammar::AndNot -> grammar::Operand NOT grammar::Cond"]
+        );
+        assert_eq!(
+            rules_of(&with, "grammar::NotMark"),
+            ["grammar::NotMark -> NOT"]
+        );
         assert_eq!(with.terminal_count(), without.terminal_count() + 1);
         // The tables parse both readings of `NOT`.
         let tables = LrTables::pack(&with, &automaton);
-        let rule_type = with.starts().iter().find(|start| with.nonterminal(with.rule(start.rule).lhs).name == "$accept(grammar::Rule)").expect("Rule has a start rule");
-        let start = automaton.start_state(rule_type.type_id).expect("start state").index() as u32;
+        let rule_type = with
+            .starts()
+            .iter()
+            .find(|start| {
+                with.nonterminal(with.rule(start.rule).lhs).name == "$accept(grammar::Rule)"
+            })
+            .expect("Rule has a start rule");
+        let start = automaton
+            .start_state(rule_type.type_id)
+            .expect("start state")
+            .index() as u32;
         let name = terminal(&with, "NameText");
         let number = terminal(&with, "NumberText");
         let word = |spelling: &str| terminal(&with, spelling);
         // `a not between 1 and 2;`
-        let trace = simulate(&with, &tables, start, &[name, word("NOT_LA"), word("BETWEEN"), number, word("AND"), number, word("SEMI")]).expect("NOT BETWEEN parses");
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[
+                name,
+                word("NOT_LA"),
+                word("BETWEEN"),
+                number,
+                word("AND"),
+                number,
+                word("SEMI"),
+            ],
+        )
+        .expect("NOT BETWEEN parses");
         assert_eq!(trace.consumed, 7);
-        assert!(trace.reductions.iter().any(|rule| rule == "grammar::Subject -> grammar::Name"), "{:?}", trace.reductions);
+        assert!(
+            trace
+                .reductions
+                .iter()
+                .any(|rule| rule == "grammar::Subject -> grammar::Name"),
+            "{:?}",
+            trace.reductions
+        );
         // `a not not b;`
-        let trace = simulate(&with, &tables, start, &[name, word("NOT"), word("NOT"), name, word("SEMI")]).expect("a conjunction with a unary NOT parses");
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[name, word("NOT"), word("NOT"), name, word("SEMI")],
+        )
+        .expect("a conjunction with a unary NOT parses");
         assert_eq!(trace.consumed, 5);
-        assert!(trace.reductions.iter().any(|rule| rule == "grammar::Operand -> grammar::Name"), "{:?}", trace.reductions);
+        assert!(
+            trace
+                .reductions
+                .iter()
+                .any(|rule| rule == "grammar::Operand -> grammar::Name"),
+            "{:?}",
+            trace.reductions
+        );
     }
 
     #[test]
@@ -430,7 +649,10 @@ mod tests {
             .collect();
         let original = rendered
             .iter()
-            .find(|rule| rule.starts_with("grammar::Expr::") && rule.ends_with(" -> NOT grammar::Expr[min 10]"))
+            .find(|rule| {
+                rule.starts_with("grammar::Expr::")
+                    && rule.ends_with(" -> NOT grammar::Expr[min 10]")
+            })
             .unwrap_or_else(|| panic!("the prefix operand attachment keeps `NOT`: {rendered:#?}"));
         let twin = original.replace("-> NOT ", "-> NOT_LA ");
         assert_twin_follows(&with, original, &twin);
@@ -439,30 +661,119 @@ mod tests {
             .filter(|rule| rule.starts_with("grammar::Expr::") && rule.contains("-> NOT"))
             .collect();
         assert_eq!(tests.len(), 5, "the twins and the three tests: {tests:#?}");
-        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA LIKE grammar::Expr[min 20]")), "{tests:#?}");
-        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA BETWEEN grammar::Expr[min 20]")), "{tests:#?}");
-        assert!(tests.iter().any(|rule| rule.ends_with(" -> NOT_LA IN LPAREN grammar::Expr[min 20] RPAREN")), "{tests:#?}");
-        assert!(!rendered.iter().any(|rule| rule.contains("grammar::Expr[min 10] -> NOT ")), "the clone's prefix is the attachment's: {rendered:#?}");
+        assert!(
+            tests
+                .iter()
+                .any(|rule| rule.ends_with(" -> NOT_LA LIKE grammar::Expr[min 20]")),
+            "{tests:#?}"
+        );
+        assert!(
+            tests
+                .iter()
+                .any(|rule| rule.ends_with(" -> NOT_LA BETWEEN grammar::Expr[min 20]")),
+            "{tests:#?}"
+        );
+        assert!(
+            tests
+                .iter()
+                .any(|rule| rule.ends_with(" -> NOT_LA IN LPAREN grammar::Expr[min 20] RPAREN")),
+            "{tests:#?}"
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|rule| rule.contains("grammar::Expr[min 10] -> NOT ")),
+            "the clone's prefix is the attachment's: {rendered:#?}"
+        );
 
         // The automaton is conflict-free under binding-power precedence, and the tables parse
         // every reading of `NOT`: `not a not like b;`, `not like like b;`, `not between;`.
-        let precedence = BindingPowerPrecedence::new(&with).expect("the fixture's binding powers have precedence equivalents");
+        let precedence = BindingPowerPrecedence::new(&with)
+            .expect("the fixture's binding powers have precedence equivalents");
         let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
-        assert!(automaton.conflicts().is_empty(), "{:#?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:#?}",
+            automaton.conflicts()
+        );
         let tables = LrTables::pack(&with, &automaton);
-        let expr_rule = with.starts().iter().find(|start| with.nonterminal(with.rule(start.rule).lhs).name == "$accept(grammar::ExprRule)").expect("ExprRule has a start rule");
-        let start = automaton.start_state(expr_rule.type_id).expect("start state").index() as u32;
+        let expr_rule = with
+            .starts()
+            .iter()
+            .find(|start| {
+                with.nonterminal(with.rule(start.rule).lhs).name == "$accept(grammar::ExprRule)"
+            })
+            .expect("ExprRule has a start rule");
+        let start = automaton
+            .start_state(expr_rule.type_id)
+            .expect("start state")
+            .index() as u32;
         let word = |spelling: &str| terminal(&with, spelling);
         let name = word("NameText");
-        let trace = simulate(&with, &tables, start, &[word("NOT"), name, word("NOT_LA"), word("LIKE"), name, word("SEMI")]).expect("`not a not like b;` parses");
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[
+                word("NOT"),
+                name,
+                word("NOT_LA"),
+                word("LIKE"),
+                name,
+                word("SEMI"),
+            ],
+        )
+        .expect("`not a not like b;` parses");
         assert_eq!(trace.consumed, 6);
-        assert_eq!(trace.reductions.iter().filter(|rule| rule.contains("-> NOT grammar::Expr[min 10]")).count(), 1, "{:#?}", trace.reductions);
-        let trace = simulate(&with, &tables, start, &[word("NOT_LA"), word("LIKE"), word("LIKE"), name, word("SEMI")]).expect("`not like like b;` parses");
+        assert_eq!(
+            trace
+                .reductions
+                .iter()
+                .filter(|rule| rule.contains("-> NOT grammar::Expr[min 10]"))
+                .count(),
+            1,
+            "{:#?}",
+            trace.reductions
+        );
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[
+                word("NOT_LA"),
+                word("LIKE"),
+                word("LIKE"),
+                name,
+                word("SEMI"),
+            ],
+        )
+        .expect("`not like like b;` parses");
         assert_eq!(trace.consumed, 5);
-        assert_eq!(trace.reductions.iter().filter(|rule| rule.contains("-> NOT_LA grammar::Expr[min 10]")).count(), 1, "{:#?}", trace.reductions);
-        let trace = simulate(&with, &tables, start, &[word("NOT_LA"), word("BETWEEN"), word("SEMI")]).expect("`not between;` parses");
+        assert_eq!(
+            trace
+                .reductions
+                .iter()
+                .filter(|rule| rule.contains("-> NOT_LA grammar::Expr[min 10]"))
+                .count(),
+            1,
+            "{:#?}",
+            trace.reductions
+        );
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[word("NOT_LA"), word("BETWEEN"), word("SEMI")],
+        )
+        .expect("`not between;` parses");
         assert_eq!(trace.consumed, 3);
-        let trace = simulate(&with, &tables, start, &[word("NOT"), word("NOT"), name, word("SEMI")]).expect("`not not a;` parses");
+        let trace = simulate(
+            &with,
+            &tables,
+            start,
+            &[word("NOT"), word("NOT"), name, word("SEMI")],
+        )
+        .expect("`not not a;` parses");
         assert_eq!(trace.consumed, 4);
     }
 
@@ -484,20 +795,161 @@ pub enum Thing<'input> {
 "#,
         );
         let (lowered, result) = lr(&source);
-        let grammar = result.expect("`NOT Thing` twins: `Thing` begins with `BETWEEN` and with a name");
-        assert_eq!(rules_of(&grammar, "Wrap"), ["Wrap -> NOT Thing", "Wrap -> NOT_LA Thing"]);
+        let grammar =
+            result.expect("`NOT Thing` twins: `Thing` begins with `BETWEEN` and with a name");
+        assert_eq!(
+            rules_of(&grammar, "Wrap"),
+            ["Wrap -> NOT Thing", "Wrap -> NOT_LA Thing"]
+        );
         assert_twin_follows(&grammar, "Wrap -> NOT Thing", "Wrap -> NOT_LA Thing");
         let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let tables = LrTables::pack(&grammar, &automaton);
-        let wrap = lowered.grammar.types.iter().position(|description| description.name == "Wrap").expect("Wrap");
-        let start = automaton.start_state(crate::TypeId::new(wrap as u32)).expect("start").index() as u32;
-        let trace = simulate(&grammar, &tables, start, &[terminal(&grammar, "NOT_LA"), terminal(&grammar, "BETWEEN")]).expect("`not between` parses");
+        let wrap = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == "Wrap")
+            .expect("Wrap");
+        let start = automaton
+            .start_state(crate::TypeId::new(wrap as u32))
+            .expect("start")
+            .index() as u32;
+        let trace = simulate(
+            &grammar,
+            &tables,
+            start,
+            &[terminal(&grammar, "NOT_LA"), terminal(&grammar, "BETWEEN")],
+        )
+        .expect("`not between` parses");
         assert_eq!(trace.consumed, 2);
-        assert_eq!(trace.reductions.last().map(String::as_str), Some("Wrap -> NOT_LA Thing"), "{:?}", trace.reductions);
-        let trace = simulate(&grammar, &tables, start, &[terminal(&grammar, "NOT"), terminal(&grammar, "NameText")]).expect("`not a` parses");
+        assert_eq!(
+            trace.reductions.last().map(String::as_str),
+            Some("Wrap -> NOT_LA Thing"),
+            "{:?}",
+            trace.reductions
+        );
+        let trace = simulate(
+            &grammar,
+            &tables,
+            start,
+            &[terminal(&grammar, "NOT"), terminal(&grammar, "NameText")],
+        )
+        .expect("`not a` parses");
         assert_eq!(trace.consumed, 2);
-        assert_eq!(trace.reductions.last().map(String::as_str), Some("Wrap -> NOT Thing"), "{:?}", trace.reductions);
+        assert_eq!(
+            trace.reductions.last().map(String::as_str),
+            Some("Wrap -> NOT Thing"),
+            "{:?}",
+            trace.reductions
+        );
+    }
+
+    #[test]
+    fn disjoint_filters_sharing_a_token_emit_each_merged_kind_and_the_base() {
+        let source = small_grammar(
+            r#"
+#[derive(recursa::Node)]
+pub struct Wrap<'input> {
+    #[tok(NOT)]
+    pub inner: Thing<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct OnlyWrap<'input> {
+    #[tok(NOT)]
+    pub inner: TriggerThing<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum Thing<'input> {
+    Between { mark: BetweenMark },
+    In { mark: InMark },
+    Name { name: Name<'input> },
+}
+
+#[derive(recursa::Node)]
+pub enum TriggerThing<'input> {
+    Between { mark: BetweenMark },
+    In { mark: InMark },
+}
+
+#[derive(recursa::Node)]
+#[tok(IN)]
+pub struct InMark;
+"#,
+        )
+        .replace(
+            "lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }",
+            "lookahead { NOT_LA = NOT before { BETWEEN }, NOT_LB = NOT before { IN } }",
+        );
+        let (lowered, result) = lr(&source);
+        let grammar = result.expect("disjoint filters lower");
+        assert_eq!(
+            rules_of(&grammar, "Wrap"),
+            [
+                "Wrap -> NOT Thing",
+                "Wrap -> NOT_LA Thing",
+                "Wrap -> NOT_LB Thing",
+            ]
+        );
+        assert_eq!(
+            rules_of(&grammar, "OnlyWrap"),
+            [
+                "OnlyWrap -> NOT_LA TriggerThing",
+                "OnlyWrap -> NOT_LB TriggerThing",
+            ]
+        );
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
+        let tables = LrTables::pack(&grammar, &automaton);
+        let wrap = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == "Wrap")
+            .expect("Wrap");
+        let start = automaton
+            .start_state(crate::TypeId::new(wrap as u32))
+            .expect("start")
+            .index() as u32;
+        let word = |name: &str| terminal(&grammar, name);
+        for (merged, trigger) in [("NOT_LA", "BETWEEN"), ("NOT_LB", "IN")] {
+            let trace = simulate(&grammar, &tables, start, &[word(merged), word(trigger)])
+                .expect("a filtered source token parses");
+            assert_eq!(trace.consumed, 2);
+        }
+        let trace = simulate(&grammar, &tables, start, &[word("NOT"), word("NameText")])
+            .expect("the unfiltered source token parses");
+        assert_eq!(trace.consumed, 2);
+        let only_wrap = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == "OnlyWrap")
+            .expect("OnlyWrap");
+        let only_start = automaton
+            .start_state(crate::TypeId::new(only_wrap as u32))
+            .expect("OnlyWrap start")
+            .index() as u32;
+        for (merged, trigger) in [("NOT_LA", "BETWEEN"), ("NOT_LB", "IN")] {
+            let trace = simulate(
+                &grammar,
+                &tables,
+                only_start,
+                &[word(merged), word(trigger)],
+            )
+            .expect("a filtered source token parses without a base alternative");
+            assert_eq!(trace.consumed, 2);
+        }
     }
 
     #[test]
@@ -532,14 +984,42 @@ pub enum Thing<'input> {
             ]
         );
         let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let tables = LrTables::pack(&grammar, &automaton);
-        let twice = lowered.grammar.types.iter().position(|description| description.name == "Twice").expect("Twice");
-        let start = automaton.start_state(crate::TypeId::new(twice as u32)).expect("start").index() as u32;
+        let twice = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == "Twice")
+            .expect("Twice");
+        let start = automaton
+            .start_state(crate::TypeId::new(twice as u32))
+            .expect("start")
+            .index() as u32;
         let word = |spelling: &str| terminal(&grammar, spelling);
-        let trace = simulate(&grammar, &tables, start, &[word("NOT"), word("NameText"), word("NOT_LA"), word("BETWEEN")]).expect("`not a not between` parses");
+        let trace = simulate(
+            &grammar,
+            &tables,
+            start,
+            &[
+                word("NOT"),
+                word("NameText"),
+                word("NOT_LA"),
+                word("BETWEEN"),
+            ],
+        )
+        .expect("`not a not between` parses");
         assert_eq!(trace.consumed, 4);
-        assert_eq!(trace.reductions.last().map(String::as_str), Some("Twice -> NOT Thing NOT_LA Thing"), "{:?}", trace.reductions);
+        assert_eq!(
+            trace.reductions.last().map(String::as_str),
+            Some("Twice -> NOT Thing NOT_LA Thing"),
+            "{:?}",
+            trace.reductions
+        );
     }
 
     #[test]
@@ -587,14 +1067,42 @@ pub struct Other<'input> {
         // `Plain` is followed by a name or `$end` only: the token stays.
         assert_eq!(rules_of(&grammar, "Plain"), ["Plain -> Name NOT"]);
         let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let tables = LrTables::pack(&grammar, &automaton);
-        let pair = lowered.grammar.types.iter().position(|description| description.name == "Pair").expect("Pair");
-        let start = automaton.start_state(crate::TypeId::new(pair as u32)).expect("start").index() as u32;
+        let pair = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == "Pair")
+            .expect("Pair");
+        let start = automaton
+            .start_state(crate::TypeId::new(pair as u32))
+            .expect("start")
+            .index() as u32;
         let name = terminal(&grammar, "NameText");
-        let trace = simulate(&grammar, &tables, start, &[name, terminal(&grammar, "NOT_LA"), terminal(&grammar, "BETWEEN")]).expect("`a not between` parses");
+        let trace = simulate(
+            &grammar,
+            &tables,
+            start,
+            &[
+                name,
+                terminal(&grammar, "NOT_LA"),
+                terminal(&grammar, "BETWEEN"),
+            ],
+        )
+        .expect("`a not between` parses");
         assert_eq!(trace.consumed, 3);
-        let trace = simulate(&grammar, &tables, start, &[name, terminal(&grammar, "NOT"), name]).expect("`a not b` parses");
+        let trace = simulate(
+            &grammar,
+            &tables,
+            start,
+            &[name, terminal(&grammar, "NOT"), name],
+        )
+        .expect("`a not b` parses");
         assert_eq!(trace.consumed, 3);
     }
 
@@ -608,7 +1116,11 @@ pub struct Other<'input> {
             [super::TerminalFilter {
                 token: terminal(&with, "NOT"),
                 merged: terminal(&with, "NOT_LA"),
-                triggers: vec![terminal(&with, "BETWEEN"), terminal(&with, "IN"), terminal(&with, "LIKE")],
+                triggers: vec![
+                    terminal(&with, "BETWEEN"),
+                    terminal(&with, "IN"),
+                    terminal(&with, "LIKE")
+                ],
             }]
         );
         let automaton = Automaton::build(&with, &NoPrecedence, AutomatonOptions::default());
@@ -616,9 +1128,15 @@ pub struct Other<'input> {
         assert_eq!(
             tables.lookahead,
             [
-                word("NOT"), word("NOT_LA"), word("BETWEEN"),
-                word("NOT"), word("NOT_LA"), word("IN"),
-                word("NOT"), word("NOT_LA"), word("LIKE"),
+                word("NOT"),
+                word("NOT_LA"),
+                word("BETWEEN"),
+                word("NOT"),
+                word("NOT_LA"),
+                word("IN"),
+                word("NOT"),
+                word("NOT_LA"),
+                word("LIKE"),
             ]
         );
         let decoded = LrTables::decode(&tables.encode()).expect("round trip");
@@ -639,10 +1157,16 @@ pub struct Other<'input> {
         let roles = TypeRoles::from_lowered(&lowered);
         let again = lower(&lowered.grammar, &roles).expect("lowers again");
         assert_eq!(grammar, again);
-        assert!(grammar.rules().iter().all(|rule| rule.rhs.iter().all(|symbol| match symbol {
-            super::Symbol::Terminal(terminal) => !grammar.terminal_name(*terminal).ends_with("_LA"),
-            super::Symbol::Nonterminal(_) => true,
-        })));
+        assert!(
+            grammar
+                .rules()
+                .iter()
+                .all(|rule| rule.rhs.iter().all(|symbol| match symbol {
+                    super::Symbol::Terminal(terminal) =>
+                        !grammar.terminal_name(*terminal).ends_with("_LA"),
+                    super::Symbol::Nonterminal(_) => true,
+                }))
+        );
     }
 
     /// The pg-sql window-frame shape of recursa#128: a keyword that names a column also opens a
@@ -757,7 +1281,9 @@ pub struct Ident<'input> {{
             "without the merged kind's level `ROWS BETWEEN . NOT_LA` is a conflict"
         );
 
-        let (_, declared) = lr(&frame_grammar("nonassoc(bp = 20) { BETWEEN, LIKE, NOT_LA },"));
+        let (_, declared) = lr(&frame_grammar(
+            "nonassoc(bp = 20) { BETWEEN, LIKE, NOT_LA },",
+        ));
         let declared = declared.expect("the frame fixture lowers with the merged kind declared");
         assert_eq!(
             merged_conflicts(&declared),

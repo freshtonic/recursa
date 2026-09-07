@@ -171,7 +171,12 @@ mod tests {
         grammar.rule("Label", "id");
         grammar.rule("E", "id");
         grammar.pratt_rule("E", "E Like", PrattPosition::Infix { lbp: 5, rbp: 6 });
-        grammar.attachment_rule("Like", "LIKE E", "E", PrattPosition::Infix { lbp: 5, rbp: 6 });
+        grammar.attachment_rule(
+            "Like",
+            "LIKE E",
+            "E",
+            PrattPosition::Infix { lbp: 5, rbp: 6 },
+        );
         grammar.attachment_rule(
             "Like",
             "LIKE E ESCAPE E",
@@ -192,7 +197,10 @@ mod tests {
             .filter(|conflict| conflict.lookahead == escape)
             .collect();
         assert_eq!(conflicts.len(), 1, "{:?}", automaton.conflicts());
-        assert!(matches!(conflicts[0].kind, ConflictKind::ShiftReduce { .. }));
+        assert!(matches!(
+            conflicts[0].kind,
+            ConflictKind::ShiftReduce { .. }
+        ));
     }
 
     #[test]
@@ -203,21 +211,40 @@ mod tests {
         textbook.precedence_level(Associativity::NonAssociative, 7, &["id", "VALUE"]);
         textbook.precedence_level(Associativity::Left, 10, &["+"]);
         let (grammar, automaton) = build(textbook, "T");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let settled = settled(&grammar, &automaton);
         assert!(
-            settled.contains(&("Like -> LIKE E".to_owned(), "ESCAPE".to_owned(), Resolution::Shift)),
+            settled.contains(&(
+                "Like -> LIKE E".to_owned(),
+                "ESCAPE".to_owned(),
+                Resolution::Shift
+            )),
             "{settled:?}"
         );
         // The `+` after the pattern is a Pratt operator of `E`, decided by binding powers as
         // before: `Like -> LIKE E` (5) against `+` (10) shifts.
         assert!(
-            settled.contains(&("Like -> LIKE E".to_owned(), "+".to_owned(), Resolution::Shift)),
+            settled.contains(&(
+                "Like -> LIKE E".to_owned(),
+                "+".to_owned(),
+                Resolution::Shift
+            )),
             "{settled:?}"
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id LIKE id ESCAPE id"),
-            ["E -> id", "E -> id", "E -> id", "Like -> LIKE E ESCAPE E", "E -> E Like", "T -> E"]
+            [
+                "E -> id",
+                "E -> id",
+                "E -> id",
+                "Like -> LIKE E ESCAPE E",
+                "E -> E Like",
+                "T -> E"
+            ]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id LIKE id + id ESCAPE id"),
@@ -254,22 +281,46 @@ mod tests {
         grammar.rule("E", "id");
         grammar.pratt_rule("E", "E IsJson", PrattPosition::Postfix { bp: 6 });
         grammar.attachment_rule("IsJson", "IS JSON", "E", PrattPosition::Postfix { bp: 6 });
-        grammar.attachment_rule("IsJson", "IS JSON VALUE", "E", PrattPosition::Postfix { bp: 6 });
+        grammar.attachment_rule(
+            "IsJson",
+            "IS JSON VALUE",
+            "E",
+            PrattPosition::Postfix { bp: 6 },
+        );
         grammar.precedence_level(Associativity::NonAssociative, 6, &["IS"]);
         grammar.precedence_level(Associativity::NonAssociative, 7, &["id", "VALUE"]);
         let (grammar, automaton) = build(grammar, "T");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             settled(&grammar, &automaton),
-            [("IsJson -> IS JSON".to_owned(), "VALUE".to_owned(), Resolution::Shift)]
+            [(
+                "IsJson -> IS JSON".to_owned(),
+                "VALUE".to_owned(),
+                Resolution::Shift
+            )]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id IS JSON VALUE"),
-            ["E -> id", "IsJson -> IS JSON VALUE", "E -> E IsJson", "T -> E"]
+            [
+                "E -> id",
+                "IsJson -> IS JSON VALUE",
+                "E -> E IsJson",
+                "T -> E"
+            ]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id IS JSON id"),
-            ["E -> id", "IsJson -> IS JSON", "E -> E IsJson", "Label -> id", "T -> E Label"]
+            [
+                "E -> id",
+                "IsJson -> IS JSON",
+                "E -> E IsJson",
+                "Label -> id",
+                "T -> E Label"
+            ]
         );
     }
 
@@ -278,14 +329,8 @@ mod tests {
     /// `%nonassoc IDENT ... PRECEDING ... PATH`.
     #[test]
     fn unbounded_and_nested_declared_below_preceding_and_path_shift() {
-        let mut grammar = TextbookGrammar::new(&[
-            "id",
-            "UNBOUNDED",
-            "PRECEDING",
-            "NESTED",
-            "PATH",
-            "string",
-        ]);
+        let mut grammar =
+            TextbookGrammar::new(&["id", "UNBOUNDED", "PRECEDING", "NESTED", "PATH", "string"]);
         grammar.rule("S", "Bound");
         grammar.rule("S", "Column");
         grammar.rule("Bound", "UNBOUNDED PRECEDING");
@@ -297,14 +342,30 @@ mod tests {
         grammar.rule("Col", "UNBOUNDED");
         grammar.rule("Col", "NESTED");
         grammar.precedence_level(Associativity::NonAssociative, 8, &["UNBOUNDED", "NESTED"]);
-        grammar.precedence_level(Associativity::NonAssociative, 9, &["id", "PRECEDING", "PATH"]);
+        grammar.precedence_level(
+            Associativity::NonAssociative,
+            9,
+            &["id", "PRECEDING", "PATH"],
+        );
         let (grammar, automaton) = build(grammar, "S");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             settled(&grammar, &automaton),
             [
-                ("Col -> UNBOUNDED".to_owned(), "PRECEDING".to_owned(), Resolution::Shift),
-                ("Col -> NESTED".to_owned(), "PATH".to_owned(), Resolution::Shift),
+                (
+                    "Col -> UNBOUNDED".to_owned(),
+                    "PRECEDING".to_owned(),
+                    Resolution::Shift
+                ),
+                (
+                    "Col -> NESTED".to_owned(),
+                    "PATH".to_owned(),
+                    Resolution::Shift
+                ),
             ]
         );
         assert_eq!(
@@ -313,7 +374,12 @@ mod tests {
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id PRECEDING"),
-            ["Col -> id", "E -> Col", "Bound -> E PRECEDING", "S -> Bound"]
+            [
+                "Col -> id",
+                "E -> Col",
+                "Bound -> E PRECEDING",
+                "S -> Bound"
+            ]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "NESTED PATH string"),
@@ -350,14 +416,26 @@ mod tests {
         grammar.precedence_level(Associativity::NonAssociative, 5, &["BETWEEN"]);
         grammar.precedence_level(Associativity::Left, 10, &["-"]);
         let (grammar, automaton) = build(grammar, "Frame");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         let settled = settled(&grammar, &automaton);
         assert!(
-            settled.contains(&("Col -> BETWEEN".to_owned(), "-".to_owned(), Resolution::Shift)),
+            settled.contains(&(
+                "Col -> BETWEEN".to_owned(),
+                "-".to_owned(),
+                Resolution::Shift
+            )),
             "{settled:?}"
         );
         assert_eq!(
-            reductions(&grammar, &automaton, "ROWS BETWEEN - id PRECEDING AND CURRENT ROW"),
+            reductions(
+                &grammar,
+                &automaton,
+                "ROWS BETWEEN - id PRECEDING AND CURRENT ROW"
+            ),
             [
                 "Col -> id",
                 "E -> Col",
@@ -370,7 +448,13 @@ mod tests {
         );
         assert_eq!(
             reductions(&grammar, &automaton, "ROWS BETWEEN PRECEDING"),
-            ["Col -> BETWEEN", "E -> Col", "Bound -> E PRECEDING", "Extent -> Bound", "Frame -> ROWS Extent"]
+            [
+                "Col -> BETWEEN",
+                "E -> Col",
+                "Bound -> E PRECEDING",
+                "Extent -> Bound",
+                "Frame -> ROWS Extent"
+            ]
         );
         // A Pratt rule against a Pratt operator of its own nonterminal is decided by binding
         // powers alone: `- id - id` is `(- id) - id` because the prefix binds at 12.
@@ -405,13 +489,19 @@ mod tests {
         grammar.precedence_level(Associativity::Left, 20, &["."]);
         grammar.rule_precedence(parenthesised, "UMINUS");
         let (grammar, automaton) = build(grammar, "E");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             settled(&grammar, &automaton),
             [("E -> Sub".to_owned(), ".".to_owned(), Resolution::Shift)]
         );
         let rule = grammar.rule(parenthesised);
-        let precedence = rule.precedence.expect("the override gives the rule a precedence");
+        let precedence = rule
+            .precedence
+            .expect("the override gives the rule a precedence");
         assert_eq!(precedence.origin, PrecedenceOrigin::Declared);
         assert_eq!(precedence.level, 18);
         assert_eq!(precedence.associativity, Associativity::Right);
@@ -444,7 +534,8 @@ mod tests {
     /// the transaction form; two literal keywords with no operator hierarchy behind them.
     #[test]
     fn local_and_session_literals_below_characteristics_shift_the_transaction_form() {
-        let mut grammar = TextbookGrammar::new(&["id", "SET", "LOCAL", "SESSION", "CHARACTERISTICS", "="]);
+        let mut grammar =
+            TextbookGrammar::new(&["id", "SET", "LOCAL", "SESSION", "CHARACTERISTICS", "="]);
         grammar.rule("Stmt", "SET Scope Var = id");
         grammar.rule("Stmt", "SET SESSION CHARACTERISTICS");
         grammar.rule("Scope", "LOCAL");
@@ -454,10 +545,18 @@ mod tests {
         grammar.precedence_level(Associativity::NonAssociative, 1, &["LOCAL", "SESSION"]);
         grammar.precedence_level(Associativity::NonAssociative, 2, &["CHARACTERISTICS"]);
         let (grammar, automaton) = build(grammar, "Stmt");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             settled(&grammar, &automaton),
-            [("Scope -> SESSION".to_owned(), "CHARACTERISTICS".to_owned(), Resolution::Shift)]
+            [(
+                "Scope -> SESSION".to_owned(),
+                "CHARACTERISTICS".to_owned(),
+                Resolution::Shift
+            )]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "SET SESSION CHARACTERISTICS"),
@@ -465,11 +564,19 @@ mod tests {
         );
         assert_eq!(
             reductions(&grammar, &automaton, "SET LOCAL CHARACTERISTICS = id"),
-            ["Scope -> LOCAL", "Var -> CHARACTERISTICS", "Stmt -> SET Scope Var = id"]
+            [
+                "Scope -> LOCAL",
+                "Var -> CHARACTERISTICS",
+                "Stmt -> SET Scope Var = id"
+            ]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "SET SESSION id = id"),
-            ["Scope -> SESSION", "Var -> id", "Stmt -> SET Scope Var = id"]
+            [
+                "Scope -> SESSION",
+                "Var -> id",
+                "Stmt -> SET Scope Var = id"
+            ]
         );
     }
 
@@ -480,7 +587,11 @@ mod tests {
         grammar.rule("E", "E < E");
         grammar.precedence_level(Associativity::NonAssociative, 7, &["<"]);
         let (grammar, automaton) = build(grammar, "E");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             settled(&grammar, &automaton),
             [("E -> E < E".to_owned(), "<".to_owned(), Resolution::Error)]
@@ -491,7 +602,10 @@ mod tests {
             "{dump}"
         );
         assert!(dump.contains("error (nonassociative)"), "{dump}");
-        assert_eq!(reductions(&grammar, &automaton, "id < id"), ["E -> id", "E -> id", "E -> E < E"]);
+        assert_eq!(
+            reductions(&grammar, &automaton, "id < id"),
+            ["E -> id", "E -> id", "E -> E < E"]
+        );
         let error = parse(&grammar, &automaton, "id < id < id").unwrap_err();
         assert_eq!(error.position, 3);
     }
@@ -505,7 +619,11 @@ mod tests {
         grammar.precedence_level(Associativity::Left, 10, &["+"]);
         grammar.precedence_level(Associativity::Right, 30, &["^"]);
         let (grammar, automaton) = build(grammar, "E");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             reductions(&grammar, &automaton, "id + id + id"),
             ["E -> id", "E -> id", "E -> E + E", "E -> id", "E -> E + E"]
@@ -533,13 +651,19 @@ mod tests {
         grammar.start("X");
         let grammar = grammar.finish();
         let level = |rule: RuleId| {
-            grammar
-                .rule(rule)
-                .precedence
-                .map(|precedence| (precedence.origin, precedence.level, precedence.associativity))
+            grammar.rule(rule).precedence.map(|precedence| {
+                (
+                    precedence.origin,
+                    precedence.level,
+                    precedence.associativity,
+                )
+            })
         };
         // `d` has no declared precedence, so the last declared terminal is `c`.
-        assert_eq!(level(both), Some((PrecedenceOrigin::Declared, 2, Associativity::Right)));
+        assert_eq!(
+            level(both),
+            Some((PrecedenceOrigin::Declared, 2, Associativity::Right))
+        );
         assert_eq!(level(none), None);
         assert_eq!(level(epsilon), None);
         assert_eq!(
@@ -553,12 +677,10 @@ mod tests {
             ))
         );
         assert!(grammar.rules().iter().all(|rule| {
-            rule.precedence.is_none_or(|precedence| precedence.owner == rule.lhs)
+            rule.precedence
+                .is_none_or(|precedence| precedence.owner == rule.lhs)
         }));
-        assert_eq!(
-            grammar.declared_precedence(terminal(&grammar, "d")),
-            None
-        );
+        assert_eq!(grammar.declared_precedence(terminal(&grammar, "d")), None);
     }
 
     #[test]
@@ -571,7 +693,11 @@ mod tests {
         grammar.pratt_rule("E", "E * E", PrattPosition::Infix { lbp: 20, rbp: 21 });
         grammar.precedence_level(Associativity::Left, 30, &["+"]);
         let (grammar, automaton) = build(grammar, "E");
-        assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
         assert_eq!(
             reductions(&grammar, &automaton, "id * id + id"),
             ["E -> id", "E -> id", "E -> E * E", "E -> id", "E -> E + E"]
@@ -624,6 +750,9 @@ mod tests {
         let mut grammar = grammar.finish();
         assign_rule_precedence(&mut grammar);
         let precedence = grammar.rule(rule).precedence.unwrap();
-        assert_eq!((precedence.level, precedence.associativity), (2, Associativity::Right));
+        assert_eq!(
+            (precedence.level, precedence.associativity),
+            (2, Associativity::Right)
+        );
     }
 }

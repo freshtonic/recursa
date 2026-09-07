@@ -189,11 +189,7 @@ impl FoldTable {
         let mut mandatory = false;
         let mut values = values.iter().copied();
         while let Some(kind) = values.next() {
-            let mut next = || {
-                values
-                    .next()
-                    .expect("a packed fold is complete")
-            };
+            let mut next = || values.next().expect("a packed fold is complete");
             let policy = FoldPolicy::decode(next());
             let count = next() as usize;
             let first = sites.len();
@@ -507,7 +503,9 @@ fn fold_site<A>(
                     Payload::Token(span) => {
                         separators.push(RepetitionSeparatorOccurrence::from_span(span));
                     }
-                    Payload::Folded(_) => unreachable!("a repetition site holds lists and separators"),
+                    Payload::Folded(_) => {
+                        unreachable!("a repetition site holds lists and separators")
+                    }
                 }
             }
             let span = consumed_span(context, first, end);

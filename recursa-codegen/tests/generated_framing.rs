@@ -39,11 +39,10 @@ fn generated_framing_partitions_mixed_source_and_rejects_the_first_failing_islan
 }
 
 #[test]
-fn framing_drives_the_default_parser_beside_a_table_driven_parser() {
-    // Named parsers (#119): framing and the explorer adapter bind to the default parser, so
-    // the framing fixture, whose driver also parses through `Entry::explorer()`, generates and
-    // partitions as before when a table-driven `lr` parser is declared beside the
-    // recursive-descent default.
+fn framing_and_explorer_run_through_a_table_driven_default_parser() {
+    // Framing and the explorer adapter bind to the parser selected by the unqualified `Input`.
+    // The unchanged driver exercises both surfaces while the generation contains no recursive-
+    // descent parser, proving neither capability reaches for that marker implicitly.
     let package = scaffold_fixture();
     let grammar = package.path.join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read framing grammar");
@@ -52,10 +51,10 @@ fn framing_drives_the_default_parser_beside_a_table_driven_parser() {
         &grammar,
         source.replace(
             "    max_lookahead = 2,\n",
-            "    max_lookahead = 2,\n    parsers(rd = recursive_descent, lr = table_driven),\n",
+            "    max_lookahead = 2,\n    parser_style = table_driven,\n",
         ),
     )
-    .expect("declare a second parser");
+    .expect("select the table-driven parser");
 
     let output = run_fixture(&package);
     assert!(

@@ -11,10 +11,10 @@ mod grammar;
 mod input;
 /// Generated lexer execution protocol.
 mod lex;
-/// The table-driven parser's runtime loop, tables and value stack.
-pub mod lr;
 #[cfg(test)]
 mod lex_tests;
+/// The table-driven parser's runtime loop, tables and value stack.
+pub mod lr;
 /// Span-bearing output traits and non-empty semantic sequences.
 mod output;
 /// Structured low-level parse failures.
@@ -34,8 +34,7 @@ pub use output::{HasSpan, Vec1};
 pub use parse::{ParseError, ParseErrorKind};
 pub use parsed::{
     DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse,
-    Parsed, Repeated,
-    RepeatedIter,
+    Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
 pub use span::{OffsetOverflow, Span};
@@ -51,11 +50,6 @@ pub use visitor::{
 #[doc(hidden)]
 pub mod __private {
     pub use crate::dispatch::{DispatchTable, dispatch_table};
-    /// Perfect-hash runtime backing generated word-keyword classification.
-    ///
-    /// Re-exported so generated code never depends on `phf` directly: it stays an
-    /// internal implementation detail of the facade/runtime pair.
-    pub use phf;
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
@@ -94,6 +88,9 @@ pub mod __private {
         LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
         lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
     };
+    pub use crate::lr::{
+        LrTables, ReduceFn as LrReduceFn, Reduction as LrReduction, run as lr_run,
+    };
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
@@ -101,11 +98,15 @@ pub mod __private {
         ParserMarker, RecursiveDescent, Repeated, RepeatedIter, TableDriven, ViewCursor, parse,
         parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
     };
-    pub use crate::lr::{LrTables, ReduceFn as LrReduceFn, Reduction as LrReduction, run as lr_run};
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
-    pub use logos;
     #[cfg(feature = "arbitrary")]
     pub use arbitrary;
+    pub use logos;
+    /// Perfect-hash runtime backing generated word-keyword classification.
+    ///
+    /// Re-exported so generated code never depends on `phf` directly: it stays an
+    /// internal implementation detail of the facade/runtime pair.
+    pub use phf;
     #[cfg(feature = "serde")]
     pub use serde;
 
@@ -168,6 +169,19 @@ pub mod __private {
         expected: &'static [ExpectedAtomId],
     ) -> FollowSet {
         FollowSet::from_static(kind_count, kinds, expected)
+    }
+
+    /// Returns the empty root FOLLOW used by a table-driven parser.
+    ///
+    /// Table-driven parsing never composes caller FOLLOW sets. Its only root
+    /// use is the tail-equivalence check, where an empty set rejects every
+    /// remaining token. A width-zero set has precisely that membership
+    /// behavior for every grammar-local kind, so table-only generations need
+    /// not emit a grammar-sized empty bitset merely to implement `Parse`.
+    #[inline]
+    pub fn empty_follow() -> &'static FollowSet {
+        static EMPTY: FollowSet = FollowSet::from_static(0, &[], &[]);
+        &EMPTY
     }
 
     /// Expands a compact generated bitset into a promoted static expectation array.

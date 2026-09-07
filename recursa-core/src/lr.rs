@@ -10,8 +10,11 @@
 //! The token feed applies the grammar's lookahead filters (`docs/table-driven-parsing.md`,
 //! section 5) at the one place the loop reads a terminal: a record whose kind is a filtered
 //! token, followed by a record whose kind is one of its triggers, is looked up as the merged
-//! terminal. Nothing else changes: the record is shifted as lexed, so a reduce action and the
-//! error path see the lexed kind and span, and the trigger record is read next as itself.
+//! terminal while that lookup can shift or reduce. A row whose merged lookup has no explicit
+//! entry or default reduction retains the source terminal, which lets one filtered token serve
+//! grammar contexts with different continuations. Nothing else changes: the record is shifted
+//! as lexed, so a reduce action and the error path see the lexed kind and span, and the trigger
+//! record is read next as itself.
 //!
 //! Three behaviours are decisions of the design document and are pinned by this module's tests:
 //! default reductions are taken before any lookahead is read, so a state that can only reduce
@@ -20,9 +23,9 @@
 //! recursive descent produces; and a failed parse restores the input cursor and drops every
 //! partially built value through the value stack's drop stack.
 
+use crate::ParseError;
 use crate::input::TokenRecord;
 use crate::parsed::{ContentText, Occurrence, ParseContext, ParsedNode};
-use crate::ParseError;
 
 pub mod lac;
 pub mod provenance;
@@ -97,7 +100,10 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
         let [frame] = self.frames else {
             panic!("`Reduction::token` is for rules of exactly one terminal");
         };
-        assert!(frame.token != NO_TOKEN, "the popped frame was entered by a goto, not a shift");
+        assert!(
+            frame.token != NO_TOKEN,
+            "the popped frame was entered by a goto, not a shift"
+        );
         self.context
             .record(frame.token as usize)
             .expect("a shifted token index is always a lexed record")
@@ -209,7 +215,10 @@ fn drive<'input, T, A>(
     }];
     let mut tail = false;
     loop {
-        let state = states.last().expect("the state stack keeps the start state").state;
+        let state = states
+            .last()
+            .expect("the state stack keeps the start state")
+            .state;
         let action = if decoded.acts_by_default(state) {
             decoded.default_action(state)
         } else {
@@ -218,7 +227,7 @@ fn drive<'input, T, A>(
                 Some(record) if u32::from(record.kind) >= end_marker => TableAction::Error,
                 Some(record) => {
                     let next = context.peek(1).map(|next| u32::from(next.kind));
-                    decoded.action(state, decoded.merged_terminal(u32::from(record.kind), next))
+                    decoded.filtered_action(state, u32::from(record.kind), next)
                 }
             }
         };
@@ -264,7 +273,10 @@ fn drive<'input, T, A>(
                 let pops = decoded.r2[rule as usize] as usize;
                 let value_pops = decoded.value_pops[rule as usize] as usize;
                 let depth = values.depth();
-                debug_assert!(value_pops <= depth, "value_pops never exceeds the values on the stack");
+                debug_assert!(
+                    value_pops <= depth,
+                    "value_pops never exceeds the values on the stack"
+                );
                 let kept = states.len() - pops;
                 let mut reduction = Reduction {
                     values,
@@ -274,7 +286,8 @@ fn drive<'input, T, A>(
                 };
                 reduce(rule, &mut reduction)?;
                 debug_assert!(
-                    values.depth() == depth - value_pops || values.depth() == depth - value_pops + 1,
+                    values.depth() == depth - value_pops
+                        || values.depth() == depth - value_pops + 1,
                     "a reduce action pops `value_pops` values and pushes at most one"
                 );
                 if let Some(stack) = occurrences.as_mut() {
@@ -286,14 +299,24 @@ fn drive<'input, T, A>(
                     _ => {}
                 }
                 states.truncate(kept);
-                let top = states.last().expect("the state stack keeps the start state").state;
+                let top = states
+                    .last()
+                    .expect("the state stack keeps the start state")
+                    .state;
                 states.push(Frame {
                     state: decoded.goto(top, decoded.r1[rule as usize]),
                     token: NO_TOKEN,
                 });
             }
             TableAction::Error => {
-                return Err(unexpected_here(context, tables, start_state, accept_rule, origin, true));
+                return Err(unexpected_here(
+                    context,
+                    tables,
+                    start_state,
+                    accept_rule,
+                    origin,
+                    true,
+                ));
             }
         }
     }
@@ -301,7 +324,7 @@ fn drive<'input, T, A>(
 
 #[cfg(test)]
 mod tests {
-    use super::tables::tests::{FILTERED_TEXTBOOK, TEXTBOOK};
+    use super::tables::tests::{FALLBACK_FILTERED_TEXTBOOK, FILTERED_TEXTBOOK, TEXTBOOK};
     use super::*;
     use crate::input::LexResult;
     use crate::{GrammarInfo, ParseErrorKind, Span};
@@ -340,7 +363,10 @@ mod tests {
     }
 
     /// Evaluates the textbook grammar: `+` adds, `*` multiplies, `id` is a decimal number.
-    fn evaluate(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+    fn evaluate(
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+    ) -> Result<(), ParseError> {
         // SAFETY: every pop names the type the child rule pushed, `Value`.
         unsafe {
             match rule {
@@ -410,7 +436,10 @@ mod tests {
         let (result, cursor, live) = parse("2+3*4");
         assert_eq!(result.unwrap(), 14);
         assert_eq!(cursor, 5);
-        assert_eq!(live, 0, "the root value was returned and dropped by the test");
+        assert_eq!(
+            live, 0,
+            "the root value was returned and dropped by the test"
+        );
         let (result, cursor, _) = parse("(2+3)*4");
         assert_eq!(result.unwrap(), 20);
         assert_eq!(cursor, 7);
@@ -463,7 +492,10 @@ mod tests {
 
     /// Reduces the textbook grammar by recording, for every `F -> id` rule, the lexed kind of
     /// the shifted record; sums record the kinds seen so far.
-    fn record_kinds(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+    fn record_kinds(
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+    ) -> Result<(), ParseError> {
         // SAFETY: every pop names the type the child rule pushed, `Value`.
         unsafe {
             match rule {
@@ -521,20 +553,46 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_falls_back_to_its_source_terminal_outside_merged_states() {
+        // The filter maps `)` before `+` to `id`, but the state after `(2`
+        // has an explicit action only for `)`. The source-token fallback
+        // closes the group, after which `+3` continues normally.
+        let live = Rc::new(Cell::new(0));
+        let lexed = lex("(2)+3");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
+        let result = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _>(context, &FALLBACK_FILTERED_TEXTBOOK, 0, 0, evaluate)
+                .map(|node| node.into_parts().0.number)
+        });
+        assert_eq!(result.unwrap(), 5);
+        assert_eq!(input.cursor(), 5);
+        assert_eq!(live.get(), 0);
+    }
+
+    #[test]
     fn the_expected_set_names_the_terminals_the_pre_reduction_stack_could_shift() {
         // `+` after `*` errors in a state with no reductions, so the row is the whole answer.
         let (result, _, _) = parse("2+3*+");
         let error = result.unwrap_err();
-        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+        assert_eq!(
+            error.expected().collect::<Vec<_>>(),
+            ["fixed:(", "content:id"]
+        );
         // An empty input fails in the start state, which shifts `(` and `id`.
         let (result, _, _) = parse("");
         let error = result.unwrap_err();
-        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+        assert_eq!(
+            error.expected().collect::<Vec<_>>(),
+            ["fixed:(", "content:id"]
+        );
         // A lexical error is never shifted, so the expected set is still the pre-reduction one.
         let (result, _, _) = parse("2+!");
         let error = result.unwrap_err();
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
-        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:(", "content:id"]);
+        assert_eq!(
+            error.expected().collect::<Vec<_>>(),
+            ["fixed:(", "content:id"]
+        );
     }
 
     #[test]
@@ -544,12 +602,19 @@ mod tests {
         // whose explicit row is `+` and `)`. But `*` could have continued `T -> T . * F` before
         // the reductions ran, so the expected set must name it too.
         let tables = TEXTBOOK.decoded();
-        assert_eq!(tables.explicit_terminals(6, 6), [0, 3], "the post-reduction row hides `*`");
+        assert_eq!(
+            tables.explicit_terminals(6, 6),
+            [0, 3],
+            "the post-reduction row hides `*`"
+        );
         let (result, cursor, live) = parse("(2+3");
         let error = result.unwrap_err();
         assert_eq!(error.kind(), ParseErrorKind::UnexpectedEof);
         assert_eq!(error.span(), Span::new(4, 4).unwrap());
-        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*", "fixed:)"]);
+        assert_eq!(
+            error.expected().collect::<Vec<_>>(),
+            ["fixed:+", "fixed:*", "fixed:)"]
+        );
         assert_eq!(cursor, 0);
         assert_eq!(live, 0);
         // The same state, reached with a token instead of the end: the token is the failing one
@@ -559,7 +624,10 @@ mod tests {
         assert_eq!(error.kind(), ParseErrorKind::UnexpectedToken);
         assert_eq!(error.span(), Span::new(5, 6).unwrap());
         assert_eq!(error.found(), Some("id"));
-        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*", "fixed:)"]);
+        assert_eq!(
+            error.expected().collect::<Vec<_>>(),
+            ["fixed:+", "fixed:*", "fixed:)"]
+        );
     }
 
     #[test]
@@ -567,7 +635,10 @@ mod tests {
         // Every reduce sees `capturing() == false` under the default request with an optional
         // policy, so no occurrence stack exists to be pushed or folded, and the root carries
         // no occurrence.
-        fn assert_off(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+        fn assert_off(
+            rule: u32,
+            reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+        ) -> Result<(), ParseError> {
             assert!(!reduction.capturing(), "capture is off");
             evaluate(rule, reduction)
         }
@@ -587,7 +658,10 @@ mod tests {
         // tree: each rule a node over the rule's extent whose children are its sites, a
         // nonterminal site grouped around the child's node, a terminal site a leaf, and
         // `F -> id` passing its token through to the group that consumes it.
-        fn assert_on(rule: u32, reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>) -> Result<(), ParseError> {
+        fn assert_on(
+            rule: u32,
+            reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+        ) -> Result<(), ParseError> {
             assert!(reduction.capturing(), "capture is on");
             evaluate(rule, reduction)
         }
@@ -620,15 +694,28 @@ mod tests {
         let lexed = LexResult::new(
             "2+3",
             vec![
-                TokenRecord { kind: 4, span: Span::new(0, 1).unwrap(), diagnostic: None },
-                TokenRecord { kind: 0, span: Span::new(1, 2).unwrap(), diagnostic: None },
-                TokenRecord { kind: 4, span: Span::new(2, 9).unwrap(), diagnostic: None },
+                TokenRecord {
+                    kind: 4,
+                    span: Span::new(0, 1).unwrap(),
+                    diagnostic: None,
+                },
+                TokenRecord {
+                    kind: 0,
+                    span: Span::new(1, 2).unwrap(),
+                    diagnostic: None,
+                },
+                TokenRecord {
+                    kind: 4,
+                    span: Span::new(2, 9).unwrap(),
+                    diagnostic: None,
+                },
             ],
             None,
         );
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _>(context, &TEXTBOOK, 0, 0, evaluate).map(|node| node.into_parts().0.number)
+            run::<Value, _>(context, &TEXTBOOK, 0, 0, evaluate)
+                .map(|node| node.into_parts().0.number)
         });
         assert_eq!(result.unwrap_err().kind(), ParseErrorKind::InvalidTokenSpan);
         assert_eq!(input.cursor(), 0);

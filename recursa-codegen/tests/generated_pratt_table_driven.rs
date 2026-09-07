@@ -26,14 +26,22 @@ fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clon
     assert!(stdout.ends_with("table-driven-pratt-ok\n"), "{stdout}");
     let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
-    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
+    assert!(
+        root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
+    assert!(
+        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
+        "one generation carries both parsers"
+    );
 
     // Associativity and precedence through parsed values: `1 - 2 - 3` is `(1 - 2) - 3`,
     // `2 ^ 3 ^ 2` is `2 ^ (3 ^ 2)`, `-a!` is `-(a!)`, and the needle of `position` stops at
     // `in` while the haystack takes the rest.
     let integer = |text: &str| {
-        format!("Integer(Integer {{ text: __RecursaContentToken0 {{ text: ContentText({text:?}) }} }})")
+        format!(
+            "Integer(Integer {{ text: __RecursaContentToken0 {{ text: ContentText({text:?}) }} }})"
+        )
     };
     let name = |text: &str| {
         format!("Name(Name {{ text: __RecursaContentToken1 {{ text: ContentText({text:?}) }} }})")
@@ -73,8 +81,14 @@ fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clon
         )),
         "{table_stdout}"
     );
-    assert!(table_stdout.contains("ok \"1 2\" => ") && table_stdout.contains("cursor=1 eof=false\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"a between b in c and d\" => code=RCA4100"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("ok \"1 2\" => ") && table_stdout.contains("cursor=1 eof=false\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"a between b in c and d\" => code=RCA4100"),
+        "{table_stdout}"
+    );
     assert!(
         table_stdout.contains(&format!(
             "ok \"a between b and c in d\" => In(Between({}, {}, {}), {}) cursor=7 eof=true\n",
@@ -90,33 +104,68 @@ fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clon
     let index_path = find_one_debug_index(debug.path());
     let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
         .expect("the bundle carries the automaton dump");
-    assert!(dump.contains("grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]"), "{dump}");
-    assert!(dump.contains("[excl In] -> BETWEEN grammar::Expr[excl In, min 8]"), "{dump}");
-    assert!(dump.contains("[excl In] -> AND grammar::Expr[excl In, min 8]"), "{dump}");
-    assert!(dump.contains("-> LBRACKET grammar::Expr[min 50] RBRACKET"), "{dump}");
-    assert!(dump.contains("grammar::Expr -> grammar::Expr FROM grammar::Expr[min 7] FOR grammar::Expr"), "{dump}");
-    assert!(table_stdout.contains("err \"a[b + c]\" => code=RCA4100"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"a from b in c for d\" => code=RCA4100"), "{table_stdout}");
+    assert!(
+        dump.contains(
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]"
+        ),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("[excl In] -> BETWEEN grammar::Expr[excl In, min 8]"),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("[excl In] -> AND grammar::Expr[excl In, min 8]"),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("-> LBRACKET grammar::Expr[min 50] RBRACKET"),
+        "{dump}"
+    );
+    assert!(
+        dump.contains("grammar::Expr -> grammar::Expr FROM grammar::Expr[min 7] FOR grammar::Expr"),
+        "{dump}"
+    );
+    assert!(
+        table_stdout.contains("err \"a[b + c]\" => code=RCA4100"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"a from b in c for d\" => code=RCA4100"),
+        "{table_stdout}"
+    );
     assert!(dump.contains("resolved by precedence (reduce)."), "{dump}");
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 
     // The recursive-descent parser of the same generation prints the same lines.
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 #[test]
 fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_driven() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let example = fs::read_to_string(workspace.join("examples/pratt-expressions/src/grammar.rs"))
         .expect("read the example grammar");
     assert_eq!(example.matches("max_lookahead = 1,").count(), 1);
     assert_eq!(example.matches("    diagrams,\n").count(), 1);
     assert_eq!(example.matches("    derives(Visit),\n").count(), 1);
     let grammar = example
-        .replace("max_lookahead = 1,", &format!("max_lookahead = 1,\n    {NAMED_PARSERS}"))
+        .replace(
+            "max_lookahead = 1,",
+            &format!("max_lookahead = 1,\n    {NAMED_PARSERS}"),
+        )
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
-        .replace("#[derive(recursa::Node)]", "#[derive(recursa::Node, Debug)]");
+        .replace(
+            "#[derive(recursa::Node)]",
+            "#[derive(recursa::Node, Debug)]",
+        );
     let package = scaffold(FIXTURE, Some(&grammar));
     fs::write(package.path().join("src/main.rs"), EXAMPLE_MAIN).unwrap();
 
@@ -125,14 +174,35 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("example-ok\n"), "{stdout}");
     let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
-    assert!(table_stdout.contains("ok \"1 + 2 + 3\" => Add(Add("), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"2 ^ 3 ^ 4\" => Power(Integer("), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"-name!\" => Negate(Factorial("), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"-a! + 2 * 3 ^ 4\" => Add(Negate(Factorial("), "{table_stdout}");
-    assert!(table_stdout.contains("lexical \"@\" => 1 error(s)"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"1 +\" => code=RCA4101"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("ok \"1 + 2 + 3\" => Add(Add("),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("ok \"2 ^ 3 ^ 4\" => Power(Integer("),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("ok \"-name!\" => Negate(Factorial("),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("ok \"-a! + 2 * 3 ^ 4\" => Add(Negate(Factorial("),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("lexical \"@\" => 1 error(s)"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"1 +\" => code=RCA4101"),
+        "{table_stdout}"
+    );
     assert!(read_selected_root(&package).contains("__recursa_lr"));
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 /// The driver of the example grammar: every input the example's tests and binary use, and a
@@ -280,7 +350,11 @@ fn split_by_parser(stdout: &str) -> (String, String) {
 
 fn read_selected_root(package: &TempDir) -> String {
     let mut found = Vec::new();
-    find_named(&package.path().join("target"), "recursa-selected.rs", &mut found);
+    find_named(
+        &package.path().join("target"),
+        "recursa-selected.rs",
+        &mut found,
+    );
     assert_eq!(found.len(), 1, "one selected Generation: {found:?}");
     let selected = found.pop().unwrap();
     let selector = fs::read_to_string(&selected).expect("read selected Generation");

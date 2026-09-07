@@ -30,7 +30,10 @@ fn the_default_surface_prints_the_same_bytes_with_and_without_a_second_parser() 
     let without = run_bin(&package, "recursa-generated-named-parsers");
     assert_success(&without);
     let root = read_selected_root(&package);
-    assert!(!root.contains("pub mod parsers"), "one parser declares no parsers module");
+    assert!(
+        !root.contains("pub mod parsers"),
+        "one parser declares no parsers module"
+    );
 
     fs::write(&grammar, &named).expect("restore the lr parser");
     let with = run_bin(&package, "recursa-generated-named-parsers");
@@ -52,11 +55,26 @@ fn the_default_surface_prints_the_same_bytes_with_and_without_a_second_parser() 
     // One generation carries both parsers: the recursive-descent marker on the root input, the
     // table-driven marker, tables and dispatcher under `parsers::lr`.
     let root = read_selected_root(&package);
-    assert!(root.contains("pub mod parsers"), "root declares the parsers module");
-    assert!(root.contains("pub mod lr"), "root declares the lr parser module");
-    assert!(root.contains("RecursiveDescent"), "the default parser is recursive descent");
-    assert!(root.contains("TableDriven"), "the lr parser is table-driven");
-    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
+    assert!(
+        root.contains("pub mod parsers"),
+        "root declares the parsers module"
+    );
+    assert!(
+        root.contains("pub mod lr"),
+        "root declares the lr parser module"
+    );
+    assert!(
+        root.contains("RecursiveDescent"),
+        "the default parser is recursive descent"
+    );
+    assert!(
+        root.contains("TableDriven"),
+        "the lr parser is table-driven"
+    );
+    assert!(
+        root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
 }
 
 #[test]
@@ -86,7 +104,11 @@ fn the_lr_input_selects_the_table_driven_parser() {
         .filter(|line| !line.starts_with("err \"print(1 + 2\"") && *line != "lr-ok")
         .collect();
     assert_eq!(lr_lines, default_lines);
-    assert!(lr_lines.iter().any(|line| line.starts_with("prov \"let z = 1 + !2 + x;\" => captured")));
+    assert!(
+        lr_lines
+            .iter()
+            .any(|line| line.starts_with("prov \"let z = 1 + !2 + x;\" => captured"))
+    );
 }
 
 fn scaffold_fixture() -> TempDir {

@@ -50,6 +50,8 @@ recursa::tokens! {
         BOXES => "boxes",
         MARKS => "marks",
         FILTER => "filter",
+        VTAIL => "vtail",
+        VARIADIC => "variadic",
     }
     punctuation {
         EQ => "=",
@@ -82,6 +84,7 @@ pub enum Statement<'input> {
     Boxes(Boxes<'input>),
     Marks(Marks),
     Filter(Filter<'input>),
+    FunctionTail(FunctionTail<'input>),
 }
 
 /// An erased optional group, a presence with an envelope, `Box<T>` and an inlined
@@ -133,6 +136,22 @@ pub struct Call<'input> {
 pub struct Args<'input> {
     #[sep(COMMA, trailing)]
     pub values: Vec<Value<'input>>,
+}
+
+/// A list whose following optional tail owns the same comma. `VARIADIC` cannot begin `Value`,
+/// so both parser styles can leave that comma for the tail without backtracking.
+#[derive(recursa::Node, Debug, Clone)]
+#[tok(VTAIL, this, SEMI)]
+pub struct FunctionTail<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<Value<'input>>,
+    pub trailing_variadic: Option<TrailingVariadic<'input>>,
+}
+
+#[derive(recursa::Node, Debug, Clone)]
+#[tok(COMMA, VARIADIC, this)]
+pub struct TrailingVariadic<'input> {
+    pub value: Value<'input>,
 }
 
 /// A `Vec1<T>` with a separator, the gram.y `arg_class` shape and an `Option<Box<T>>` behind

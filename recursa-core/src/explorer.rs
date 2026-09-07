@@ -1,8 +1,8 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
 use crate::input::TokenRecord;
-use crate::parsed::GeneratedParse;
 use crate::parsed::ViewCursor;
+use crate::parsed::{GeneratedParse, ParserMarker};
 use crate::{
     ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap, Span,
 };
@@ -1239,8 +1239,10 @@ pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
 /// `Root` must be the same generated Node type for every lifetime.
 #[doc(hidden)]
 pub unsafe trait ExplorerRootFamily: 'static {
+    /// The parser style selected by this generation's default input.
+    type Parser: ParserMarker;
     /// The root Node type for one input lifetime.
-    type Root<'input>: GeneratedParse<'input> + ExplorerRoot + 'input;
+    type Root<'input>: GeneratedParse<'input, (), Self::Parser> + ExplorerRoot + 'input;
 }
 
 /// Tests one complete strict root against a generated static variant identity.
@@ -1447,7 +1449,7 @@ pub fn parse_root<'input, F: ExplorerRootFamily>(
     source: &'input str,
 ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>> {
     let lexed = lex(source);
-    let grammar = <F::Root<'input> as GeneratedParse<'input>>::grammar();
+    let grammar = <F::Root<'input> as GeneratedParse<'input, (), F::Parser>>::grammar();
     let lexical_errors = lexed
         .records()
         .iter()
@@ -1455,7 +1457,7 @@ pub fn parse_root<'input, F: ExplorerRootFamily>(
         .map(|record| record.span)
         .collect::<Vec<_>>();
     let mut input = lexed.input(grammar);
-    parse_document::<F::Root<'input>, ()>(&mut input, lexical_errors)
+    parse_document::<F::Root<'input>, (), F::Parser>(&mut input, lexical_errors)
 }
 
 /// Produces one root family's deterministic synthetic document.
@@ -1491,15 +1493,15 @@ pub fn pretty_root<T: crate::Pretty>(
 /// Lexical errors take precedence and are all retained. A successful root
 /// parse must also consume every token before its typed value is erased.
 ///
-/// The explorer adapter belongs to the default parser, so the root always
-/// runs through its recursive-descent impl; other parser styles are not
-/// reachable from this seam.
-fn parse_document<'input, T, A>(
+/// The explorer adapter belongs to the default parser, so the root runs
+/// through the parser marker selected by the generated root family.
+fn parse_document<'input, T, A, P>(
     input: &mut Input<'input, A>,
     lexical_errors: impl IntoIterator<Item = Span>,
 ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>
 where
-    T: GeneratedParse<'input, A> + ExplorerRoot + 'input,
+    T: GeneratedParse<'input, A, P> + ExplorerRoot + 'input,
+    P: ParserMarker,
 {
     let source = input.source();
     let lexical_diagnostics = lexical_errors
@@ -1520,7 +1522,7 @@ where
         });
     }
 
-    let parsed = crate::parsed::parse_spanned::<T, A, crate::parsed::RecursiveDescent>(input)
+    let parsed = crate::parsed::parse_spanned::<T, A, P>(input)
         .map_err(|error| parse_failure_from_error(source, error))?;
 
     if let Some(record) = input.peek(0) {

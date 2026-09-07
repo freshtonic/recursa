@@ -1,6 +1,8 @@
 //! Textbook grammars with known LALR(1) outcomes: state counts, tables and conflicts.
 
-use super::automaton::{Action, Automaton, AutomatonOptions, ConflictKind, NoPrecedence, StateId};
+use super::automaton::{
+    Action, Automaton, AutomatonOptions, ConflictKind, NoPrecedence, Resolution, StateId,
+};
 use super::grammar::{LrGrammar, TextbookGrammar};
 use super::report::automaton_dump;
 use super::tables::{LrTables, PACT_NINF};
@@ -63,7 +65,10 @@ fn expression_grammar_has_the_textbook_twelve_states_and_no_conflicts() {
     let automaton = build(&grammar);
     assert_eq!(automaton.states().len(), 12);
     assert!(automaton.conflicts().is_empty());
-    assert_eq!(automaton.start_state(crate::TypeId::new(0)), Some(StateId::new(0)));
+    assert_eq!(
+        automaton.start_state(crate::TypeId::new(0)),
+        Some(StateId::new(0))
+    );
 
     // The state reached by `id` reduces `F -> id` on exactly FOLLOW(F).
     let id = grammar.nonterminal_by_name("F").unwrap();
@@ -124,7 +129,16 @@ fn expression_grammar_tables_drive_a_prefix_parse() {
     let trace = super::tables::simulate(&grammar, &decoded, 0, &input).unwrap();
     assert_eq!(
         trace.reductions,
-        ["F -> id", "T -> F", "E -> T", "F -> id", "T -> F", "F -> id", "T -> T * F", "E -> E + T"]
+        [
+            "F -> id",
+            "T -> F",
+            "E -> T",
+            "F -> id",
+            "T -> F",
+            "F -> id",
+            "T -> T * F",
+            "E -> E + T"
+        ]
     );
     assert_eq!(trace.consumed, 5);
 
@@ -132,7 +146,10 @@ fn expression_grammar_tables_drive_a_prefix_parse() {
     let input: Vec<_> = ["id", "+", "id", ")"].map(terminal).to_vec();
     let trace = super::tables::simulate(&grammar, &decoded, 0, &input).unwrap();
     assert_eq!(trace.consumed, 3);
-    assert_eq!(trace.reductions.last().map(String::as_str), Some("E -> E + T"));
+    assert_eq!(
+        trace.reductions.last().map(String::as_str),
+        Some("E -> E + T")
+    );
 }
 
 #[test]
@@ -154,11 +171,117 @@ fn dangling_else_reports_one_shift_reduce_conflict_resolved_as_shift() {
         .iter()
         .map(|item| item.render(&grammar))
         .collect();
-    assert_eq!(
-        items,
-        ["S -> i S .", "S -> i S . e S"]
-    );
+    assert_eq!(items, ["S -> i S .", "S -> i S . e S"]);
+}
 
+#[test]
+fn scoped_shift_resolution_uses_source_owners_and_is_recorded_in_the_dump() {
+    let grammar = dangling_else_grammar();
+    let mut automaton = build(&grammar);
+    let declaration = crate::LrConflictResolution {
+        owners: vec![crate::LrRuleOwner::Type(crate::TypeId::new(0))],
+        against: vec![crate::LrRuleOwner::Type(crate::TypeId::new(0))],
+        action: crate::LrConflictAction::Shift,
+        lookaheads: vec![crate::KindId::new(1)],
+        expected: 1,
+    };
+    automaton
+        .apply_scoped_resolutions(&grammar, &[declaration])
+        .expect("the exact dangling-else cell matches");
+    assert!(automaton.conflicts().is_empty());
+    assert_eq!(automaton.scoped_resolutions().len(), 1);
+    assert_eq!(
+        automaton.scoped_resolutions()[0].resolution,
+        Resolution::Shift
+    );
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(
+        dump.contains("resolved by scoped declaration 0 (shift)"),
+        "{dump}"
+    );
+}
+
+#[test]
+fn scoped_resolution_validation_is_atomic_and_fail_closed() {
+    assert_eq!(
+        crate::lr::report::INVALID_SCOPED_RESOLUTION,
+        "RCA0407",
+        "invalid scoped declarations are reported under the registered analysis code",
+    );
+    let grammar = dangling_else_grammar();
+    let base = crate::LrConflictResolution {
+        owners: vec![crate::LrRuleOwner::Type(crate::TypeId::new(0))],
+        against: vec![crate::LrRuleOwner::Type(crate::TypeId::new(0))],
+        action: crate::LrConflictAction::Shift,
+        lookaheads: vec![crate::KindId::new(1)],
+        expected: 1,
+    };
+    for (declarations, expected_message) in [
+        (
+            vec![crate::LrConflictResolution {
+                expected: 2,
+                ..base.clone()
+            }],
+            "expected 2 conflict cell(s) but matched 1",
+        ),
+        (
+            vec![crate::LrConflictResolution {
+                lookaheads: vec![crate::KindId::new(0)],
+                ..base.clone()
+            }],
+            "matched no conflict on lookahead `i`",
+        ),
+        (vec![base.clone(), base.clone()], "both select state"),
+    ] {
+        let mut automaton = build(&grammar);
+        let errors = automaton
+            .apply_scoped_resolutions(&grammar, &declarations)
+            .expect_err("the declaration must fail closed");
+        assert!(
+            errors.iter().any(|error| error.contains(expected_message)),
+            "{errors:?}"
+        );
+        assert_eq!(automaton.conflicts().len(), 1, "validation is atomic");
+        assert!(automaton.scoped_resolutions().is_empty());
+    }
+}
+
+#[test]
+fn scoped_reduce_resolution_selects_the_authored_winner_of_reduce_reduce() {
+    let mut textbook = TextbookGrammar::new(&["x", "tail"]);
+    textbook.start("S");
+    textbook.rule("S", "A tail");
+    textbook.rule("S", "B tail");
+    textbook.rule("A", "x");
+    textbook.rule("B", "x");
+    let grammar = textbook.finish();
+    let mut automaton = build(&grammar);
+    let conflict = automaton
+        .conflicts()
+        .iter()
+        .find(|conflict| grammar.terminal_name(conflict.lookahead) == "tail")
+        .expect("A/B has a reduce/reduce cell on tail");
+    assert!(matches!(conflict.kind, ConflictKind::ReduceReduce { .. }));
+    // The synthetic start follows S, then A and B; select B even though bison's fallback chose A.
+    automaton
+        .apply_scoped_resolutions(
+            &grammar,
+            &[crate::LrConflictResolution {
+                owners: vec![crate::LrRuleOwner::Type(crate::TypeId::new(3))],
+                against: vec![crate::LrRuleOwner::Type(crate::TypeId::new(2))],
+                action: crate::LrConflictAction::Reduce,
+                lookaheads: vec![crate::KindId::new(1)],
+                expected: 1,
+            }],
+        )
+        .expect("the exact competing source owners select one winner");
+    assert!(automaton.conflicts().is_empty());
+    let resolved = &automaton.scoped_resolutions()[0];
+    assert_eq!(resolved.resolution, Resolution::Reduce);
+    assert_eq!(
+        grammar.render_rule(resolved.reduced.expect("reduce winner")),
+        "B -> x"
+    );
 }
 
 #[test]
@@ -171,9 +294,15 @@ fn lalr_merge_artefacts_are_reduce_reduce_conflicts_absent_in_canonical_lr1() {
         let ConflictKind::ReduceReduce { ref rules } = conflict.kind else {
             panic!("expected reduce/reduce conflicts");
         };
-        let rendered: Vec<String> = rules.iter().map(|rule| grammar.render_rule(*rule)).collect();
+        let rendered: Vec<String> = rules
+            .iter()
+            .map(|rule| grammar.render_rule(*rule))
+            .collect();
         assert_eq!(rendered, ["A -> c", "B -> c"]);
-        assert!(conflict.merge_artefact, "the merged `c` state is an LALR artefact");
+        assert!(
+            conflict.merge_artefact,
+            "the merged `c` state is an LALR artefact"
+        );
         assert_eq!(conflict.resolution, Action::Reduce(rules[0]));
     }
     let lookaheads: Vec<&str> = conflicts
@@ -181,7 +310,6 @@ fn lalr_merge_artefacts_are_reduce_reduce_conflicts_absent_in_canonical_lr1() {
         .map(|conflict| grammar.terminal_name(conflict.lookahead))
         .collect();
     assert_eq!(lookaheads, ["d", "e"]);
-
 }
 
 #[test]
@@ -205,11 +333,21 @@ fn every_start_rule_gets_its_own_start_state() {
     grammar.rule("T", "id");
     let grammar = grammar.finish();
     let automaton = build(&grammar);
-    assert_eq!(automaton.start_state(crate::TypeId::new(0)), Some(StateId::new(0)));
-    assert_eq!(automaton.start_state(crate::TypeId::new(2)), Some(StateId::new(1)));
+    assert_eq!(
+        automaton.start_state(crate::TypeId::new(0)),
+        Some(StateId::new(0))
+    );
+    assert_eq!(
+        automaton.start_state(crate::TypeId::new(2)),
+        Some(StateId::new(1))
+    );
     assert!(automaton.conflicts().is_empty());
     let tables = LrTables::pack(&grammar, &automaton);
-    assert_eq!(tables.start_states.len(), 3, "indexed by the highest grammar type");
+    assert_eq!(
+        tables.start_states.len(),
+        3,
+        "indexed by the highest grammar type"
+    );
     assert_eq!(tables.start_states[0], 0);
     assert_eq!(tables.start_states[2], 1);
 }
@@ -236,7 +374,13 @@ fn wrapper_grammar() -> LrGrammar {
     grammar.rule("QualifiedName", "ColId . ColId");
     grammar.rule("Name", "ColId");
     grammar.rule("Name", "TypeFunctionName");
-    for root in ["Expr", "FuncName", "Name", "ColIdText", "TypeFunctionNameText"] {
+    for root in [
+        "Expr",
+        "FuncName",
+        "Name",
+        "ColIdText",
+        "TypeFunctionNameText",
+    ] {
         grammar.start(root);
     }
     grammar.finish()
@@ -274,7 +418,11 @@ fn reductions_of(
 fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order() {
     let grammar = wrapper_grammar();
     let automaton = build(&grammar);
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
 
     // The one merged state records the resolution; the earliest-declared wrapper wins.
     let col_id_text = super::grammar::RuleId::new(0);
@@ -285,8 +433,15 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
     assert_eq!(resolution.rules, vec![col_id_text, type_function_name_text]);
     assert_eq!(resolution.chosen, col_id_text);
     let state = &automaton.states()[resolution.state.index()];
-    let kernel: Vec<String> = state.kernel().iter().map(|item| item.render(&grammar)).collect();
-    assert_eq!(kernel, ["ColIdText -> IDENT .", "TypeFunctionNameText -> IDENT ."]);
+    let kernel: Vec<String> = state
+        .kernel()
+        .iter()
+        .map(|item| item.render(&grammar))
+        .collect();
+    assert_eq!(
+        kernel,
+        ["ColIdText -> IDENT .", "TypeFunctionNameText -> IDENT ."]
+    );
 
     // Every continuation terminal keeps its own explicit action: only `$end` was decided.
     let terminal = |name: &str| {
@@ -295,8 +450,14 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
             .find(|terminal| grammar.terminal_name(*terminal) == name)
             .unwrap()
     };
-    assert_eq!(state.actions()[&grammar.end_marker()], Action::Reduce(col_id_text));
-    assert_eq!(state.actions()[&terminal("(")], Action::Reduce(type_function_name_text));
+    assert_eq!(
+        state.actions()[&grammar.end_marker()],
+        Action::Reduce(col_id_text)
+    );
+    assert_eq!(
+        state.actions()[&terminal("(")],
+        Action::Reduce(type_function_name_text)
+    );
     assert_eq!(state.actions()[&terminal(".")], Action::Reduce(col_id_text));
     assert_eq!(state.default_reduction(), Some(col_id_text));
 
@@ -304,7 +465,12 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
     assert!(dump.contains(
         "    Conflict between rules 0 and 1 resolved on $end by declaration order (reduce using rule 0).\n"
     ), "{dump}");
-    assert!(dump.contains("No conflicts.\n1 reduce/reduce conflicts on $end resolved by declaration order.\n"), "{dump}");
+    assert!(
+        dump.contains(
+            "No conflicts.\n1 reduce/reduce conflicts on $end resolved by declaration order.\n"
+        ),
+        "{dump}"
+    );
 
     // A real root that continues past the wrapper reduces the right wrapper on the real
     // continuation terminal, and the wrapper the end of input needs when the root ends there.
@@ -320,7 +486,12 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
     );
     assert_eq!(
         reductions("Expr", &["IDENT"]).unwrap(),
-        ["ColIdText -> IDENT", "ColId -> ColIdText", "ColumnRef -> ColId", "Expr -> ColumnRef"]
+        [
+            "ColIdText -> IDENT",
+            "ColId -> ColIdText",
+            "ColumnRef -> ColId",
+            "Expr -> ColumnRef"
+        ]
     );
     assert_eq!(
         reductions("FuncName", &["IDENT", ".", "IDENT"]).unwrap(),
@@ -342,12 +513,12 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
     // The limit of the rule: a root context that can end only in the later-declared wrapper
     // takes the earlier one at the end of input and then finds no action, where recursive
     // descent would accept `TypeFunctionName`. The failing position is the end of input.
-    assert_eq!(
-        reductions("FuncName", &["IDENT"]).unwrap_err().position,
-        1
-    );
+    assert_eq!(reductions("FuncName", &["IDENT"]).unwrap_err().position, 1);
     // The bare wrapper roots are unaffected: their start states reach one-item states.
-    assert_eq!(reductions("ColIdText", &["IDENT"]).unwrap(), ["ColIdText -> IDENT"]);
+    assert_eq!(
+        reductions("ColIdText", &["IDENT"]).unwrap(),
+        ["ColIdText -> IDENT"]
+    );
     assert_eq!(
         reductions("TypeFunctionNameText", &["IDENT"]).unwrap(),
         ["TypeFunctionNameText -> IDENT"]
@@ -377,10 +548,12 @@ fn wrapper_conflicts_that_also_exist_on_a_real_terminal_stay_conflicts() {
         .map(|conflict| grammar.terminal_name(conflict.lookahead))
         .collect();
     assert_eq!(lookaheads, ["(", "$end"]);
-    assert!(automaton.conflicts().iter().all(|conflict| matches!(
-        conflict.kind,
-        ConflictKind::ReduceReduce { .. }
-    )));
+    assert!(
+        automaton
+            .conflicts()
+            .iter()
+            .all(|conflict| matches!(conflict.kind, ConflictKind::ReduceReduce { .. }))
+    );
 }
 
 /// One shared `opt(X)` at two sites whose contexts follow it and `Y -> X` by swapped terminals
@@ -412,14 +585,25 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
     let lookaheads: Vec<(&str, bool)> = automaton
         .conflicts()
         .iter()
-        .map(|conflict| (shared.terminal_name(conflict.lookahead), conflict.merge_artefact))
+        .map(|conflict| {
+            (
+                shared.terminal_name(conflict.lookahead),
+                conflict.merge_artefact,
+            )
+        })
         .collect();
     assert_eq!(lookaheads, [("c", true), ("d", true)]);
     let helper = shared.nonterminal_by_name("opt(X)").unwrap();
-    assert_eq!(super::helpers::polluted_helpers(&shared, &automaton), [helper].into());
+    assert_eq!(
+        super::helpers::polluted_helpers(&shared, &automaton),
+        [helper].into()
+    );
     let sites = super::helpers::sites_of(&shared, helper);
     assert_eq!(
-        sites.iter().map(|site| shared.render_rule(site.rule)).collect::<Vec<_>>(),
+        sites
+            .iter()
+            .map(|site| shared.render_rule(site.rule))
+            .collect::<Vec<_>>(),
         ["A -> a opt(X) c", "B -> b opt(X) d"]
     );
 
@@ -429,7 +613,11 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
         AutomatonOptions::default(),
     )
     .unwrap();
-    assert!(built.automaton.conflicts().is_empty(), "{:?}", built.automaton.conflicts());
+    assert!(
+        built.automaton.conflicts().is_empty(),
+        "{:?}",
+        built.automaton.conflicts()
+    );
     assert_eq!(built.rounds, 2);
     let [split] = built.splits.as_slice() else {
         panic!("one split: {:?}", built.splits);
@@ -470,10 +658,16 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
             "opt(X)@B -> X",
         ]
     );
-    let original_rules: Vec<&super::grammar::Rule> =
-        grammar.rules_of(helper).iter().map(|rule| grammar.rule(*rule)).collect();
-    let copy_rules: Vec<&super::grammar::Rule> =
-        grammar.rules_of(copy.copy).iter().map(|rule| grammar.rule(*rule)).collect();
+    let original_rules: Vec<&super::grammar::Rule> = grammar
+        .rules_of(helper)
+        .iter()
+        .map(|rule| grammar.rule(*rule))
+        .collect();
+    let copy_rules: Vec<&super::grammar::Rule> = grammar
+        .rules_of(copy.copy)
+        .iter()
+        .map(|rule| grammar.rule(*rule))
+        .collect();
     for (original, copied) in original_rules.iter().zip(&copy_rules) {
         assert_eq!(original.action, copied.action);
         assert_eq!(original.fold, copied.fold);
@@ -481,16 +675,37 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
         assert_eq!(original.value_pops, copied.value_pops);
     }
     let dump = automaton_dump(grammar, &built.automaton);
-    assert!(dump.ends_with("No conflicts.\n\nHelper copies\n\nopt(X)@B copies opt(X)\n"), "{dump}");
+    assert!(
+        dump.ends_with("No conflicts.\n\nHelper copies\n\nopt(X)@B copies opt(X)\n"),
+        "{dump}"
+    );
 
     // Every sentence parses to its own derivation once the copies separate the contexts.
     let reductions = |input: &[&str]| reductions_of(grammar, &built.automaton, "S", input).unwrap();
-    assert_eq!(reductions(&["a", "x", "c"]), ["X -> x", "opt(X) -> X", "A -> a opt(X) c", "S -> A"]);
-    assert_eq!(reductions(&["a", "x", "d"]), ["X -> x", "Y -> X", "A2 -> a Y d", "S -> A2"]);
-    assert_eq!(reductions(&["a", "c"]), ["opt(X) -> %empty", "A -> a opt(X) c", "S -> A"]);
-    assert_eq!(reductions(&["b", "x", "d"]), ["X -> x", "opt(X)@B -> X", "B -> b opt(X)@B d", "S -> B"]);
-    assert_eq!(reductions(&["b", "x", "c"]), ["X -> x", "Y -> X", "B2 -> b Y c", "S -> B2"]);
-    assert_eq!(reductions(&["b", "d"]), ["opt(X)@B -> %empty", "B -> b opt(X)@B d", "S -> B"]);
+    assert_eq!(
+        reductions(&["a", "x", "c"]),
+        ["X -> x", "opt(X) -> X", "A -> a opt(X) c", "S -> A"]
+    );
+    assert_eq!(
+        reductions(&["a", "x", "d"]),
+        ["X -> x", "Y -> X", "A2 -> a Y d", "S -> A2"]
+    );
+    assert_eq!(
+        reductions(&["a", "c"]),
+        ["opt(X) -> %empty", "A -> a opt(X) c", "S -> A"]
+    );
+    assert_eq!(
+        reductions(&["b", "x", "d"]),
+        ["X -> x", "opt(X)@B -> X", "B -> b opt(X)@B d", "S -> B"]
+    );
+    assert_eq!(
+        reductions(&["b", "x", "c"]),
+        ["X -> x", "Y -> X", "B2 -> b Y c", "S -> B2"]
+    );
+    assert_eq!(
+        reductions(&["b", "d"]),
+        ["opt(X)@B -> %empty", "B -> b opt(X)@B d", "S -> B"]
+    );
 }
 
 #[test]
@@ -523,7 +738,12 @@ fn sites_that_share_a_state_share_a_copy_and_a_genuine_conflict_copies_nothing_u
         .automaton
         .conflicts()
         .iter()
-        .map(|conflict| (shared.terminal_name(conflict.lookahead), conflict.merge_artefact))
+        .map(|conflict| {
+            (
+                shared.terminal_name(conflict.lookahead),
+                conflict.merge_artefact,
+            )
+        })
         .collect();
     assert_eq!(genuine, [("c", false)]);
 }

@@ -79,7 +79,11 @@ impl LrTables {
         let mut defact = Vec::with_capacity(states.len());
         for state in states {
             vectors.push(action_row(state));
-            defact.push(state.default_reduction().map_or(0, |rule| rule.index() as u32 + 1));
+            defact.push(
+                state
+                    .default_reduction()
+                    .map_or(0, |rule| rule.index() as u32 + 1),
+            );
         }
         let mut defgoto = Vec::with_capacity(grammar.nonterminal_count());
         for index in 0..grammar.nonterminal_count() {
@@ -303,9 +307,7 @@ fn pack_vectors(vectors: &[SparseVector]) -> (Vec<i32>, Vec<i32>, Vec<i32>) {
     let mut order: Vec<usize> = (0..vectors.len()).collect();
     order.sort_by_key(|index| {
         let vector = &vectors[*index];
-        let width = vector
-            .last()
-            .map_or(0, |(last, _)| last - vector[0].0 + 1);
+        let width = vector.last().map_or(0, |(last, _)| last - vector[0].0 + 1);
         (
             std::cmp::Reverse(vector.len()),
             std::cmp::Reverse(width),

@@ -86,7 +86,11 @@ pub fn shortest_paths(automaton: &Automaton) -> Vec<Option<SymbolPath>> {
 
 /// Renders a path bison-style: the start type's nonterminal, an arrow, the symbols, a dot, and
 /// the lookahead when there is one, as in `S -> i S . e`.
-pub fn render_path(grammar: &LrGrammar, path: &SymbolPath, lookahead: Option<TerminalId>) -> String {
+pub fn render_path(
+    grammar: &LrGrammar,
+    path: &SymbolPath,
+    lookahead: Option<TerminalId>,
+) -> String {
     let start = grammar
         .starts()
         .iter()
@@ -120,7 +124,13 @@ mod tests {
         let paths = shortest_paths(&automaton);
         let rendered: Vec<String> = paths
             .iter()
-            .map(|path| render_path(&grammar, path.as_ref().expect("every state is reachable"), None))
+            .map(|path| {
+                render_path(
+                    &grammar,
+                    path.as_ref().expect("every state is reachable"),
+                    None,
+                )
+            })
             .collect();
         // State 6 (`F -> ( E . )`) is reached by `( E`, not by any longer derivation of `E`;
         // state 9 (`F -> ( E ) .`) needs the three symbols and no fewer.

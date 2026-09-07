@@ -1069,6 +1069,8 @@ pub(super) enum PlannedContainer {
         element_selector: ExpectedSet,
         /// FIRST set for a configured separator.
         separator_selector: Option<ExpectedSet>,
+        /// FIRST set after a separator owned by the immediately following optional tail.
+        separated_tail_after: Option<ExpectedSet>,
         /// Whether a separator may terminate the sequence.
         optional_trailing: bool,
         /// FOLLOW evidence that legally ends repetition.
@@ -2846,6 +2848,7 @@ pub(super) fn declaration_container(
             operation,
             element_selector: ExpectedSet::empty(kind_count),
             separator_selector: has_separator.then(|| ExpectedSet::empty(kind_count)),
+            separated_tail_after: None,
             optional_trailing,
             stop: PlannedFollow::Caller,
             child_follow: PlannedFollow::Caller,
@@ -4723,6 +4726,10 @@ pub(super) fn planned_container(
             } else {
                 None
             };
+            let separated_tail_after = machine
+                .separated_tail_after()
+                .map(|positions| ExpectedSet::from_positions(positions, atom_index, kind_count))
+                .transpose()?;
             let continuation = separator_selector
                 .as_ref()
                 .unwrap_or(&element_selector)
@@ -4732,6 +4739,7 @@ pub(super) fn planned_container(
                 operation,
                 element_selector,
                 separator_selector,
+                separated_tail_after,
                 optional_trailing: machine.optional_trailing(),
                 stop,
                 child_follow,
@@ -6669,6 +6677,7 @@ pub(super) fn render_semantic_parse(
             operation,
             element_selector,
             separator_selector,
+            separated_tail_after,
             optional_trailing,
             stop,
             child_follow,
@@ -6686,6 +6695,7 @@ pub(super) fn render_semantic_parse(
             *operation,
             element_selector,
             separator_selector.as_ref(),
+            separated_tail_after.as_ref(),
             *optional_trailing,
             stop,
             child_follow,
@@ -6852,6 +6862,7 @@ pub(super) fn render_repeated_parse(
     operation: ContainerOperation,
     element_selector: &ExpectedSet,
     separator_selector: Option<&ExpectedSet>,
+    separated_tail_after: Option<&ExpectedSet>,
     optional_trailing: bool,
     stop: &PlannedFollow,
     child_follow: &PlannedFollow,
@@ -6954,6 +6965,20 @@ pub(super) fn render_repeated_parse(
 
     let continuation = if let Some(separator_selector) = separator_selector {
         let separator_expected = render_expected_set(plan, separator_selector);
+        let separated_tail = separated_tail_after.map_or_else(
+            || quote!(),
+            |after_separator| {
+                let after_separator_expected = render_expected_set(plan, after_separator);
+                quote! {
+                    if context
+                        .peek(1)
+                        .is_some_and(|record| #after_separator_expected.contains(record.kind))
+                    {
+                        break;
+                    }
+                }
+            },
+        );
         let trailing = if optional_trailing {
             quote! {
                 if context.is_eof() || context.next_is(&#stop_value) {
@@ -6971,6 +6996,7 @@ pub(super) fn render_repeated_parse(
                     }
                     return Err(context.unexpected(&#continuation_value));
                 }
+                #separated_tail
                 let separator_occurrence =
                     context.parse_repetition_separator(&#separator_expected)?;
                 separator_occurrences.push(separator_occurrence);

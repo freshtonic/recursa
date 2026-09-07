@@ -1778,6 +1778,7 @@ pub(super) fn render_node_application_explorer(
         .iter()
         .find(|root| root.node == node.node && root.application == application.application);
     let entry = root.map(|root| {
+        let default_parser = default_parser_marker(plan);
         let root_schema = explorer_schema_static(node_index, None);
         let grammar_tables = explorer_grammar_tables_static();
         let explorer_lex = explorer_lex_function();
@@ -1818,7 +1819,7 @@ pub(super) fn render_node_application_explorer(
                         #facade::framing::CompleteFrame<'__recursa_input, Self>,
                         #facade::framing::FrameFailure<'__recursa_input>,
                     > {
-                        #facade::__private::frame_document::<Self>(
+                        #facade::__private::frame_document::<Self, #default_parser>(
                             source,
                             #module_anchor::__recursa_lexical::__recursa_frame_lex,
                             &#module_anchor::__RECURSA_FRAMING_PLAN,
@@ -1850,6 +1851,7 @@ pub(super) fn render_node_application_explorer(
             }
 
             unsafe impl #facade::__private::ExplorerRootFamily for #static_ty {
+                type Parser = #default_parser;
                 type Root<'__recursa_input> = #ty;
             }
 

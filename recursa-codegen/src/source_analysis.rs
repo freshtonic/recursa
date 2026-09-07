@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use crate::analysis::analyze_for_generation;
+use crate::analysis::{analyze_for_generation, analyze_for_table_driven_generation};
 use crate::build_diagnostic::diagnostic_code_spec;
 use crate::discovery::{
     DiscoveredModuleTree, DiscoveryDiagnostic, DiscoveryDiagnosticKind, DiscoveryInput,
@@ -253,7 +253,17 @@ pub(crate) fn analyze_discovered_tree(
         ));
     };
 
-    let analysis = analyze_for_generation(&lowered.grammar);
+    let analysis = if lowered
+        .source_modeled
+        .resolved()
+        .build_inputs
+        .parsers
+        .renders_recursive_descent()
+    {
+        analyze_for_generation(&lowered.grammar)
+    } else {
+        analyze_for_table_driven_generation(&lowered.grammar)
+    };
     collector.extend(
         analysis
             .diagnostics
@@ -761,6 +771,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
         SourceModelDiagnosticKind::InvalidLookaheadFilter => "RCA3132",
         SourceModelDiagnosticKind::InvalidPrecedenceDeclaration => "RCA3133",
+        SourceModelDiagnosticKind::InvalidLrConflictResolution => "RCA3134",
     }
 }
 

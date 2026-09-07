@@ -45,14 +45,13 @@ mod textbook;
 
 pub use automaton::{
     Action, Automaton, AutomatonOptions, Conflict, ConflictKind, ConflictResolver,
-    EndMarkerResolution, Item, NoPrecedence, ResolvedConflict, Resolution, State, StateId,
-    TerminalSet,
+    EndMarkerResolution, Item, NoPrecedence, Resolution, ResolvedConflict,
+    ScopedConflictResolution, State, StateId, TerminalSet,
 };
 pub use grammar::{
     Associativity, DeclaredPrecedence, ElementValue, LrGrammar, Nonterminal, NonterminalId,
-    NonterminalOrigin, OptionalContent, PrecedenceOrigin, Rule, RuleAction, RuleId,
-    RulePrecedence, SiteForm, StartRule, Symbol, TerminalFilter, TerminalId,
-    UnrepresentableBindingPowers,
+    NonterminalOrigin, OptionalContent, PrecedenceOrigin, Rule, RuleAction, RuleId, RulePrecedence,
+    SiteForm, StartRule, Symbol, TerminalFilter, TerminalId, UnrepresentableBindingPowers,
 };
 pub use helpers::{CopiedBuild, HelperSite, HelperSplit, SiteClassCopy, build_with_helper_copies};
 pub use lowering::{TypeRoles, lower};
@@ -120,10 +119,27 @@ impl LrAnalysis {
         let roles = TypeRoles::from_lowered(lowered);
         let grammar = lower(&lowered.grammar, &roles)?;
         let CopiedBuild {
-            grammar, automaton, ..
+            grammar,
+            mut automaton,
+            ..
         } = build_with_helper_copies(grammar, BindingPowerPrecedence::new, options)?;
+        let scoped_diagnostics = automaton
+            .apply_scoped_resolutions(&grammar, &lowered.grammar.lr_conflict_resolutions)
+            .err()
+            .into_iter()
+            .flatten()
+            .map(|message| LrDiagnostic {
+                code: report::INVALID_SCOPED_RESOLUTION,
+                message,
+                path: String::new(),
+                items: Vec::new(),
+                actions: Vec::new(),
+                notes: Vec::new(),
+            })
+            .collect::<Vec<_>>();
         let tables = LrTables::pack(&grammar, &automaton);
-        let diagnostics = conflict_diagnostics(&grammar, &automaton);
+        let mut diagnostics = scoped_diagnostics;
+        diagnostics.extend(conflict_diagnostics(&grammar, &automaton));
         Ok(Self {
             grammar,
             automaton,
@@ -257,10 +273,16 @@ mod tests {
         let grammar = lalr_merge_grammar();
         let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
         let diagnostics = conflict_diagnostics(&grammar, &automaton);
-        let paths: Vec<&str> = diagnostics.iter().map(|diagnostic| diagnostic.path.as_str()).collect();
+        let paths: Vec<&str> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.path.as_str())
+            .collect();
         assert_eq!(paths, ["S -> a c . d", "S -> a c . e"]);
         let dump = super::automaton_dump(&grammar, &automaton);
-        assert!(dump.contains("State 4\n\n    path: S -> a c .\n\n"), "{dump}");
+        assert!(
+            dump.contains("State 4\n\n    path: S -> a c .\n\n"),
+            "{dump}"
+        );
         assert!(dump.contains("State 0\n\n    path: S -> .\n\n"), "{dump}");
     }
 
@@ -286,7 +308,11 @@ mod tests {
                 ]
             );
             assert_eq!(diagnostic.notes.len(), 1);
-            assert!(diagnostic.notes[0].starts_with("RCA0405: "), "{}", diagnostic.notes[0]);
+            assert!(
+                diagnostic.notes[0].starts_with("RCA0405: "),
+                "{}",
+                diagnostic.notes[0]
+            );
         }
 
         // Without the canonical LR(1) check no conflict can be called an artefact.
@@ -298,12 +324,20 @@ mod tests {
                 ..AutomatonOptions::default()
             },
         );
-        assert!(unchecked.conflicts().iter().all(|conflict| !conflict.merge_artefact));
+        assert!(
+            unchecked
+                .conflicts()
+                .iter()
+                .all(|conflict| !conflict.merge_artefact)
+        );
         assert!(matches!(
             unchecked.conflicts()[0].kind,
             ConflictKind::ReduceReduce { .. }
         ));
-        assert!(matches!(unchecked.conflicts()[0].resolution, Action::Reduce(_)));
+        assert!(matches!(
+            unchecked.conflicts()[0].resolution,
+            Action::Reduce(_)
+        ));
     }
 
     /// A normalized grammar with one token type refined by an exact-text predicate.
@@ -362,8 +396,7 @@ mod tests {
         let number = push_token(&mut grammar, location, "Number", "NUMBER");
         let plus = push_token(&mut grammar, location, "Plus", "PLUS");
         let expr_declaration = grammar.push_declaration(Declaration::new("Expr", location));
-        let atom_declaration =
-            grammar.push_declaration(Declaration::new("Expr::Number", location));
+        let atom_declaration = grammar.push_declaration(Declaration::new("Expr::Number", location));
         let add_declaration = grammar.push_declaration(Declaration::new("Expr::Add", location));
         let expr = TypeId::new(grammar.types.len() as u32);
         let number_site = grammar.push_site(ParseSite::new(
@@ -372,8 +405,12 @@ mod tests {
             atom_declaration,
             ContainerShape::Direct,
         ));
-        let plus_site =
-            grammar.push_site(ParseSite::new(expr, plus, add_declaration, ContainerShape::Direct));
+        let plus_site = grammar.push_site(ParseSite::new(
+            expr,
+            plus,
+            add_declaration,
+            ContainerShape::Direct,
+        ));
         let rhs_site = grammar.push_site(
             ParseSite::new(expr, expr, add_declaration, ContainerShape::Direct).with_min_bp(rbp),
         );
@@ -409,7 +446,10 @@ mod tests {
         let mut grammar = pratt_grammar(10, 11);
         let expr = TypeId::new(2);
         let add_declaration = crate::DeclId::new(4);
-        assert_eq!(grammar.declarations[add_declaration.index()].name, "Expr::Add");
+        assert_eq!(
+            grammar.declarations[add_declaration.index()].name,
+            "Expr::Add"
+        );
         let location = grammar.locations.len() - 1;
         let location = crate::LocationId::new(location as u32);
         let pair_declaration = grammar.push_declaration(Declaration::new("Pair", location));
@@ -472,16 +512,23 @@ mod tests {
     /// The Pratt grammar plus a postfix `Expr::Index` whose operand follows `[` in a fixed-token
     /// attachment, closed by `]` when `closing`, with minimum binding power `min_bp`, the way a
     /// postfix tail operand inherits its `bp`.
-    fn pratt_grammar_with_index_operand(min_bp: u8, closing: bool) -> (GrammarDescription, TypeRoles) {
+    fn pratt_grammar_with_index_operand(
+        min_bp: u8,
+        closing: bool,
+    ) -> (GrammarDescription, TypeRoles) {
         let mut grammar = pratt_grammar(10, 11);
         let expr = TypeId::new(2);
         let location = crate::LocationId::new(0);
         let open = push_token(&mut grammar, location, "Open", "LBRACKET");
         let close = push_token(&mut grammar, location, "Close", "RBRACKET");
-        let index_declaration =
-            grammar.push_declaration(Declaration::new("Expr::Index", location));
+        let index_declaration = grammar.push_declaration(Declaration::new("Expr::Index", location));
         let unit = TypeId::new(grammar.types.len() as u32);
-        let operand_site = grammar.push_site(ParseSite::new(unit, open, index_declaration, ContainerShape::Direct));
+        let operand_site = grammar.push_site(ParseSite::new(
+            unit,
+            open,
+            index_declaration,
+            ContainerShape::Direct,
+        ));
         let semantic_site = grammar.push_site(
             ParseSite::new(unit, expr, index_declaration, ContainerShape::Direct)
                 .with_min_bp(min_bp),
@@ -529,11 +576,21 @@ mod tests {
         let and = push_token(&mut grammar, location, "And", "AND");
         let declaration = grammar.push_declaration(Declaration::new("Expr::Between", location));
         let sites = vec![
-            grammar.push_site(ParseSite::new(expr, between, declaration, ContainerShape::Direct)),
+            grammar.push_site(ParseSite::new(
+                expr,
+                between,
+                declaration,
+                ContainerShape::Direct,
+            )),
             grammar.push_site(
                 ParseSite::new(expr, expr, declaration, ContainerShape::Direct).with_min_bp(min_bp),
             ),
-            grammar.push_site(ParseSite::new(expr, and, declaration, ContainerShape::Direct)),
+            grammar.push_site(ParseSite::new(
+                expr,
+                and,
+                declaration,
+                ContainerShape::Direct,
+            )),
             grammar.push_site(
                 ParseSite::new(expr, expr, declaration, ContainerShape::Direct).with_min_bp(min_bp),
             ),
@@ -636,7 +693,9 @@ mod tests {
                 "Expr[min 50] -> Expr[min 50] Expr::__recursa_attachment",
             ]
         );
-        let unit = lowered.nonterminal_by_name("Expr::__recursa_attachment").unwrap();
+        let unit = lowered
+            .nonterminal_by_name("Expr::__recursa_attachment")
+            .unwrap();
         let rule = lowered.rule(lowered.rules_of(unit)[0]);
         assert_eq!(
             rule.precedence.map(|p| (p.level, p.owner)),
@@ -669,13 +728,23 @@ mod tests {
              reproduces; the table-driven parser style needs rbp = lbp + 1 (left-associative), \
              rbp = lbp or rbp = lbp - 1 (right-associative)"
         );
-        assert!(error[0].render().starts_with("error[RCA0402]: Pratt variant `Expr::Add`"));
+        assert!(
+            error[0]
+                .render()
+                .starts_with("error[RCA0402]: Pratt variant `Expr::Add`")
+        );
         for (lbp, rbp) in [(10, 11), (10, 10), (10, 9)] {
             let grammar = lower(&pratt_grammar(lbp, rbp), &TypeRoles::default())
                 .unwrap_or_else(|error| panic!("lbp = {lbp}, rbp = {rbp} lowers: {error:?}"));
             let add = crate::lr::RuleId::new(1);
             assert_eq!(grammar.render_rule(add), "Expr -> Expr Plus Expr");
-            assert_eq!(grammar.rule(add).precedence.map(|precedence| precedence.level), Some(lbp));
+            assert_eq!(
+                grammar
+                    .rule(add)
+                    .precedence
+                    .map(|precedence| precedence.level),
+                Some(lbp)
+            );
         }
     }
 
@@ -732,7 +801,8 @@ mod tests {
         .expect("the grammar passes source analysis")
         .analyzed
         .lowered;
-        let error = super::LrAnalysis::from_lowered(&lowered, AutomatonOptions::default()).unwrap_err();
+        let error =
+            super::LrAnalysis::from_lowered(&lowered, AutomatonOptions::default()).unwrap_err();
         let messages: Vec<String> = error
             .iter()
             .map(|diagnostic| {

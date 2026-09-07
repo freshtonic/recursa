@@ -34,6 +34,9 @@ pub const MERGE_ARTEFACT: &str = "RCA0405";
 /// A node, variant or field overrides the capture policy (`#[spanned(...)]`), which the
 /// table-driven parser cannot resolve below the entry type (#118).
 pub const CAPTURE_OVERRIDE: &str = "RCA0406";
+/// Registered code of a stale, missing, ambiguous, incompatible, or over-broad scoped LR
+/// conflict declaration.
+pub const INVALID_SCOPED_RESOLUTION: &str = "RCA0407";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One table-driven analysis diagnostic, before the build report adapts it.
@@ -118,7 +121,9 @@ pub fn conflict_diagnostics(grammar: &LrGrammar, automaton: &Automaton) -> Vec<L
             let lookahead = grammar.terminal_name(conflict.lookahead);
             let path = paths[conflict.state.index()]
                 .as_ref()
-                .map_or_else(String::new, |path| render_path(grammar, path, Some(conflict.lookahead)));
+                .map_or_else(String::new, |path| {
+                    render_path(grammar, path, Some(conflict.lookahead))
+                });
             let (code, message) = match &conflict.kind {
                 ConflictKind::ShiftReduce { .. } => (
                     SHIFT_REDUCE,
@@ -177,7 +182,13 @@ pub fn automaton_dump(grammar: &LrGrammar, automaton: &Automaton) -> String {
     text.push('\n');
     let paths = shortest_paths(automaton);
     for state in automaton.states() {
-        render_state(&mut text, grammar, automaton, state, paths[state.id().index()].as_ref());
+        render_state(
+            &mut text,
+            grammar,
+            automaton,
+            state,
+            paths[state.id().index()].as_ref(),
+        );
     }
     render_conflict_summary(&mut text, grammar, automaton);
     render_end_marker_resolutions(&mut text, automaton);
@@ -239,6 +250,36 @@ fn render_state(
     text.push('\n');
 
     let mut wrote_resolved = false;
+    for resolved in automaton
+        .scoped_resolutions()
+        .iter()
+        .filter(|resolved| resolved.state == state.id())
+    {
+        let rules = resolved
+            .rules
+            .iter()
+            .map(|rule| rule.index().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let verdict = match resolved.resolution {
+            Resolution::Shift => "shift".to_owned(),
+            Resolution::Reduce => format!(
+                "reduce using rule {}",
+                resolved
+                    .reduced
+                    .expect("a scoped reduce records its selected rule")
+                    .index()
+            ),
+            Resolution::Error => "an error".to_owned(),
+        };
+        let _ = writeln!(
+            text,
+            "    Conflict involving rule(s) {rules} and token {} resolved by scoped declaration {} ({verdict}).",
+            grammar.terminal_name(resolved.lookahead),
+            resolved.declaration,
+        );
+        wrote_resolved = true;
+    }
     for resolved in automaton
         .resolved_conflicts()
         .iter()
@@ -389,7 +430,12 @@ fn render_conflict_summary(text: &mut String, grammar: &LrGrammar, automaton: &A
             if counts.reduce_reduce > 0 {
                 parts.push(format!("{} reduce/reduce", counts.reduce_reduce));
             }
-            let _ = writeln!(text, "State {} conflicts: {}", counts.state, parts.join(", "));
+            let _ = writeln!(
+                text,
+                "State {} conflicts: {}",
+                counts.state,
+                parts.join(", ")
+            );
         }
     };
     for conflict in automaton.conflicts() {

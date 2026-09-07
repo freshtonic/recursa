@@ -359,7 +359,8 @@ pub(super) fn render_debug_capability_fragments(
         .collect::<Vec<_>>()
         .join("+");
     for (index, token) in plan.tokens.iter().enumerate() {
-        let rendered = render_token(plan, token, index, &ParserSet::recursive_descent()).to_string();
+        let rendered =
+            render_token(plan, token, index, &ParserSet::recursive_descent()).to_string();
         fragments.push((
             format!("intrinsic-token:{}:{intrinsic_token_traits}", token.ident),
             rendered.clone(),

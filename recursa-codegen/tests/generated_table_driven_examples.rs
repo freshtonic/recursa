@@ -28,11 +28,23 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
     assert!(stdout.ends_with("table-driven-json-ok\n"), "{stdout}");
     let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
     let root = read_selected_root(&package);
-    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(root.contains("RecursiveDescent") && root.contains("pub mod lr"), "one generation carries both parsers");
+    assert!(
+        root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
+    assert!(
+        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
+        "one generation carries both parsers"
+    );
     // The example's own expectations, seen through the table-driven parser.
-    assert!(table_stdout.contains("ok \"{}\" => object{} cursor=2 eof=true\n"), "{table_stdout}");
-    assert!(table_stdout.contains("ok \"[]\" => array(none) cursor=2 eof=true\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("ok \"{}\" => object{} cursor=2 eof=true\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("ok \"[]\" => array(none) cursor=2 eof=true\n"),
+        "{table_stdout}"
+    );
     assert!(
         table_stdout.contains("ok \"[\\\"text\\\",-12.5e+2]\" => array[string(\"text\") number(-12.5e+2)] cursor=5 eof=true\n"),
         "{table_stdout}"
@@ -41,22 +53,46 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
         table_stdout.contains("ok \"{\\\"answer\\\":[true,null,42]}\" => object{\"answer\": array[bool(true) null number(42)]} cursor=11 eof=true\n"),
         "{table_stdout}"
     );
-    assert!(table_stdout.contains("prefix first object{} cursor=2 eof=false\n"), "{table_stdout}");
-    assert!(table_stdout.contains("prefix fourth array[bool(true)] cursor=14 eof=true\n"), "{table_stdout}");
-    assert!(table_stdout.contains("err \"@\" => code=RCA4000 kind=LexicalError"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("prefix first object{} cursor=2 eof=false\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("prefix fourth array[bool(true)] cursor=14 eof=true\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("err \"@\" => code=RCA4000 kind=LexicalError"),
+        "{table_stdout}"
+    );
     // A root whose selected alternative is one token long rejects the token after it, as
     // recursive descent's dispatch does (#118); a closing token above accepted the prefix.
     assert!(table_stdout.contains("trailing \"null,\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 5 } found=Some(\"fixed:,\") cursor=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing \"null true\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 5, end: 9 } found=Some(\"fixed:true\") cursor=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing \"42 ]\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 3, end: 4 } found=Some(\"fixed:]\") cursor=0\n"), "{table_stdout}");
-    assert!(table_stdout.contains("trailing \"true\" => ok bool(true) cursor=1 eof=true\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("trailing \"true\" => ok bool(true) cursor=1 eof=true\n"),
+        "{table_stdout}"
+    );
     // Provenance (#118): the occurrence tree, the root's elements and the Pretty rendering of
     // every positive input are printed and compared line by line with the `rd` parser below.
-    assert!(table_stdout.contains("prov \"{}\" => captured 0..2 ("), "{table_stdout}");
-    assert!(table_stdout.contains("elements \"[]\" => ["), "{table_stdout}");
-    assert!(table_stdout.contains("pretty \"{\\\"answer\\\":[true,null,42]}\" => \""), "{table_stdout}");
+    assert!(
+        table_stdout.contains("prov \"{}\" => captured 0..2 ("),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("elements \"[]\" => ["),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("pretty \"{\\\"answer\\\":[true,null,42]}\" => \""),
+        "{table_stdout}"
+    );
 
-    assert_eq!(table_stdout, recursive_stdout, "the two parsers must agree on every line");
+    assert_eq!(
+        table_stdout, recursive_stdout,
+        "the two parsers must agree on every line"
+    );
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -76,14 +112,27 @@ fn scaffold_fixture() -> TempDir {
     // and both parsers declared.
     let example = fs::read_to_string(workspace.join("examples/json/src/grammar.rs"))
         .expect("read the JSON example grammar");
-    assert_eq!(example.matches("    diagrams,\n").count(), 1, "the example declares diagrams once");
-    assert_eq!(example.matches(LOOKAHEAD).count(), 1, "the example configures lookahead once");
-    assert_eq!(example.matches("    derives(Visit),\n").count(), 1, "the example declares derives once");
+    assert_eq!(
+        example.matches("    diagrams,\n").count(),
+        1,
+        "the example declares diagrams once"
+    );
+    assert_eq!(
+        example.matches(LOOKAHEAD).count(),
+        1,
+        "the example configures lookahead once"
+    );
+    assert_eq!(
+        example.matches("    derives(Visit),\n").count(),
+        1,
+        "the example declares derives once"
+    );
     let grammar = example
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace(LOOKAHEAD, &format!("{LOOKAHEAD}\n    {NAMED_PARSERS}"));
-    fs::write(package.path().join("src/grammar.rs"), grammar).expect("write the scaffolded grammar");
+    fs::write(package.path().join("src/grammar.rs"), grammar)
+        .expect("write the scaffolded grammar");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
         .expect("read generated grammar fixture manifest")

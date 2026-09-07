@@ -799,7 +799,10 @@ impl LrGrammar {
     /// rule directly after its original, so the rules of one nonterminal stay contiguous for the
     /// reduce dispatcher. The new order is the rule numbering from then on.
     pub fn replace_rules(&mut self, rules: Vec<Rule>) {
-        assert!(self.starts.is_empty(), "rules are replaced before the start rules exist");
+        assert!(
+            self.starts.is_empty(),
+            "rules are replaced before the start rules exist"
+        );
         self.rules.clear();
         for group in &mut self.rules_by_lhs {
             group.clear();

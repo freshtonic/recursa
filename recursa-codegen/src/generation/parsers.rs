@@ -22,6 +22,21 @@
 
 use super::*;
 
+/// Spells one generated parser marker without exposing parser-set construction to capability
+/// renderers that only need the selected default.
+fn marker_for_style(plan: &EmissionPlan, style: ParserStyle) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    match style {
+        ParserStyle::RecursiveDescent => quote!(#facade::__private::RecursiveDescent),
+        ParserStyle::TableDriven => quote!(#facade::__private::TableDriven),
+    }
+}
+
+/// Spells the marker selected by the generation's unqualified `Input`.
+pub(super) fn default_parser_marker(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    marker_for_style(plan, plan.parsers.default_parser().style)
+}
+
 /// One declared parser as the renderer spells it.
 pub(super) struct RenderedParser {
     /// Author-chosen name; `None` for the single `parser_style` parser.
@@ -52,11 +67,7 @@ impl RenderedParser {
 
     /// The marker type this parser's `GeneratedParse` impls and its `Input` carry.
     pub(super) fn marker(&self, plan: &EmissionPlan) -> proc_macro2::TokenStream {
-        let facade = &plan.facade;
-        match self.style {
-            ParserStyle::RecursiveDescent => quote!(#facade::__private::RecursiveDescent),
-            ParserStyle::TableDriven => quote!(#facade::__private::TableDriven),
-        }
+        marker_for_style(plan, self.style)
     }
 
     /// The explicit marker argument of a `Parse<'input, A, P>` bound: empty for recursive
@@ -102,24 +113,13 @@ impl ParserSet {
     /// Builds the plan's declared parsers, running the LALR(1) analysis for a table-driven one
     /// and failing on any conflict.
     ///
-    /// Document framing and the explorer adapter drive the default parser through facade seams
-    /// bound to the recursive-descent impl, so a table-driven default parser is refused when
-    /// either capability is declared.
+    /// Document framing and the explorer adapter drive the same marker selected by the default
+    /// grammar-local input, so either parser style may own the unqualified surface.
     pub(super) fn declared(
         plan: &EmissionPlan,
         lowered: &crate::materialization::LoweredGrammar,
     ) -> Result<Self, String> {
         let declarations = &plan.parsers;
-        if declarations.default_parser().style == ParserStyle::TableDriven
-            && (plan.explorer.is_some() || plan.framing.is_some())
-        {
-            return Err(
-                "the explorer and framing capabilities drive the default parser, which must be \
-                 recursive descent: declare a `recursive_descent` parser first in `parsers(...)` \
-                 or select `parser_style = recursive_descent`"
-                    .to_owned(),
-            );
-        }
         let mut parsers = Vec::new();
         for (index, declaration) in declarations.iter().enumerate() {
             let tables = match declaration.style {

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use super::LrAnalysis;
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
 use super::grammar::{
     Associativity, ElementValue, LrGrammar, NonterminalId, NonterminalOrigin, OptionalContent,
@@ -10,7 +11,6 @@ use super::grammar::{
 use super::lowering::{PrattRestriction, TypeRoles, lower};
 use super::precedence::BindingPowerPrecedence;
 use super::report::{automaton_dump, conflict_diagnostics};
-use super::LrAnalysis;
 use super::tables::{LrTables, simulate};
 use crate::PrattPosition;
 use crate::materialization::LoweredGrammar;
@@ -22,7 +22,12 @@ fn lowered_tree(manifest_dir: &Path, root: &str) -> LoweredGrammar {
         SourceAnalysisInput::rust_2024(manifest_dir, root),
         &mut Vec::new(),
     )
-    .unwrap_or_else(|error| panic!("{} failed source analysis:\n{error}", manifest_dir.display()))
+    .unwrap_or_else(|error| {
+        panic!(
+            "{} failed source analysis:\n{error}",
+            manifest_dir.display()
+        )
+    })
     .analyzed
     .lowered
 }
@@ -84,7 +89,9 @@ fn type_named(lowered: &LoweredGrammar, name: &str) -> crate::TypeId {
 #[test]
 fn arith_pratt_variants_lower_to_plain_rules_with_recorded_binding_powers() {
     let (_, grammar) = lr_fixture("arith");
-    let expr = grammar.nonterminal_by_name("arith::Expr").expect("the Pratt enum");
+    let expr = grammar
+        .nonterminal_by_name("arith::Expr")
+        .expect("the Pratt enum");
     let rules: Vec<String> = grammar
         .rules_of(expr)
         .iter()
@@ -170,16 +177,25 @@ fn sql_fixture_inlines_fixed_tokens_and_parses_from_every_start_state() {
         .collect();
     assert_eq!(rules, ["sql::CreateTable -> CREATE TABLE Rest"]);
     let rule = grammar.rule(grammar.rules_of(create_table)[0]);
-    assert_eq!(rule.value_pops, 1, "fixed tokens carry no value; `Rest` does");
+    assert_eq!(
+        rule.value_pops, 1,
+        "fixed tokens carry no value; `Rest` does"
+    );
     assert!(matches!(rule.action, RuleAction::Construct { .. }));
-    let rest = grammar.nonterminal_by_name("Rest").expect("the content token");
+    let rest = grammar
+        .nonterminal_by_name("Rest")
+        .expect("the content token");
     assert!(matches!(
         grammar.rule(grammar.rules_of(rest)[0]).action,
         RuleAction::Token { .. }
     ));
 
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
     for application in &lowered.lowering_map.applications {
         assert!(
             automaton.start_state(application.lowered).is_some(),
@@ -202,7 +218,11 @@ fn sql_fixture_inlines_fixed_tokens_and_parses_from_every_start_state() {
     assert_eq!(trace.consumed, 3, "the root ends before the next statement");
     assert_eq!(
         trace.reductions,
-        ["Rest -> Rest", "sql::CreateTable -> CREATE TABLE Rest", "sql::Statement -> sql::CreateTable"]
+        [
+            "Rest -> Rest",
+            "sql::CreateTable -> CREATE TABLE Rest",
+            "sql::Statement -> sql::CreateTable"
+        ]
     );
     // The same tables parse a `DropView` from its own start state.
     let drop_view = type_named(&lowered, "sql::DropView");
@@ -211,8 +231,17 @@ fn sql_fixture_inlines_fixed_tokens_and_parses_from_every_start_state() {
         terminal(&grammar, "VIEW"),
         terminal(&grammar, "Rest"),
     ];
-    let trace = simulate(&grammar, &tables, tables.start_states[drop_view.index()], &input).unwrap();
-    assert_eq!(trace.reductions.last().map(String::as_str), Some("sql::DropView -> DROP VIEW Rest"));
+    let trace = simulate(
+        &grammar,
+        &tables,
+        tables.start_states[drop_view.index()],
+        &input,
+    )
+    .unwrap();
+    assert_eq!(
+        trace.reductions.last().map(String::as_str),
+        Some("sql::DropView -> DROP VIEW Rest")
+    );
 }
 
 #[test]
@@ -222,14 +251,21 @@ fn json_fixture_lowers_separated_lists_to_left_recursive_helpers() {
         type_id: type_named(&lowered, "json::Member"),
         boxes: 0,
     };
-    let object = grammar.nonterminal_by_name("json::Object").expect("the object node");
+    let object = grammar
+        .nonterminal_by_name("json::Object")
+        .expect("the object node");
     let rules: Vec<String> = grammar
         .rules_of(object)
         .iter()
         .map(|rule| grammar.render_rule(*rule))
         .collect();
-    assert_eq!(rules, ["json::Object -> LBRACE list(json::Member, sep=COMMA) RBRACE"]);
-    let list = grammar.nonterminal_by_name("list(json::Member, sep=COMMA)").unwrap();
+    assert_eq!(
+        rules,
+        ["json::Object -> LBRACE list(json::Member, sep=COMMA) RBRACE"]
+    );
+    let list = grammar
+        .nonterminal_by_name("list(json::Member, sep=COMMA)")
+        .unwrap();
     let list_rules: Vec<(String, u32, RuleAction)> = grammar
         .rules_of(list)
         .iter()
@@ -256,7 +292,9 @@ fn json_fixture_lowers_separated_lists_to_left_recursive_helpers() {
             ),
         ]
     );
-    let core = grammar.nonterminal_by_name("list1(json::Member, sep=COMMA)").unwrap();
+    let core = grammar
+        .nonterminal_by_name("list1(json::Member, sep=COMMA)")
+        .unwrap();
     let core_rules: Vec<String> = grammar
         .rules_of(core)
         .iter()
@@ -270,7 +308,11 @@ fn json_fixture_lowers_separated_lists_to_left_recursive_helpers() {
         ]
     );
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
 }
 
 #[test]
@@ -290,14 +332,27 @@ fn optq_fixture_lowers_optionals_to_nullable_helpers_without_conflicts() {
         .iter()
         .map(|rule| grammar.render_rule(*rule))
         .collect();
-    assert_eq!(opt_rules, ["opt(optq::Debug) -> %empty", "opt(optq::Debug) -> optq::Debug"]);
+    assert_eq!(
+        opt_rules,
+        [
+            "opt(optq::Debug) -> %empty",
+            "opt(optq::Debug) -> optq::Debug"
+        ]
+    );
     let debug = grammar.nonterminal_by_name("optq::Debug").unwrap();
-    assert_eq!(grammar.render_rule(grammar.rules_of(debug)[0]), "optq::Debug -> DEBUG");
+    assert_eq!(
+        grammar.render_rule(grammar.rules_of(debug)[0]),
+        "optq::Debug -> DEBUG"
+    );
     assert_eq!(grammar.rule(grammar.rules_of(debug)[0]).value_pops, 0);
 
     // The LL(2) shared prefix is no problem for LR: the optional reduces on PRINT/READ/SET.
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
 }
 
 #[test]
@@ -305,7 +360,10 @@ fn construction_is_deterministic_across_builds() {
     let (_, grammar) = lr_fixture("json");
     let first = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
     let second = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert_eq!(automaton_dump(&grammar, &first), automaton_dump(&grammar, &second));
+    assert_eq!(
+        automaton_dump(&grammar, &first),
+        automaton_dump(&grammar, &second)
+    );
     assert_eq!(
         LrTables::pack(&grammar, &first).encode(),
         LrTables::pack(&grammar, &second).encode()
@@ -314,18 +372,24 @@ fn construction_is_deterministic_across_builds() {
     assert_eq!(format!("{grammar:?}"), format!("{again:?}"));
 }
 
-
 #[test]
 fn the_whole_analysis_runs_from_one_entry_point() {
     let lowered = lowered_fixture("json");
     let analysis = LrAnalysis::from_lowered(&lowered, AutomatonOptions::default())
         .expect("json has no text predicates");
     assert!(analysis.diagnostics.is_empty());
-    assert_eq!(analysis.tables, LrTables::pack(&analysis.grammar, &analysis.automaton));
+    assert_eq!(
+        analysis.tables,
+        LrTables::pack(&analysis.grammar, &analysis.automaton)
+    );
     assert!(analysis.dump().starts_with("Grammar\n\n"));
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-analysis/json");
-    let from_source = LrAnalysis::analyze_source(&fixture, Path::new("grammar.rs"), AutomatonOptions::default())
-        .expect("the public entry point reaches the same analysis");
+    let from_source = LrAnalysis::analyze_source(
+        &fixture,
+        Path::new("grammar.rs"),
+        AutomatonOptions::default(),
+    )
+    .expect("the public entry point reaches the same analysis");
     assert_eq!(from_source.dump(), analysis.dump());
 }
 
@@ -353,19 +417,33 @@ fn cskw_admission_sets_lower_to_one_rule_per_member_kind_yielding_the_token() {
     assert_eq!(
         rules,
         [
-            ("ColumnName -> AS".to_owned(), 0, RuleAction::Token { type_id }),
-            ("ColumnName -> Word".to_owned(), 0, RuleAction::Token { type_id }),
+            (
+                "ColumnName -> AS".to_owned(),
+                0,
+                RuleAction::Token { type_id }
+            ),
+            (
+                "ColumnName -> Word".to_owned(),
+                0,
+                RuleAction::Token { type_id }
+            ),
         ],
         "one rule per admitted kind, each yielding the token"
     );
     assert!(grammar.nonterminal(column_name).carries_value);
-    let alias = grammar.nonterminal_by_name("Alias").expect("the plain content token");
+    let alias = grammar
+        .nonterminal_by_name("Alias")
+        .expect("the plain content token");
     assert_eq!(grammar.rules_of(alias).len(), 1);
 
     // `AS` is both an admitted identifier and the alias keyword; LALR(1) tells them apart by the
     // state, so the fixture builds without conflicts.
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
     let start = grammar.starts().iter().find(|start| {
         matches!(grammar.rule(start.rule).rhs[0], Symbol::Nonterminal(id) if id == column_name)
     });
@@ -375,8 +453,8 @@ fn cskw_admission_sets_lower_to_one_rule_per_member_kind_yielding_the_token() {
 /// Lowers the table-driven Pratt generation fixture: the textbook expression grammar as a
 /// `#[pratt]` enum with an exclusion site.
 fn pratt_fixture() -> (LoweredGrammar, LrGrammar) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/generation/table-driven-pratt");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation/table-driven-pratt");
     let lowered = lowered_tree(&fixture, "src/grammar.rs");
     let roles = TypeRoles::from_lowered(&lowered);
     let grammar = lower(&lowered.grammar, &roles).expect("the Pratt fixture lowers");
@@ -385,7 +463,12 @@ fn pratt_fixture() -> (LoweredGrammar, LrGrammar) {
 
 /// Simulates a parse of `source` from the fixture's `Expr` start state and returns the
 /// reductions of `Expr` rules, in order; token spellings are single characters or `in`.
-fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Automaton, source: &str) -> Vec<String> {
+fn expr_reductions(
+    lowered: &LoweredGrammar,
+    grammar: &LrGrammar,
+    automaton: &Automaton,
+    source: &str,
+) -> Vec<String> {
     let tables = LrTables::pack(grammar, automaton);
     let start = automaton
         .start_state(type_named(lowered, "grammar::Expr"))
@@ -422,7 +505,10 @@ fn expr_reductions(lowered: &LoweredGrammar, grammar: &LrGrammar, automaton: &Au
 fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixture() {
     let (lowered, grammar) = pratt_fixture();
     let naive = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
-    assert!(!naive.conflicts().is_empty(), "the naive lowering conflicts on every operator");
+    assert!(
+        !naive.conflicts().is_empty(),
+        "the naive lowering conflicts on every operator"
+    );
 
     let precedence = BindingPowerPrecedence::new(&grammar)
         .expect("every binding power of the fixture has a precedence equivalent");
@@ -488,15 +574,38 @@ fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixt
     let between_tail = "grammar::Expr::__recursa_attachment#23 -> AND grammar::Expr[min 8]";
     let between = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#22 grammar::Expr::__recursa_attachment#23";
     assert_eq!(
-        expr_reductions(&lowered, &grammar, &automaton, "1 between 2 + 3 and 4 * 5 in 6"),
+        expr_reductions(
+            &lowered,
+            &grammar,
+            &automaton,
+            "1 between 2 + 3 and 4 * 5 in 6"
+        ),
         [
-            integer, min_integer, integer, min_add, between_head, min_integer, integer,
-            min_multiply, between_tail, between, integer, membership
+            integer,
+            min_integer,
+            integer,
+            min_add,
+            between_head,
+            min_integer,
+            integer,
+            min_multiply,
+            between_tail,
+            between,
+            integer,
+            membership
         ]
     );
-    for attachment in ["grammar::Expr::__recursa_attachment#22", "grammar::Expr::__recursa_attachment#23"] {
-        let attachment = grammar.nonterminal_by_name(attachment).expect("a between attachment");
-        let precedence = grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited");
+    for attachment in [
+        "grammar::Expr::__recursa_attachment#22",
+        "grammar::Expr::__recursa_attachment#23",
+    ] {
+        let attachment = grammar
+            .nonterminal_by_name(attachment)
+            .expect("a between attachment");
+        let precedence = grammar
+            .rule(grammar.rules_of(attachment)[0])
+            .precedence
+            .expect("inherited");
         assert_eq!(
             (precedence.level, precedence.owner),
             (8, grammar.nonterminal_by_name("grammar::Expr").unwrap())
@@ -560,7 +669,10 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         .filter(|rule| !grammar.render_rule(**rule).contains(" IN "))
         .map(|rule| {
             let rule = grammar.rule(*rule);
-            (rule.value_pops, rule.precedence.map(|p| (p.level, p.associativity)))
+            (
+                rule.value_pops,
+                rule.precedence.map(|p| (p.level, p.associativity)),
+            )
         })
         .collect();
     let cloned: Vec<(u32, Option<(u8, Associativity)>)> = grammar
@@ -575,7 +687,10 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             (rule.value_pops, rule.precedence.map(|p| (p.level, p.associativity)))
         })
         .collect();
-    assert_eq!(cloned, original, "clone rules keep the value pops and binding powers");
+    assert_eq!(
+        cloned, original,
+        "clone rules keep the value pops and binding powers"
+    );
     let position = grammar.nonterminal_by_name("grammar::Position").unwrap();
     assert_eq!(
         grammar.render_rule(grammar.rules_of(position)[0]),
@@ -613,7 +728,11 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
     );
     assert_eq!(
         grammar
-            .rules_of(grammar.nonterminal_by_name("grammar::Expr[excl In, min 50]").unwrap())
+            .rules_of(
+                grammar
+                    .nonterminal_by_name("grammar::Expr[excl In, min 50]")
+                    .unwrap()
+            )
             .iter()
             .map(|rule| grammar.render_rule(*rule))
             .collect::<Vec<_>>(),
@@ -629,8 +748,14 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         "a minimum of 50 keeps the atoms, the prefix and the two postfix operators at 50"
     );
     for (attachment, rule) in [
-        ("grammar::Expr::__recursa_attachment#22[excl In]", "grammar::Expr::__recursa_attachment#22[excl In] -> BETWEEN grammar::Expr[excl In, min 8]"),
-        ("grammar::Expr::__recursa_attachment#23[excl In]", "grammar::Expr::__recursa_attachment#23[excl In] -> AND grammar::Expr[excl In, min 8]"),
+        (
+            "grammar::Expr::__recursa_attachment#22[excl In]",
+            "grammar::Expr::__recursa_attachment#22[excl In] -> BETWEEN grammar::Expr[excl In, min 8]",
+        ),
+        (
+            "grammar::Expr::__recursa_attachment#23[excl In]",
+            "grammar::Expr::__recursa_attachment#23[excl In] -> AND grammar::Expr[excl In, min 8]",
+        ),
     ] {
         let attachment = grammar
             .nonterminal_by_name(attachment)
@@ -638,25 +763,41 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         assert_eq!(grammar.render_rule(grammar.rules_of(attachment)[0]), rule);
         assert!(grammar.nonterminal(attachment).carries_value);
         // The cloned attachment carries the variant's precedence, owned by the clone.
-        let precedence = grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited");
+        let precedence = grammar
+            .rule(grammar.rules_of(attachment)[0])
+            .precedence
+            .expect("inherited");
         assert_eq!((precedence.level, precedence.owner), (8, clone));
     }
 
     let precedence = BindingPowerPrecedence::new(&grammar).expect("the clone keeps the levels");
     let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{}", automaton_dump(&grammar, &automaton));
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{}",
+        automaton_dump(&grammar, &automaton)
+    );
     let dump = automaton_dump(&grammar, &automaton);
     assert!(
-        dump.contains("grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]"),
+        dump.contains(
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] PLUS grammar::Expr[excl In]"
+        ),
         "{dump}"
     );
     assert!(
-        dump.contains("grammar::Position -> POSITION LPAREN . grammar::Expr[excl In] IN grammar::Expr RPAREN"),
+        dump.contains(
+            "grammar::Position -> POSITION LPAREN . grammar::Expr[excl In] IN grammar::Expr RPAREN"
+        ),
         "{dump}"
     );
     // The needle stops at `in`; the haystack takes the rest.
     assert_eq!(
-        expr_reductions(&lowered, &grammar, &automaton, "position ( 1 + 2 in 3 in 4 )"),
+        expr_reductions(
+            &lowered,
+            &grammar,
+            &automaton,
+            "position ( 1 + 2 in 3 in 4 )"
+        ),
         [
             "grammar::Expr[excl In] -> grammar::Integer",
             "grammar::Expr[excl In] -> grammar::Integer",
@@ -671,8 +812,8 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
 
 /// Lowers the Pratt shapes fixture (`tests/fixtures/generation/pratt-shapes`).
 fn pratt_shapes_fixture() -> (LoweredGrammar, LrGrammar) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/generation/pratt-shapes");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation/pratt-shapes");
     let lowered = lowered_tree(&fixture, "src/grammar.rs");
     let roles = TypeRoles::from_lowered(&lowered);
     let grammar = lower(&lowered.grammar, &roles).expect("the Pratt shapes fixture lowers");
@@ -687,9 +828,15 @@ fn attachment_with_rule(grammar: &LrGrammar, rhs: &str) -> NonterminalId {
         .iter()
         .enumerate()
         .filter(|(_, rule)| matches!(rule.action, RuleAction::Attachment { .. }))
-        .filter(|(index, _)| grammar.render_rule(RuleId::new(*index as u32)).ends_with(&suffix))
+        .filter(|(index, _)| {
+            grammar
+                .render_rule(RuleId::new(*index as u32))
+                .ends_with(&suffix)
+        })
         .map(|(_, rule)| rule.lhs);
-    let id = found.next().unwrap_or_else(|| panic!("no attachment rule `{rhs}`"));
+    let id = found
+        .next()
+        .unwrap_or_else(|| panic!("no attachment rule `{rhs}`"));
     assert!(found.next().is_none(), "several attachment rules `{rhs}`");
     id
 }
@@ -702,9 +849,18 @@ fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_va
     // The operand attachments carry the operand minimum (`rbp` for the infix variant, `bp`
     // for the postfix one), the optional escape operand's included.
     let like = name(attachment_with_rule(&grammar, "LIKE grammar::Expr[min 7]"));
-    let escape_like = name(attachment_with_rule(&grammar, "ESCAPE grammar::Expr[min 7]"));
-    let not_like = name(attachment_with_rule(&grammar, "NOT LIKE grammar::Expr[min 6]"));
-    let escape_not_like = name(attachment_with_rule(&grammar, "ESCAPE grammar::Expr[min 6]"));
+    let escape_like = name(attachment_with_rule(
+        &grammar,
+        "ESCAPE grammar::Expr[min 7]",
+    ));
+    let not_like = name(attachment_with_rule(
+        &grammar,
+        "NOT LIKE grammar::Expr[min 6]",
+    ));
+    let escape_not_like = name(attachment_with_rule(
+        &grammar,
+        "ESCAPE grammar::Expr[min 6]",
+    ));
     // The optional operand is inlined into its variant's rule as one alternative without and
     // one with the attachment, never a helper with an epsilon reduce.
     let rules = rules_of(&grammar, "grammar::Expr");
@@ -714,7 +870,10 @@ fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_va
         format!("grammar::Expr -> grammar::Expr {not_like}"),
         format!("grammar::Expr -> grammar::Expr {not_like} {escape_not_like}"),
     ] {
-        assert!(rules.contains(&expected), "missing `{expected}` in {rules:?}");
+        assert!(
+            rules.contains(&expected),
+            "missing `{expected}` in {rules:?}"
+        );
     }
     assert!(!rules.iter().any(|rule| rule.contains("opt(")), "{rules:?}");
     // The attachments inherit the variant's precedence for their own reduce and introduce
@@ -723,18 +882,33 @@ fn an_attached_optional_operand_is_inlined_with_its_token_one_level_above_its_va
     // nothing.
     let precedence_of = |name: &str| {
         let attachment = grammar.nonterminal_by_name(name).expect("an attachment");
-        grammar.rule(grammar.rules_of(attachment)[0]).precedence.expect("inherited")
+        grammar
+            .rule(grammar.rules_of(attachment)[0])
+            .precedence
+            .expect("inherited")
     };
     let escape = precedence_of(&escape_like);
-    assert_eq!((escape.level, escape.owner, escape.attaches_at), (6, expr, Some(7)));
+    assert_eq!(
+        (escape.level, escape.owner, escape.attaches_at),
+        (6, expr, Some(7))
+    );
     let escape = precedence_of(&escape_not_like);
     assert_eq!((escape.level, escape.attaches_at), (6, Some(7)));
     let operand = precedence_of(&like);
     assert_eq!((operand.level, operand.attaches_at), (6, None));
     let precedence = BindingPowerPrecedence::new(&grammar).expect("representable binding powers");
-    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "ESCAPE")), [7]);
-    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "LIKE")), [6]);
-    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "NOT")), [6]);
+    assert_eq!(
+        precedence.token_precedence(expr, terminal(&grammar, "ESCAPE")),
+        [7]
+    );
+    assert_eq!(
+        precedence.token_precedence(expr, terminal(&grammar, "LIKE")),
+        [6]
+    );
+    assert_eq!(
+        precedence.token_precedence(expr, terminal(&grammar, "NOT")),
+        [6]
+    );
     let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
     let dump = automaton_dump(&grammar, &automaton);
     assert!(automaton.conflicts().is_empty(), "{dump}");
@@ -765,31 +939,59 @@ fn an_exclusion_of_atoms_clones_the_pratt_nonterminal_without_them() {
     // The roles read the resolved exclusions off the sites: atoms, an extender, both.
     let mut restrictions: Vec<&PrattRestriction> = roles.pratt_exclusions.values().collect();
     restrictions.sort();
-    let mut index_elem = vec![declaration("grammar::Expr::Subquery"), declaration("grammar::Expr::And")];
+    let mut index_elem = vec![
+        declaration("grammar::Expr::Subquery"),
+        declaration("grammar::Expr::And"),
+    ];
     index_elem.sort_unstable();
     assert_eq!(
         restrictions,
         [
-            &PrattRestriction { type_id: expr, excluded: vec![declaration("grammar::Expr::Default")], min_bp: 0 },
-            &PrattRestriction { type_id: expr, excluded: index_elem, min_bp: 0 },
+            &PrattRestriction {
+                type_id: expr,
+                excluded: vec![declaration("grammar::Expr::Default")],
+                min_bp: 0
+            },
+            &PrattRestriction {
+                type_id: expr,
+                excluded: index_elem,
+                min_bp: 0
+            },
         ]
     );
     // The clone drops the excluded atom's rule and keeps every other, extenders included; the
     // `c_expr` clone drops the parenthesised query and `and`, and carries the exclusion into
     // its operands.
     let default = rules_of(&grammar, "grammar::Expr[excl Default]");
-    assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Name".to_owned()), "{default:?}");
-    assert!(!default.iter().any(|rule| rule.ends_with("-> DEFAULT")), "{default:?}");
+    assert!(
+        default.contains(&"grammar::Expr[excl Default] -> grammar::Name".to_owned()),
+        "{default:?}"
+    );
+    assert!(
+        !default.iter().any(|rule| rule.ends_with("-> DEFAULT")),
+        "{default:?}"
+    );
     assert!(default.contains(&"grammar::Expr[excl Default] -> grammar::Expr[excl Default] AND grammar::Expr[excl Default]".to_owned()), "{default:?}");
     let full = rules_of(&grammar, "grammar::Expr");
     assert_eq!(default.len(), full.len() - 1);
     let index = rules_of(&grammar, "grammar::Expr[excl Subquery,And]");
     assert_eq!(index.len(), full.len() - 2);
-    assert!(!index.iter().any(|rule| rule.contains(" AND ")), "{index:?}");
+    assert!(
+        !index.iter().any(|rule| rule.contains(" AND ")),
+        "{index:?}"
+    );
     assert!(index.contains(&"grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]".to_owned()), "{index:?}");
     let subquery = attachment_with_rule(&grammar, "LPAREN SELECT grammar::Expr RPAREN");
-    assert!(full.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)));
-    assert!(!index.iter().any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)), "{index:?}");
+    assert!(
+        full.iter()
+            .any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name))
+    );
+    assert!(
+        !index
+            .iter()
+            .any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)),
+        "{index:?}"
+    );
 }
 
 #[test]
@@ -828,16 +1030,24 @@ fn a_content_token_operator_lowers_before_the_operand_with_the_variant_binding_p
         }
     );
     let precedence = BindingPowerPrecedence::new(&grammar).expect("representable binding powers");
-    assert_eq!(precedence.token_precedence(expr, terminal(&grammar, "OperatorText")), [8]);
+    assert_eq!(
+        precedence.token_precedence(expr, terminal(&grammar, "OperatorText")),
+        [8]
+    );
     let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
-    assert!(automaton.conflicts().is_empty(), "{}", automaton_dump(&grammar, &automaton));
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{}",
+        automaton_dump(&grammar, &automaton)
+    );
 }
 
 /// Lowers the container fixture grammar and builds its automaton.
 fn containers() -> (LoweredGrammar, LrGrammar, Automaton) {
     let lowered = lowered_containers();
     let roles = TypeRoles::from_lowered(&lowered);
-    let grammar = lower(&lowered.grammar, &roles).expect("the container fixture has no text predicates");
+    let grammar =
+        lower(&lowered.grammar, &roles).expect("the container fixture has no text predicates");
     let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
     (lowered, grammar, automaton)
 }
@@ -845,10 +1055,17 @@ fn containers() -> (LoweredGrammar, LrGrammar, Automaton) {
 #[test]
 fn containers_fixture_builds_without_conflicts_and_deterministically() {
     let (_, grammar, automaton) = containers();
-    assert!(automaton.conflicts().is_empty(), "{:?}", automaton.conflicts());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
     let (_, again, again_automaton) = containers();
     assert_eq!(format!("{grammar:?}"), format!("{again:?}"));
-    assert_eq!(automaton_dump(&grammar, &automaton), automaton_dump(&again, &again_automaton));
+    assert_eq!(
+        automaton_dump(&grammar, &automaton),
+        automaton_dump(&again, &again_automaton)
+    );
 }
 
 #[test]
@@ -871,7 +1088,12 @@ fn fixed_only_choices_are_inlined_as_terminals_and_valued_ones_by_admitted_first
     let envelope_rules: Vec<(String, RuleAction)> = grammar
         .rules_of(envelope)
         .iter()
-        .map(|rule| (grammar.render_rule(*rule), grammar.rule(*rule).action.clone()))
+        .map(|rule| {
+            (
+                grammar.render_rule(*rule),
+                grammar.rule(*rule).action.clone(),
+            )
+        })
         .collect();
     let type_id = match envelope_rules[0].1 {
         RuleAction::Envelope { type_id, .. } => type_id,
@@ -882,11 +1104,17 @@ fn fixed_only_choices_are_inlined_as_terminals_and_valued_ones_by_admitted_first
         [
             (
                 "grammar::Let::__recursa_presence_envelope -> IF EXISTS".to_owned(),
-                RuleAction::Envelope { type_id, present: false }
+                RuleAction::Envelope {
+                    type_id,
+                    present: false
+                }
             ),
             (
                 "grammar::Let::__recursa_presence_envelope -> IF NOT EXISTS".to_owned(),
-                RuleAction::Envelope { type_id, present: true }
+                RuleAction::Envelope {
+                    type_id,
+                    present: true
+                }
             ),
         ]
     );
@@ -900,13 +1128,42 @@ fn fixed_only_choices_are_inlined_as_terminals_and_valued_ones_by_admitted_first
     );
     assert_eq!(
         rules_of(&grammar, "opt(grammar::Guard)"),
-        ["opt(grammar::Guard) -> %empty", "opt(grammar::Guard) -> grammar::Guard"]
+        [
+            "opt(grammar::Guard) -> %empty",
+            "opt(grammar::Guard) -> grammar::Guard"
+        ]
     );
     // The gram.y `arg_class` shape: `Option<Mode>` inlined, so no epsilon reduce competes with
     // the shift of `IN` or `OUT`, which `Callee` admits.
     assert_eq!(
         rules_of(&grammar, "grammar::Param"),
-        ["grammar::Param -> grammar::Name", "grammar::Param -> grammar::Mode grammar::Name"]
+        [
+            "grammar::Param -> grammar::Name",
+            "grammar::Param -> grammar::Mode grammar::Name"
+        ]
+    );
+}
+
+#[test]
+fn separated_list_continuation_inlines_its_adjacent_optional_tail() {
+    let (_, grammar, automaton) = containers();
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
+    assert_eq!(
+        rules_of(&grammar, "grammar::FunctionTail"),
+        [
+            "grammar::FunctionTail -> VTAIL list1(grammar::Value, sep=COMMA) SEMI",
+            "grammar::FunctionTail -> VTAIL list1(grammar::Value, sep=COMMA) grammar::TrailingVariadic SEMI",
+        ]
+    );
+    assert!(
+        grammar
+            .nonterminal_by_name("opt(grammar::TrailingVariadic)")
+            .is_none(),
+        "the tail must inline: an epsilon helper reintroduces the list/optional conflict"
     );
 }
 
@@ -917,7 +1174,9 @@ fn lists_lower_to_a_left_recursive_core_with_inlined_or_delegated_emptiness_and_
         type_id: type_named(&lowered, "grammar::Value"),
         boxes: 0,
     };
-    let core = grammar.nonterminal_by_name("list1(grammar::Value, sep=COMMA)").unwrap();
+    let core = grammar
+        .nonterminal_by_name("list1(grammar::Value, sep=COMMA)")
+        .unwrap();
     let core_rules: Vec<(String, u32, RuleAction)> = grammar
         .rules_of(core)
         .iter()
@@ -968,7 +1227,9 @@ fn lists_lower_to_a_left_recursive_core_with_inlined_or_delegated_emptiness_and_
             "grammar::Boxes -> BOXES list1(Box<grammar::Value>, sep=COMMA) SEMI",
         ]
     );
-    let boxed_core = grammar.nonterminal_by_name("list1(Box<grammar::Value>, sep=COMMA)").unwrap();
+    let boxed_core = grammar
+        .nonterminal_by_name("list1(Box<grammar::Value>, sep=COMMA)")
+        .unwrap();
     assert_eq!(
         grammar.rule(grammar.rules_of(boxed_core)[0]).action,
         RuleAction::ListFirst {
@@ -991,7 +1252,10 @@ fn lists_lower_to_a_left_recursive_core_with_inlined_or_delegated_emptiness_and_
     // `Vec<Statement>` without a separator, inlined because a statement can begin with a callee.
     assert_eq!(
         rules_of(&grammar, "grammar::Block"),
-        ["grammar::Block -> LBRACE RBRACE", "grammar::Block -> LBRACE list1(grammar::Statement) RBRACE"]
+        [
+            "grammar::Block -> LBRACE RBRACE",
+            "grammar::Block -> LBRACE list1(grammar::Statement) RBRACE"
+        ]
     );
     // `Vec<Bang>` and `Option<Vec1<Bang>>` are delegated: `BANG` is no admitted keyword.
     let bang = ElementValue {
@@ -1014,7 +1278,9 @@ fn lists_lower_to_a_left_recursive_core_with_inlined_or_delegated_emptiness_and_
             RuleAction::ListFromNonEmpty { element: bang },
         ]
     );
-    let optional_list = grammar.nonterminal_by_name("opt(list1(grammar::Bang))").unwrap();
+    let optional_list = grammar
+        .nonterminal_by_name("opt(list1(grammar::Bang))")
+        .unwrap();
     assert_eq!(
         grammar.rule(grammar.rules_of(optional_list)[1]).action,
         RuleAction::OptionalPresent {
@@ -1055,7 +1321,10 @@ fn choices_past_the_inline_budget_are_demoted_to_helpers_from_the_right_valued_f
     // Five erased groups: the rightmost becomes an erased `opt(FIVE)` helper without a value.
     let erased = rules_of(&grammar, "grammar::Erased");
     assert_eq!(erased.len(), 16);
-    assert_eq!(erased[0], "grammar::Erased -> ERASED opt(FIVE) grammar::Name SEMI");
+    assert_eq!(
+        erased[0],
+        "grammar::Erased -> ERASED opt(FIVE) grammar::Name SEMI"
+    );
     let helper = grammar.nonterminal_by_name("opt(FIVE)").unwrap();
     assert!(!grammar.nonterminal(helper).carries_value);
     assert_eq!(
@@ -1067,7 +1336,10 @@ fn choices_past_the_inline_budget_are_demoted_to_helpers_from_the_right_valued_f
     // Five valued optionals of unit nodes: the rightmost becomes `opt(KwTemp)`.
     let options = rules_of(&grammar, "grammar::Options");
     assert_eq!(options.len(), 16);
-    assert_eq!(options[0], "grammar::Options -> OPTIONS opt(grammar::KwTemp) SEMI");
+    assert_eq!(
+        options[0],
+        "grammar::Options -> OPTIONS opt(grammar::KwTemp) SEMI"
+    );
     assert_eq!(
         options[15],
         "grammar::Options -> OPTIONS grammar::KwAs grammar::KwIn grammar::KwOut grammar::KwOnly opt(grammar::KwTemp) SEMI"
@@ -1085,7 +1357,10 @@ fn choices_past_the_inline_budget_are_demoted_to_helpers_from_the_right_valued_f
     // Four erased groups and a trailing separator: the trailing choice becomes `list1t`.
     let trail = rules_of(&grammar, "grammar::Trail");
     assert_eq!(trail.len(), 16);
-    assert_eq!(trail[0], "grammar::Trail -> TRAIL list1t(grammar::Name, sep=COMMA) SEMI");
+    assert_eq!(
+        trail[0],
+        "grammar::Trail -> TRAIL list1t(grammar::Name, sep=COMMA) SEMI"
+    );
     assert_eq!(
         rules_of(&grammar, "list1t(grammar::Name, sep=COMMA)"),
         [
@@ -1105,7 +1380,9 @@ fn attachment_units_pass_their_semantic_value_through_and_inline_their_own_group
         rules_of(&grammar, "grammar::Tuple"),
         ["grammar::Tuple -> list1(grammar::Tuple::__recursa_attachment, sep=PIPE)"]
     );
-    let unit = grammar.nonterminal_by_name("grammar::Tuple::__recursa_attachment").unwrap();
+    let unit = grammar
+        .nonterminal_by_name("grammar::Tuple::__recursa_attachment")
+        .unwrap();
     assert_eq!(
         grammar.render_rule(grammar.rules_of(unit)[0]),
         "grammar::Tuple::__recursa_attachment -> LPAREN grammar::Value RPAREN"
@@ -1186,18 +1463,28 @@ fn site_forms_map_every_element_to_its_symbols() {
     let RuleAction::Construct { sites, .. } = &grammar.rule(let_rules[0]).action else {
         panic!("a node rule constructs");
     };
-    assert_eq!((sites[1].len, sites[1].present, sites[1].inlined), (0, false, true));
-    assert_eq!((sites[6].start, sites[6].len, sites[6].present), (5, 0, false));
+    assert_eq!(
+        (sites[1].len, sites[1].present, sites[1].inlined),
+        (0, false, true)
+    );
+    assert_eq!(
+        (sites[6].start, sites[6].len, sites[6].present),
+        (5, 0, false)
+    );
     assert_eq!(grammar.rule(let_rules[0]).value_pops, 3);
     assert_eq!(grammar.rule(let_rules[3]).value_pops, 4);
 }
 
 /// Runs the whole table-driven analysis over the precedence generation fixture.
 fn precedence_fixture_analysis() -> LrAnalysis {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/generation/precedence");
-    LrAnalysis::analyze_source(&fixture, Path::new("src/grammar.rs"), AutomatonOptions::default())
-        .unwrap_or_else(|error| panic!("the precedence fixture analyzes:\n{error}"))
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation/precedence");
+    LrAnalysis::analyze_source(
+        &fixture,
+        Path::new("src/grammar.rs"),
+        AutomatonOptions::default(),
+    )
+    .unwrap_or_else(|error| panic!("the precedence fixture analyzes:\n{error}"))
 }
 
 #[test]
@@ -1221,7 +1508,10 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
     assert_eq!(declared("LIKE"), Some((5, Associativity::NonAssociative)));
     assert_eq!(declared("MINUS"), Some((10, Associativity::Left)));
     assert_eq!(declared("DOT"), Some((20, Associativity::Left)));
-    assert_eq!(declared("NameText"), Some((9, Associativity::NonAssociative)));
+    assert_eq!(
+        declared("NameText"),
+        Some((9, Associativity::NonAssociative))
+    );
     assert_eq!(declared("SEMI"), None);
     assert_eq!(declared("JSON"), None);
 
@@ -1235,8 +1525,13 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
             .find(|(index, _)| grammar.render_rule(super::RuleId::new(*index as u32)) == rendered)
             .unwrap_or_else(|| panic!("no rule {rendered}"))
             .1;
-        rule.precedence
-            .map(|precedence| (precedence.origin, precedence.level, precedence.associativity))
+        rule.precedence.map(|precedence| {
+            (
+                precedence.origin,
+                precedence.level,
+                precedence.associativity,
+            )
+        })
     };
     use super::PrecedenceOrigin::Declared;
     assert_eq!(
@@ -1247,9 +1542,18 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
         rule_precedence("grammar::IsJsonTail -> JSON"),
         Some((Declared, 8, Associativity::NonAssociative))
     );
-    assert_eq!(rule_precedence("grammar::IsJsonTail -> JSON VALUE"), Some((Declared, 9, Associativity::NonAssociative)));
-    assert_eq!(rule_precedence("NameText -> BETWEEN"), Some((Declared, 5, Associativity::NonAssociative)));
-    assert_eq!(rule_precedence("grammar::SetScope -> SESSION"), Some((Declared, 1, Associativity::NonAssociative)));
+    assert_eq!(
+        rule_precedence("grammar::IsJsonTail -> JSON VALUE"),
+        Some((Declared, 9, Associativity::NonAssociative))
+    );
+    assert_eq!(
+        rule_precedence("NameText -> BETWEEN"),
+        Some((Declared, 5, Associativity::NonAssociative))
+    );
+    assert_eq!(
+        rule_precedence("grammar::SetScope -> SESSION"),
+        Some((Declared, 1, Associativity::NonAssociative))
+    );
     let escape_attachment = grammar
         .rules()
         .iter()
@@ -1257,8 +1561,14 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
         .map(|(index, _)| grammar.render_rule(super::RuleId::new(index as u32)))
         .find(|rendered| rendered.contains(" -> ESCAPE "))
         .expect("the escape clause lowers to a rule starting with ESCAPE");
-    assert_eq!(rule_precedence(&escape_attachment), Some((Declared, 6, Associativity::NonAssociative)));
-    assert_eq!(rule_precedence("grammar::SubSelect -> LPAREN SELECT grammar::Name RPAREN"), None);
+    assert_eq!(
+        rule_precedence(&escape_attachment),
+        Some((Declared, 6, Associativity::NonAssociative))
+    );
+    assert_eq!(
+        rule_precedence("grammar::SubSelect -> LPAREN SELECT grammar::Name RPAREN"),
+        None
+    );
     assert_eq!(rule_precedence("grammar::Expr -> grammar::Number"), None);
 
     let settled: Vec<(String, String, super::Resolution)> = analysis
@@ -1274,7 +1584,11 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
         })
         .collect();
     let shift = |rule: &str, lookahead: &str| {
-        (rule.to_owned(), lookahead.to_owned(), super::Resolution::Shift)
+        (
+            rule.to_owned(),
+            lookahead.to_owned(),
+            super::Resolution::Shift,
+        )
     };
     for expected in [
         // `%prec UMINUS` below `'.'`.
@@ -1289,9 +1603,15 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
         shift("grammar::SetScope -> SESSION", "CHARACTERISTICS"),
         // The Pratt `LIKE` rule (5) against `ESCAPE` (6), which introduces no operator of
         // `Expr`.
-        shift("grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#59", "ESCAPE"),
+        shift(
+            "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#59",
+            "ESCAPE",
+        ),
     ] {
-        assert!(settled.contains(&expected), "{expected:?} not in {settled:#?}");
+        assert!(
+            settled.contains(&expected),
+            "{expected:?} not in {settled:#?}"
+        );
     }
     // A Pratt rule against a Pratt operator of its owner is still decided by binding powers.
     assert!(settled.contains(&shift(

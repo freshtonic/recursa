@@ -27,12 +27,27 @@ fn the_table_driven_parser_parses_like_the_recursive_descent_parser_of_the_same_
     // One generation carries both parsers: the recursive-descent default on the root input,
     // the table-driven tables, dispatcher and marker under `parsers::lr`.
     let root = read_selected_root(&package);
-    assert!(root.contains("RecursiveDescent"), "the default parser is recursive descent");
-    assert!(root.contains("pub mod parsers"), "root declares the extra parsers");
+    assert!(
+        root.contains("RecursiveDescent"),
+        "the default parser is recursive descent"
+    );
+    assert!(
+        root.contains("pub mod parsers"),
+        "root declares the extra parsers"
+    );
     assert!(root.contains("pub mod lr"), "root declares the lr parser");
-    assert!(root.contains("__recursa_lr"), "root carries the tables and dispatcher");
-    assert!(root.contains("TableDriven"), "the lr input names the table-driven marker");
-    assert!(root.contains("__recursa_reduce"), "root carries the reduce dispatcher");
+    assert!(
+        root.contains("__recursa_lr"),
+        "root carries the tables and dispatcher"
+    );
+    assert!(
+        root.contains("TableDriven"),
+        "the lr input names the table-driven marker"
+    );
+    assert!(
+        root.contains("__recursa_reduce"),
+        "root carries the reduce dispatcher"
+    );
 
     // Positive inputs parse to equal values and leave the cursor at the end.
     assert!(
@@ -46,14 +61,23 @@ fn the_table_driven_parser_parses_like_the_recursive_descent_parser_of_the_same_
     // A root parse stops where recursive descent stops when tokens follow the root.
     assert!(table_stdout.contains("prefix first Let { assignment: Assignment { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } }, value: Number(Number { text: __RecursaContentToken1 { text: ContentText(\"5\") } }) } } cursor=5\n"), "{table_stdout}");
     assert!(table_stdout.contains("prefix second Print { print: Print { value: Name { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } } } } } cursor=10 eof=false\n"), "{table_stdout}");
-    assert!(table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:true\") cursor=10\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("prefix third code=RCA4100 found=Some(\"fixed:true\") cursor=10\n"),
+        "{table_stdout}"
+    );
     // Provenance (#118): with capture requested the occurrence tree equals recursive descent's,
     // node by node, including every fixed token, and so do the root's elements and the Pretty
     // rendering; the twin comparison below holds every `prov`, `elements` and `pretty` line to
     // byte equality.
     assert!(table_stdout.contains("prov \"let x = 5;\" => captured 0..10 (0..10: (0..10: (0..10: (0..3) (4..5: (4..5: (4..5: (4..5)))) (6..7) (8..9: (8..9: (8..9: (8..9: (8..9: (8..9)))))) (9..10))))\n"), "{table_stdout}");
-    assert!(table_stdout.contains("elements \"let x = 5;\" => [let_assignment:SemanticField@0..10]\n"), "{table_stdout}");
-    assert!(table_stdout.contains("pretty \"print(!!false);\" => \"print(! ! false);\"\n"), "{table_stdout}");
+    assert!(
+        table_stdout.contains("elements \"let x = 5;\" => [let_assignment:SemanticField@0..10]\n"),
+        "{table_stdout}"
+    );
+    assert!(
+        table_stdout.contains("pretty \"print(!!false);\" => \"print(! ! false);\"\n"),
+        "{table_stdout}"
+    );
     // A root decided by its FOLLOW rejects the token after it as recursive descent does, with
     // the same failing token and an expected set of what could have continued (#118).
     assert!(table_stdout.contains("trailing \"true x\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 5, end: 6 } found=Some(\"content:\\\"[A-Za-z_][A-Za-z0-9_]*\\\":priority=None\") cursor=0 expected=[]\n"), "{table_stdout}");
@@ -80,13 +104,19 @@ fn the_debug_bundle_of_a_table_driven_generation_carries_the_automaton_dump() {
     let index_path = find_one_debug_index(destination.path());
     let index = fs::read_to_string(&index_path).unwrap();
     assert_eq!(
-        index.lines().filter(|line| line.starts_with("automaton\t")).count(),
+        index
+            .lines()
+            .filter(|line| line.starts_with("automaton\t"))
+            .count(),
         1,
         "index:\n{index}"
     );
     let dump = fs::read_to_string(index_path.parent().unwrap().join("automaton.txt"))
         .expect("the bundle carries the automaton dump");
-    assert!(dump.contains("$accept(grammar::Statement) -> grammar::Statement"), "{dump}");
+    assert!(
+        dump.contains("$accept(grammar::Statement) -> grammar::Statement"),
+        "{dump}"
+    );
     assert!(dump.contains("State 0"), "{dump}");
 }
 
@@ -273,17 +303,28 @@ fn assert_twins_agree(table: &str, recursive: &str) {
         let table_names = expected_names(table_expected);
         let recursive_names = expected_names(recursive_expected);
         assert!(
-            recursive_names.iter().all(|name| table_names.contains(name)),
+            recursive_names
+                .iter()
+                .all(|name| table_names.contains(name)),
             "the table-driven expected set must contain recursive descent's:\n{table_line}\n{recursive_line}"
         );
-        let head = table_line.split_once(" =>").map_or(*table_line, |(head, _)| head);
-        differences.push((head.to_owned(), table_expected.to_owned(), recursive_expected.to_owned()));
+        let head = table_line
+            .split_once(" =>")
+            .map_or(*table_line, |(head, _)| head);
+        differences.push((
+            head.to_owned(),
+            table_expected.to_owned(),
+            recursive_expected.to_owned(),
+        ));
     }
     let differences: Vec<(&str, &str, &str)> = differences
         .iter()
         .map(|(head, table, recursive)| (head.as_str(), table.as_str(), recursive.as_str()))
         .collect();
-    assert_eq!(differences, EXPECTED_SET_DIFFERENCES, "the expected-set differences are pinned");
+    assert_eq!(
+        differences, EXPECTED_SET_DIFFERENCES,
+        "the expected-set differences are pinned"
+    );
 }
 
 /// Splits an error line into everything before its expected set and the set's Debug text.

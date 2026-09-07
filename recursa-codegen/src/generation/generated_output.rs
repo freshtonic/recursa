@@ -144,7 +144,11 @@ mod tests {
         ];
         let (keys, kinds) = deduplicated_word_classifier_keys(&classifiers, true);
         assert_eq!(keys, vec![b"select".to_vec()]);
-        assert_eq!(kinds, vec![11], "the first declared kind wins the collision");
+        assert_eq!(
+            kinds,
+            vec![11],
+            "the first declared kind wins the collision"
+        );
 
         // The rendering itself must not panic on the surviving single-entry map, and
         // must still expose the winning kind number literally as an entry value.
@@ -1153,13 +1157,30 @@ pub(super) fn render_root(
         render_word_classifiers(&plan.word_classifiers, word_candidate_kinds, facade);
     let lexical_machine = render_lexical_machine(plan, facade)
         .expect("the emission plan carries a renderable lexical machine");
-    let empty_words = vec![0_u64; kind_count.div_ceil(64)];
-    let expected_set_count = plan.expected_sets.values().len();
-    let expected_sets = plan
-        .expected_sets
-        .values()
-        .iter()
-        .map(|expected| render_expected_value(expected, plan, facade));
+    // Recursive descent selects and transports frozen FOLLOW sets. The LALR
+    // runtime computes its error expectations from its own tables and needs
+    // only the facade's width-independent empty root FOLLOW, so a
+    // table-driven-only generation has no use for this grammar-wide pool.
+    let recursive_expectations = parsers.renders_recursive_descent().then(|| {
+        let empty_words = vec![0_u64; kind_count.div_ceil(64)];
+        let expected_set_count = plan.expected_sets.values().len();
+        let expected_sets = plan
+            .expected_sets
+            .values()
+            .iter()
+            .map(|expected| render_expected_value(expected, plan, facade));
+        quote! {
+            static __RECURSA_EMPTY_FOLLOW: #facade::__private::FollowSet =
+                #facade::__private::follow_set(
+                    #kind_count as u32,
+                    &[#(#empty_words),*],
+                    &[],
+                );
+            static __RECURSA_EXPECTED_SETS: [#facade::__private::FollowSet; #expected_set_count] = [
+                #(#expected_sets),*
+            ];
+        }
+    });
     let token_items = plan
         .tokens
         .iter()
@@ -1294,15 +1315,7 @@ pub(super) fn render_root(
                 &[#(#atom_names),*],
                 #lexical_error_kind,
             );
-        static __RECURSA_EMPTY_FOLLOW: #facade::__private::FollowSet =
-            #facade::__private::follow_set(
-                #kind_count as u32,
-                &[#(#empty_words),*],
-                &[],
-            );
-        static __RECURSA_EXPECTED_SETS: [#facade::__private::FollowSet; #expected_set_count] = [
-            #(#expected_sets),*
-        ];
+        #recursive_expectations
         #framing_root
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1913,7 +1926,12 @@ pub(super) fn render_node(
         .flat_map(|application| parsers.iter().map(move |parser| (application, parser)))
         .map(|(application, parser)| match parser.tables() {
             Some(lr) => render_node_application(plan, node, application, lr, parser),
-            None => Ok(render_node_parse_application(plan, node, application, instrumentation)),
+            None => Ok(render_node_parse_application(
+                plan,
+                node,
+                application,
+                instrumentation,
+            )),
         })
         .collect::<Result<Vec<_>, String>>()?;
     let token_bindings = if plan.nodes[..node_index]

@@ -158,9 +158,7 @@ impl DispatchTable {
         let states = self.decode_all(self.states);
         let edges = self.decode_all(self.edges);
         let positions = self.decode_all(self.positions);
-        let unconditional = positions
-            .chunks_exact(4)
-            .all(|position| position[1] == 0);
+        let unconditional = positions.chunks_exact(4).all(|position| position[1] == 0);
         let kind_count = self
             .expected
             .first()
@@ -202,7 +200,11 @@ impl DispatchTable {
                 let position = edges[edge * 2] as usize;
                 let next = edges[edge * 2 + 1];
                 let expected = &self.expected[positions[position * 4] as usize];
-                let value = if unconditional { next + 1 } else { edge as u32 + 1 };
+                let value = if unconditional {
+                    next + 1
+                } else {
+                    edge as u32 + 1
+                };
                 for (word_index, word) in expected.kind_words().iter().copied().enumerate() {
                     let mut word = word;
                     while word != 0 {
@@ -480,7 +482,10 @@ mod tests {
         for (position, next) in wide_edges.iter().chain(narrow_edges) {
             edge_values.extend([*position, *next]);
         }
-        let edge_ranges = vec![(0, wide_edges.len()), (wide_edges.len(), narrow_edges.len())];
+        let edge_ranges = vec![
+            (0, wide_edges.len()),
+            (wide_edges.len(), narrow_edges.len()),
+        ];
         // State rows use the predictive shape: target, edge start, edge count, expected.
         let mut state_values = Vec::new();
         for (start, count) in &edge_ranges {
@@ -501,7 +506,11 @@ mod tests {
     }
 
     /// Asserts the indexed lookup matches the oracle for every kind and every spelling.
-    fn assert_matches_oracle(fixture: &Fixture, source: &str, spans: &[(u16, std::ops::Range<usize>)]) {
+    fn assert_matches_oracle(
+        fixture: &Fixture,
+        source: &str,
+        spans: &[(u16, std::ops::Range<usize>)],
+    ) {
         for (state, (start, count)) in fixture.edge_ranges.iter().copied().enumerate() {
             assert_eq!(
                 fixture.table.follow_edge(state, None, source),
@@ -554,9 +563,8 @@ mod tests {
     fn indexed_lookup_matches_the_linear_walk_across_predicate_modes() {
         let sets: &[&[u16]] = &[&[1, 2, 3, 4, 5, 6, 7, 8, 9], &[3, 4], &[9, 10, 11]];
         let options: &'static [&'static str] = &["alpha", "BETA"];
-        let positions: Vec<(usize, usize, &'static [&'static str])> = (0..8)
-            .map(|mode| (mode % 3, mode, options))
-            .collect();
+        let positions: Vec<(usize, usize, &'static [&'static str])> =
+            (0..8).map(|mode| (mode % 3, mode, options)).collect();
         // Nine edges on the root: every predicate mode plus a repeat, so the root is
         // dense and the dense cell must only start, never finish, the predicate walk.
         let wide: Vec<(usize, usize)> = (0..8)

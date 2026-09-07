@@ -95,9 +95,10 @@ impl<'src> LexResult<'src> {
             source: self.source,
             bounds,
             records: Cow::Owned(contained(&self.records, bounds, |record| record.span).to_vec()),
-            trivia: self.trivia.as_ref().map(|trivia| {
-                Cow::Owned(contained(trivia, bounds, |record| record.span).to_vec())
-            }),
+            trivia: self
+                .trivia
+                .as_ref()
+                .map(|trivia| Cow::Owned(contained(trivia, bounds, |record| record.span).to_vec())),
             cursor: 0,
             grammar,
             builder: (),

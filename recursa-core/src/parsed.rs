@@ -451,7 +451,12 @@ impl OccurrenceNode {
         if !self.repetition_separators.is_empty() {
             formatter.write_str(" ;")?;
             for separator in &self.repetition_separators {
-                write!(formatter, " {}..{}", separator.span.start(), separator.span.end())?;
+                write!(
+                    formatter,
+                    " {}..{}",
+                    separator.span.start(),
+                    separator.span.end()
+                )?;
             }
         }
         formatter.write_str(")")
@@ -1243,7 +1248,14 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
     ) -> Result<Occurrence, ParseError> {
         self.provenance
-            .finish_repeated(self.input.source(), policy, self.request, span, children, separators)
+            .finish_repeated(
+                self.input.source(),
+                policy,
+                self.request,
+                span,
+                children,
+                separators,
+            )
             .map_err(|()| {
                 ParseError::invalid_token_span(
                     self.input,
@@ -1709,9 +1721,9 @@ pub trait ParserMarker: parser_marker_seal::Sealed + 'static {}
 
 /// Marker for the recursive-descent parser style.
 ///
-/// This is the default parser of every generation and the default of the
-/// [`GeneratedParse`] marker parameter, so a generation that names no parser
-/// style compiles against it unchanged.
+/// This is the default of the [`GeneratedParse`] marker parameter and the
+/// implicit style when a generation names no parser, so existing generated
+/// code compiles against it unchanged.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct RecursiveDescent;
@@ -1822,19 +1834,18 @@ where
 /// Runs the generated root parser with one generated caller FOLLOW.
 ///
 /// Document framing uses this seam to keep its separator outside the authored
-/// root while preserving ordinary transactional parse behavior. Framing belongs
-/// to the default parser, so this seam drives only the [`RecursiveDescent`]
-/// impl of `T`; a root whose only impl carries another marker does not satisfy
-/// its bound.
+/// root while preserving ordinary transactional parse behavior. `P` is the
+/// generated grammar's selected default parser marker.
 #[cfg(feature = "explorer")]
-pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
+pub(crate) fn parse_spanned_with_root_follow<'input, T, A, P>(
     input: &mut Input<'input, A>,
     follow: &FollowSet,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: GeneratedParse<'input, A>,
+    T: GeneratedParse<'input, A, P>,
+    P: ParserMarker,
 {
-    parse_with_request_and_follow::<T, A, RecursiveDescent>(input, CaptureRequest::Spanned, follow)
+    parse_with_request_and_follow::<T, A, P>(input, CaptureRequest::Spanned, follow)
 }
 
 /// Runs a root parser transactionally under one capture request.

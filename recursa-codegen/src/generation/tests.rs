@@ -46,11 +46,10 @@ fn emission_plan_join_error(
 
 #[cfg(feature = "explorer")]
 #[test]
-fn a_table_driven_default_parser_is_refused_beside_framing_or_the_explorer() {
-    // Framing and the explorer adapter drive the default parser through facade seams bound to
-    // the recursive-descent impl (#119): a table-driven default is refused at the renderer
-    // selection point with a remedy, whether declared through `parser_style` or first in
-    // `parsers(...)`; the same declaration with recursive descent first renders.
+fn framing_and_explorer_select_the_declared_default_parser_marker() {
+    // Framing and Explorer are parser-style-neutral facade capabilities. Their generated root
+    // family and explicit-FOLLOW calls name the marker owned by the unqualified `Input`, whether
+    // the default is the only table-driven parser or the first of two named parsers.
     let framing = include_str!("../../tests/fixtures/generation/framing/src/grammar.rs");
     let with_setting = |setting: &str| {
         framing.replace(
@@ -63,21 +62,36 @@ fn a_table_driven_default_parser_is_refused_beside_framing_or_the_explorer() {
         "parsers(lr = table_driven, rd = recursive_descent),",
     ] {
         let (_package, analyzed, plan) = joined_plan_from_source(&with_setting(setting));
-        let detail = render_by_parser_style(&plan, &analyzed.lowered)
-            .err()
-            .unwrap_or_else(|| panic!("{setting} is refused beside framing"));
-        assert_eq!(
-            detail,
-            "the explorer and framing capabilities drive the default parser, which must be \
-             recursive descent: declare a `recursive_descent` parser first in `parsers(...)` \
-             or select `parser_style = recursive_descent`"
+        let rendered = render_by_parser_style(&plan, &analyzed.lowered)
+            .unwrap_or_else(|error| panic!("{setting} renders beside framing: {error}"));
+        let nodes = rendered
+            .nodes
+            .iter()
+            .map(|(_, source)| source.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            nodes.contains("type Parser = recursa :: __private :: TableDriven"),
+            "the Explorer root family selects the table-driven default: {nodes}"
+        );
+        assert!(
+            nodes.contains("frame_document :: < Self , recursa :: __private :: TableDriven >"),
+            "framing selects the table-driven default: {nodes}"
         );
     }
-    let (_package, analyzed, plan) =
-        joined_plan_from_source(&with_setting("parsers(rd = recursive_descent, lr = table_driven),"));
+    let (_package, analyzed, plan) = joined_plan_from_source(&with_setting(
+        "parsers(rd = recursive_descent, lr = table_driven),",
+    ));
     let rendered = render_by_parser_style(&plan, &analyzed.lowered)
         .expect("a recursive-descent default parser renders beside framing");
     assert!(rendered.root.contains("pub mod parsers"));
+    let nodes = rendered
+        .nodes
+        .iter()
+        .map(|(_, source)| source.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(nodes.contains("type Parser = recursa :: __private :: RecursiveDescent"));
 }
 
 #[test]
@@ -389,7 +403,10 @@ fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical(
     let undeclared_nodes = normalized(&undeclared_rendered, &undeclared_plan.identity);
     if declared_nodes != undeclared_nodes {
         if let Some(directory) = std::env::var_os("RECURSA_TEST_DUMP_DIR") {
-            for (label, nodes) in [("declared", &declared_nodes), ("undeclared", &undeclared_nodes)] {
+            for (label, nodes) in [
+                ("declared", &declared_nodes),
+                ("undeclared", &undeclared_nodes),
+            ] {
                 for (name, text) in nodes {
                     fs::write(Path::new(&directory).join(format!("{label}-{name}")), text).unwrap();
                 }
@@ -400,15 +417,18 @@ fn a_lookahead_declaration_leaves_recursive_descent_node_sources_byte_identical(
         declared_nodes, undeclared_nodes,
         "a lookahead declaration is inert under recursive descent"
     );
-    assert!(declared_rendered.root.contains("NOT_LA"), "the merged kind is a TokenKind variant");
+    assert!(
+        declared_rendered.root.contains("NOT_LA"),
+        "the merged kind is a TokenKind variant"
+    );
     assert!(!undeclared_rendered.root.contains("NOT_LA"));
     assert_ne!(
         declared_plan.identity, undeclared_plan.identity,
         "the merged kind must re-generate"
     );
 
-    let table_rendered = render_by_parser_style(&table_plan, &table_analyzed.lowered)
-        .expect("render table-driven");
+    let table_rendered =
+        render_by_parser_style(&table_plan, &table_analyzed.lowered).expect("render table-driven");
     assert!(table_rendered.root.contains("__recursa_lr"));
     assert!(table_rendered.root.contains("NOT_LA"));
     assert_ne!(table_rendered.nodes, declared_rendered.nodes);
@@ -459,13 +479,18 @@ fn a_merged_kind_in_the_precedence_block_leaves_recursive_descent_sources_byte_i
 fn a_precedence_declaration_leaves_recursive_descent_sources_byte_identical() {
     let fixture = include_str!("../../tests/fixtures/generation/precedence/src/grammar.rs");
     let named_parsers = "parsers(rd = recursive_descent, lr = table_driven),";
-    let precedence_start = fixture.find("    precedence {").expect("the fixture declares precedence");
+    let precedence_start = fixture
+        .find("    precedence {")
+        .expect("the fixture declares precedence");
     let precedence_end = fixture[precedence_start..]
         .find("    }\n")
         .map(|end| precedence_start + end + "    }\n".len())
         .expect("the declaration closes");
     let precedence = &fixture[precedence_start..precedence_end];
-    let overrides = ["    #[parse(prec = UMINUS)]\n", "    #[parse(prec = UNBOUNDED)]\n"];
+    let overrides = [
+        "    #[parse(prec = UMINUS)]\n",
+        "    #[parse(prec = UNBOUNDED)]\n",
+    ];
     assert_eq!(fixture.matches(named_parsers).count(), 1);
     for override_ in overrides {
         assert_eq!(fixture.matches(override_).count(), 1, "{override_}");
@@ -495,8 +520,8 @@ fn a_precedence_declaration_leaves_recursive_descent_sources_byte_identical() {
     );
     assert_eq!(declared_rendered.root, undeclared_rendered.root);
 
-    let table_rendered = render_by_parser_style(&table_plan, &table_analyzed.lowered)
-        .expect("render table-driven");
+    let table_rendered =
+        render_by_parser_style(&table_plan, &table_analyzed.lowered).expect("render table-driven");
     assert!(table_rendered.root.contains("__recursa_lr"));
     assert_ne!(table_rendered.nodes, declared_rendered.nodes);
 }
@@ -544,6 +569,39 @@ fn parser_style_leaves_an_unchanged_grammar_identity_in_place_and_table_driven_m
 }
 
 #[test]
+fn table_driven_only_omits_predictive_follow_statics() {
+    let fixture = include_str!("../../tests/fixtures/generation/lookahead/src/grammar.rs");
+    let named = "parsers(rd = recursive_descent, lr = table_driven),";
+    let table_only = fixture.replace(named, "parser_style = table_driven,");
+    let (_package, table_analyzed, table_plan) = joined_plan_from_source(&table_only);
+    let table = render_by_parser_style(&table_plan, &table_analyzed.lowered)
+        .expect("a table-driven-only grammar renders");
+    let table_nodes = table
+        .nodes
+        .iter()
+        .map(|(_, source)| source.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!table.root.contains("__RECURSA_EMPTY_FOLLOW"));
+    assert!(!table.root.contains("__RECURSA_EXPECTED_SETS"));
+    assert!(table_nodes.contains("__private :: empty_follow ()"));
+
+    let (_package, named_analyzed, named_plan) = joined_plan_from_source(fixture);
+    let named_rendered = render_by_parser_style(&named_plan, &named_analyzed.lowered)
+        .expect("named recursive-descent and table-driven parsers render together");
+    let named_nodes = named_rendered
+        .nodes
+        .iter()
+        .map(|(_, source)| source.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(named_rendered.root.contains("__RECURSA_EMPTY_FOLLOW"));
+    assert!(named_rendered.root.contains("__RECURSA_EXPECTED_SETS"));
+    assert!(named_nodes.contains("__private :: empty_follow ()"));
+    assert!(named_nodes.contains("__RECURSA_EMPTY_FOLLOW"));
+}
+
+#[test]
 fn the_renderer_selection_point_routes_table_driven_and_named_parsers() {
     // The Pratt fixture reaches the table-driven renderer, whose analysis lowers the binding
     // powers to precedence and then reports the fixture's genuine conflict, the optional
@@ -571,19 +629,13 @@ fn the_renderer_selection_point_routes_table_driven_and_named_parsers() {
     assert_eq!(diagnostic.code().as_str(), "RCA9105");
     assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
 
-    // A table-driven default parser reports the same conflict, unless the explorer generation
-    // feature makes every eligible node an explorer root, in which case the default parser is
-    // refused first: the explorer adapter drives the recursive-descent impl.
-    let (_package, analyzed, plan) =
-        joined_pratt_plan_with_setting("parser_style = table_driven,");
+    // A table-driven default parser reports the same conflict; Explorer drives whichever parser
+    // owns the unqualified input and does not change LR analysis.
+    let (_package, analyzed, plan) = joined_pratt_plan_with_setting("parser_style = table_driven,");
     let detail = render_by_parser_style(&plan, &analyzed.lowered)
         .err()
         .expect("a table-driven default parser does not render the Pratt fixture");
-    if cfg!(feature = "explorer") {
-        assert!(detail.starts_with("the explorer and framing capabilities drive the default parser"), "{detail}");
-    } else {
-        assert!(is_the_escape_conflict(&detail), "{detail}");
-    }
+    assert!(is_the_escape_conflict(&detail), "{detail}");
 
     let (_package, analyzed, recursive) = joined_pratt_plan_with_setting("");
     let default_rendering = render_by_parser_style(&recursive, &analyzed.lowered)

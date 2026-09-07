@@ -380,7 +380,10 @@ fn consider(best: &mut Option<LexChoice>, challenger: LexChoice) {
 /// Returns the final extent after the fence and trailing rules together with
 /// the first interior fence encountered, or `None` when the family does not
 /// admit the first byte.
-fn scan_operator_run(remaining: &str, run: &OperatorRunRule) -> Option<(usize, Option<(usize, usize)>)> {
+fn scan_operator_run(
+    remaining: &str,
+    run: &OperatorRunRule,
+) -> Option<(usize, Option<(usize, usize)>)> {
     let bytes = remaining.as_bytes();
     let mut interior_fence = None;
     let mut end = 0;

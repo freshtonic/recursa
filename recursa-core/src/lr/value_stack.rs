@@ -82,7 +82,12 @@ impl ValueStack {
     ///
     /// Values with an alignment above 16 are refused at compile time.
     pub fn push<V>(&mut self, value: V) {
-        const { assert!(align_of::<V>() <= UNIT_ALIGN, "value alignment exceeds the stack unit") };
+        const {
+            assert!(
+                align_of::<V>() <= UNIT_ALIGN,
+                "value alignment exceeds the stack unit"
+            )
+        };
         let start = self.len;
         let offset = start.next_multiple_of(align_of::<V>().max(1));
         let end = offset + size_of::<V>();
@@ -116,10 +121,9 @@ impl ValueStack {
     /// this because the push in one rule's action and the pop in its parent's action are derived
     /// from the same grammar symbol.
     pub unsafe fn pop<V>(&mut self) -> V {
-        let slot = self
-            .slots
-            .pop()
-            .expect("value stack underflow: a reduce action popped more values than its rule holds");
+        let slot = self.slots.pop().expect(
+            "value stack underflow: a reduce action popped more values than its rule holds",
+        );
         debug_assert_eq!(
             slot.size,
             size_of::<V>(),
@@ -130,7 +134,12 @@ impl ValueStack {
         // `unwind` release slots and each releases exactly its own. After the read the bytes are
         // logically moved out, and truncating `len` to `slot.start` forgets them.
         let value = unsafe {
-            let source = self.units.as_ptr().cast::<u8>().add(slot.offset).cast::<V>();
+            let source = self
+                .units
+                .as_ptr()
+                .cast::<u8>()
+                .add(slot.offset)
+                .cast::<V>();
             ptr::read(source)
         };
         self.len = slot.start;

@@ -286,6 +286,19 @@ impl ParserDeclarations {
         self.0.iter()
     }
 
+    /// Reports whether this generation emits a recursive-descent parser.
+    ///
+    /// The source-independent grammar analysis is shared by all parser styles. A
+    /// shared-prefix diagnostic is an error for recursive descent, but it is not
+    /// by itself a reason to reject a table-driven-only generation. Keeping this
+    /// fact on the parser declaration set gives that policy one source of truth
+    /// for implicit, single-style, and named-parser configurations.
+    pub(crate) fn renders_recursive_descent(&self) -> bool {
+        self.0
+            .iter()
+            .any(|parser| parser.style == ParserStyle::RecursiveDescent)
+    }
+
     /// Reports whether this is the implicit default of an omitted configuration.
     ///
     /// An explicit `parser_style = recursive_descent` states the same fact, so

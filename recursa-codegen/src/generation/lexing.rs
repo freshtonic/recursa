@@ -634,7 +634,10 @@ pub(super) fn render_token_binding(
 }
 
 /// Packs one byte alphabet into the runtime's 256-bit membership words.
-fn render_byte_set(bytes: impl IntoIterator<Item = u8>, facade: &Ident) -> proc_macro2::TokenStream {
+fn render_byte_set(
+    bytes: impl IntoIterator<Item = u8>,
+    facade: &Ident,
+) -> proc_macro2::TokenStream {
     let mut words = [0_u64; 4];
     for byte in bytes {
         words[usize::from(byte >> 6)] |= 1_u64 << (byte & 63);
@@ -660,9 +663,7 @@ fn exclusion_scalar_ranges(pattern: &str) -> Result<Vec<(char, char)>, String> {
             HirKind::Class(Class::Bytes(class)) => class.iter().try_for_each(|range| {
                 let (start, end) = (range.start(), range.end());
                 if end > 0x7f {
-                    return Err(
-                        "a next-exclusion predicate must match complete scalars".to_owned()
-                    );
+                    return Err("a next-exclusion predicate must match complete scalars".to_owned());
                 }
                 ranges.push((char::from(start), char::from(end)));
                 Ok(())
@@ -681,9 +682,7 @@ fn exclusion_scalar_ranges(pattern: &str) -> Result<Vec<(char, char)>, String> {
             }
             HirKind::Capture(capture) => collect(&capture.sub, ranges),
             HirKind::Concat(parts) if parts.len() == 1 => collect(&parts[0], ranges),
-            HirKind::Alternation(parts) => {
-                parts.iter().try_for_each(|part| collect(part, ranges))
-            }
+            HirKind::Alternation(parts) => parts.iter().try_for_each(|part| collect(part, ranges)),
             _ => Err("a next-exclusion predicate must match exactly one scalar".to_owned()),
         }
     }

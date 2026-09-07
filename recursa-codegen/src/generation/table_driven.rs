@@ -52,8 +52,8 @@ use crate::lr::{
     AutomatonOptions, ElementValue, EncodedLrTables, LrAnalysis, LrDiagnostic, NonterminalOrigin,
     OptionalContent, Rule, RuleAction, SiteForm, Symbol,
 };
-use crate::{KindId, TypeId};
 use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
+use crate::{KindId, TypeId};
 
 /// What a block of contiguous rules reduces to.
 #[derive(Clone, Copy, Debug)]
@@ -602,7 +602,7 @@ fn render_parse_impl(
                 &#module_anchor::__RECURSA_GRAMMAR
             }
             fn root_follow() -> &'static #facade::__private::FollowSet {
-                &#module_anchor::__RECURSA_EMPTY_FOLLOW
+                #facade::__private::empty_follow()
             }
             fn parse(
                 context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
@@ -696,55 +696,65 @@ fn render_reduce_arm(
         ResolvedFieldStyle,
         Cow<'_, [ElementParsePlan]>,
     ) = match (&application.body, variant) {
-            (NodeBodyPlan::Struct { style, elements }, None) => {
-                (None, *style, Cow::Borrowed(elements.as_slice()))
-            }
-            (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
-                let resolved = plan_variant(lr, application, *declaration)?;
-                let variant = variants
-                    .iter()
-                    .find(|variant| variant.resolved_variant == resolved)
-                    .ok_or_else(|| format!("`{}` has no plan for one of its alternatives", node.ident))?;
-                (Some(&variant.ident), variant.style, Cow::Borrowed(variant.elements.as_slice()))
-            }
-            (NodeBodyPlan::Pratt(pratt), Some(declaration)) => {
-                let resolved = plan_variant(lr, application, *declaration)?;
-                if let Some(nud) = pratt
-                    .nud
-                    .iter()
-                    .find(|nud| nud.variant.resolved_variant == resolved)
-                {
-                    (
-                        Some(&nud.variant.ident),
-                        nud.variant.style,
-                        Cow::Borrowed(nud.variant.elements.as_slice()),
-                    )
-                } else if let Some(led) = pratt
-                    .led
-                    .iter()
-                    .find(|led| led.variant.resolved_variant == resolved)
-                {
-                    // The lowered rule starts with the implicit left operand, which the plan
-                    // keeps apart from the tail; put it back in front so that pops line up.
-                    let mut elements = Vec::with_capacity(led.variant.elements.len() + 1);
-                    elements.push(led.lhs.clone());
-                    elements.extend(led.variant.elements.iter().cloned());
-                    implicit_lhs = true;
-                    (Some(&led.variant.ident), led.variant.style, Cow::Owned(elements))
-                } else {
-                    return Err(format!(
-                        "`{}` has no Pratt plan for one of its variants",
-                        node.ident
-                    ));
-                }
-            }
-            _ => {
+        (NodeBodyPlan::Struct { style, elements }, None) => {
+            (None, *style, Cow::Borrowed(elements.as_slice()))
+        }
+        (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
+            let resolved = plan_variant(lr, application, *declaration)?;
+            let variant = variants
+                .iter()
+                .find(|variant| variant.resolved_variant == resolved)
+                .ok_or_else(|| {
+                    format!("`{}` has no plan for one of its alternatives", node.ident)
+                })?;
+            (
+                Some(&variant.ident),
+                variant.style,
+                Cow::Borrowed(variant.elements.as_slice()),
+            )
+        }
+        (NodeBodyPlan::Pratt(pratt), Some(declaration)) => {
+            let resolved = plan_variant(lr, application, *declaration)?;
+            if let Some(nud) = pratt
+                .nud
+                .iter()
+                .find(|nud| nud.variant.resolved_variant == resolved)
+            {
+                (
+                    Some(&nud.variant.ident),
+                    nud.variant.style,
+                    Cow::Borrowed(nud.variant.elements.as_slice()),
+                )
+            } else if let Some(led) = pratt
+                .led
+                .iter()
+                .find(|led| led.variant.resolved_variant == resolved)
+            {
+                // The lowered rule starts with the implicit left operand, which the plan
+                // keeps apart from the tail; put it back in front so that pops line up.
+                let mut elements = Vec::with_capacity(led.variant.elements.len() + 1);
+                elements.push(led.lhs.clone());
+                elements.extend(led.variant.elements.iter().cloned());
+                implicit_lhs = true;
+                (
+                    Some(&led.variant.ident),
+                    led.variant.style,
+                    Cow::Owned(elements),
+                )
+            } else {
                 return Err(format!(
-                    "`{}`: the lowered rule and the node plan disagree on the node's shape",
+                    "`{}` has no Pratt plan for one of its variants",
                     node.ident
                 ));
             }
-        };
+        }
+        _ => {
+            return Err(format!(
+                "`{}`: the lowered rule and the node plan disagree on the node's shape",
+                node.ident
+            ));
+        }
+    };
     // The implicit left operand has no site form; give it a required one so that the forms
     // line up with the elements.
     let forms: Cow<'_, [SiteForm]> = if implicit_lhs {

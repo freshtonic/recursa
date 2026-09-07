@@ -1404,9 +1404,11 @@ impl Materializer {
                     if let Some(semantic) = unit_semantic_site.get(&target) {
                         target = grammar.sites[semantic.index()].target;
                     }
-                    let target_application = application_of_type
-                        .get(&target)
-                        .and_then(|id| self.applications.iter().find(|candidate| candidate.id == *id));
+                    let target_application = application_of_type.get(&target).and_then(|id| {
+                        self.applications
+                            .iter()
+                            .find(|candidate| candidate.id == *id)
+                    });
                     let Some(MaterializedNodeBody::Pratt(variants)) =
                         target_application.map(|candidate| &candidate.body)
                     else {
@@ -1420,19 +1422,22 @@ impl Materializer {
                         ));
                         continue;
                     };
-                    let target_application = target_application.expect("a Pratt body has an application");
+                    let target_application =
+                        target_application.expect("a Pratt body has an application");
                     let repeated = Self::repeats(&grammar.sites[site.index()].container);
                     let mut excluded = Vec::new();
                     for name in &filter.excluded {
-                        let Some((resolved, is_nud)) = variants.iter().find_map(|variant| match variant {
-                            MaterializedPrattVariant::Nud(nud) if nud.common.name == *name => {
-                                Some((nud.common.resolved_variant, true))
-                            }
-                            MaterializedPrattVariant::Led(led) if led.common.name == *name => {
-                                Some((led.common.resolved_variant, false))
-                            }
-                            _ => None,
-                        }) else {
+                        let Some((resolved, is_nud)) =
+                            variants.iter().find_map(|variant| match variant {
+                                MaterializedPrattVariant::Nud(nud) if nud.common.name == *name => {
+                                    Some((nud.common.resolved_variant, true))
+                                }
+                                MaterializedPrattVariant::Led(led) if led.common.name == *name => {
+                                    Some((led.common.resolved_variant, false))
+                                }
+                                _ => None,
+                            })
+                        else {
                             diagnostics.push((
                                 source,
                                 range.clone(),
@@ -2455,10 +2460,7 @@ impl Materializer {
             );
             return false;
         }
-        let operand = semantic
-            .last()
-            .copied()
-            .expect("one operand was counted");
+        let operand = semantic.last().copied().expect("one operand was counted");
         if content_token(operand) {
             let (source, range) = self.resolved_variant_site(variant);
             self.push_diagnostic(
@@ -3623,13 +3625,16 @@ impl Materializer {
                                 source_variant.site.source,
                                 source_variant.site.range.clone(),
                             ));
-                            let declaration = grammar.push_declaration(self.with_precedence_override(
-                                crate::source_model::PrecedenceOwner::Variant(variant.resolved_variant),
-                                Declaration::new(
-                                    format!("{}::{}", application.display_name, variant.name),
-                                    location,
-                                ),
-                            ));
+                            let declaration =
+                                grammar.push_declaration(self.with_precedence_override(
+                                    crate::source_model::PrecedenceOwner::Variant(
+                                        variant.resolved_variant,
+                                    ),
+                                    Declaration::new(
+                                        format!("{}::{}", application.display_name, variant.name),
+                                        location,
+                                    ),
+                                ));
                             variants.push(VariantAlternativeCorrelation {
                                 application: application.id,
                                 variant: variant.resolved_variant,
@@ -3678,13 +3683,16 @@ impl Materializer {
                                 source_variant.common.site.source,
                                 source_variant.common.site.range.clone(),
                             ));
-                            let declaration = grammar.push_declaration(self.with_precedence_override(
-                                crate::source_model::PrecedenceOwner::Variant(common.resolved_variant),
-                                Declaration::new(
-                                    format!("{}::{}", application.display_name, common.name),
-                                    location,
-                                ),
-                            ));
+                            let declaration =
+                                grammar.push_declaration(self.with_precedence_override(
+                                    crate::source_model::PrecedenceOwner::Variant(
+                                        common.resolved_variant,
+                                    ),
+                                    Declaration::new(
+                                        format!("{}::{}", application.display_name, common.name),
+                                        location,
+                                    ),
+                                ));
                             variants.push(VariantAlternativeCorrelation {
                                 application: application.id,
                                 variant: common.resolved_variant,
@@ -4013,6 +4021,11 @@ impl Materializer {
             &projected_fields,
         );
         self.project_pratt_exclusions(&mut grammar, &projected_fields, &variant_correlations);
+        self.project_lr_conflict_resolutions(
+            &mut grammar,
+            &reservations.applications,
+            &variant_correlations,
+        );
         (
             grammar,
             LoweringMap {
@@ -4513,6 +4526,71 @@ impl Materializer {
                 .collect::<Vec<_>>();
             grammar.sites[site.index()].pratt_excluded = excluded;
         }
+    }
+
+    /// Projects source-stable LR conflict selectors to the concrete Node applications and
+    /// variant declarations that LR lowering can inspect. A generic source owner may materialize
+    /// more than once, so one authored declaration retains the complete ordered owner sets and
+    /// its single exact expected-cell count.
+    fn project_lr_conflict_resolutions(
+        &self,
+        grammar: &mut GrammarDescription,
+        applications: &[ApplicationTypeCorrelation],
+        variants: &[VariantAlternativeCorrelation],
+    ) {
+        let owners = |owner: crate::source_model::LrRuleOwner| match owner {
+            crate::source_model::LrRuleOwner::Type(node) => applications
+                .iter()
+                .filter(|correlation| correlation.node == node)
+                .map(|correlation| crate::LrRuleOwner::Type(correlation.lowered))
+                .collect(),
+            crate::source_model::LrRuleOwner::Variant(variant) => variants
+                .iter()
+                .filter(|correlation| correlation.variant == variant)
+                .map(|correlation| crate::LrRuleOwner::Variant(correlation.lowered))
+                .collect(),
+        };
+        grammar.lr_conflict_resolutions = self
+            .source_model()
+            .lr_conflict_resolutions
+            .iter()
+            .map(|resolution| crate::LrConflictResolution {
+                owners: owners(resolution.owner),
+                against: owners(resolution.against),
+                action: match resolution.action {
+                    crate::source_model::LrConflictAction::Shift => crate::LrConflictAction::Shift,
+                    crate::source_model::LrConflictAction::Reduce => {
+                        crate::LrConflictAction::Reduce
+                    }
+                    crate::source_model::LrConflictAction::Error => crate::LrConflictAction::Error,
+                },
+                lookaheads: resolution
+                    .lookaheads
+                    .iter()
+                    .map(|reference| match reference {
+                        crate::source_model::LrLookaheadReference::Token(definition) => {
+                            self.kind_for_definition(*definition)
+                        }
+                        crate::source_model::LrLookaheadReference::Merged(filter) => {
+                            let name = &self.source_model().lookahead_filters[*filter].name;
+                            self.lexical_plan()
+                                .token_kinds
+                                .iter()
+                                .find_map(|kind| match &kind.identity {
+                                    crate::lexical::TokenKindIdentity::Merged(merged)
+                                        if &merged.name == name =>
+                                    {
+                                        Some(kind.id)
+                                    }
+                                    _ => None,
+                                })
+                                .expect("every lookahead filter plans one merged kind")
+                        }
+                    })
+                    .collect(),
+                expected: resolution.expected,
+            })
+            .collect();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6532,7 +6610,10 @@ enum Expr<'input> {
         let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
             panic!("Custom is a nud variant")
         };
-        assert_eq!(prefix.position, MaterializedPrattNudPosition::Prefix { bp: 8 });
+        assert_eq!(
+            prefix.position,
+            MaterializedPrattNudPosition::Prefix { bp: 8 }
+        );
         let types: Vec<bool> = prefix
             .body
             .iter()
@@ -6546,8 +6627,17 @@ enum Expr<'input> {
             .collect();
         assert_eq!(types, [true, false]);
         // The operand site, and only it, carries the prefix binding power as its minimum.
-        let minimums: Vec<u8> = lowered.grammar.sites.iter().map(|site| site.min_bp).collect();
-        assert_eq!(minimums.iter().filter(|minimum| **minimum == 8).count(), 1, "{minimums:?}");
+        let minimums: Vec<u8> = lowered
+            .grammar
+            .sites
+            .iter()
+            .map(|site| site.min_bp)
+            .collect();
+        assert_eq!(
+            minimums.iter().filter(|minimum| **minimum == 8).count(),
+            1,
+            "{minimums:?}"
+        );
         assert_eq!(minimums.last(), Some(&8), "{minimums:?}");
     }
 
@@ -6652,7 +6742,12 @@ struct Attached {
             .sites
             .iter()
             .filter(|site| !site.pratt_excluded.is_empty())
-            .map(|site| (grammar.types[site.owner.index()].name.clone(), site.pratt_excluded.clone()))
+            .map(|site| {
+                (
+                    grammar.types[site.owner.index()].name.clone(),
+                    site.pratt_excluded.clone(),
+                )
+            })
             .collect();
         let mut named = vec![
             declaration("namespaces::Expr::Default"),
@@ -6664,7 +6759,10 @@ struct Attached {
             restricted,
             [
                 ("namespaces::Named".to_owned(), named),
-                ("namespaces::Attached".to_owned(), vec![declaration("namespaces::Expr::And")]),
+                (
+                    "namespaces::Attached".to_owned(),
+                    vec![declaration("namespaces::Expr::And")]
+                ),
             ]
         );
         // The attached operand's exclusion sits on the outer site, whose target is the unit.
@@ -6673,7 +6771,10 @@ struct Attached {
             .iter()
             .find(|site| grammar.types[site.owner.index()].name == "namespaces::Attached")
             .unwrap();
-        assert!(matches!(grammar.types[attached.target.index()].shape, TypeShape::Sequence { .. }));
+        assert!(matches!(
+            grammar.types[attached.target.index()].shape,
+            TypeShape::Sequence { .. }
+        ));
     }
 
     #[test]

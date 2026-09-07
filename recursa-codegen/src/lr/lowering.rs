@@ -36,9 +36,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use super::grammar::{
-    FoldKind, FoldPolicy, FoldSite, RuleFold, SiteKind, TailDecision,
-    ElementValue, LrGrammar, NonterminalId, NonterminalOrigin, OptionalContent, Rule, RuleAction,
-    RulePrecedence, SiteForm, Symbol, TerminalId, UnrepresentableBindingPowers,
+    ElementValue, FoldKind, FoldPolicy, FoldSite, LrGrammar, NonterminalId, NonterminalOrigin,
+    OptionalContent, Rule, RuleAction, RuleFold, RulePrecedence, SiteForm, SiteKind, Symbol,
+    TailDecision, TerminalId, UnrepresentableBindingPowers,
 };
 use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
 use crate::{
@@ -188,7 +188,9 @@ fn pratt_exclusions(
         .map(|(index, site)| {
             let type_id = attachment_units
                 .get(&site.target)
-                .map_or(site.target, |semantic| grammar.sites[semantic.index()].target);
+                .map_or(site.target, |semantic| {
+                    grammar.sites[semantic.index()].target
+                });
             (
                 SiteId::new(index as u32),
                 PrattRestriction {
@@ -383,6 +385,8 @@ enum SiteLowering {
         content: OptionalContent,
         /// Whether the choice is inlined.
         inline: bool,
+        /// Whether this optional must remain inlined to preserve a proven separated-list tail.
+        required_inline: bool,
     },
     /// `Vec1<T>`: the core list, with a trailing-separator choice when accepted.
     OneOrMore {
@@ -443,7 +447,14 @@ impl SiteLowering {
     /// Demotes the site's valued choice to a helper; reports whether there was one to demote.
     fn demote_valued(&mut self) -> bool {
         match self {
-            Self::ValuedOptional { inline, .. } | Self::ZeroOrMore { inline, .. } if *inline => {
+            Self::ValuedOptional {
+                inline,
+                required_inline: false,
+                ..
+            }
+            | Self::ZeroOrMore { inline, .. }
+                if *inline =>
+            {
                 *inline = false;
                 true
             }
@@ -561,6 +572,8 @@ struct Lowering<'a> {
     /// What every fixed-token attachment around a Pratt operand belongs to, keyed by the
     /// attachment sequence type.
     operand_attachments: HashMap<TypeId, OperandAttachment>,
+    /// Optional tail sites that must inline after a preceding separated list.
+    separated_tail_sites: BTreeSet<SiteId>,
 }
 
 #[derive(Clone, Copy)]
@@ -690,6 +703,11 @@ impl<'a> Lowering<'a> {
     fn new(grammar: &'a GrammarDescription, roles: &'a TypeRoles) -> Self {
         let atom_kinds = crate::analysis::expand_atoms(grammar);
         let (first, _) = first_sets(grammar, &atom_kinds);
+        let separated_tail_sites = crate::analysis::FirstSequenceAnalysis::for_grammar(grammar)
+            .separated_list_continuations()
+            .into_iter()
+            .map(|continuation| continuation.tail)
+            .collect();
         let kind_count = grammar.kind_count;
         let mut content_kinds = KindSet::empty(kind_count);
         let mut fixed_kinds = KindSet::empty(kind_count);
@@ -767,6 +785,7 @@ impl<'a> Lowering<'a> {
             attachment_clones: BTreeMap::new(),
             pending_clones: VecDeque::new(),
             operand_attachments: HashMap::new(),
+            separated_tail_sites,
         }
     }
 
@@ -964,8 +983,9 @@ impl<'a> Lowering<'a> {
     /// nonterminal (the base type, or the clone without a minimum), which lists every operator.
     fn lower_clones(&mut self) {
         while let Some((restriction, lhs)) = self.pending_clones.pop_front() {
-            let TypeShape::Pratt { variants } =
-                self.grammar.types[restriction.type_id.index()].shape.clone()
+            let TypeShape::Pratt { variants } = self.grammar.types[restriction.type_id.index()]
+                .shape
+                .clone()
             else {
                 unreachable!("only Pratt types are cloned");
             };
@@ -986,7 +1006,13 @@ impl<'a> Lowering<'a> {
                 let precedence = RulePrecedence::from_position(variant.position, owner)
                     .ok()
                     .flatten();
-                self.add_pratt_rule(lhs, restriction.type_id, &variant, precedence, Some(&restriction));
+                self.add_pratt_rule(
+                    lhs,
+                    restriction.type_id,
+                    &variant,
+                    precedence,
+                    Some(&restriction),
+                );
             }
         }
     }
@@ -1191,7 +1217,9 @@ impl<'a> Lowering<'a> {
         // The semantic site of an attachment unit passes its operand's occurrence through: the
         // unit's node is the operand's own occurrence with the fixed tokens as siblings.
         let pass_through = match kind {
-            ConstructKind::Attachment { type_id } => self.roles.attachment_units.get(&type_id).copied(),
+            ConstructKind::Attachment { type_id } => {
+                self.roles.attachment_units.get(&type_id).copied()
+            }
             _ => None,
         };
         // A presence envelope's node is the outer group the presence renderer builds around the
@@ -1222,7 +1250,9 @@ impl<'a> Lowering<'a> {
                 let alternative = &site[*choice];
                 let site_kind = if pass_through == Some(*site_id) {
                     SiteKind::Through
-                } else if envelope_presence == Some(position) && alternative.kind == SiteKind::Presence {
+                } else if envelope_presence == Some(position)
+                    && alternative.kind == SiteKind::Presence
+                {
                     if alternative.symbols.is_empty() {
                         SiteKind::Absent
                     } else {
@@ -1425,8 +1455,10 @@ impl<'a> Lowering<'a> {
                 // The attachment around an optional Pratt operand is always inlined: the
                 // variant's own reduce competes with the shift of the attachment's token, and
                 // an epsilon reduce of a helper has no precedence to settle that with.
-                let inline =
-                    self.inline_choice(target) || self.operand_attachments.contains_key(&target);
+                let required_inline = self.separated_tail_sites.contains(&site_id);
+                let inline = self.inline_choice(target)
+                    || self.operand_attachments.contains_key(&target)
+                    || required_inline;
                 match inner_shape {
                     ContainerShape::Direct | ContainerShape::Boxed(_) => {
                         SiteLowering::ValuedOptional {
@@ -1436,6 +1468,7 @@ impl<'a> Lowering<'a> {
                                 boxes: inner_boxes,
                             }),
                             inline,
+                            required_inline,
                         }
                     }
                     ContainerShape::Repeat {
@@ -1464,6 +1497,7 @@ impl<'a> Lowering<'a> {
                                 boxes: inner_boxes,
                             },
                             inline,
+                            required_inline,
                         }
                     }
                     ContainerShape::Optional(_)
@@ -1530,15 +1564,14 @@ impl<'a> Lowering<'a> {
     /// Expands a site lowering to the alternatives it contributes, creating helpers for the
     /// choices that are not inlined.
     fn alternatives(&mut self, lowering: &SiteLowering) -> Vec<Alternative> {
-        let present = |symbols: Vec<Symbol>, inlined: bool, kind: SiteKind, policy: FoldPolicy| {
-            Alternative {
+        let present =
+            |symbols: Vec<Symbol>, inlined: bool, kind: SiteKind, policy: FoldPolicy| Alternative {
                 symbols,
                 present: true,
                 inlined,
                 kind,
                 policy,
-            }
-        };
+            };
         let absent = |kind: SiteKind| Alternative {
             symbols: Vec::new(),
             present: false,
@@ -1583,13 +1616,19 @@ impl<'a> Lowering<'a> {
                     } else {
                         SiteKind::Through
                     };
-                    vec![present(vec![Symbol::Nonterminal(helper)], false, kind, inherited)]
+                    vec![present(
+                        vec![Symbol::Nonterminal(helper)],
+                        false,
+                        kind,
+                        inherited,
+                    )]
                 }
             }
             SiteLowering::ValuedOptional {
                 inner,
                 content,
                 inline,
+                ..
             } => {
                 let (inner_alternatives, kind, absent_kind) = match inner {
                     OptionalInner::Element(symbol) => {
@@ -1683,7 +1722,10 @@ impl<'a> Lowering<'a> {
                     | NonterminalOrigin::Restriction { type_id, .. } => type_id,
                     _ => return false,
                 };
-                matches!(self.grammar.types[type_id.index()].shape, TypeShape::Pratt { .. })
+                matches!(
+                    self.grammar.types[type_id.index()].shape,
+                    TypeShape::Pratt { .. }
+                )
             })
             .collect();
         let grammar = self.grammar;
@@ -1703,16 +1745,13 @@ impl<'a> Lowering<'a> {
             if !matches!(grammar.types[type_id.index()].shape, TypeShape::Enum { .. }) {
                 continue;
             }
-            let (min, max) = rule
-                .rhs
-                .iter()
-                .fold((0_u8, 0_u8), |(min, max), symbol| {
-                    let (symbol_min, symbol_max) = match symbol {
-                        Symbol::Terminal(_) => (1, 1),
-                        Symbol::Nonterminal(id) => bounds[id.index()],
-                    };
-                    ((min + symbol_min).min(2), (max + symbol_max).min(2))
-                });
+            let (min, max) = rule.rhs.iter().fold((0_u8, 0_u8), |(min, max), symbol| {
+                let (symbol_min, symbol_max) = match symbol {
+                    Symbol::Terminal(_) => (1, 1),
+                    Symbol::Nonterminal(id) => bounds[id.index()],
+                };
+                ((min + symbol_min).min(2), (max + symbol_max).min(2))
+            });
             if min == 1 && max == 1 {
                 rule.tail = TailDecision::Reject;
             }
@@ -1953,16 +1992,13 @@ fn token_bounds(grammar: &LrGrammar) -> Vec<(u8, u8)> {
     loop {
         let mut changed = false;
         for rule in grammar.rules() {
-            let (min, max) = rule
-                .rhs
-                .iter()
-                .fold((0_u8, 0_u8), |(min, max), symbol| {
-                    let (symbol_min, symbol_max) = match symbol {
-                        Symbol::Terminal(_) => (1, 1),
-                        Symbol::Nonterminal(id) => bounds[id.index()],
-                    };
-                    ((min + symbol_min).min(2), (max + symbol_max).min(2))
-                });
+            let (min, max) = rule.rhs.iter().fold((0_u8, 0_u8), |(min, max), symbol| {
+                let (symbol_min, symbol_max) = match symbol {
+                    Symbol::Terminal(_) => (1, 1),
+                    Symbol::Nonterminal(id) => bounds[id.index()],
+                };
+                ((min + symbol_min).min(2), (max + symbol_max).min(2))
+            });
             let entry = &mut bounds[rule.lhs.index()];
             let next = (entry.0.min(min), entry.1.max(max));
             if next != *entry {

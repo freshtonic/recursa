@@ -170,7 +170,11 @@ impl LexicalPlan {
         }
         for filter in &self.lookahead_filters {
             let label = |kind: KindId| kind_label(&self.token_kinds[kind.index()].identity);
-            let mut triggers = filter.triggers.iter().map(|kind| label(*kind)).collect::<Vec<_>>();
+            let mut triggers = filter
+                .triggers
+                .iter()
+                .map(|kind| label(*kind))
+                .collect::<Vec<_>>();
             triggers.sort();
             writeln!(
                 rendered,
@@ -2493,7 +2497,10 @@ struct Root;
             "the merged kind follows every lexed kind"
         );
         let merged = plan.token_kinds[4].id;
-        assert!(plan.rules.iter().all(|rule| rule.kind != merged), "no lexical rule produces it");
+        assert!(
+            plan.rules.iter().all(|rule| rule.kind != merged),
+            "no lexical rule produces it"
+        );
         assert!(plan.keywords.iter().all(|keyword| keyword.kind != merged));
         assert_eq!(
             plan.lookahead_filters,
