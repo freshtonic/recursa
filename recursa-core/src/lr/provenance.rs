@@ -20,6 +20,9 @@
 
 use std::ops::Range;
 
+use bumpalo::Bump;
+use bumpalo::collections::Vec as BumpVec;
+
 use crate::parsed::{
     CapturePolicy, Occurrence, Occurrences, ParseContext, RepetitionSeparatorOccurrence,
 };
@@ -51,7 +54,7 @@ impl FoldPolicy {
     }
 
     /// Resolves the policy against the parse context.
-    fn resolve<A>(self, context: &ParseContext<'_, '_, A>) -> CapturePolicy {
+    fn resolve<A>(self, context: &ParseContext<'_, '_, '_, A>) -> CapturePolicy {
         match self {
             Self::Inherited => context.capture_policy(),
             Self::Off => CapturePolicy::Off,
@@ -213,41 +216,44 @@ impl FoldTable {
 }
 
 /// What one entry's symbol contributed.
-enum Payload {
+enum Payload<'arena> {
     /// A shifted token, whose span was validated on shift. The site that consumes it applies
     /// its policy, the way `parse_fixed` and a content token's `finish` take theirs.
     Token(Span),
     /// A folded nonterminal: the occurrence its rule built, final.
-    Folded(Occurrence),
+    Folded(Occurrence<'arena>),
     /// A list helper: the items and separators gathered so far, not yet a group.
     List {
         /// Item occurrences accumulated in source order.
-        items: Occurrences,
+        items: Occurrences<'arena>,
         /// The separators shifted between and after the items.
-        separators: Vec<RepetitionSeparatorOccurrence>,
+        separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
     },
 }
 
 /// One entry, parallel to a state-stack frame entered by a shift or a goto.
-struct Entry {
+struct Entry<'arena> {
     /// The absolute index of the first token the entry's symbol covers.
     first: u32,
     /// The absolute index after the last token it covers; equal to `first` for an empty symbol.
     end: u32,
     /// What the symbol contributed.
-    payload: Payload,
+    payload: Payload<'arena>,
 }
 
 /// The occurrence stack; see the module documentation.
-pub(super) struct OccurrenceStack {
+pub(super) struct OccurrenceStack<'arena> {
+    /// Arena backing list accumulators and every folded occurrence node.
+    arena: &'arena Bump,
     /// One entry per state-stack frame above the start frame.
-    entries: Vec<Entry>,
+    entries: Vec<Entry<'arena>>,
 }
 
-impl OccurrenceStack {
+impl<'arena> OccurrenceStack<'arena> {
     /// Creates the stack of one capturing parse.
-    pub(super) fn new() -> Self {
+    pub(super) fn new(arena: &'arena Bump) -> Self {
         Self {
+            arena,
             entries: Vec::new(),
         }
     }
@@ -255,7 +261,7 @@ impl OccurrenceStack {
     /// Records a shifted token, validating its span against the source as `parse_fixed` does.
     pub(super) fn shift<A>(
         &mut self,
-        context: &ParseContext<'_, '_, A>,
+        context: &ParseContext<'_, '_, 'arena, A>,
         token: u32,
         span: Span,
     ) -> Result<(), ParseError> {
@@ -273,7 +279,7 @@ impl OccurrenceStack {
     /// Folds the top `pops` entries by the rule's fold and pushes the result.
     pub(super) fn reduce<A>(
         &mut self,
-        context: &ParseContext<'_, '_, A>,
+        context: &ParseContext<'_, '_, 'arena, A>,
         folds: &FoldTable,
         rule: u32,
         pops: usize,
@@ -295,13 +301,18 @@ impl OccurrenceStack {
             FoldKind::Absent => Payload::Folded(Occurrence::absent()),
             FoldKind::Node => {
                 let sites = &folds.sites[fold.sites.clone()];
-                let mut children = Vec::with_capacity(sites.len());
+                let mut children = BumpVec::with_capacity_in(sites.len(), self.arena);
                 for site in sites {
                     children.push(fold_site(context, popped, end, site)?);
                 }
                 let span = consumed_span(context, first, end);
                 let policy = fold.policy.resolve(context);
-                Payload::Folded(context.collect_occurrence(policy, span, children, [])?)
+                Payload::Folded(context.collect_occurrence(
+                    policy,
+                    span,
+                    children,
+                    BumpVec::new_in(self.arena),
+                )?)
             }
             FoldKind::Group | FoldKind::Repetition => {
                 let site = SiteFold {
@@ -320,11 +331,11 @@ impl OccurrenceStack {
                 let [item] = popped else {
                     unreachable!("a list starts with exactly one item");
                 };
-                let mut items = Occurrences::new();
+                let mut items = Occurrences::new_in(self.arena);
                 items.push(item_occurrence(context, fold.policy, take(item))?);
                 Payload::List {
                     items,
-                    separators: Vec::new(),
+                    separators: BumpVec::new_in(self.arena),
                 }
             }
             FoldKind::ListExtend => {
@@ -349,8 +360,8 @@ impl OccurrenceStack {
             }
             FoldKind::ListThrough => match popped.split_first_mut() {
                 None => Payload::List {
-                    items: Occurrences::new(),
-                    separators: Vec::new(),
+                    items: Occurrences::new_in(self.arena),
+                    separators: BumpVec::new_in(self.arena),
                 },
                 Some((list, rest)) => {
                     let Payload::List {
@@ -380,43 +391,49 @@ impl OccurrenceStack {
     /// folded entry, or a content-token root's leaf under the root's policy.
     pub(super) fn into_root<A>(
         mut self,
-        context: &ParseContext<'_, '_, A>,
-    ) -> Result<Occurrence, ParseError> {
+        context: &ParseContext<'_, '_, 'arena, A>,
+    ) -> Result<Occurrence<'arena>, ParseError> {
         let entry = self.entries.pop().expect("the accepted root has an entry");
         debug_assert!(self.entries.is_empty(), "acceptance pops every other entry");
         match entry.payload {
             Payload::Folded(occurrence) => Ok(occurrence),
-            Payload::Token(span) => {
-                context.collect_occurrence(context.capture_policy(), Some(span), [], [])
-            }
+            Payload::Token(span) => context.collect_occurrence(
+                context.capture_policy(),
+                Some(span),
+                BumpVec::new_in(self.arena),
+                BumpVec::new_in(self.arena),
+            ),
             Payload::List { .. } => unreachable!("a list helper is never a grammar type"),
         }
     }
 }
 
 /// Takes an entry's payload, leaving an absent one behind; every payload is consumed once.
-fn take(entry: &mut Entry) -> Payload {
+fn take<'arena>(entry: &mut Entry<'arena>) -> Payload<'arena> {
     std::mem::replace(&mut entry.payload, Payload::Folded(Occurrence::absent()))
 }
 
 /// The occurrence of a list item or a direct child: a folded nonterminal's occurrence, or a
 /// content token's leaf finished under the consuming site's policy.
-fn item_occurrence<A>(
-    context: &ParseContext<'_, '_, A>,
+fn item_occurrence<'arena, A>(
+    context: &ParseContext<'_, '_, 'arena, A>,
     policy: FoldPolicy,
-    payload: Payload,
-) -> Result<Occurrence, ParseError> {
+    payload: Payload<'arena>,
+) -> Result<Occurrence<'arena>, ParseError> {
     match payload {
         Payload::Folded(occurrence) => Ok(occurrence),
-        Payload::Token(span) => {
-            context.collect_occurrence(policy.resolve(context), Some(span), [], [])
-        }
+        Payload::Token(span) => context.collect_occurrence(
+            policy.resolve(context),
+            Some(span),
+            BumpVec::new_in(context.provenance_arena()),
+            BumpVec::new_in(context.provenance_arena()),
+        ),
         Payload::List { .. } => unreachable!("a list helper never stands for an item"),
     }
 }
 
 /// The separator provenance of a shifted separator token.
-fn separator_occurrence(payload: Payload) -> RepetitionSeparatorOccurrence {
+fn separator_occurrence(payload: Payload<'_>) -> RepetitionSeparatorOccurrence {
     let Payload::Token(span) = payload else {
         unreachable!("a repetition separator is a fixed token")
     };
@@ -427,7 +444,7 @@ fn separator_occurrence(payload: Payload) -> RepetitionSeparatorOccurrence {
 /// reports it for a parse that began at `first` and stands at `end`: `None` past the end of
 /// input, and for an empty range the extent from the next token's start to the previous
 /// token's end, which is a zero-width span when the two are adjacent.
-fn consumed_span<A>(context: &ParseContext<'_, '_, A>, first: u32, end: u32) -> Option<Span> {
+fn consumed_span<A>(context: &ParseContext<'_, '_, '_, A>, first: u32, end: u32) -> Option<Span> {
     let first = context.record(first as usize)?;
     let last = context.record((end as usize).checked_sub(1)?)?;
     Span::new(first.span.start() as usize, last.span.end() as usize).ok()
@@ -435,16 +452,16 @@ fn consumed_span<A>(context: &ParseContext<'_, '_, A>, first: u32, end: u32) -> 
 
 /// Builds one site's occurrence from the entries it occupies; `rule_end` locates an empty site
 /// after the rule's last entry.
-fn fold_site<A>(
-    context: &ParseContext<'_, '_, A>,
-    popped: &mut [Entry],
+fn fold_site<'arena, A>(
+    context: &ParseContext<'_, '_, 'arena, A>,
+    popped: &mut [Entry<'arena>],
     rule_end: u32,
     site: &SiteFold,
-) -> Result<Occurrence, ParseError> {
+) -> Result<Occurrence<'arena>, ParseError> {
     let start = site.start as usize;
     let range = start..start + site.len as usize;
     let policy = site.policy.resolve(context);
-    let extent = |popped: &[Entry]| -> (u32, u32) {
+    let extent = |popped: &[Entry<'_>]| -> (u32, u32) {
         if range.is_empty() {
             let position = popped.get(start).map_or(rule_end, |entry| entry.first);
             (position, position)
@@ -460,12 +477,17 @@ fn fold_site<A>(
         }
         SiteKind::Group => {
             let (first, end) = extent(popped);
-            let mut children = Vec::with_capacity(range.len());
+            let mut children = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
             for entry in &mut popped[range] {
                 children.push(item_occurrence(context, site.policy, take(entry))?);
             }
             let span = consumed_span(context, first, end);
-            context.collect_occurrence(policy, span, children, [])
+            context.collect_occurrence(
+                policy,
+                span,
+                children,
+                BumpVec::new_in(context.provenance_arena()),
+            )
         }
         SiteKind::Presence => {
             let (first, end) = extent(popped);
@@ -473,18 +495,30 @@ fn fold_site<A>(
             let inner = if range.is_empty() {
                 Occurrence::absent()
             } else {
-                let mut leaves = Vec::with_capacity(range.len());
+                let mut leaves = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
                 for entry in &mut popped[range] {
                     leaves.push(item_occurrence(context, site.policy, take(entry))?);
                 }
-                context.collect_occurrence(policy, span, leaves, [])?
+                context.collect_occurrence(
+                    policy,
+                    span,
+                    leaves,
+                    BumpVec::new_in(context.provenance_arena()),
+                )?
             };
-            context.collect_occurrence(policy, span, [inner], [])
+            let mut children = BumpVec::with_capacity_in(1, context.provenance_arena());
+            children.push(inner);
+            context.collect_occurrence(
+                policy,
+                span,
+                children,
+                BumpVec::new_in(context.provenance_arena()),
+            )
         }
         SiteKind::Repetition => {
             let (first, end) = extent(popped);
-            let mut items = Occurrences::new();
-            let mut separators = Vec::new();
+            let mut items = Occurrences::new_in(context.provenance_arena());
+            let mut separators = BumpVec::new_in(context.provenance_arena());
             for entry in &mut popped[range] {
                 match take(entry) {
                     Payload::List {
@@ -503,7 +537,7 @@ fn fold_site<A>(
                 }
             }
             let span = consumed_span(context, first, end);
-            context.collect_occurrence(policy, span, items, separators)
+            context.collect_occurrence(policy, span, items.into_retained(), separators)
         }
     }
 }

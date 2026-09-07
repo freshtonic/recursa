@@ -53,7 +53,7 @@ pub struct ErrorSite {
 /// Replays the state stack to the point the failing token was first read, then explores every
 /// terminal from it; see the module documentation.
 pub fn expected_set<A>(
-    context: &ParseContext<'_, '_, A>,
+    context: &ParseContext<'_, '_, '_, A>,
     tables: &LrTables,
     site: ErrorSite,
 ) -> FollowSet {
@@ -91,7 +91,7 @@ pub fn expected_set<A>(
 /// an error or the accept rule before the failing cursor; both arms return the stack anyway
 /// rather than panic, since the caller is already reporting an error.
 fn replay<A>(
-    context: &ParseContext<'_, '_, A>,
+    context: &ParseContext<'_, '_, '_, A>,
     decoded: &DecodedTables,
     site: ErrorSite,
 ) -> Vec<u32> {

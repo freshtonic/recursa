@@ -665,7 +665,7 @@ pub(super) fn render_root_items(
                 quote! {
                     #[inline(never)]
                     fn #ident<#input_lifetime, A>(
-                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
                     ) -> Result<(), #facade::ParseError> {
                         #body
                         Ok(())
@@ -695,7 +695,7 @@ pub(super) fn render_root_items(
             #[inline(always)]
             pub(crate) fn __recursa_reduce<#input_lifetime, A>(
                 rule: u32,
-                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
             ) -> Result<(), #facade::ParseError> {
                 match rule {
                     #(#arms)*
@@ -771,9 +771,9 @@ fn render_parse_impl(
             fn root_follow() -> &'static #facade::__private::FollowSet {
                 #facade::__private::empty_follow()
             }
-            fn parse(
-                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
-            ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
+            fn parse<'arena>(
+                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, 'arena, A>,
+            ) -> Result<#facade::__private::ParsedNode<'arena, Self>, #facade::ParseError> {
                 #facade::__private::lr_run::<Self, A, _>(
                     context,
                     &#tables_module::TABLES,
@@ -834,7 +834,7 @@ pub(super) fn render_node_application(
                 #[doc = #safety]
                 #[inline(always)]
                 pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
-                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
                 ) -> Result<(), #facade::ParseError> {
                     <#ty>::#method_ident(reduction)
                 }
@@ -843,7 +843,7 @@ pub(super) fn render_node_application(
                 #[doc = #safety]
                 #[inline(never)]
                 fn #method_ident #helper_method_generics(
-                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
                 ) -> Result<(), #facade::ParseError> {
                     #body
                     Ok(())
@@ -1176,7 +1176,7 @@ pub(super) fn render_token_items(
 
         impl<#input_lifetime> #ident<#input_lifetime> {
             pub(crate) fn __recursa_reduce_lr<A>(
-                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
             ) -> Result<(), #facade::ParseError> {
                 let record = reduction.token();
                 let text = reduction.matched_text(record)?;

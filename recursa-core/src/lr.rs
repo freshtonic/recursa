@@ -57,18 +57,18 @@ struct Frame {
 /// reduce action's concern: the loop folds the occurrence stack from the rule's static fold
 /// after the action ran (see [`provenance`]), so the action only learns through
 /// [`Reduction::capturing`] whether a stack exists at all.
-pub struct Reduction<'reduction, 'context, 'input, A> {
+pub struct Reduction<'reduction, 'context, 'input, 'arena, A> {
     /// The value stack; values are popped in reverse right-hand-side order.
     values: &'reduction mut ValueStack,
     /// The popped frames in right-hand-side order.
     frames: &'reduction [Frame],
     /// The parse context, for token text and the builder.
-    context: &'reduction mut ParseContext<'context, 'input, A>,
+    context: &'reduction mut ParseContext<'context, 'input, 'arena, A>,
     /// Whether this parse keeps an occurrence stack.
     capturing: bool,
 }
 
-impl<'input, A> Reduction<'_, '_, 'input, A> {
+impl<'input, A> Reduction<'_, '_, 'input, '_, A> {
     /// Reports whether the parse folds provenance: capture was requested, the root's policy is
     /// mandatory, or the grammar has a mandatory site. When false no occurrence work runs.
     pub fn capturing(&self) -> bool {
@@ -128,20 +128,20 @@ impl<'input, A> Reduction<'_, '_, 'input, A> {
 /// The occurrence stack exists only when the context captures (the request or the root's
 /// policy asks for spans) or the grammar has a mandatory site; otherwise no occurrence work runs
 /// and the root is returned without provenance.
-pub fn run<'input, T, A, F>(
-    context: &mut ParseContext<'_, 'input, A>,
+pub fn run<'input, 'arena, T, A, F>(
+    context: &mut ParseContext<'_, 'input, 'arena, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
     mut reduce: F,
-) -> Result<ParsedNode<T>, ParseError>
+) -> Result<ParsedNode<'arena, T>, ParseError>
 where
-    F: FnMut(u32, &mut Reduction<'_, '_, 'input, A>) -> Result<(), ParseError>,
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>) -> Result<(), ParseError>,
 {
     let checkpoint = context.cursor();
     let mut values = ValueStack::new();
-    let mut occurrences =
-        (context.captures() || tables.mandatory_provenance()).then(OccurrenceStack::new);
+    let mut occurrences = (context.captures() || tables.mandatory_provenance())
+        .then(|| OccurrenceStack::new(context.provenance_arena()));
     match drive::<T, A, _>(
         context,
         tables,
@@ -167,7 +167,7 @@ where
 /// state stack as it was before that token triggered any reduction; `accepts` says whether
 /// acceptance counts as a continuation (see [`lac::ErrorSite::accepts`]).
 fn unexpected_here<A>(
-    context: &ParseContext<'_, '_, A>,
+    context: &ParseContext<'_, '_, '_, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
@@ -192,17 +192,17 @@ fn unexpected_here<A>(
 /// symbols, so one flag set by the rules' `tail` table (a one-token enum alternative or repetition
 /// tail sets it, while a Pratt rule clears it) decides whether an outside token is an error or the
 /// parsed prefix may be accepted.
-fn drive<'input, T, A, F>(
-    context: &mut ParseContext<'_, 'input, A>,
+fn drive<'input, 'arena, T, A, F>(
+    context: &mut ParseContext<'_, 'input, 'arena, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
     reduce: &mut F,
     values: &mut ValueStack,
-    occurrences: &mut Option<OccurrenceStack>,
-) -> Result<(T, Occurrence), ParseError>
+    occurrences: &mut Option<OccurrenceStack<'arena>>,
+) -> Result<(T, Occurrence<'arena>), ParseError>
 where
-    F: FnMut(u32, &mut Reduction<'_, '_, 'input, A>) -> Result<(), ParseError>,
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>) -> Result<(), ParseError>,
 {
     let decoded = tables.decoded();
     let end_marker = tables.end_marker();
@@ -367,7 +367,7 @@ mod tests {
     /// Evaluates the textbook grammar: `+` adds, `*` multiplies, `id` is a decimal number.
     fn evaluate(
         rule: u32,
-        reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+        reduction: &mut Reduction<'_, '_, '_, '_, Rc<Cell<usize>>>,
     ) -> Result<(), ParseError> {
         // SAFETY: every pop names the type the child rule pushed, `Value`.
         unsafe {
@@ -495,7 +495,7 @@ mod tests {
     /// the shifted record; sums record the kinds seen so far.
     fn record_kinds(
         rule: u32,
-        reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+        reduction: &mut Reduction<'_, '_, '_, '_, Rc<Cell<usize>>>,
     ) -> Result<(), ParseError> {
         // SAFETY: every pop names the type the child rule pushed, `Value`.
         unsafe {
@@ -638,7 +638,7 @@ mod tests {
         // no occurrence.
         fn assert_off(
             rule: u32,
-            reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+            reduction: &mut Reduction<'_, '_, '_, '_, Rc<Cell<usize>>>,
         ) -> Result<(), ParseError> {
             assert!(!reduction.capturing(), "capture is off");
             evaluate(rule, reduction)
@@ -646,11 +646,12 @@ mod tests {
         let live = Rc::new(Cell::new(0));
         let lexed = lex("(2+3)*4");
         let mut input = lexed.input_with_builder(&GRAMMAR, live);
-        let occurrence = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_off).map(|node| node.into_parts().1)
+        let captured = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_off)
+                .map(|node| node.into_parts().1.is_captured())
         })
         .unwrap();
-        assert!(!occurrence.is_captured());
+        assert!(!captured);
     }
 
     #[test]
@@ -661,7 +662,7 @@ mod tests {
         // `F -> id` passing its token through to the group that consumes it.
         fn assert_on(
             rule: u32,
-            reduction: &mut Reduction<'_, '_, '_, Rc<Cell<usize>>>,
+            reduction: &mut Reduction<'_, '_, '_, '_, Rc<Cell<usize>>>,
         ) -> Result<(), ParseError> {
             assert!(reduction.capturing(), "capture is on");
             evaluate(rule, reduction)
@@ -670,11 +671,12 @@ mod tests {
         let lexed = lex("2+3*4");
         let mut input = lexed.input_with_builder(&GRAMMAR, live);
         let occurrence = crate::parsed::test_context_spanned(&mut input, |context| {
-            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_on).map(|node| node.into_parts().1)
+            run::<Value, _, _>(context, &TEXTBOOK, 0, 0, assert_on)
+                .map(|node| node.into_parts().1.render())
         })
         .unwrap();
         assert_eq!(
-            occurrence.render(),
+            occurrence,
             "(0..5: (0..1: (0..1: (0..1: (0..1: (0..1: (0..1)))))) (1..2) (2..5: (2..5: (2..3: (2..3: (2..3: (2..3)))) (3..4) (4..5: (4..5)))))"
         );
         // A failed capturing parse drops the stack with everything else.

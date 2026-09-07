@@ -4,6 +4,7 @@
 pub mod explorer;
 #[cfg(feature = "explorer")]
 pub mod framing;
+/// Static grammar identity, token kinds, and compact follow-set representation.
 mod grammar;
 /// Grammar-bound lexical output and parser cursor state.
 mod input;
