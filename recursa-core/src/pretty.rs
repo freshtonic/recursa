@@ -480,8 +480,11 @@ pub struct PrettyScope<'a> {
     restore: PrettyScopeRestore,
 }
 
+/// Enclosing Pretty state saved across one generated scope.
 enum PrettyScopeRestore {
+    /// Occurrence provenance replaced while rendering one generated child.
     Provenance(Option<PrettyProvenance>),
+    /// Repetition layout replaced while rendering one generated sequence.
     Repetition(Option<RepetitionLayout>),
 }
 

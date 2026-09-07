@@ -3,6 +3,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
+use bumpalo::Bump;
+use bumpalo::collections::Vec as BumpVec;
+
 use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord, TriviaRecord};
 use crate::{FollowSet, GrammarInfo, HasSpan, ParseError, Span};
 
@@ -107,7 +110,9 @@ enum Origin<'input> {
         /// Exact absolute input window retained by this parse.
         bounds: Span,
         /// Root of the immutable occurrence sidecar.
-        provenance: Box<Provenance>,
+        provenance: ProvenanceCell,
+        /// Opted-in immutable lexical records used for document gap views.
+        document: Option<RetainedDocument>,
     },
 }
 
@@ -120,39 +125,42 @@ impl Origin<'_> {
                 source,
                 bounds,
                 provenance,
+                document,
             } => ViewCursor {
-                occurrence: provenance.root.as_ref(),
+                occurrence: provenance.borrow_dependent().root.as_ref(),
                 source: Some(*source),
                 bounds: Some(*bounds),
-                records: provenance
-                    .document
-                    .as_ref()
-                    .map(|document| document.records.as_ref()),
-                trivia: provenance
-                    .document
-                    .as_ref()
-                    .map(|document| document.trivia.as_ref()),
+                records: document.as_ref().map(|document| document.records.as_ref()),
+                trivia: document.as_ref().map(|document| document.trivia.as_ref()),
             },
         }
     }
 }
 
-/// Owned occurrence provenance for one parsed root.
-struct Provenance {
+/// Arena-borrowing occurrence provenance for one parsed root.
+struct Provenance<'arena> {
     /// Root occurrence whose descendants follow generated child ordinals.
-    root: Option<OccurrenceNode>,
-    /// Opted-in immutable lexical records used for document gap views.
-    document: Option<RetainedDocument>,
+    root: Option<OccurrenceNode<'arena>>,
+}
+
+self_cell::self_cell! {
+    /// Move-owned arena and the provenance tree allocated inside it.
+    struct ProvenanceCell {
+        owner: Bump,
+
+        #[covariant]
+        dependent: Provenance,
+    }
 }
 
 /// One private occurrence-sidecar node.
-struct OccurrenceNode {
+struct OccurrenceNode<'arena> {
     /// Captured extent when requested or required.
     span: Option<Span>,
     /// Semantic and fixed-element children in generated ordinal order.
-    children: Box<[OccurrenceNode]>,
+    children: BumpVec<'arena, Occurrence<'arena>>,
     /// Fixed separators retained independently from semantic children.
-    repetition_separators: Box<[RepetitionSeparatorNode]>,
+    repetition_separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
 }
 
 /// Fixed separator provenance belongs to a repetition occurrence, not to its
@@ -428,7 +436,7 @@ impl<'view> Iterator for Elements<'view> {
 impl ExactSizeIterator for Elements<'_> {}
 impl std::iter::FusedIterator for Elements<'_> {}
 
-impl OccurrenceNode {
+impl OccurrenceNode<'_> {
     /// Writes this node as `(span: children ; separators)`; see [`Parsed::debug_provenance`].
     fn render(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("(")?;
@@ -440,10 +448,9 @@ impl OccurrenceNode {
             formatter.write_str(":")?;
             for child in &self.children {
                 formatter.write_str(" ")?;
-                if child.is_captured() {
-                    child.render(formatter)?;
-                } else {
-                    formatter.write_str("_")?;
+                match &child.node {
+                    Some(node) => node.render(formatter)?,
+                    None => formatter.write_str("_")?,
                 }
             }
         }
@@ -453,8 +460,8 @@ impl OccurrenceNode {
                 write!(
                     formatter,
                     " {}..{}",
-                    separator.span.start(),
-                    separator.span.end()
+                    separator.node.span.start(),
+                    separator.node.span.end()
                 )?;
             }
         }
@@ -464,13 +471,18 @@ impl OccurrenceNode {
     /// Reports whether this node or any private descendant retained provenance.
     fn is_captured(&self) -> bool {
         self.span.is_some()
-            || self.children.iter().any(Self::is_captured)
+            || self.children.iter().any(Occurrence::is_captured)
             || !self.repetition_separators.is_empty()
     }
 
     /// Reports whether public source access is justified by a captured span.
     fn has_public_capture(&self) -> bool {
-        self.span.is_some() || self.children.iter().any(Self::has_public_capture)
+        self.span.is_some()
+            || self
+                .children
+                .iter()
+                .filter_map(|child| child.node.as_ref())
+                .any(Self::has_public_capture)
     }
 }
 
@@ -523,8 +535,10 @@ impl<'input, T> Parsed<'input, T> {
                 source,
                 bounds,
                 provenance,
-            } if provenance.document.is_some()
+                document,
+            } if document.is_some()
                 || provenance
+                    .borrow_dependent()
                     .root
                     .as_ref()
                     .is_some_and(OccurrenceNode::has_public_capture) =>
@@ -572,7 +586,7 @@ impl fmt::Display for DebugProvenance<'_> {
                 bounds, provenance, ..
             } => {
                 write!(formatter, "captured {}..{} ", bounds.start(), bounds.end())?;
-                match &provenance.root {
+                match &provenance.borrow_dependent().root {
                     None => formatter.write_str("none"),
                     Some(root) => root.render(formatter),
                 }
@@ -713,7 +727,7 @@ pub trait NodeViewFactory: Sized {
 #[derive(Clone, Copy)]
 pub struct ViewCursor<'view> {
     /// Matching sidecar occurrence, absent for synthetic or uncaptured values.
-    occurrence: Option<&'view OccurrenceNode>,
+    occurrence: Option<&'view OccurrenceNode<'view>>,
     /// Complete parsed source used by occurrence spans.
     source: Option<&'view str>,
     /// Exact source window bounding retained document gaps.
@@ -722,6 +736,11 @@ pub struct ViewCursor<'view> {
     records: Option<&'view [TokenRecord]>,
     /// Classified trivia retained for opted-in gap views.
     trivia: Option<&'view [TriviaRecord]>,
+}
+
+/// Preserves one absent generated child ordinal in copied Pretty provenance.
+fn empty_pretty_provenance() -> crate::pretty::PrettyProvenance {
+    crate::pretty::PrettyProvenance::new(None, None, Box::new([]), Box::new([]))
 }
 
 impl<'view> ViewCursor<'view> {
@@ -746,7 +765,8 @@ impl<'view> ViewCursor<'view> {
         Self {
             occurrence: self
                 .occurrence
-                .and_then(|occurrence| occurrence.children.get(index)),
+                .and_then(|occurrence| occurrence.children.get(index))
+                .and_then(|occurrence| occurrence.node.as_ref()),
             source: self.source,
             bounds: self.bounds,
             records: self.records,
@@ -772,14 +792,14 @@ impl<'view> ViewCursor<'view> {
             .iter()
             .map(|child| {
                 ViewCursor {
-                    occurrence: Some(child),
+                    occurrence: child.node.as_ref(),
                     source: self.source,
                     bounds: self.bounds,
                     records: self.records,
                     trivia: self.trivia,
                 }
                 .pretty_provenance()
-                .expect("a child cursor always has an occurrence")
+                .unwrap_or_else(empty_pretty_provenance)
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -789,12 +809,12 @@ impl<'view> ViewCursor<'view> {
             .map(|separator| {
                 let text = self
                     .source
-                    .and_then(|source| source.get(separator.span.range()))
+                    .and_then(|source| source.get(separator.node.span.range()))
                     .expect("captured separator spans were validated against their source")
                     .to_owned();
                 crate::pretty::RepetitionSeparatorProvenance {
                     text,
-                    span: separator.span,
+                    span: separator.node.span,
                 }
             })
             .collect::<Vec<_>>()
@@ -945,12 +965,12 @@ impl CapturePolicy {
 
 /// Opaque move-owned occurrence produced alongside a recursive value.
 #[doc(hidden)]
-pub struct Occurrence {
+pub struct Occurrence<'arena> {
     /// Retained sidecar node, absent when this subtree captured nothing.
-    node: Option<OccurrenceNode>,
+    node: Option<OccurrenceNode<'arena>>,
 }
 
-impl Occurrence {
+impl<'arena> Occurrence<'arena> {
     /// Represents an authored element that has no active occurrence.
     pub fn absent() -> Self {
         Self { node: None }
@@ -959,8 +979,8 @@ impl Occurrence {
     /// Renders the retained node as [`Parsed::debug_provenance`] renders it, or `_`.
     #[cfg(test)]
     pub(crate) fn render(&self) -> String {
-        struct Render<'occurrence>(&'occurrence Occurrence);
-        impl fmt::Display for Render<'_> {
+        struct Render<'occurrence, 'arena>(&'occurrence Occurrence<'arena>);
+        impl fmt::Display for Render<'_, '_> {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 match &self.0.node {
                     Some(node) => node.render(formatter),
@@ -1000,24 +1020,24 @@ impl RepetitionSeparatorOccurrence {
 
 /// Lazy ordinal accumulator for runtime-sized child occurrence sequences.
 #[doc(hidden)]
-pub struct Occurrences {
+pub struct Occurrences<'arena> {
     /// Uncaptured leading ordinals deferred until a later capture requires them.
     leading_absent: usize,
     /// Materialized occurrence ordinals beginning at the first capture.
-    retained: Vec<Occurrence>,
+    retained: BumpVec<'arena, Occurrence<'arena>>,
 }
 
-impl Occurrences {
+impl<'arena> Occurrences<'arena> {
     /// Creates an empty lazy occurrence accumulator.
-    pub const fn new() -> Self {
+    pub fn new_in(arena: &'arena Bump) -> Self {
         Self {
             leading_absent: 0,
-            retained: Vec::new(),
+            retained: BumpVec::new_in(arena),
         }
     }
 
     /// Appends one ordinal while delaying leading absent allocation.
-    pub fn push(&mut self, occurrence: Occurrence) {
+    pub fn push(&mut self, occurrence: Occurrence<'arena>) {
         if occurrence.is_captured() {
             if self.retained.is_empty() {
                 self.retained
@@ -1030,49 +1050,47 @@ impl Occurrences {
             self.retained.push(occurrence);
         }
     }
-}
 
-impl Default for Occurrences {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl IntoIterator for Occurrences {
-    type Item = Occurrence;
-    type IntoIter = std::vec::IntoIter<Occurrence>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.retained.into_iter()
+    /// Consumes the accumulator into its materialized occurrence ordinals.
+    pub(crate) fn into_retained(self) -> BumpVec<'arena, Occurrence<'arena>> {
+        self.retained
     }
 }
 
 /// Move-owned semantic value and occurrence produced by generated table parsing.
 #[doc(hidden)]
-pub struct ParsedNode<T> {
+pub struct ParsedNode<'arena, T> {
     /// Semantic value constructed by reduce actions.
     value: T,
     /// Opaque occurrence sidecar for parent assembly.
-    occurrence: Occurrence,
+    occurrence: Occurrence<'arena>,
 }
 
-impl<T> ParsedNode<T> {
+impl<'arena, T> ParsedNode<'arena, T> {
     /// Pairs a value the table-driven automaton built with the occurrence its fold produced.
-    pub(crate) fn from_parts(value: T, occurrence: Occurrence) -> Self {
+    pub(crate) fn from_parts(value: T, occurrence: Occurrence<'arena>) -> Self {
         Self { value, occurrence }
     }
 
     /// Separates a value from its opaque occurrence for runtime tests.
     #[cfg(test)]
-    pub(crate) fn into_parts(self) -> (T, Occurrence) {
+    pub(crate) fn into_parts(self) -> (T, Occurrence<'arena>) {
         (self.value, self.occurrence)
     }
 }
 
 /// Stateless builder that validates and compacts occurrence provenance.
-pub(crate) struct ProvenanceCollector;
+pub(crate) struct ProvenanceCollector<'arena> {
+    /// Arena that owns every occurrence node and child sequence for this parse.
+    arena: &'arena Bump,
+}
 
-impl ProvenanceCollector {
+impl<'arena> ProvenanceCollector<'arena> {
+    /// Binds one collector to the parse-owned arena.
+    fn new(arena: &'arena Bump) -> Self {
+        Self { arena }
+    }
+
     /// Finishes provenance while retaining separators outside child ordinals.
     pub(crate) fn finish_repeated(
         &self,
@@ -1080,54 +1098,21 @@ impl ProvenanceCollector {
         policy: CapturePolicy,
         request: CaptureRequest,
         span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
-    ) -> Result<Occurrence, ()> {
+        children: BumpVec<'arena, Occurrence<'arena>>,
+        repetition_separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
+    ) -> Result<Occurrence<'arena>, ()> {
         if let Some(span) = span {
             source.get(span.range()).ok_or(())?;
         }
         let span = policy.captures(request).then_some(span).flatten();
-        let mut leading_absent = 0;
-        let mut retained = Vec::new();
-        for occurrence in children {
-            match occurrence.node {
-                Some(node) => {
-                    if retained.is_empty() {
-                        retained.extend((0..leading_absent).map(|_| OccurrenceNode {
-                            span: None,
-                            children: Box::new([]),
-                            repetition_separators: Box::new([]),
-                        }));
-                    }
-                    retained.push(node);
-                }
-                None if retained.is_empty() => leading_absent += 1,
-                None => retained.push(OccurrenceNode {
-                    span: None,
-                    children: Box::new([]),
-                    repetition_separators: Box::new([]),
-                }),
-            }
-        }
-        let repetition_separators = separators
-            .into_iter()
-            .map(|separator| separator.node)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        if span.is_none() && retained.is_empty() && repetition_separators.is_empty() {
+        let child_captured = children.iter().any(Occurrence::is_captured);
+        if span.is_none() && !child_captured && repetition_separators.is_empty() {
             return Ok(Occurrence::absent());
-        }
-        if span.is_some() && retained.is_empty() && leading_absent != 0 {
-            retained.extend((0..leading_absent).map(|_| OccurrenceNode {
-                span: None,
-                children: Box::new([]),
-                repetition_separators: Box::new([]),
-            }));
         }
         Ok(Occurrence {
             node: Some(OccurrenceNode {
                 span,
-                children: retained.into_boxed_slice(),
+                children,
                 repetition_separators,
             }),
         })
@@ -1140,7 +1125,7 @@ impl ProvenanceCollector {
 /// matching-version ABI. Generated reduce actions interact through [`crate::lr::Reduction`]; this
 /// context owns the grammar-erased state shared by the LR loop and its diagnostics.
 #[doc(hidden)]
-pub struct ParseContext<'context, 'input, A> {
+pub struct ParseContext<'context, 'input, 'arena, A> {
     /// Grammar-bound cursor and caller construction state.
     input: &'context mut Input<'input, A>,
     /// FOLLOW supplied for this root invocation.
@@ -1150,23 +1135,24 @@ pub struct ParseContext<'context, 'input, A> {
     /// Root-call capture request.
     request: CaptureRequest,
     /// Builder for validated compact sidecars.
-    provenance: ProvenanceCollector,
+    provenance: ProvenanceCollector<'arena>,
 }
 
-impl<'context, 'input, A> ParseContext<'context, 'input, A> {
+impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
     /// Binds one table parse invocation to input, root FOLLOW, and capture state.
     fn new(
         input: &'context mut Input<'input, A>,
         follow: &'context FollowSet,
         policy: CapturePolicy,
         request: CaptureRequest,
+        arena: &'arena Bump,
     ) -> Self {
         Self {
             input,
             follow,
             policy,
             request,
-            provenance: ProvenanceCollector,
+            provenance: ProvenanceCollector::new(arena),
         }
     }
 
@@ -1215,6 +1201,11 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.policy.captures(self.request)
     }
 
+    /// Returns the arena backing provenance retained by this parse.
+    pub(crate) const fn provenance_arena(&self) -> &'arena Bump {
+        self.provenance.arena
+    }
+
     /// Reports a shifted token span that leaves the source.
     pub(crate) fn invalid_token_span(&self, span: Span) -> ParseError {
         ParseError::invalid_token_span(self.input, span, None)
@@ -1225,9 +1216,9 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         &self,
         policy: CapturePolicy,
         span: Option<Span>,
-        children: impl IntoIterator<Item = Occurrence>,
-        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
-    ) -> Result<Occurrence, ParseError> {
+        children: BumpVec<'arena, Occurrence<'arena>>,
+        separators: BumpVec<'arena, RepetitionSeparatorOccurrence>,
+    ) -> Result<Occurrence<'arena>, ParseError> {
         self.provenance
             .finish_repeated(
                 self.input.source(),
@@ -1284,7 +1275,9 @@ pub trait GeneratedParse<'input, A = ()>: Node + Sized {
     fn root_follow() -> &'static FollowSet;
 
     /// Runs the generated LR parser under a matching context.
-    fn parse(context: &mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<Self>, ParseError>;
+    fn parse<'arena>(
+        context: &mut ParseContext<'_, 'input, 'arena, A>,
+    ) -> Result<ParsedNode<'arena, Self>, ParseError>;
 }
 
 /// Grammar-local input wrapper generated for one grammar.
@@ -1383,22 +1376,34 @@ where
     let checkpoint = input.cursor();
     let source = input.source();
     let bounds = input.bounds();
-    let mut context = ParseContext::new(input, follow, T::CAPTURE_POLICY, request);
-    let ParsedNode { value, occurrence } = match T::parse(&mut context) {
-        Ok(parsed) => parsed,
+    let mut value = None;
+    let provenance = match ProvenanceCell::try_new(Bump::new(), |arena| {
+        let mut context = ParseContext::new(input, follow, T::CAPTURE_POLICY, request, arena);
+        let ParsedNode {
+            value: parsed_value,
+            occurrence,
+        } = T::parse(&mut context)?;
+        value = Some(parsed_value);
+        Ok::<_, ParseError>(Provenance {
+            root: occurrence.node,
+        })
+    }) {
+        Ok(provenance) => provenance,
         Err(error) => {
             input.restore(checkpoint);
             return Err(error);
         }
     };
-    let root = occurrence.node;
+    let value = value.expect("a successful parse always constructs its semantic root");
     let document = input.retained_document();
+    let root = provenance.borrow_dependent().root.as_ref();
     let origin = if root.is_some() || document.is_some() {
-        debug_assert!(root.as_ref().is_none_or(OccurrenceNode::is_captured));
+        debug_assert!(root.is_none_or(OccurrenceNode::is_captured));
         Origin::Captured {
             source,
             bounds,
-            provenance: Box::new(Provenance { root, document }),
+            provenance,
+            document,
         }
     } else {
         Origin::Uncaptured
@@ -1410,7 +1415,7 @@ where
 #[cfg(test)]
 pub(crate) fn test_context<'input, A, R>(
     input: &mut Input<'input, A>,
-    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
 ) -> R {
     test_context_with_request(input, CaptureRequest::Default, operation)
 }
@@ -1419,7 +1424,7 @@ pub(crate) fn test_context<'input, A, R>(
 #[cfg(test)]
 pub(crate) fn test_context_spanned<'input, A, R>(
     input: &mut Input<'input, A>,
-    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
 ) -> R {
     test_context_with_request(input, CaptureRequest::Spanned, operation)
 }
@@ -1429,10 +1434,17 @@ pub(crate) fn test_context_spanned<'input, A, R>(
 fn test_context_with_request<'input, A, R>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
-    operation: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> R,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
 ) -> R {
     static EMPTY_FOLLOW: FollowSet = FollowSet::from_static(0, &[], &[]);
-    let mut context = ParseContext::new(input, &EMPTY_FOLLOW, CapturePolicy::Optional, request);
+    let arena = Bump::new();
+    let mut context = ParseContext::new(
+        input,
+        &EMPTY_FOLLOW,
+        CapturePolicy::Optional,
+        request,
+        &arena,
+    );
     operation(&mut context)
 }
 
@@ -1487,7 +1499,7 @@ mod tests {
 
     fn reduce_word<'input, T: WordValue<'input>>(
         rule: u32,
-        reduction: &mut crate::lr::Reduction<'_, '_, 'input, ()>,
+        reduction: &mut crate::lr::Reduction<'_, '_, 'input, '_, ()>,
     ) -> Result<(), ParseError> {
         match rule {
             1 => {
@@ -1532,9 +1544,9 @@ mod tests {
                     &WORD_START
                 }
 
-                fn parse(
-                    context: &mut ParseContext<'_, 'input, ()>,
-                ) -> Result<ParsedNode<Self>, ParseError> {
+                fn parse<'arena>(
+                    context: &mut ParseContext<'_, 'input, 'arena, ()>,
+                ) -> Result<ParsedNode<'arena, Self>, ParseError> {
                     crate::lr::run(context, &WORD_TABLES, 0, 0, reduce_word::<Self>)
                 }
             }
@@ -1590,7 +1602,8 @@ mod tests {
 
     #[test]
     fn occurrence_sequences_allocate_only_after_capture_and_preserve_ordinals() {
-        let mut occurrences = Occurrences::new();
+        let arena = Bump::new();
+        let mut occurrences = Occurrences::new_in(&arena);
         occurrences.push(Occurrence::absent());
         occurrences.push(Occurrence::absent());
         assert_eq!(occurrences.retained.capacity(), 0);
@@ -1598,13 +1611,13 @@ mod tests {
         occurrences.push(Occurrence {
             node: Some(OccurrenceNode {
                 span: Some(Span::new(4, 5).unwrap()),
-                children: Box::new([]),
-                repetition_separators: Box::new([]),
+                children: BumpVec::new_in(&arena),
+                repetition_separators: BumpVec::new_in(&arena),
             }),
         });
         occurrences.push(Occurrence::absent());
 
-        let retained = occurrences.into_iter().collect::<Vec<_>>();
+        let retained = occurrences.into_retained();
         assert_eq!(retained.len(), 4);
         assert!(!retained[0].is_captured());
         assert!(!retained[1].is_captured());
