@@ -2947,9 +2947,16 @@ impl Materializer {
                         })
                     }
                     SemanticTarget::Catalog(catalog) => {
-                        let [ResolvedGenericArgument::Type(argument)] = arguments.as_slice() else {
-                            self.push_invalid_arguments(ty, &authored);
-                            return None;
+                        let argument = match arguments.as_slice() {
+                            [ResolvedGenericArgument::Type(argument)] => argument,
+                            [
+                                ResolvedGenericArgument::Lifetime(_),
+                                ResolvedGenericArgument::Type(argument),
+                            ] if self.resolved().build_inputs.arena_ast => argument,
+                            _ => {
+                                self.push_invalid_arguments(ty, &authored);
+                                return None;
+                            }
                         };
                         let argument =
                             self.evaluate_type(argument, current_application, environment)?;

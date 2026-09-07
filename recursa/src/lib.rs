@@ -10,10 +10,11 @@ pub use recursa_core::explorer;
 #[cfg(feature = "explorer")]
 pub use recursa_core::framing;
 pub use recursa_core::{
-    DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView,
-    OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext,
-    PrettySink, Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor,
-    TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
+    ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, DebugProvenance,
+    ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
+    Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,
+    Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
+    Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
 

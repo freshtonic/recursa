@@ -160,6 +160,28 @@ impl<T: VisitMut> VisitMut for Box<T> {
     }
 }
 
+impl<T: Visit> Visit for bumpalo::boxed::Box<'_, T> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
+        (**self).visit(visitor)
+    }
+}
+
+impl<T: VisitMut> VisitMut for bumpalo::boxed::Box<'_, T> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
+        (**self).visit_mut(visitor)
+    }
+}
+
 impl<T: Visit> Visit for Option<T> {
     type Events = T::Events;
 
@@ -216,6 +238,34 @@ impl<T: VisitMut> VisitMut for Vec<T> {
     }
 }
 
+impl<T: Visit> Visit for bumpalo::collections::Vec<'_, T> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
+        for value in self {
+            value.visit(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl<T: VisitMut> VisitMut for bumpalo::collections::Vec<'_, T> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
+        for value in self {
+            value.visit_mut(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 impl<T: Visit> Visit for crate::Vec1<T> {
     type Events = T::Events;
 
@@ -231,6 +281,34 @@ impl<T: Visit> Visit for crate::Vec1<T> {
 }
 
 impl<T: VisitMut> VisitMut for crate::Vec1<T> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
+        for value in self.iter_mut() {
+            value.visit_mut(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl<T: Visit> Visit for crate::ArenaVec1<'_, T> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
+        for value in self.iter() {
+            value.visit(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl<T: VisitMut> VisitMut for crate::ArenaVec1<'_, T> {
     type EventsMut = T::EventsMut;
 
     fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>

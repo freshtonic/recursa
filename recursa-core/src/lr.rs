@@ -68,7 +68,7 @@ pub struct Reduction<'reduction, 'context, 'input, 'arena, A> {
     capturing: bool,
 }
 
-impl<'input, A> Reduction<'_, '_, 'input, '_, A> {
+impl<'input, 'arena, A> Reduction<'_, '_, 'input, 'arena, A> {
     /// Reports whether the parse folds provenance: capture was requested, the root's policy is
     /// mandatory, or the grammar has a mandatory site. When false no occurrence work runs.
     pub fn capturing(&self) -> bool {
@@ -107,6 +107,22 @@ impl<'input, A> Reduction<'_, '_, 'input, '_, A> {
     /// Converts a shifted token into borrowed content-token text.
     pub fn matched_text(&self, record: TokenRecord) -> Result<ContentText<'input>, ParseError> {
         self.context.matched_text(record)
+    }
+
+    /// Converts a shifted token into text whose borrow is shortened to the AST arena.
+    pub fn matched_text_in_arena(
+        &self,
+        record: TokenRecord,
+    ) -> Result<ContentText<'arena>, ParseError>
+    where
+        'input: 'arena,
+    {
+        self.context.matched_text_in_arena(record)
+    }
+
+    /// Returns the bump arena used by generated semantic containers.
+    pub fn arena(&self) -> &'arena bumpalo::Bump {
+        self.context.arena()
     }
 
     /// Returns the caller's construction state.
@@ -226,8 +242,13 @@ where
                 None => decoded.action(state, end_marker),
                 Some(record) if u32::from(record.kind) >= end_marker => TableAction::Error,
                 Some(record) => {
-                    let next = context.peek(1).map(|next| u32::from(next.kind));
-                    decoded.filtered_action(state, u32::from(record.kind), next)
+                    let kind = u32::from(record.kind);
+                    if decoded.requires_lookahead(kind) {
+                        let next = context.peek(1).map(|next| u32::from(next.kind));
+                        decoded.filtered_action(state, kind, next)
+                    } else {
+                        decoded.action(state, kind)
+                    }
                 }
             }
         };
@@ -264,7 +285,7 @@ where
                 // action of a `T` rule pushed as a `T`.
                 let value = unsafe { values.pop::<T>() };
                 let occurrence = match occurrences.take() {
-                    Some(stack) => stack.into_root(context)?,
+                    Some(stack) => stack.into_root(context),
                     None => Occurrence::absent(),
                 };
                 return Ok((value, occurrence));
@@ -293,7 +314,7 @@ where
                     "a reduce action pops `value_pops` values and pushes at most one"
                 );
                 if let Some(stack) = occurrences.as_mut() {
-                    stack.reduce(context, tables.folds(), rule, pops)?;
+                    stack.reduce(context, tables.folds(), rule, pops);
                 }
                 match decoded.tail[rule as usize] {
                     1 => tail = true,

@@ -7,12 +7,16 @@
 //! partial partition survive a rejection.
 
 use crate::explorer::{
-    ExplorerRoot, NodeSchemaData, ParseDiagnostic, VariantSchemaData, parse_failure_from_error,
+    ExplorerRoot, NodeSchemaData, ParseDiagnostic, VariantSchemaData,
+    arena_parsed_active_variant_is, parse_failure_from_error, parsed_active_variant_is,
     root_contains_variant, trailing_input_diagnostic,
 };
 use crate::input::{Input, LexResult, TokenRecord, TriviaRecord};
 use crate::lex::LexDiagnostic;
-use crate::parsed::{GeneratedParse, Parsed, parse_spanned_with_root_follow};
+use crate::parsed::{
+    ArenaAstFamily, ArenaGeneratedParse, ArenaParsed, GeneratedParse, Parsed,
+    parse_arena_spanned_with_root_follow, parse_spanned_with_root_follow,
+};
 use crate::{FollowSet, GrammarInfo, Span};
 
 /// Generated lexical function used only behind a framing declaration.
@@ -83,51 +87,94 @@ pub const fn plan(
 
 /// A fully strict exact-source document partition.
 pub struct CompleteFrame<'input, T> {
+    inner: FrameStorage<'input, Parsed<'input, T>>,
+}
+
+/// A fully strict exact-source document partition retaining arena-backed islands.
+pub struct ArenaCompleteFrame<'input, F: ArenaAstFamily> {
+    inner: FrameStorage<'input, ArenaParsed<'input, F>>,
+}
+
+/// Storage shared by standard and arena-backed framing surfaces.
+struct FrameStorage<'input, P> {
     /// Complete borrowed source.
     source: &'input str,
     /// Ordered, non-overlapping, exhaustive source ownership.
-    parts: Box<[CompletePart<'input, T>]>,
+    parts: Box<[FramePart<'input, P>]>,
 }
 
 impl<'input, T> CompleteFrame<'input, T> {
     /// Returns the complete source.
     pub const fn source(&self) -> &'input str {
-        self.source
+        self.inner.source
     }
 
     /// Returns exact original source without normalization.
     pub const fn render_exact(&self) -> &'input str {
-        self.source
+        self.inner.source
     }
 
     /// Iterates exact source parts in ownership order.
     pub fn parts(&self) -> impl ExactSizeIterator<Item = &CompletePart<'input, T>> {
-        self.parts.iter()
+        self.inner.parts.iter()
     }
 
     /// Iterates all owned spans in source order.
     pub fn spans(&self) -> impl ExactSizeIterator<Item = Span> + '_ {
-        self.parts.iter().map(CompletePart::span)
+        self.inner.parts.iter().map(FramePart::span)
     }
 
     /// Iterates only complete parsed authored islands.
     pub fn typed_islands(&self) -> impl Iterator<Item = &Parsed<'input, T>> {
-        self.parts.iter().filter_map(|part| match part {
-            CompletePart::Island(island) => Some(&island.parsed),
-            CompletePart::Gap(_)
-            | CompletePart::Line(_)
-            | CompletePart::Delimited(_)
-            | CompletePart::Payload(_) => None,
+        self.inner.parts.iter().filter_map(|part| match part {
+            FramePart::Island(island) => Some(&island.parsed),
+            FramePart::Gap(_)
+            | FramePart::Line(_)
+            | FramePart::Delimited(_)
+            | FramePart::Payload(_) => None,
+        })
+    }
+}
+
+impl<'input, F: ArenaAstFamily> ArenaCompleteFrame<'input, F> {
+    /// Returns the complete source.
+    pub const fn source(&self) -> &'input str {
+        self.inner.source
+    }
+
+    /// Returns exact original source without normalization.
+    pub const fn render_exact(&self) -> &'input str {
+        self.inner.source
+    }
+
+    /// Iterates exact source parts in ownership order.
+    pub fn parts(&self) -> impl ExactSizeIterator<Item = &ArenaCompletePart<'input, F>> {
+        self.inner.parts.iter()
+    }
+
+    /// Iterates all owned spans in source order.
+    pub fn spans(&self) -> impl ExactSizeIterator<Item = Span> + '_ {
+        self.inner.parts.iter().map(FramePart::span)
+    }
+
+    /// Iterates only complete parsed authored islands.
+    pub fn typed_islands(&self) -> impl Iterator<Item = &ArenaParsed<'input, F>> {
+        self.inner.parts.iter().filter_map(|part| match part {
+            FramePart::Island(island) => Some(&island.parsed),
+            FramePart::Gap(_)
+            | FramePart::Line(_)
+            | FramePart::Delimited(_)
+            | FramePart::Payload(_) => None,
         })
     }
 }
 
 /// One source-owned part of a fully strict partition.
-pub enum CompletePart<'input, T> {
+pub enum FramePart<'input, P> {
     /// Beginning, inter-item, or end source not owned by a significant item.
     Gap(SourceRegion<'input>),
     /// One complete strict typed island.
-    Island(CompleteIsland<'input, T>),
+    Island(FrameIsland<P>),
     /// One atomically matched physical-line region.
     Line(SourceRegion<'input>),
     /// One atomically matched delimited region.
@@ -136,7 +183,13 @@ pub enum CompletePart<'input, T> {
     Payload(PayloadRegion<'input>),
 }
 
-impl<T> CompletePart<'_, T> {
+/// One source part in a standard parsed frame.
+pub type CompletePart<'input, T> = FramePart<'input, Parsed<'input, T>>;
+
+/// One source part in an arena-backed parsed frame.
+pub type ArenaCompletePart<'input, F> = FramePart<'input, ArenaParsed<'input, F>>;
+
+impl<P> FramePart<'_, P> {
     /// Returns this part's exact checked ownership span.
     pub const fn span(&self) -> Span {
         match self {
@@ -148,21 +201,27 @@ impl<T> CompletePart<'_, T> {
 }
 
 /// One complete authored island paired with its exact framing extent.
-pub struct CompleteIsland<'input, T> {
+pub struct FrameIsland<P> {
     /// Span including the configured framing boundary.
     span: Span,
     /// Strict value and its occurrence provenance.
-    parsed: Parsed<'input, T>,
+    parsed: P,
 }
 
-impl<'input, T> CompleteIsland<'input, T> {
+/// One standard parsed island.
+pub type CompleteIsland<'input, T> = FrameIsland<Parsed<'input, T>>;
+
+/// One arena-backed parsed island.
+pub type ArenaCompleteIsland<'input, F> = FrameIsland<ArenaParsed<'input, F>>;
+
+impl<P> FrameIsland<P> {
     /// Returns the exact island extent including its boundary token.
     pub const fn span(&self) -> Span {
         self.span
     }
 
     /// Borrows the complete strict authored value and provenance.
-    pub const fn parsed(&self) -> &Parsed<'input, T> {
+    pub const fn parsed(&self) -> &P {
         &self.parsed
     }
 }
@@ -425,7 +484,7 @@ impl std::fmt::Display for FrameError<'_> {
 impl std::error::Error for FrameError<'_> {}
 
 /// Ordered part retained until the whole partition is validated.
-enum DraftPart<'input, T> {
+enum DraftPart<P> {
     /// Exact gap.
     Gap(Span),
     /// One strict island and its exact extent.
@@ -433,7 +492,7 @@ enum DraftPart<'input, T> {
         /// Exact extent including the boundary when one is present.
         span: Span,
         /// Strict value with its occurrence provenance.
-        parsed: Parsed<'input, T>,
+        parsed: P,
     },
     /// Atomic physical line.
     Line(Span),
@@ -471,6 +530,46 @@ pub fn frame_document<'input, T>(
 where
     T: GeneratedParse<'input> + ExplorerRoot + 'input,
 {
+    let inner = frame_document_impl(
+        source,
+        lex,
+        plan,
+        |input, follow| parse_spanned_with_root_follow::<T, ()>(input, follow),
+        parsed_active_variant_is,
+    )?;
+    Ok(CompleteFrame { inner })
+}
+
+/// Parses and partitions exact source while retaining every AST in its own arena.
+#[doc(hidden)]
+pub fn frame_arena_document<'input, T>(
+    source: &'input str,
+    lex: LexFn,
+    plan: &'static PlanData,
+) -> Result<ArenaCompleteFrame<'input, T::Family>, FrameFailure<'input>>
+where
+    T: ArenaGeneratedParse<'input> + 'input,
+    T::Family: 'input,
+    for<'arena> <T::Family as ArenaAstFamily>::Ast<'arena>: ExplorerRoot,
+{
+    let inner = frame_document_impl(
+        source,
+        lex,
+        plan,
+        |input, follow| parse_arena_spanned_with_root_follow::<T, ()>(input, follow),
+        arena_parsed_active_variant_is,
+    )?;
+    Ok(ArenaCompleteFrame { inner })
+}
+
+/// Shared framing interpreter parameterized only by the strict parse storage strategy.
+fn frame_document_impl<'input, P>(
+    source: &'input str,
+    lex: LexFn,
+    plan: &'static PlanData,
+    mut parse: impl FnMut(&mut Input<'input>, &FollowSet) -> Result<P, crate::ParseError>,
+    active_variant_is: impl Fn(&P, &'static VariantSchemaData) -> bool,
+) -> Result<FrameStorage<'input, P>, FrameFailure<'input>> {
     validate_plan(source, plan)?;
     let mut byte = 0_usize;
     let mut drafts = Vec::new();
@@ -526,8 +625,7 @@ where
                 &segment,
                 plan,
             )?;
-            if let Ok(parsed) =
-                parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow)
+            if let Ok(parsed) = parse(&mut input, plan.boundary_follow)
                 && input.peek(0).is_some_and(|record| record == boundary)
             {
                 strict_match = Some((parsed, boundary));
@@ -553,7 +651,7 @@ where
                 &segment,
                 plan,
             )?;
-            match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
+            match parse(&mut input, plan.boundary_follow) {
                 Ok(parsed) => {
                     let root_end = consumed_end(&input, island_start);
                     if let Some(next) = input.peek(0) {
@@ -601,12 +699,13 @@ where
                     // When the source before the failing token is itself a complete
                     // island, the failure is a missing boundary rather than a syntax
                     // error inside the island.
-                    let framing = prefix_is_complete_island::<T>(
+                    let framing = prefix_is_complete_island(
                         source,
                         island_start,
                         failure_span.start() as usize,
                         &segment,
                         plan,
+                        &mut parse,
                     )?
                     .then(|| FrameDiagnostic {
                         kind: FrameDiagnosticKind::MissingBoundary,
@@ -631,9 +730,9 @@ where
         // The framing boundary itself is the hard-progress transition for an
         // otherwise empty island.
         validate_hard_progress(source, island_start, island_end)?;
-        let enters_payload = plan.payload.is_some_and(|payload| {
-            crate::explorer::parsed_active_variant_is(&parsed, payload.after)
-        });
+        let enters_payload = plan
+            .payload
+            .is_some_and(|payload| active_variant_is(&parsed, payload.after));
         drafts.push(DraftPart::Island {
             span: checked_span(source, island_start, island_end)?,
             parsed,
@@ -684,16 +783,14 @@ where
 ///
 /// The prefix must parse strictly and leave no significant token unconsumed; an
 /// empty prefix is never a complete island.
-fn prefix_is_complete_island<'input, T>(
+fn prefix_is_complete_island<'input, P>(
     source: &'input str,
     island_start: usize,
     prefix_end: usize,
     segment: &LexResult<'input>,
     plan: &'static PlanData,
-) -> Result<bool, FrameError<'input>>
-where
-    T: GeneratedParse<'input> + ExplorerRoot + 'input,
-{
+    parse: &mut impl FnMut(&mut Input<'input>, &FollowSet) -> Result<P, crate::ParseError>,
+) -> Result<bool, FrameError<'input>> {
     if prefix_end <= island_start {
         return Ok(false);
     }
@@ -703,10 +800,7 @@ where
         segment,
         plan,
     )?;
-    Ok(
-        parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow).is_ok()
-            && input.peek(0).is_none(),
-    )
+    Ok(parse(&mut input, plan.boundary_follow).is_ok() && input.peek(0).is_none())
 }
 
 /// Chooses the extent reported for a rejected island candidate.
@@ -721,24 +815,22 @@ fn rejection_end(source: &str, boundaries: &[TokenRecord], failure: Span) -> usi
 }
 
 /// Converts a validated draft partition into the published strict frame.
-fn complete_from_drafts<'input, T>(
+fn complete_from_drafts<'input, P>(
     source: &'input str,
-    drafts: Vec<DraftPart<'input, T>>,
-) -> CompleteFrame<'input, T> {
+    drafts: Vec<DraftPart<P>>,
+) -> FrameStorage<'input, P> {
     let parts = drafts
         .into_iter()
         .map(|part| match part {
-            DraftPart::Gap(span) => CompletePart::Gap(region(source, span)),
-            DraftPart::Island { span, parsed } => {
-                CompletePart::Island(CompleteIsland { span, parsed })
-            }
-            DraftPart::Line(span) => CompletePart::Line(region(source, span)),
-            DraftPart::Delimited(span) => CompletePart::Delimited(region(source, span)),
+            DraftPart::Gap(span) => FramePart::Gap(region(source, span)),
+            DraftPart::Island { span, parsed } => FramePart::Island(FrameIsland { span, parsed }),
+            DraftPart::Line(span) => FramePart::Line(region(source, span)),
+            DraftPart::Delimited(span) => FramePart::Delimited(region(source, span)),
             DraftPart::Payload {
                 span,
                 data,
                 terminator,
-            } => CompletePart::Payload(PayloadRegion {
+            } => FramePart::Payload(PayloadRegion {
                 source,
                 span,
                 data,
@@ -746,7 +838,7 @@ fn complete_from_drafts<'input, T>(
             }),
         })
         .collect::<Vec<_>>();
-    CompleteFrame {
+    FrameStorage {
         source,
         parts: parts.into_boxed_slice(),
     }
@@ -964,9 +1056,9 @@ fn standalone_terminator(source: &str, start: usize, terminator: &str) -> Option
 }
 
 /// Proves that draft ownership is exhaustive, ordered, and non-overlapping.
-fn validate_draft_partition<'input, T>(
+fn validate_draft_partition<'input, P>(
     source: &'input str,
-    drafts: &[DraftPart<'input, T>],
+    drafts: &[DraftPart<P>],
 ) -> Result<(), FrameError<'input>> {
     let mut cursor = 0_u32;
     for draft in drafts {

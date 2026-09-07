@@ -283,7 +283,7 @@ impl<'arena> OccurrenceStack<'arena> {
         folds: &FoldTable,
         rule: u32,
         pops: usize,
-    ) -> Result<(), ParseError> {
+    ) {
         let fold = &folds.rules[rule as usize];
         let kept = self.entries.len() - pops;
         let cursor = context.cursor() as u32;
@@ -296,14 +296,14 @@ impl<'arena> OccurrenceStack<'arena> {
         let payload = match fold.kind {
             FoldKind::Through => {
                 debug_assert_eq!(pops, 1, "a pass-through rule has exactly one symbol");
-                return Ok(());
+                return;
             }
             FoldKind::Absent => Payload::Folded(Occurrence::absent()),
             FoldKind::Node => {
                 let sites = &folds.sites[fold.sites.clone()];
                 let mut children = BumpVec::with_capacity_in(sites.len(), self.arena);
                 for site in sites {
-                    children.push(fold_site(context, popped, end, site)?);
+                    children.push(fold_site(context, popped, end, site));
                 }
                 let span = consumed_span(context, first, end);
                 let policy = fold.policy.resolve(context);
@@ -312,7 +312,7 @@ impl<'arena> OccurrenceStack<'arena> {
                     span,
                     children,
                     BumpVec::new_in(self.arena),
-                )?)
+                ))
             }
             FoldKind::Group | FoldKind::Repetition => {
                 let site = SiteFold {
@@ -325,14 +325,14 @@ impl<'arena> OccurrenceStack<'arena> {
                     },
                     policy: fold.policy,
                 };
-                Payload::Folded(fold_site(context, popped, end, &site)?)
+                Payload::Folded(fold_site(context, popped, end, &site))
             }
             FoldKind::ListStart => {
                 let [item] = popped else {
                     unreachable!("a list starts with exactly one item");
                 };
                 let mut items = Occurrences::new_in(self.arena);
-                items.push(item_occurrence(context, fold.policy, take(item))?);
+                items.push(item_occurrence(context, fold.policy, take(item)));
                 Payload::List {
                     items,
                     separators: BumpVec::new_in(self.arena),
@@ -355,7 +355,7 @@ impl<'arena> OccurrenceStack<'arena> {
                 for separator in between {
                     separators.push(separator_occurrence(take(separator)));
                 }
-                items.push(item_occurrence(context, fold.policy, take(item))?);
+                items.push(item_occurrence(context, fold.policy, take(item)));
                 Payload::List { items, separators }
             }
             FoldKind::ListThrough => match popped.split_first_mut() {
@@ -384,7 +384,6 @@ impl<'arena> OccurrenceStack<'arena> {
             end,
             payload,
         });
-        Ok(())
     }
 
     /// Returns the root's occurrence once the accept rule has popped everything else: the
@@ -392,11 +391,11 @@ impl<'arena> OccurrenceStack<'arena> {
     pub(super) fn into_root<A>(
         mut self,
         context: &ParseContext<'_, '_, 'arena, A>,
-    ) -> Result<Occurrence<'arena>, ParseError> {
+    ) -> Occurrence<'arena> {
         let entry = self.entries.pop().expect("the accepted root has an entry");
         debug_assert!(self.entries.is_empty(), "acceptance pops every other entry");
         match entry.payload {
-            Payload::Folded(occurrence) => Ok(occurrence),
+            Payload::Folded(occurrence) => occurrence,
             Payload::Token(span) => context.collect_occurrence(
                 context.capture_policy(),
                 Some(span),
@@ -419,9 +418,9 @@ fn item_occurrence<'arena, A>(
     context: &ParseContext<'_, '_, 'arena, A>,
     policy: FoldPolicy,
     payload: Payload<'arena>,
-) -> Result<Occurrence<'arena>, ParseError> {
+) -> Occurrence<'arena> {
     match payload {
-        Payload::Folded(occurrence) => Ok(occurrence),
+        Payload::Folded(occurrence) => occurrence,
         Payload::Token(span) => context.collect_occurrence(
             policy.resolve(context),
             Some(span),
@@ -457,7 +456,7 @@ fn fold_site<'arena, A>(
     popped: &mut [Entry<'arena>],
     rule_end: u32,
     site: &SiteFold,
-) -> Result<Occurrence<'arena>, ParseError> {
+) -> Occurrence<'arena> {
     let start = site.start as usize;
     let range = start..start + site.len as usize;
     let policy = site.policy.resolve(context);
@@ -470,7 +469,7 @@ fn fold_site<'arena, A>(
         }
     };
     match site.kind {
-        SiteKind::Absent => Ok(Occurrence::absent()),
+        SiteKind::Absent => Occurrence::absent(),
         SiteKind::Leaf | SiteKind::Through => {
             debug_assert_eq!(site.len, 1, "a leaf or pass-through site has one entry");
             item_occurrence(context, site.policy, take(&mut popped[start]))
@@ -479,7 +478,7 @@ fn fold_site<'arena, A>(
             let (first, end) = extent(popped);
             let mut children = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
             for entry in &mut popped[range] {
-                children.push(item_occurrence(context, site.policy, take(entry))?);
+                children.push(item_occurrence(context, site.policy, take(entry)));
             }
             let span = consumed_span(context, first, end);
             context.collect_occurrence(
@@ -497,14 +496,14 @@ fn fold_site<'arena, A>(
             } else {
                 let mut leaves = BumpVec::with_capacity_in(range.len(), context.provenance_arena());
                 for entry in &mut popped[range] {
-                    leaves.push(item_occurrence(context, site.policy, take(entry))?);
+                    leaves.push(item_occurrence(context, site.policy, take(entry)));
                 }
                 context.collect_occurrence(
                     policy,
                     span,
                     leaves,
                     BumpVec::new_in(context.provenance_arena()),
-                )?
+                )
             };
             let mut children = BumpVec::with_capacity_in(1, context.provenance_arena());
             children.push(inner);

@@ -284,6 +284,22 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
                 }
             }
 
+            impl<'__recursa_input, T> __RecursaVisitWith<'__recursa_input>
+                for #facade::ArenaBox<'__recursa_input, T>
+            where
+                T: __RecursaVisitWith<'__recursa_input>,
+            {
+                fn __recursa_visit_with<V>(
+                    &self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitor<__RecursaVisitEvents<'__recursa_input>>,
+                {
+                    (**self).__recursa_visit_with(visitor)
+                }
+            }
+
             impl<'__recursa_input, T> __RecursaVisitWith<'__recursa_input> for Option<T>
             where
                 T: __RecursaVisitWith<'__recursa_input>,
@@ -320,7 +336,46 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
                 }
             }
 
+            impl<'__recursa_input, T> __RecursaVisitWith<'__recursa_input>
+                for #facade::ArenaVec<'__recursa_input, T>
+            where
+                T: __RecursaVisitWith<'__recursa_input>,
+            {
+                fn __recursa_visit_with<V>(
+                    &self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitor<__RecursaVisitEvents<'__recursa_input>>,
+                {
+                    for value in self {
+                        value.__recursa_visit_with(visitor)?;
+                    }
+                    ::core::ops::ControlFlow::Continue(())
+                }
+            }
+
             impl<'__recursa_input, T> __RecursaVisitWith<'__recursa_input> for #facade::Vec1<T>
+            where
+                T: __RecursaVisitWith<'__recursa_input>,
+            {
+                fn __recursa_visit_with<V>(
+                    &self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitor<__RecursaVisitEvents<'__recursa_input>>,
+                {
+                    for value in self.iter() {
+                        value.__recursa_visit_with(visitor)?;
+                    }
+                    ::core::ops::ControlFlow::Continue(())
+                }
+            }
+
+
+            impl<'__recursa_input, T> __RecursaVisitWith<'__recursa_input>
+                for #facade::ArenaVec1<'__recursa_input, T>
             where
                 T: __RecursaVisitWith<'__recursa_input>,
             {
@@ -395,6 +450,22 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
                 }
             }
 
+            impl<'__recursa_input, T> __RecursaVisitMutWith<'__recursa_input>
+                for #facade::ArenaBox<'__recursa_input, T>
+            where
+                T: __RecursaVisitMutWith<'__recursa_input>,
+            {
+                fn __recursa_visit_mut_with<V>(
+                    &mut self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitorMut<__RecursaVisitEventsMut<'__recursa_input>>,
+                {
+                    (**self).__recursa_visit_mut_with(visitor)
+                }
+            }
+
             impl<'__recursa_input, T> __RecursaVisitMutWith<'__recursa_input> for Option<T>
             where
                 T: __RecursaVisitMutWith<'__recursa_input>,
@@ -431,7 +502,46 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
                 }
             }
 
+            impl<'__recursa_input, T> __RecursaVisitMutWith<'__recursa_input>
+                for #facade::ArenaVec<'__recursa_input, T>
+            where
+                T: __RecursaVisitMutWith<'__recursa_input>,
+            {
+                fn __recursa_visit_mut_with<V>(
+                    &mut self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitorMut<__RecursaVisitEventsMut<'__recursa_input>>,
+                {
+                    for value in self {
+                        value.__recursa_visit_mut_with(visitor)?;
+                    }
+                    ::core::ops::ControlFlow::Continue(())
+                }
+            }
+
             impl<'__recursa_input, T> __RecursaVisitMutWith<'__recursa_input> for #facade::Vec1<T>
+            where
+                T: __RecursaVisitMutWith<'__recursa_input>,
+            {
+                fn __recursa_visit_mut_with<V>(
+                    &mut self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitorMut<__RecursaVisitEventsMut<'__recursa_input>>,
+                {
+                    for value in self.iter_mut() {
+                        value.__recursa_visit_mut_with(visitor)?;
+                    }
+                    ::core::ops::ControlFlow::Continue(())
+                }
+            }
+
+
+            impl<'__recursa_input, T> __RecursaVisitMutWith<'__recursa_input>
+                for #facade::ArenaVec1<'__recursa_input, T>
             where
                 T: __RecursaVisitMutWith<'__recursa_input>,
             {

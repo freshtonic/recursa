@@ -1,10 +1,11 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
 use crate::input::TokenRecord;
-use crate::parsed::GeneratedParse;
 use crate::parsed::ViewCursor;
+use crate::parsed::{ArenaAstFamily, ArenaGeneratedParse, GeneratedParse};
 use crate::{
-    ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap, Span,
+    ArenaParsed, ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap,
+    Span,
 };
 use std::fmt;
 
@@ -427,6 +428,17 @@ impl<'input> ExplorerDocument<'input> {
         }
     }
 
+    /// Erases a complete arena-backed parsed root while retaining its allocator.
+    pub fn from_arena<F>(parsed: ArenaParsed<'input, F>) -> Self
+    where
+        F: ArenaAstFamily + 'input,
+        for<'arena> F::Ast<'arena>: ExplorerRoot,
+    {
+        Self {
+            storage: Box::new(ArenaTypedDocument { parsed }),
+        }
+    }
+
     /// Returns whether this document was parsed or synthesized.
     pub fn provenance(&self) -> Provenance {
         self.storage.provenance()
@@ -487,7 +499,37 @@ impl<T: ExplorerRoot> ErasedDocument for TypedDocument<'_, T> {
     }
 
     fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput> {
-        T::__recursa_explorer_pretty(&self.parsed, config)
+        let (value, cursor) = self.parsed.explorer_parts();
+        T::__recursa_explorer_pretty(value, cursor, config)
+    }
+}
+
+/// Typed backing allocation for one self-contained arena parse.
+struct ArenaTypedDocument<'input, F: ArenaAstFamily> {
+    parsed: ArenaParsed<'input, F>,
+}
+
+impl<F> ErasedDocument for ArenaTypedDocument<'_, F>
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: ExplorerRoot,
+{
+    fn provenance(&self) -> Provenance {
+        Provenance::Parsed
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.parsed.source()
+    }
+
+    fn root(&self) -> NodeData<'_> {
+        let (value, cursor) = self.parsed.explorer_parts();
+        value.__recursa_explorer_node(cursor)
+    }
+
+    fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput> {
+        let (value, cursor) = self.parsed.explorer_parts();
+        <F::Ast<'_> as ExplorerRoot>::__recursa_explorer_pretty(value, cursor, config)
     }
 }
 
@@ -1115,6 +1157,19 @@ unsafe impl<T: ExplorerNode + ?Sized> ExplorerNode for Box<T> {
     }
 }
 
+unsafe impl<T: ExplorerNode + ?Sized> ExplorerNode for bumpalo::boxed::Box<'_, T> {
+    fn __recursa_explorer_node<'document>(
+        &'document self,
+        cursor: ViewCursor<'document>,
+    ) -> NodeData<'document> {
+        (**self).__recursa_explorer_node(cursor)
+    }
+
+    fn __recursa_explorer_field(&self, element: usize) -> ExplorerField<'_> {
+        (**self).__recursa_explorer_field(element)
+    }
+}
+
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 /// Erased semantic content of one grammar element in an active Node shape.
@@ -1178,9 +1233,33 @@ impl<T: ExplorerNode> ExplorerSeq for Vec<T> {
     }
 }
 
+impl<T: ExplorerNode> ExplorerSeq for bumpalo::collections::Vec<'_, T> {
+    fn len(&self) -> usize {
+        bumpalo::collections::Vec::len(self)
+    }
+
+    fn get(&self, index: usize) -> Option<&dyn ExplorerNode> {
+        self.as_slice()
+            .get(index)
+            .map(|value| value as &dyn ExplorerNode)
+    }
+}
+
 impl<T: ExplorerNode> ExplorerSeq for crate::Vec1<T> {
     fn len(&self) -> usize {
         crate::Vec1::len(self)
+    }
+
+    fn get(&self, index: usize) -> Option<&dyn ExplorerNode> {
+        self.as_slice()
+            .get(index)
+            .map(|value| value as &dyn ExplorerNode)
+    }
+}
+
+impl<T: ExplorerNode> ExplorerSeq for crate::ArenaVec1<'_, T> {
+    fn len(&self) -> usize {
+        crate::ArenaVec1::len(self)
     }
 
     fn get(&self, index: usize) -> Option<&dyn ExplorerNode> {
@@ -1222,10 +1301,11 @@ pub fn field_optional_many<S: ExplorerSeq>(values: Option<&S>) -> ExplorerField<
 pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
     /// Renders parsed or synthetic Pretty output; roots without `Pretty` report none.
     fn __recursa_explorer_pretty(
-        parsed: &Parsed<'_, Self>,
+        value: &Self,
+        cursor: ViewCursor<'_>,
         config: &PrettyConfig,
     ) -> Option<PrettyOutput> {
-        let _ = (parsed, config);
+        let _ = (value, cursor, config);
         None
     }
 }
@@ -1244,11 +1324,44 @@ pub unsafe trait ExplorerRootFamily: 'static {
     type Root<'input>: GeneratedParse<'input> + ExplorerRoot + 'input;
 }
 
+/// Private root family for one arena-backed materialized root application.
+///
+/// # Safety
+/// `Root` must select one generated arena family whose AST is the same Explorer Node for every
+/// allocator lifetime.
+#[doc(hidden)]
+pub unsafe trait ArenaExplorerRootFamily: 'static {
+    /// Input-lifetime spelling carrying the generated arena parsing implementation.
+    type Root<'input>: ArenaGeneratedParse<'input> + 'input;
+
+    /// Parses one source through this family's concrete lifetime-parametric root.
+    fn parse<'input>(
+        lex: RawLexFn,
+        source: &'input str,
+    ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>;
+}
+
 /// Tests one complete strict root against a generated static variant identity.
 pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
     parsed: &Parsed<'_, T>,
     expected: &'static VariantSchemaData,
 ) -> bool {
+    let (value, cursor) = parsed.explorer_parts();
+    value
+        .__recursa_explorer_node(cursor)
+        .active_variant
+        .is_some_and(|active| std::ptr::eq(active, expected))
+}
+
+/// Tests one arena-backed strict root against a generated static variant identity.
+pub(crate) fn arena_parsed_active_variant_is<F>(
+    parsed: &ArenaParsed<'_, F>,
+    expected: &'static VariantSchemaData,
+) -> bool
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: ExplorerRoot,
+{
     let (value, cursor) = parsed.explorer_parts();
     value
         .__recursa_explorer_node(cursor)
@@ -1459,6 +1572,64 @@ pub fn parse_root<'input, F: ExplorerRootFamily>(
     parse_document::<F::Root<'input>, ()>(&mut input, lexical_errors)
 }
 
+/// Lexes and strictly parses one arena-backed root family's document.
+#[doc(hidden)]
+pub fn parse_arena_root<'input, F: ArenaExplorerRootFamily>(
+    lex: RawLexFn,
+    source: &'input str,
+) -> Result<ExplorerDocument<'input>, ParseFailure<'input>> {
+    F::parse(lex, source)
+}
+
+/// Concrete arena root implementation named from one generated family method.
+#[doc(hidden)]
+pub fn parse_arena_typed_root<'input, T>(
+    lex: RawLexFn,
+    source: &'input str,
+) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>
+where
+    T: ArenaGeneratedParse<'input>,
+    T::Family: 'input,
+    for<'arena> <T::Family as ArenaAstFamily>::Ast<'arena>: ExplorerRoot,
+{
+    let lexed = lex(source);
+    let grammar = T::grammar();
+    let lexical_errors = lexed
+        .records()
+        .iter()
+        .filter(|record| record.kind == grammar.lexical_error_kind)
+        .map(|record| record.span)
+        .collect::<Vec<_>>();
+    if !lexical_errors.is_empty() {
+        return Err(ParseFailure {
+            source,
+            diagnostics: lexical_errors
+                .into_iter()
+                .map(|span| ParseDiagnostic {
+                    kind: ParseDiagnosticKind::LexicalError,
+                    span,
+                    text: source.get(span.range()).unwrap_or(""),
+                    found: None,
+                    expected: Box::new([]),
+                    message: "unrecognized input".into(),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
+    }
+    let mut input = lexed.input(grammar);
+    let parsed = crate::parsed::parse_arena_spanned::<T, ()>(&mut input)
+        .map_err(|error| parse_failure_from_error(source, error))?;
+    if let Some(record) = input.peek(0) {
+        return Err(ParseFailure {
+            source,
+            diagnostics: vec![trailing_input_diagnostic(source, grammar, record)]
+                .into_boxed_slice(),
+        });
+    }
+    Ok(ExplorerDocument::from_arena(parsed))
+}
+
 /// Produces one root family's deterministic synthetic document.
 ///
 /// One instantiation per family replaces one generated sample callback per Node.
@@ -1479,12 +1650,16 @@ where
 /// Renders structured Pretty output for a root that configures `Pretty`.
 #[doc(hidden)]
 pub fn pretty_root<T: crate::Pretty>(
-    parsed: &Parsed<'_, T>,
+    value: &T,
+    cursor: ViewCursor<'_>,
     config: &PrettyConfig,
 ) -> Option<PrettyOutput> {
-    Some(pretty_output(crate::Pretty::render_mapped_with(
-        parsed, *config,
-    )))
+    let mut context = crate::PrettyContext::with_config(*config);
+    context
+        .with_cursor(cursor, |context| value.pretty(context))
+        .expect("rendering into a structured sink cannot fail");
+    let (rendered, source_map) = context.finish_mapped();
+    Some(pretty_output((rendered, source_map)))
 }
 
 /// Runs one generated root parser as a strict grammar-erased transaction.

@@ -27,13 +27,15 @@ mod span;
 /// Grammar-independent AST traversal contracts.
 mod visitor;
 
+pub use bumpalo::boxed::Box as ArenaBox;
+pub use bumpalo::collections::Vec as ArenaVec;
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
 pub(crate) use input::Input;
-pub use output::{HasSpan, Vec1};
+pub use output::{ArenaVec1, HasSpan, Vec1};
 pub use parse::{ParseError, ParseErrorKind};
 pub use parsed::{
-    DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse,
-    Parsed, Repeated, RepeatedIter,
+    ArenaAstFamily, ArenaParse, ArenaParsed, DebugProvenance, ElementMetadata, ElementRole,
+    ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
 pub use span::{OffsetOverflow, Span};
@@ -52,12 +54,13 @@ pub mod __private {
     pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
-        ElementSchemaData as ExplorerElementSchemaData,
+        ArenaExplorerRootFamily, ElementSchemaData as ExplorerElementSchemaData,
         ElementTargetData as ExplorerElementTargetData, ExplorerField, ExplorerNode, ExplorerRoot,
         ExplorerRootFamily, ExplorerSeq, GrammarTablesData as ExplorerGrammarTablesData,
         NodeData as ExplorerNodeData, NodeSchemaData as ExplorerNodeSchemaData,
-        SampleFn as ExplorerSampleFn, TokenSchemaData as ExplorerTokenSchemaData,
-        VariantSchemaData as ExplorerVariantSchemaData, construct_adapter as explorer_adapter,
+        RawLexFn as ExplorerRawLexFn, SampleFn as ExplorerSampleFn,
+        TokenSchemaData as ExplorerTokenSchemaData, VariantSchemaData as ExplorerVariantSchemaData,
+        construct_adapter as explorer_adapter,
         content_token_target as explorer_content_token_target,
         element_schema as explorer_element_schema, field_many as explorer_field_many,
         field_one as explorer_field_one, field_optional as explorer_field_optional,
@@ -65,14 +68,17 @@ pub mod __private {
         grammar_tables as explorer_grammar_tables, lex_record as explorer_lex_record,
         lex_result as explorer_lex_result, node as explorer_node,
         node_child as explorer_node_child, node_schema as explorer_node_schema,
-        node_target as explorer_node_target, parse_root as explorer_parse_root,
-        pretty_root as explorer_pretty_root, token_node as explorer_token_node,
-        token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
+        node_target as explorer_node_target, parse_arena_root as explorer_parse_arena_root,
+        parse_arena_typed_root as explorer_parse_arena_typed_root,
+        parse_root as explorer_parse_root, pretty_root as explorer_pretty_root,
+        token_node as explorer_token_node, token_schema as explorer_token_schema,
+        variant_schema as explorer_variant_schema,
     };
     #[cfg(feature = "explorer")]
     pub use crate::framing::{
-        PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData, frame_document,
-        payload_plan as framing_payload_plan, plan as framing_plan,
+        PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
+        frame_arena_document, frame_document, payload_plan as framing_payload_plan,
+        plan as framing_plan,
     };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
     pub use crate::input::{
@@ -87,10 +93,10 @@ pub mod __private {
     pub use crate::lr::{LrTables, Reduction as LrReduction, run as lr_run};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
-        CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
-        NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode, Repeated,
-        RepeatedIter, ViewCursor, parse, parse_seal::Sealed as ParseSealed, parse_spanned,
-        pretty_view,
+        ArenaGeneratedParse, CapturePolicy, ContentText, ElementMetadata, GeneratedInput,
+        GeneratedParse as Parse, NodeElements, NodeViewFactory, Occurrence, Occurrences,
+        ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor, parse, parse_arena,
+        parse_arena_spanned, parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]

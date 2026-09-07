@@ -426,6 +426,32 @@ fn input_lifetime() -> syn::Lifetime {
     syn::parse_quote!('__recursa_input)
 }
 
+/// The lifetime semantic AST containers borrow in generated reduce actions.
+fn semantic_lifetime(plan: &EmissionPlan) -> syn::Lifetime {
+    if plan.arena_ast {
+        syn::parse_quote!('__recursa_arena)
+    } else {
+        input_lifetime()
+    }
+}
+
+/// Wraps one generated semantic value in the grammar-selected box.
+fn box_value(
+    plan: &EmissionPlan,
+    ty: proc_macro2::TokenStream,
+    value: proc_macro2::TokenStream,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    if plan.arena_ast {
+        let facade = &plan.facade;
+        (
+            quote!(#facade::ArenaBox<'__recursa_arena, #ty>),
+            quote!(#facade::ArenaBox::new_in(#value, reduction.arena())),
+        )
+    } else {
+        (quote!(Box<#ty>), quote!(Box::new(#value)))
+    }
+}
+
 /// The Rust spelling of one element value: its type and the expression that takes it off the
 /// value stack (or names it, for a fixed-token unit node), boxed as the container shape says.
 struct ElementRendering {
@@ -444,17 +470,21 @@ impl TableDrivenRendering {
         element: ElementValue,
     ) -> Result<ElementRendering, String> {
         let module_anchor = &plan.module_anchor;
-        let input_lifetime = input_lifetime();
+        let input_lifetime = semantic_lifetime(plan);
         let (mut ty, mut value) = if let Some(application) =
             self.application_by_type.get(&element.type_id)
         {
-            let ty = plan
+            let mut ty = plan
                 .nodes
                 .iter()
                 .flat_map(|node| node.parse_applications.iter())
                 .find(|candidate| candidate.application == *application)
-                .map(|candidate| &candidate.ty)
+                .map(|candidate| candidate.ty.clone())
                 .ok_or_else(|| "a lowered element has no planned node application".to_owned())?;
+            if plan.arena_ast {
+                let authored_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
+                replace_lifetime(&mut ty, &authored_lifetime, &semantic_lifetime(plan));
+            }
             let carries_value = self
                 .type_carries_value
                 .get(&element.type_id)
@@ -463,7 +493,7 @@ impl TableDrivenRendering {
             let value = if carries_value {
                 quote!(unsafe { reduction.pop::<#ty>() })
             } else {
-                let Type::Path(path) = ty else {
+                let Type::Path(path) = &ty else {
                     return Err(
                         "a valueless element must name a unit fixed-token struct".to_owned()
                     );
@@ -487,8 +517,7 @@ impl TableDrivenRendering {
             );
         };
         for _ in 0..element.boxes {
-            ty = quote!(Box<#ty>);
-            value = quote!(Box::new(#value));
+            (ty, value) = box_value(plan, ty, value);
         }
         Ok(ElementRendering { ty, value })
     }
@@ -504,8 +533,7 @@ impl TableDrivenRendering {
         let boxed =
             |mut ty: proc_macro2::TokenStream, mut value: proc_macro2::TokenStream, boxes: u32| {
                 for _ in 0..boxes {
-                    ty = quote!(Box<#ty>);
-                    value = quote!(Box::new(#value));
+                    (ty, value) = box_value(plan, ty, value);
                 }
                 (ty, value)
             };
@@ -520,7 +548,12 @@ impl TableDrivenRendering {
                 }
                 OptionalContent::NonEmptyList { element, boxes } => {
                     let ty = self.element(plan, *element)?.ty;
-                    let (ty, _) = boxed(quote!(#facade::Vec1<#ty>), quote!(), *boxes);
+                    let list_ty = if plan.arena_ast {
+                        quote!(#facade::ArenaVec1<'__recursa_arena, #ty>)
+                    } else {
+                        quote!(#facade::Vec1<#ty>)
+                    };
+                    let (ty, _) = boxed(list_ty, quote!(), *boxes);
                     quote!(reduction.push::<Option<#ty>>(None);)
                 }
             },
@@ -536,9 +569,14 @@ impl TableDrivenRendering {
                 }
                 OptionalContent::NonEmptyList { element, boxes } => {
                     let ty = self.element(plan, *element)?.ty;
+                    let list_ty = if plan.arena_ast {
+                        quote!(#facade::ArenaVec1<'__recursa_arena, #ty>)
+                    } else {
+                        quote!(#facade::Vec1<#ty>)
+                    };
                     let (_, value) = boxed(
                         quote!(),
-                        quote!(unsafe { reduction.pop::<#facade::Vec1<#ty>>() }),
+                        quote!(unsafe { reduction.pop::<#list_ty>() }),
                         *boxes,
                     );
                     quote! {
@@ -549,28 +587,49 @@ impl TableDrivenRendering {
             },
             RuleAction::ListEmpty { element } => {
                 let ty = self.element(plan, *element)?.ty;
-                quote!(reduction.push(Vec::<#ty>::new());)
+                if plan.arena_ast {
+                    quote!(reduction.push(#facade::ArenaVec::<#ty>::new_in(reduction.arena()));)
+                } else {
+                    quote!(reduction.push(Vec::<#ty>::new());)
+                }
             }
             RuleAction::ListFirst { element } => {
                 let value = self.element(plan, *element)?.value;
-                quote! {
-                    let element = #value;
-                    reduction.push(#facade::Vec1::new(element));
+                if plan.arena_ast {
+                    quote! {
+                        let element = #value;
+                        reduction.push(#facade::ArenaVec1::new_in(element, reduction.arena()));
+                    }
+                } else {
+                    quote! {
+                        let element = #value;
+                        reduction.push(#facade::Vec1::new(element));
+                    }
                 }
             }
             RuleAction::ListPush { element } => {
                 let ElementRendering { ty, value } = self.element(plan, *element)?;
+                let list_ty = if plan.arena_ast {
+                    quote!(#facade::ArenaVec1<'__recursa_arena, #ty>)
+                } else {
+                    quote!(#facade::Vec1<#ty>)
+                };
                 quote! {
                     let element = #value;
-                    let mut list = unsafe { reduction.pop::<#facade::Vec1<#ty>>() };
+                    let mut list = unsafe { reduction.pop::<#list_ty>() };
                     list.push(element);
                     reduction.push(list);
                 }
             }
             RuleAction::ListFromNonEmpty { element } => {
                 let ty = self.element(plan, *element)?.ty;
+                let list_ty = if plan.arena_ast {
+                    quote!(#facade::ArenaVec1<'__recursa_arena, #ty>)
+                } else {
+                    quote!(#facade::Vec1<#ty>)
+                };
                 quote! {
-                    let list = unsafe { reduction.pop::<#facade::Vec1<#ty>>() };
+                    let list = unsafe { reduction.pop::<#list_ty>() };
                     reduction.push(list.into_vec());
                 }
             }
@@ -593,6 +652,17 @@ pub(super) fn render_root_items(
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
+    let semantic_lifetime = semantic_lifetime(plan);
+    let reducer_generics = if plan.arena_ast {
+        quote!(<#input_lifetime: #semantic_lifetime, #semantic_lifetime, A>)
+    } else {
+        quote!(<#input_lifetime, A>)
+    };
+    let reduction_arena = if plan.arena_ast {
+        quote!(#semantic_lifetime)
+    } else {
+        quote!('_)
+    };
     let end_marker = lr.end_marker;
     let asset = |name: &str| {
         let path = format!("/recursa-generations/{}/{name}", plan.identity);
@@ -627,7 +697,7 @@ pub(super) fn render_root_items(
             DispatchTarget::Token(token) => {
                 let ident = token_idents[&token];
                 Some(quote! {
-                    #first..=#last => <#module_anchor::__recursa_content_tokens::#ident<#input_lifetime>>::__recursa_reduce_lr(reduction),
+                    #first..=#last => <#module_anchor::__recursa_content_tokens::#ident<#semantic_lifetime>>::__recursa_reduce_lr(reduction),
                 })
             }
         }
@@ -664,8 +734,8 @@ pub(super) fn render_root_items(
             let function = (!body.is_empty()).then(|| {
                 quote! {
                     #[inline(never)]
-                    fn #ident<#input_lifetime, A>(
-                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
+                    fn #ident #reducer_generics(
+                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, #reduction_arena, A>,
                     ) -> Result<(), #facade::ParseError> {
                         #body
                         Ok(())
@@ -693,9 +763,9 @@ pub(super) fn render_root_items(
             #[doc = #safety]
             #[allow(clippy::manual_range_patterns)]
             #[inline(always)]
-            pub(crate) fn __recursa_reduce<#input_lifetime, A>(
+            pub(crate) fn __recursa_reduce #reducer_generics(
                 rule: u32,
-                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
+                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, #reduction_arena, A>,
             ) -> Result<(), #facade::ParseError> {
                 match rule {
                     #(#arms)*
@@ -751,6 +821,7 @@ fn application_action_reducer_path(
 fn render_parse_impl(
     plan: &EmissionPlan,
     ty: &Type,
+    family_ident: &Ident,
     capture: proc_macro2::TokenStream,
     start: &StartTables,
     parser: &RenderedParser,
@@ -761,6 +832,49 @@ fn render_parse_impl(
     let input_lifetime = input_lifetime();
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
+    if plan.arena_ast {
+        let arena_lifetime = semantic_lifetime(plan);
+        let mut marker_ty = ty.clone();
+        replace_lifetime(&mut marker_ty, &arena_lifetime, &input_lifetime);
+        return quote! {
+            #[doc(hidden)]
+            pub struct #family_ident;
+
+            unsafe impl #facade::ArenaAstFamily for #family_ident {
+                type Ast<#arena_lifetime> = #ty;
+            }
+
+            impl<#input_lifetime, A> #facade::__private::ArenaGeneratedParse<#input_lifetime, A>
+                for #marker_ty
+            {
+                type Family = #family_ident;
+                const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
+                fn grammar() -> &'static #facade::__private::GrammarInfo {
+                    &#module_anchor::__RECURSA_GRAMMAR
+                }
+                fn root_follow() -> &'static #facade::__private::FollowSet {
+                    #facade::__private::empty_follow()
+                }
+                fn parse_arena<#arena_lifetime>(
+                    context: &mut #facade::__private::ParseContext<'_, #input_lifetime, #arena_lifetime, A>,
+                ) -> Result<
+                    #facade::__private::ParsedNode<#arena_lifetime, #ty>,
+                    #facade::ParseError,
+                >
+                where
+                    #input_lifetime: #arena_lifetime,
+                {
+                    #facade::__private::lr_run::<#ty, A, _>(
+                        context,
+                        &#tables_module::TABLES,
+                        #start_state,
+                        #accept_rule,
+                        #tables_module::__recursa_reduce,
+                    )
+                }
+            }
+        };
+    }
     quote! {
         impl<#input_lifetime, A> #facade::__private::Parse<#input_lifetime, A> for #ty
         {
@@ -786,6 +900,22 @@ fn render_parse_impl(
     }
 }
 
+/// Rebinds one generated lifetime throughout a materialized application type.
+fn replace_lifetime(ty: &mut Type, from: &syn::Lifetime, to: &syn::Lifetime) {
+    struct Replace<'a> {
+        from: &'a syn::Lifetime,
+        to: &'a syn::Lifetime,
+    }
+    impl syn::visit_mut::VisitMut for Replace<'_> {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            if lifetime.ident == self.from.ident {
+                *lifetime = self.to.clone();
+            }
+        }
+    }
+    syn::visit_mut::VisitMut::visit_type_mut(&mut Replace { from, to }, ty);
+}
+
 /// Renders one node application's `TableDriven` parse impl and its reduce actions.
 pub(super) fn render_node_application(
     plan: &EmissionPlan,
@@ -797,20 +927,35 @@ pub(super) fn render_node_application(
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
-    let ty = &application.ty;
+    let semantic_lifetime = semantic_lifetime(plan);
+    let mut ty = application.ty.clone();
+    if plan.arena_ast {
+        replace_lifetime(&mut ty, &input_lifetime, &semantic_lifetime);
+    }
+    let ty = &ty;
     let tables = lr.application(application.application);
     let Some(start) = &tables.start else {
         return Ok(quote!());
     };
-    let parse_impl = render_parse_impl(plan, ty, node.capture.render(facade), start, parser);
+    let family_ident = format_ident!("__RecursaArenaFamilyNode{}", application.parse_index);
+    let parse_impl = render_parse_impl(
+        plan,
+        ty,
+        &family_ident,
+        node.capture.render(facade),
+        start,
+        parser,
+    );
     let mut helper_generics = Generics::default();
-    if node.generics.lifetimes().next().is_some() {
+    if node.generics.lifetimes().next().is_some() || plan.arena_ast {
         helper_generics
             .params
-            .push(syn::parse_quote!(#input_lifetime));
+            .push(syn::parse_quote!(#semantic_lifetime));
     }
     let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
-    let helper_method_generics = if node.generics.lifetimes().next().is_some() {
+    let helper_method_generics = if plan.arena_ast {
+        quote!(<#input_lifetime: #semantic_lifetime, A>)
+    } else if node.generics.lifetimes().next().is_some() {
         quote!(<A>)
     } else {
         quote!(<#input_lifetime, A>)
@@ -830,20 +975,37 @@ pub(super) fn render_node_application(
                 action_index
             );
             let body = render_reduce_body(plan, node, application, lr, action.rule)?;
-            let shim = quote! {
-                #[doc = #safety]
-                #[inline(always)]
-                pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
-                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
-                ) -> Result<(), #facade::ParseError> {
-                    <#ty>::#method_ident(reduction)
+            let shim = if plan.arena_ast {
+                quote! {
+                    #[doc = #safety]
+                    #[inline(always)]
+                    pub(in #module_anchor) fn #reducer_ident<#input_lifetime: #semantic_lifetime, #semantic_lifetime, A>(
+                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, #semantic_lifetime, A>,
+                    ) -> Result<(), #facade::ParseError> {
+                        <#ty>::#method_ident(reduction)
+                    }
                 }
+            } else {
+                quote! {
+                    #[doc = #safety]
+                    #[inline(always)]
+                    pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
+                        reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
+                    ) -> Result<(), #facade::ParseError> {
+                        <#ty>::#method_ident(reduction)
+                    }
+                }
+            };
+            let reduction_arena = if plan.arena_ast {
+                quote!(#semantic_lifetime)
+            } else {
+                quote!('_)
             };
             let method = quote! {
                 #[doc = #safety]
                 #[inline(never)]
                 fn #method_ident #helper_method_generics(
-                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, #reduction_arena, A>,
                 ) -> Result<(), #facade::ParseError> {
                     #body
                     Ok(())
@@ -1011,9 +1173,18 @@ fn render_reduce_body(
 }
 
 /// Wraps a value expression in `boxes` layers of `Box::new`.
-fn boxed(mut expression: proc_macro2::TokenStream, boxes: usize) -> proc_macro2::TokenStream {
+fn boxed(
+    plan: &EmissionPlan,
+    mut expression: proc_macro2::TokenStream,
+    boxes: usize,
+) -> proc_macro2::TokenStream {
     for _ in 0..boxes {
-        expression = quote!(Box::new(#expression));
+        expression = if plan.arena_ast {
+            let facade = &plan.facade;
+            quote!(#facade::ArenaBox::new_in(#expression, reduction.arena()))
+        } else {
+            quote!(Box::new(#expression))
+        };
     }
     expression
 }
@@ -1061,26 +1232,36 @@ fn render_field_value(
         } else {
             unit_value(plan, node, terminal, terminal_node)?
         };
-        Ok(boxed(value, boxes))
+        Ok(boxed(plan, value, boxes))
     };
     let Some(depth) = wrappers.iter().position(is_choice) else {
         return element(wrappers.len());
     };
     if !form.inlined {
         // A required list or a helper: the symbol's value is the field value from `depth` on.
-        return Ok(boxed(quote!(unsafe { reduction.pop() }), depth));
+        return Ok(boxed(plan, quote!(unsafe { reduction.pop() }), depth));
     }
     let inner = match (&wrappers[depth], form.present) {
         (FieldWrapper::Optional, false) => quote!(None),
-        (FieldWrapper::ZeroOrMore, false) => quote!(Vec::new()),
+        (FieldWrapper::ZeroOrMore, false) => {
+            if plan.arena_ast {
+                quote!(#facade::ArenaVec::new_in(reduction.arena()))
+            } else {
+                quote!(Vec::new())
+            }
+        }
         (FieldWrapper::ZeroOrMore, true) => {
-            quote!(unsafe { reduction.pop::<#facade::Vec1<_>>() }.into_vec())
+            if plan.arena_ast {
+                quote!(unsafe { reduction.pop::<#facade::ArenaVec1<'__recursa_arena, _>>() }.into_vec())
+            } else {
+                quote!(unsafe { reduction.pop::<#facade::Vec1<_>>() }.into_vec())
+            }
         }
         (FieldWrapper::Optional, true) => {
             let rest = &wrappers[depth + 1..];
             let inner = match rest.iter().position(is_choice) {
                 None => element(rest.len())?,
-                Some(list_depth) => boxed(quote!(unsafe { reduction.pop() }), list_depth),
+                Some(list_depth) => boxed(plan, quote!(unsafe { reduction.pop() }), list_depth),
             };
             quote!(Some(#inner))
         }
@@ -1091,7 +1272,7 @@ fn render_field_value(
             ));
         }
     };
-    Ok(boxed(inner, depth))
+    Ok(boxed(plan, inner, depth))
 }
 
 /// Finds the resolved variant a lowered alternative declaration stands for.
@@ -1159,11 +1340,13 @@ pub(super) fn render_token_items(
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let ident = &token.ident;
-    let input_lifetime = input_lifetime();
+    let input_lifetime = semantic_lifetime(plan);
     let ty: Type = syn::parse_quote!(#ident<#input_lifetime>);
+    let family_ident = format_ident!("__RecursaArenaFamilyToken{}", token.semantic.index());
     let parse_impl = render_parse_impl(
         plan,
         &ty,
+        &family_ident,
         token.capture.render(facade),
         lr.token(token.semantic),
         parser,
@@ -1171,19 +1354,36 @@ pub(super) fn render_token_items(
     let parsed_kind = (token.accepted_kind_variants.len() > 1).then(
         || quote!(kind: #module_anchor::__recursa_lexical::__recursa_typed_kind(record.kind),),
     );
-    quote! {
-        #parse_impl
-
-        impl<#input_lifetime> #ident<#input_lifetime> {
-            pub(crate) fn __recursa_reduce_lr<A>(
-                reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
-            ) -> Result<(), #facade::ParseError> {
-                let record = reduction.token();
-                let text = reduction.matched_text(record)?;
-                reduction.push(Self { text, #parsed_kind });
-                Ok(())
+    let reducer = if plan.arena_ast {
+        quote! {
+            impl<'__recursa_arena> #ident<'__recursa_arena> {
+                pub(crate) fn __recursa_reduce_lr<'__recursa_input: '__recursa_arena, A>(
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, '__recursa_input, '__recursa_arena, A>,
+                ) -> Result<(), #facade::ParseError> {
+                    let record = reduction.token();
+                    let text = reduction.matched_text_in_arena(record)?;
+                    reduction.push(Self { text, #parsed_kind });
+                    Ok(())
+                }
             }
         }
+    } else {
+        quote! {
+            impl<#input_lifetime> #ident<#input_lifetime> {
+                pub(crate) fn __recursa_reduce_lr<A>(
+                    reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, '_, A>,
+                ) -> Result<(), #facade::ParseError> {
+                    let record = reduction.token();
+                    let text = reduction.matched_text(record)?;
+                    reduction.push(Self { text, #parsed_kind });
+                    Ok(())
+                }
+            }
+        }
+    };
+    quote! {
+        #parse_impl
+        #reducer
     }
 }
 
