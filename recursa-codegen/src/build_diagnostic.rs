@@ -390,6 +390,7 @@ impl DiagnosticLocation {
     }
 
     /// Returns this value with source text attached.
+    #[cfg(test)]
     pub(crate) fn with_source_text(
         mut self,
         source: &str,
@@ -430,6 +431,7 @@ pub(crate) enum DiagnosticLocationInvariant {
     /// Range end precedes its start.
     ReversedRange,
     /// Range offset splits a UTF-8 scalar value.
+    #[cfg(test)]
     InvalidUtf8Boundary,
 }
 
@@ -447,6 +449,7 @@ fn manifest_relative_path(path: &Path) -> Option<PathBuf> {
 }
 
 /// Performs the line column phase of this boundary.
+#[cfg(test)]
 fn line_column(source: &str, byte: u32) -> Option<LineColumn> {
     let byte = usize::try_from(byte).ok()?;
     if byte > source.len() || !source.is_char_boundary(byte) {

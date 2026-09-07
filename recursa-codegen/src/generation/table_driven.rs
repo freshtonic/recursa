@@ -525,7 +525,11 @@ impl TableDrivenRendering {
                 ));
             }
         };
-        Ok(quote!(#index => { #body Ok(()) }))
+        if body.is_empty() {
+            Ok(quote!(#index => Ok(()),))
+        } else {
+            Ok(quote!(#index => { #body Ok(()) }))
+        }
     }
 }
 
@@ -580,8 +584,13 @@ pub(super) fn render_root_items(
         match arm.target {
             DispatchTarget::Application(application) => {
                 let reducer = &application_reducers[&application];
+                let local_rule = if base == 0 {
+                    quote!(rule - #first)
+                } else {
+                    quote!(rule - #first + #base)
+                };
                 quote! {
-                    #first..=#last => #reducer(rule - #first + #base, reduction),
+                    #first..=#last => #reducer(#local_rule, reduction),
                 }
             }
             DispatchTarget::Token(token) => {
@@ -730,11 +739,33 @@ pub(super) fn render_node_application(
             render_reduce_body(plan, node, application, lr, rule).map(|body| (index as u32, body))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let arms = coalesce_reduce_actions(actions).into_iter().map(|action| {
-        let indices = action.indices;
-        let body = action.body;
-        quote!(#(#indices)|* => #body)
-    });
+    let coalesced = coalesce_reduce_actions(actions);
+    let effective = coalesced
+        .into_iter()
+        .filter(|action| !is_empty_reduce_body(&action.body))
+        .collect::<Vec<_>>();
+    let reduce_dispatch = if effective.len() == 1 {
+        let action = &effective[0];
+        let indices = &action.indices;
+        let body = &action.body;
+        quote! {
+            if false #(|| rule == #indices)* {
+                #body
+            }
+        }
+    } else {
+        let arms = effective.into_iter().map(|action| {
+            let indices = action.indices;
+            let body = action.body;
+            render_reduce_arm(&indices, &body)
+        });
+        quote! {
+            match rule {
+                #(#arms)*
+                _ => {}
+            }
+        }
+    };
     let safety = "Reduce actions of the table-driven parser. SAFETY: each `pop` names, through \
                   the constructed field's type, the type the child rule's action pushed for the \
                   same grammar symbol, and pops happen in reverse right-hand-side order.";
@@ -755,14 +786,18 @@ pub(super) fn render_node_application(
                 rule: u32,
                 reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
             ) -> Result<(), #facade::ParseError> {
-                match rule {
-                    #(#arms)*
-                    _ => {}
-                }
+                #reduce_dispatch
                 Ok(())
             }
         }
     })
+}
+
+/// Returns whether a reduction body has no semantic effect.
+fn is_empty_reduce_body(body: &proc_macro2::TokenStream) -> bool {
+    syn::parse2::<syn::Block>(body.clone())
+        .map(|block| block.stmts.is_empty())
+        .unwrap_or(false)
 }
 
 /// One semantically distinct node-local reduce action and every local rule index that uses it.
@@ -774,6 +809,20 @@ pub(super) fn render_node_application(
 struct CoalescedReduceAction {
     indices: Vec<u32>,
     body: proc_macro2::TokenStream,
+}
+
+/// Renders one node-local reducer arm without wrapping a single statement in an unnecessary
+/// block. Generated fixtures compile with warnings denied, so a unit construction such as
+/// `reduction.push(Self)` must be emitted directly as the arm expression.
+fn render_reduce_arm(indices: &[u32], body: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let pattern = quote!(#(#indices)|*);
+    if let Ok(block) = syn::parse2::<syn::Block>(body.clone())
+        && let [syn::Stmt::Expr(expression, _)] = block.stmts.as_slice()
+    {
+        quote!(#pattern => #expression,)
+    } else {
+        quote!(#pattern => #body)
+    }
 }
 
 /// Coalesces textually identical node-local reduce actions in first-occurrence order.
@@ -1242,5 +1291,28 @@ mod nested {
         assert_eq!(coalesced[1].indices, vec![3]);
         assert!(coalesced[0].body.to_string().contains("Node :: Second"));
         assert!(coalesced[1].body.to_string().contains("Node :: First"));
+    }
+
+    #[test]
+    fn singleton_reduce_arms_do_not_emit_unnecessary_braces() {
+        let arm = render_reduce_arm(
+            &[0],
+            &quote!({
+                reduction.push(Node::Value);
+            }),
+        );
+        assert_eq!(
+            arm.to_string(),
+            "0u32 => reduction . push (Node :: Value) ,"
+        );
+
+        let arm = render_reduce_arm(
+            &[1],
+            &quote!({
+                let value = reduction.pop();
+                reduction.push(Node { value });
+            }),
+        );
+        assert!(arm.to_string().contains("1u32 => { let value"));
     }
 }

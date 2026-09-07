@@ -18,7 +18,12 @@ macro_rules! source_id {
             pub(crate) fn next(length: usize) -> Self {
                 Self(length.try_into().expect("source model ID overflow"))
             }
+        }
+    };
+    ($name:ident, indexed) => {
+        source_id!($name);
 
+        impl $name {
             pub(crate) const fn index(self) -> usize {
                 self.0 as usize
             }
@@ -26,11 +31,11 @@ macro_rules! source_id {
     };
 }
 
-source_id!(ModuleId);
-source_id!(NodeId);
+source_id!(ModuleId, indexed);
+source_id!(NodeId, indexed);
 source_id!(ElementId);
-source_id!(TokenDefinitionId);
-source_id!(TokenUseId);
+source_id!(TokenDefinitionId, indexed);
+source_id!(TokenUseId, indexed);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Rust syntax edition accepted by source discovery.
@@ -46,8 +51,6 @@ pub(crate) enum DiagnosticStage {
     Discovery,
     /// An authored Rust source file could not be parsed.
     Syntax,
-    /// Authored grammar meaning could not be lowered.
-    Lowering,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
