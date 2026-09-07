@@ -1229,8 +1229,8 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
     ordered_identities.sort_by(|(left_identity, left_site), (right_identity, right_site)| {
         (left_site, kind_label(left_identity)).cmp(&(right_site, kind_label(right_identity)))
     });
-    // Merged kinds follow every lexed kind, so a `lookahead` block never renumbers the kinds a
-    // recursive-descent generation dispatches on.
+    // Merged kinds follow every lexed kind, so a `lookahead` block never renumbers source token
+    // kinds.
     let merged_identities = model.lookahead_filters.iter().map(|filter| {
         let TokenDefinitionKind::Fixed(fixed) = &model.token_definitions[filter.token.index()].kind
         else {

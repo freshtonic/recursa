@@ -1,12 +1,14 @@
-//! Rendering for the table-driven parser style: the root tables and reduce dispatcher, and the
-//! per-node `TableDriven` parse impls with their reduce actions.
+//! Rendering for the Recursa parser: root tables, the reduce dispatcher, and per-node parse impls.
 //!
 //! Section 8 of `docs/table-driven-parsing.md` is the shape. The renderer runs the [`crate::lr`]
 //! analysis over the lowered grammar at the renderer-selection point, refuses to generate on any
 //! conflict, and then emits data plus reduce actions: the packed tables as byte-string literals,
 //! one generic dispatcher with a range match over each contiguous block of a grammar type's
-//! rules, and for every node application and content token an `impl GeneratedParse<'i, A,
-//! TableDriven>` whose `parse` hands its start state and accept rule to the facade loop.
+//! rules, and for every node application and content token a `GeneratedParse` impl whose `parse`
+//! hands its start state and accept rule to the facade loop. A node application's dispatcher arm
+//! calls a declaration-local free shim instead of naming the node type at the grammar root: that
+//! keeps private node declarations private while allowing their own module to run the typed
+//! reduction.
 //!
 //! A reduce action pops the values of its rule's value-carrying symbols in reverse right-hand
 //! side order and pushes the constructed node. The pops are `unsafe` because the value stack is
@@ -18,6 +20,8 @@
 //! Sequences, enum alternatives, Pratt variants, fixed tokens and content tokens are rendered.
 //! A Pratt variant's reduce pops its operands like any other children and boxes them at
 //! construction; the implicit left operand of an infix or postfix variant is the first pop.
+//! Textually identical node-local reductions share one match arm so rustc optimizes their
+//! construction once while the LR table retains every distinct rule number.
 //!
 //! Containers (#114) follow the lowering's two forms. An inlined choice is visible to the node's
 //! own reduce action through the rule's [`SiteForm`]s: an absent site is `None`, `false` or an
@@ -25,13 +29,11 @@
 //! `presence(...)`, `list(...)`, `list1(...)`, `list1t(...)`) and a presence envelope are reduced
 //! in the root dispatcher, where the value they build is spelled through the element's node
 //! type or content-token path, so a shared helper is typed once and every user pops the same
-//! type by inference. A named table-driven parser (#119) renders the same items: its tables
-//! and dispatcher under `parsers::<name>` when it is not the default parser, and its parse
-//! impls against the same `TableDriven` marker, which its own `Input` names.
+//! type by inference.
 //!
 //! Deviations from the section 8 sketch, all deliberate: a type's start state and accept rule
-//! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`, so the
-//! trait shared with recursive descent stays untouched; there is no `VALUE_SLOT`, because the
+//! are passed to `lr::run` as arguments instead of living as consts on `GeneratedParse`; there is
+//! no `VALUE_SLOT`, because the
 //! value stack is typed at each pop by the constructed field; the `start_states` table that
 //! the analysis packs is not rendered, since every type carries its own start facts; the end
 //! marker terminal travels with the tables; and the reduce dispatcher takes one `Reduction`
@@ -54,6 +56,23 @@ use crate::lr::{
 };
 use crate::materialization::{LoweredGrammar, VariantAlternativeCorrelation};
 use crate::{KindId, TypeId};
+
+/// Binary table files published beside generated Rust.
+pub(super) const LR_TABLE_ASSET_NAMES: [&str; 13] = [
+    "lr-pact.bin",
+    "lr-table.bin",
+    "lr-check.bin",
+    "lr-defact.bin",
+    "lr-pgoto.bin",
+    "lr-defgoto.bin",
+    "lr-r1.bin",
+    "lr-r2.bin",
+    "lr-value-pops.bin",
+    "lr-expected-atoms.bin",
+    "lr-lookahead.bin",
+    "lr-folds.bin",
+    "lr-tail.bin",
+];
 
 /// What a block of contiguous rules reduces to.
 #[derive(Clone, Copy, Debug)]
@@ -97,19 +116,17 @@ pub(super) struct ApplicationTables {
     pub(super) rules: Vec<Rule>,
 }
 
-/// Everything the renderers need from the table-driven analysis of one generation.
+/// Everything the renderers need from the LR analysis of one generation.
 pub(super) struct TableDrivenRendering {
     /// The end-marker terminal.
     end_marker: u32,
     /// The encoded tables.
     tables: EncodedLrTables,
     /// Whether some rule folds an occurrence under a mandatory policy (an erased optional
-    /// fixed-token group), which makes every parse fold provenance, as recursive descent
-    /// retains it whatever the request (#118).
+    /// fixed-token group), which makes every parse fold provenance (#118).
     mandatory_provenance: bool,
-    /// Per terminal, its canonical atom plus one or `0`: the vocabulary the error path names
-    /// expected terminals by, the same canonical atom per kind recursive descent's expected
-    /// sets carry.
+    /// Per terminal, its canonical atom plus one or `0`: the vocabulary the error path uses to
+    /// name expected terminals.
     expected_atoms: EncodedTable,
     /// The dispatcher arms in ascending rule order.
     arms: Vec<DispatchArm>,
@@ -136,7 +153,7 @@ pub(super) struct TableDrivenRendering {
 /// Joins conflict diagnostics into one generation failure message.
 fn render_diagnostics(diagnostics: &[LrDiagnostic]) -> String {
     let mut text = format!(
-        "the table-driven parser cannot be generated: {} conflict(s)\n",
+        "the Recursa parser cannot be generated: {} conflict(s)\n",
         diagnostics.len()
     );
     for diagnostic in diagnostics {
@@ -284,6 +301,30 @@ impl TableDrivenRendering {
         })
     }
 
+    /// Returns the exact encoded table bytes published outside generated Rust syntax.
+    pub(super) fn assets(&self) -> Vec<(String, Vec<u8>)> {
+        let tables = &self.tables;
+        [
+            &tables.pact,
+            &tables.table,
+            &tables.check,
+            &tables.defact,
+            &tables.pgoto,
+            &tables.defgoto,
+            &tables.r1,
+            &tables.r2,
+            &tables.value_pops,
+            &self.expected_atoms,
+            &tables.lookahead,
+            &tables.folds,
+            &tables.tail,
+        ]
+        .into_iter()
+        .zip(LR_TABLE_ASSET_NAMES)
+        .map(|(table, name)| (name.to_owned(), table.literal()))
+        .collect()
+    }
+
     /// Returns a node application's rules and start facts.
     pub(super) fn application(&self, application: MaterializedApplicationId) -> &ApplicationTables {
         &self.applications[&application]
@@ -325,8 +366,7 @@ fn same_target(left: DispatchTarget, right: DispatchTarget) -> bool {
     }
 }
 
-/// The lifetime name every table-driven impl uses for the input, matching the recursive-descent
-/// renderer so that `NodeApplicationParsePlan::ty` reads verbatim.
+/// The lifetime name every generated parse impl uses for the input.
 fn input_lifetime() -> syn::Lifetime {
     syn::parse_quote!('__recursa_input)
 }
@@ -489,9 +529,8 @@ impl TableDrivenRendering {
     }
 }
 
-/// Renders the `__recursa_lr` module of one table-driven parser, the tables and the reduce
-/// dispatcher: at the grammar module in `root.rs` for the default parser, under
-/// `parsers::<name>` for an extra one.
+/// Renders the sole parser's `__recursa_lr` module, tables, and reduce dispatcher at the
+/// grammar module in `root.rs`.
 pub(super) fn render_root_items(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
@@ -500,41 +539,49 @@ pub(super) fn render_root_items(
     let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
     let end_marker = lr.end_marker;
-    let literal = |table: &crate::lr::tables::EncodedTable| {
-        proc_macro2::Literal::byte_string(&table.literal())
+    let asset = |name: &str| {
+        let path = format!("/recursa-generations/{}/{name}", plan.identity);
+        quote!(include_bytes!(concat!(env!("OUT_DIR"), #path)))
     };
-    let pact = literal(&lr.tables.pact);
-    let table = literal(&lr.tables.table);
-    let check = literal(&lr.tables.check);
-    let defact = literal(&lr.tables.defact);
-    let pgoto = literal(&lr.tables.pgoto);
-    let defgoto = literal(&lr.tables.defgoto);
-    let r1 = literal(&lr.tables.r1);
-    let r2 = literal(&lr.tables.r2);
-    let value_pops = literal(&lr.tables.value_pops);
-    let expected_atoms = literal(&lr.expected_atoms);
-    let lookahead = literal(&lr.tables.lookahead);
-    let folds = literal(&lr.tables.folds);
-    let tail = literal(&lr.tables.tail);
+    let [
+        pact,
+        table,
+        check,
+        defact,
+        pgoto,
+        defgoto,
+        r1,
+        r2,
+        value_pops,
+        expected_atoms,
+        lookahead,
+        folds,
+        tail,
+    ] = LR_TABLE_ASSET_NAMES.map(asset);
     let mandatory = lr.mandatory_provenance;
     let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
         .tokens
         .iter()
         .map(|token| (token.semantic, &token.ident))
         .collect();
-    let application_types: HashMap<MaterializedApplicationId, &Type> = plan
+    let application_reducers: HashMap<MaterializedApplicationId, syn::Path> = plan
         .nodes
         .iter()
         .flat_map(|node| node.parse_applications.iter())
-        .map(|application| (application.application, &application.ty))
-        .collect();
+        .map(|application| {
+            Ok((
+                application.application,
+                application_reducer_path(application)?,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
     let arms = lr.arms.iter().map(|arm| {
         let (first, last, base) = (arm.first, arm.last, arm.local_base);
         match arm.target {
             DispatchTarget::Application(application) => {
-                let ty = application_types[&application];
+                let reducer = &application_reducers[&application];
                 quote! {
-                    #first..=#last => <#ty>::__recursa_reduce_lr(rule - #first + #base, reduction),
+                    #first..=#last => #reducer(rule - #first + #base, reduction),
                 }
             }
             DispatchTarget::Token(token) => {
@@ -576,6 +623,35 @@ pub(super) fn render_root_items(
     })
 }
 
+/// Names the declaration-local reducer shim for one materialized node application.
+fn application_reducer_ident(application: &NodeApplicationParsePlan) -> Ident {
+    format_ident!("__recursa_reduce_lr_{}", application.parse_index)
+}
+
+/// Resolves the declaration-local reducer shim without exposing the node type to its ancestors.
+///
+/// Materialized application types are emitted as an absolute `crate::module::Node<...>` path.
+/// Replacing the final type segment with the application-unique shim keeps the call at the same
+/// module while removing both the private declaration and its generic arguments from the root
+/// dispatcher's name resolution.
+fn application_reducer_path(application: &NodeApplicationParsePlan) -> Result<syn::Path, String> {
+    let Type::Path(type_path) = &application.ty else {
+        return Err("a materialized node application must have a path type".to_owned());
+    };
+    if type_path.qself.is_some() {
+        return Err("a materialized node application cannot have a qualified self type".to_owned());
+    }
+    let mut path = type_path.path.clone();
+    path.segments
+        .pop()
+        .ok_or_else(|| "a materialized node application path is empty".to_owned())?;
+    path.segments
+        .push(syn::PathSegment::from(application_reducer_ident(
+            application,
+        )));
+    Ok(path)
+}
+
 /// Renders the `TableDriven` parse impl of one type: `parse` runs the facade loop from the
 /// type's start state over the parser's tables.
 fn render_parse_impl(
@@ -587,15 +663,12 @@ fn render_parse_impl(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
-    let marker = parser.marker(plan);
     let tables_module = parser.tables_module(plan);
     let input_lifetime = input_lifetime();
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
     quote! {
-        impl<#input_lifetime, A>
-            #facade::__private::Parse<#input_lifetime, A, #marker>
-            for #ty
+        impl<#input_lifetime, A> #facade::__private::Parse<#input_lifetime, A> for #ty
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
             fn grammar() -> &'static #facade::__private::GrammarInfo {
@@ -628,6 +701,7 @@ pub(super) fn render_node_application(
     parser: &RenderedParser,
 ) -> Result<proc_macro2::TokenStream, String> {
     let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
     let ty = &application.ty;
     let tables = lr.application(application.application);
@@ -647,17 +721,33 @@ pub(super) fn render_node_application(
     } else {
         quote!(<#input_lifetime, A>)
     };
-    let arms = tables
+    let reducer_ident = application_reducer_ident(application);
+    let actions = tables
         .rules
         .iter()
         .enumerate()
-        .map(|(index, rule)| render_reduce_arm(plan, node, application, lr, index as u32, rule))
+        .map(|(index, rule)| {
+            render_reduce_body(plan, node, application, lr, rule).map(|body| (index as u32, body))
+        })
         .collect::<Result<Vec<_>, _>>()?;
+    let arms = coalesce_reduce_actions(actions).into_iter().map(|action| {
+        let indices = action.indices;
+        let body = action.body;
+        quote!(#(#indices)|* => #body)
+    });
     let safety = "Reduce actions of the table-driven parser. SAFETY: each `pop` names, through \
                   the constructed field's type, the type the child rule's action pushed for the \
                   same grammar symbol, and pops happen in reverse right-hand-side order.";
     Ok(quote! {
         #parse_impl
+
+        #[doc = #safety]
+        pub(in #module_anchor) fn #reducer_ident<#input_lifetime, A>(
+            rule: u32,
+            reduction: &mut #facade::__private::LrReduction<'_, '_, #input_lifetime, A>,
+        ) -> Result<(), #facade::ParseError> {
+            <#ty>::__recursa_reduce_lr(rule, reduction)
+        }
 
         impl #helper_impl_generics #ty #helper_where_clause {
             #[doc = #safety]
@@ -675,20 +765,55 @@ pub(super) fn render_node_application(
     })
 }
 
-/// Renders one reduce arm: pops for the rule's value-carrying elements and the construction.
+/// One semantically distinct node-local reduce action and every local rule index that uses it.
+///
+/// LR lowering deliberately clones rules for contexts such as Pratt minimum binding powers. The
+/// clones still need distinct grammar-wide rules and table entries, but frequently construct the
+/// exact same authored value. Keeping one rendered body behind an or-pattern avoids making rustc
+/// parse, type-check and optimize the same reducer many times.
+struct CoalescedReduceAction {
+    indices: Vec<u32>,
+    body: proc_macro2::TokenStream,
+}
+
+/// Coalesces textually identical node-local reduce actions in first-occurrence order.
+///
+/// All actions in one call are methods on the same concrete node application, so equal rendered
+/// Rust has the same input and output types. Rule-specific stack/state accounting remains in the
+/// LR binary tables; only the node construction executed after that accounting is shared here.
+fn coalesce_reduce_actions(
+    actions: Vec<(u32, proc_macro2::TokenStream)>,
+) -> Vec<CoalescedReduceAction> {
+    let mut positions = HashMap::<String, usize>::new();
+    let mut unique = Vec::<CoalescedReduceAction>::new();
+    for (index, body) in actions {
+        let key = body.to_string();
+        if let Some(position) = positions.get(&key).copied() {
+            unique[position].indices.push(index);
+        } else {
+            positions.insert(key, unique.len());
+            unique.push(CoalescedReduceAction {
+                indices: vec![index],
+                body,
+            });
+        }
+    }
+    unique
+}
+
+/// Renders one reduce body: pops for the rule's value-carrying elements and the construction.
 ///
 /// The rule's site forms and the node plan's elements are walked together, in reverse, so that
 /// every element finds its symbols and every inlined choice its absent or present form.
-fn render_reduce_arm(
+fn render_reduce_body(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
     lr: &TableDrivenRendering,
-    index: u32,
     rule: &Rule,
 ) -> Result<proc_macro2::TokenStream, String> {
     let RuleAction::Construct { variant, sites, .. } = &rule.action else {
-        return Ok(quote!(#index => {},));
+        return Ok(quote!({}));
     };
     let mut implicit_lhs = false;
     let (variant_ident, style, elements): (
@@ -814,7 +939,7 @@ fn render_reduce_arm(
     values.reverse();
     let construction = render_construction(variant_ident, style, &values);
     Ok(quote! {
-        #index => {
+        {
             #(#pops)*
             reduction.push(#construction);
         }
@@ -995,5 +1120,127 @@ pub(super) fn render_token_items(
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_reduce_dispatch_does_not_name_private_nested_node_types() {
+        let package = tempfile::tempdir().expect("temporary private Node fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+recursa::grammar! { module = crate }
+
+mod nested {
+    #[derive(recursa::Node)]
+    #[tok("root")]
+    struct Private;
+}
+"#,
+        )
+        .expect("write private Node fixture");
+        let success = analyze_source_tree(
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze private Node fixture");
+        let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join private Node emission plan");
+        let rendered = render(&plan).expect("render private Node generation");
+
+        assert!(
+            !rendered
+                .root
+                .contains("< crate :: nested :: Private > :: __recursa_reduce_lr"),
+            "the grammar-root dispatcher must not name a child module's private type: {}",
+            rendered.root,
+        );
+        assert!(
+            rendered
+                .root
+                .contains("crate :: nested :: __recursa_reduce_lr_0"),
+            "the grammar-root dispatcher must call the declaration-local reducer shim: {}",
+            rendered.root,
+        );
+        assert!(
+            rendered.nodes[0]
+                .1
+                .contains("pub (in crate) fn __recursa_reduce_lr_0"),
+            "the Node output must expose its reducer shim to the grammar root: {}",
+            rendered.nodes[0].1,
+        );
+    }
+
+    #[test]
+    fn identical_node_reduce_bodies_share_one_match_arm() {
+        let actions = vec![
+            (
+                0,
+                quote!({
+                    reduction.push(Node::Value);
+                }),
+            ),
+            (
+                1,
+                quote!({
+                    reduction.push(Node::Other);
+                }),
+            ),
+            (
+                4,
+                quote!({
+                    reduction.push(Node::Value);
+                }),
+            ),
+            (
+                7,
+                quote!({
+                    reduction.push(Node::Value);
+                }),
+            ),
+        ];
+
+        let coalesced = coalesce_reduce_actions(actions);
+
+        assert_eq!(coalesced.len(), 2);
+        assert_eq!(coalesced[0].indices, vec![0, 4, 7]);
+        assert_eq!(coalesced[1].indices, vec![1]);
+        assert!(coalesced[0].body.to_string().contains("Node :: Value"));
+        assert!(coalesced[1].body.to_string().contains("Node :: Other"));
+    }
+
+    #[test]
+    fn reduce_body_coalescing_keeps_first_occurrence_order() {
+        let actions = vec![
+            (
+                2,
+                quote!({
+                    reduction.push(Node::Second);
+                }),
+            ),
+            (
+                3,
+                quote!({
+                    reduction.push(Node::First);
+                }),
+            ),
+            (
+                8,
+                quote!({
+                    reduction.push(Node::Second);
+                }),
+            ),
+        ];
+
+        let coalesced = coalesce_reduce_actions(actions);
+
+        assert_eq!(coalesced[0].indices, vec![2, 8]);
+        assert_eq!(coalesced[1].indices, vec![3]);
+        assert!(coalesced[0].body.to_string().contains("Node :: Second"));
+        assert!(coalesced[1].body.to_string().contains("Node :: First"));
     }
 }

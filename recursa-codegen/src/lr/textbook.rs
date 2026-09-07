@@ -1,7 +1,8 @@
 //! Textbook grammars with known LALR(1) outcomes: state counts, tables and conflicts.
 
 use super::automaton::{
-    Action, Automaton, AutomatonOptions, ConflictKind, NoPrecedence, Resolution, StateId,
+    Action, Automaton, AutomatonOptions, ConflictKind, MergeArtefactCheck, NoPrecedence,
+    Resolution, StateId, canonical_build_count, reset_canonical_build_count,
 };
 use super::grammar::{LrGrammar, TextbookGrammar};
 use super::report::automaton_dump;
@@ -255,7 +256,15 @@ fn scoped_reduce_resolution_selects_the_authored_winner_of_reduce_reduce() {
     textbook.rule("A", "x");
     textbook.rule("B", "x");
     let grammar = textbook.finish();
-    let mut automaton = build(&grammar);
+    reset_canonical_build_count();
+    let mut automaton = Automaton::build(
+        &grammar,
+        &NoPrecedence,
+        AutomatonOptions {
+            check_merge_artefacts: false,
+            ..AutomatonOptions::default()
+        },
+    );
     let conflict = automaton
         .conflicts()
         .iter()
@@ -275,12 +284,97 @@ fn scoped_reduce_resolution_selects_the_authored_winner_of_reduce_reduce() {
             }],
         )
         .expect("the exact competing source owners select one winner");
+    automaton.classify_merge_artefacts(
+        &grammar,
+        AutomatonOptions {
+            lr1_state_budget: 0,
+            ..AutomatonOptions::default()
+        },
+    );
     assert!(automaton.conflicts().is_empty());
+    assert_eq!(automaton.merge_check(), &MergeArtefactCheck::NotNeeded);
+    assert_eq!(canonical_build_count(), 0);
     let resolved = &automaton.scoped_resolutions()[0];
     assert_eq!(resolved.resolution, Resolution::Reduce);
     assert_eq!(
         grammar.render_rule(resolved.reduced.expect("reduce winner")),
         "B -> x"
+    );
+}
+
+#[test]
+fn an_exhausted_canonical_budget_leaves_a_hard_conflict_and_reports_inconclusive() {
+    let grammar = lalr_merge_grammar();
+    reset_canonical_build_count();
+    let automaton = Automaton::build(
+        &grammar,
+        &NoPrecedence,
+        AutomatonOptions {
+            lr1_state_budget: 0,
+            ..AutomatonOptions::default()
+        },
+    );
+    assert_eq!(
+        automaton.merge_check(),
+        &MergeArtefactCheck::BudgetExceeded { budget: 0 }
+    );
+    assert_eq!(automaton.conflicts().len(), 2);
+    assert_eq!(canonical_build_count(), 1);
+    let diagnostics = super::report::conflict_diagnostics(&grammar, &automaton);
+    assert_eq!(diagnostics.len(), 2);
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic.code, super::report::REDUCE_REDUCE);
+        assert_eq!(
+            diagnostic.notes,
+            [
+                "merge-artefact classification is inconclusive: canonical LR(1) exceeded the \
+              0-state budget"
+            ]
+        );
+    }
+    assert!(
+        automaton_dump(&grammar, &automaton)
+            .contains("Merge-artefact check inconclusive: canonical LR(1) exceeded 0 states.")
+    );
+}
+
+#[test]
+fn inconclusive_reclassification_clears_an_older_verified_artefact_verdict() {
+    let grammar = lalr_merge_grammar();
+    let mut automaton = build(&grammar);
+    assert!(
+        automaton
+            .conflicts()
+            .iter()
+            .all(|conflict| conflict.merge_artefact)
+    );
+
+    reset_canonical_build_count();
+    automaton.classify_merge_artefacts(
+        &grammar,
+        AutomatonOptions {
+            lr1_state_budget: 0,
+            ..AutomatonOptions::default()
+        },
+    );
+    assert_eq!(canonical_build_count(), 1);
+    assert_eq!(
+        automaton.merge_check(),
+        &MergeArtefactCheck::BudgetExceeded { budget: 0 }
+    );
+    assert!(
+        automaton
+            .conflicts()
+            .iter()
+            .all(|conflict| !conflict.merge_artefact)
+    );
+    assert!(
+        super::report::conflict_diagnostics(&grammar, &automaton)
+            .iter()
+            .all(|diagnostic| diagnostic
+                .notes
+                .iter()
+                .all(|note| !note.starts_with(super::report::MERGE_ARTEFACT)))
     );
 }
 
@@ -504,15 +598,14 @@ fn end_marker_conflicts_between_token_wrappers_are_settled_by_declaration_order(
             "FuncName -> QualifiedName"
         ]
     );
-    // A genuinely ambiguous root yields the earliest-declared wrapper, which is the first
-    // alternative recursive descent would take.
+    // A genuinely ambiguous root yields the earliest-declared wrapper.
     assert_eq!(
         reductions("Name", &["IDENT"]).unwrap(),
         ["ColIdText -> IDENT", "ColId -> ColIdText", "Name -> ColId"]
     );
-    // The limit of the rule: a root context that can end only in the later-declared wrapper
-    // takes the earlier one at the end of input and then finds no action, where recursive
-    // descent would accept `TypeFunctionName`. The failing position is the end of input.
+    // The limit of the rule: a root context that can end only in the later-declared wrapper takes
+    // the earlier one at the end of input and then finds no action. The failing position is the
+    // end of input.
     assert_eq!(reductions("FuncName", &["IDENT"]).unwrap_err().position, 1);
     // The bare wrapper roots are unaffected: their start states reach one-item states.
     assert_eq!(
@@ -607,10 +700,14 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
         ["A -> a opt(X) c", "B -> b opt(X) d"]
     );
 
+    reset_canonical_build_count();
     let built = super::helpers::build_with_helper_copies(
         shared.clone(),
         |_| Ok(NoPrecedence),
-        AutomatonOptions::default(),
+        AutomatonOptions {
+            lr1_state_budget: 0,
+            ..AutomatonOptions::default()
+        },
     )
     .unwrap();
     assert!(
@@ -619,6 +716,11 @@ fn a_shared_helper_whose_merged_lookaheads_conflict_is_copied_per_site_class() {
         built.automaton.conflicts()
     );
     assert_eq!(built.rounds, 2);
+    assert_eq!(
+        built.automaton.merge_check(),
+        &MergeArtefactCheck::NotNeeded
+    );
+    assert_eq!(canonical_build_count(), 0);
     let [split] = built.splits.as_slice() else {
         panic!("one split: {:?}", built.splits);
     };

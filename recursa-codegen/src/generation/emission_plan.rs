@@ -5,8 +5,6 @@
 
 use super::*;
 
-use crate::source_syntax::ParserDeclarations;
-
 #[cfg(test)]
 std::thread_local! {
     /// Per-test observation of complete emission-plan validation passes.
@@ -42,8 +40,6 @@ pub(super) struct EmissionPlan {
     pub(super) module_anchor: syn::Path,
     /// Display name retained from the grammar configuration.
     pub(super) grammar_name: String,
-    /// Grammar-wide fixed-token comparison policy.
-    pub(super) text_equivalence: TextEquivalence,
     /// Default maximum rendered width for generated `Pretty` implementations.
     pub(super) pretty_max_width: usize,
     /// Default indentation width for generated `Pretty` implementations.
@@ -60,8 +56,6 @@ pub(super) struct EmissionPlan {
     pub(super) kind_names: Vec<String>,
     /// Expected-atom descriptions in semantic analysis order.
     pub(super) atom_names: Vec<String>,
-    /// Canonical grammar-wide storage for every emitted static expectation.
-    pub(super) expected_sets: ExpectedSetPool,
     /// Frozen Node parse plans in canonical materialization order.
     pub(super) nodes: Vec<NodeParsePlan>,
     /// Frozen content-token plans in semantic token order.
@@ -91,12 +85,8 @@ pub(super) struct EmissionPlan {
     pub(super) explorer: Option<ExtensionEmissionPlan>,
     /// Optional generated exact-source document framing plan.
     pub(super) framing: Option<FramingEmissionPlan>,
-    /// Validation counters proving frozen dispatch consumption.
-    pub(super) instrumentation: EmissionInstrumentation,
     /// Independent identities used to detect capability-plan drift.
     pub(super) plan_families: EmissionPlanFamilies,
-    /// Parsers this generation emits, default first; selects the renderer.
-    pub(super) parsers: ParserDeclarations,
 }
 
 /// Opaque proof that an immutable emission plan passed its complete invariant check.
@@ -156,18 +146,25 @@ pub(super) struct EmissionPlanFamilies {
     pub(super) explorer: Option<u64>,
 }
 
-#[derive(Clone, Default)]
-/// Counters proving plan construction consumed the complete frozen semantic decision product.
-pub(super) struct EmissionInstrumentation {
-    /// Number of Node dispatch tries joined into the frozen plan.
-    pub(super) frozen_dispatch_nodes_consumed: usize,
+#[cfg(test)]
+thread_local! {
+    /// LR lowering paired with plans constructed by unit tests on the current test thread.
+    static TEST_LOWERED: std::cell::RefCell<std::collections::BTreeMap<String, crate::materialization::LoweredGrammar>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-#[derive(Default)]
-/// Counters proving rendering consumed exactly the plan structure validated earlier.
-pub(super) struct RenderInstrumentation {
-    /// Number of frozen Node dispatch tries consumed during rendering.
-    pub(super) frozen_dispatch_nodes_rendered: usize,
+#[cfg(test)]
+fn remember_test_lowered(identity: &str, lowered: &crate::materialization::LoweredGrammar) {
+    TEST_LOWERED.with(|values| {
+        values
+            .borrow_mut()
+            .insert(identity.to_owned(), lowered.clone());
+    });
+}
+
+#[cfg(test)]
+pub(super) fn test_lowered(identity: &str) -> Option<crate::materialization::LoweredGrammar> {
+    TEST_LOWERED.with(|values| values.borrow().get(identity).cloned())
 }
 
 /// Resolves one authored framing declaration to generated Node, token, and variant identities.
@@ -345,7 +342,10 @@ impl EmissionPlan {
         analyzed: &crate::source_analysis::AnalyzedGrammar,
         cfg: &CargoCfgSnapshot,
     ) -> Result<ValidatedEmissionPlan, String> {
-        Self::build(analyzed, cfg).map(ValidatedEmissionPlan)
+        let plan = Self::build(analyzed, cfg)?;
+        #[cfg(test)]
+        remember_test_lowered(&plan.identity, &analyzed.lowered);
+        Ok(ValidatedEmissionPlan(plan))
     }
 
     #[cfg(test)]
@@ -354,7 +354,9 @@ impl EmissionPlan {
         analyzed: &crate::source_analysis::AnalyzedGrammar,
         cfg: &CargoCfgSnapshot,
     ) -> Result<Self, String> {
-        Self::build(analyzed, cfg)
+        let plan = Self::build(analyzed, cfg)?;
+        remember_test_lowered(&plan.identity, &analyzed.lowered);
+        Ok(plan)
     }
 
     /// Builds and validates the immutable plan wrapped by the production join seam.
@@ -370,10 +372,6 @@ impl EmissionPlan {
     ) -> Result<Self, String> {
         let lowered = &analyzed.lowered;
         let resolved = lowered.source_modeled.resolved();
-        let output = analyzed.analysis.output.as_ref().ok_or_else(|| {
-            "successful source analysis output lacks semantic analysis decisions".to_owned()
-        })?;
-        let decisions = output.decisions();
         let module_anchor = emitted_crate_path(&resolved.build_inputs.module_anchor.segments)?;
         let facade = emitted_ident(&resolved.build_inputs.facade.ident)?;
         let root_configured_traits = resolved
@@ -437,8 +435,7 @@ impl EmissionPlan {
                     format!("content token `{}` lacks a normalized type", content.ident)
                 })?
                 .lowered;
-            let TypeShape::Token { atom, .. } = &lowered.grammar.types[content_type.index()].shape
-            else {
+            let TypeShape::Token { .. } = &lowered.grammar.types[content_type.index()].shape else {
                 return Err(format!(
                     "content token `{}` did not lower to a normalized token type",
                     content.ident
@@ -447,10 +444,6 @@ impl EmissionPlan {
             let kind = u16::try_from(target.base_kind.index())
                 .map_err(|_| "generated token kind exceeds runtime width".to_owned())?;
             let accepted_kinds = target.accepted_kinds();
-            let mut expected = ExpectedSet::from_kinds(&accepted_kinds, kind_count);
-            expected.atoms.push(atom.index().try_into().map_err(|_| {
-                "generated content-token expectation exceeds runtime width".to_owned()
-            })?);
             tokens.push(TokenParsePlan {
                 semantic: content.id,
                 ident: format_ident!("__RecursaContentToken{index}"),
@@ -460,7 +453,6 @@ impl EmissionPlan {
                     .iter()
                     .map(|kind| kind_variants[kind.index()].clone())
                     .collect(),
-                expected,
                 capture: resolved.build_inputs.spans.into(),
                 arbitrary_spelling: lexical_pattern_witness(
                     &lowered
@@ -534,15 +526,6 @@ impl EmissionPlan {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mut nodes = Vec::new();
-        let mut instrumentation = EmissionInstrumentation::default();
-        let expected_atom_index = ExpectedAtomIndex::from_grammar(&lowered.grammar)?;
-        let emission_lookups = EmissionLookupIndex::new(
-            decisions,
-            &expected_atom_index,
-            lowered.grammar.types.len(),
-            lowered.grammar.sites.len(),
-            kind_count,
-        );
         for node in &resolved.nodes {
             let applications = lowered
                 .applications
@@ -586,13 +569,8 @@ impl EmissionPlan {
             let mut application_plans = Vec::new();
             let mut source_plan = None;
             for application in applications {
-                let planned = plan_node(
-                    node,
-                    application,
-                    lowered,
-                    &emission_lookups,
-                    &mut instrumentation,
-                )?;
+                let (planned, application_body) =
+                    plan_lr_node(node, source_node, application, lowered, kind_count)?;
                 application_plans.push(NodeApplicationParsePlan {
                     application: application.id,
                     node: application.node,
@@ -609,7 +587,7 @@ impl EmissionPlan {
                         lowered,
                         &syn::parse_quote!('static),
                     )?,
-                    body: planned.body.clone(),
+                    body: application_body,
                 });
                 if source_plan.is_none() {
                     source_plan = Some(planned);
@@ -617,7 +595,6 @@ impl EmissionPlan {
             }
             let mut planned = source_plan
                 .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?;
-            planned.body = structural_body(node, source_node, lowered, kind_count)?;
             planned.parse_applications.append(&mut application_plans);
             planned.configured_traits = configured_traits;
             planned.explorer_visit_configured = explorer_visit_configured;
@@ -630,22 +607,6 @@ impl EmissionPlan {
                 next_parse_index += 1;
             }
         }
-        let expected_sets = ExpectedSetPool::from_plans(&nodes, &tokens, kind_count);
-        let frozen_dispatch_sequences = nodes
-            .iter()
-            .flat_map(|node| &node.parse_applications)
-            .filter_map(|application| match &application.body {
-                NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch.frozen_sequence_count),
-                NodeBodyPlan::Struct { .. } => None,
-                NodeBodyPlan::Pratt(pratt) => Some(
-                    pratt.nud_dispatch.frozen_sequence_count
-                        + pratt
-                            .led_dispatch
-                            .as_ref()
-                            .map_or(0, |dispatch| dispatch.frozen_sequence_count),
-                ),
-            })
-            .sum::<usize>();
         let frozen_parse_identity = parse_plan_identity(&nodes);
         // source analysis has already decided whether each fixed token remains a standalone
         // rule or is recognized through one or more proven carriers. Preserve
@@ -873,6 +834,7 @@ impl EmissionPlan {
             });
         #[cfg(not(feature = "explorer"))]
         let authoritative_explorer: Option<ExtensionEmissionPlan> = None;
+        let authoritative_pretty = authoritative_pretty_plan(lowered, resolved)?;
         let plan_families = EmissionPlanFamilies {
             configured_traits: authoritative_configured_trait_identity(lowered, resolved),
             private_abi: plan_family_identity(&authoritative_private_abi_plan()),
@@ -881,9 +843,7 @@ impl EmissionPlan {
                 resolved.build_inputs.diagrams,
                 authoritative_explorer.is_some(),
             )),
-            pretty: authoritative_pretty_plan(lowered, resolved)?
-                .as_ref()
-                .map(plan_family_identity),
+            pretty: authoritative_pretty.as_ref().map(plan_family_identity),
             parse: frozen_parse_identity,
             diagrams: frozen_diagrams,
             explorer: authoritative_explorer.as_ref().map(plan_family_identity),
@@ -897,11 +857,13 @@ impl EmissionPlan {
             resolved.build_inputs.discovery.cfg_snapshot,
         );
         // Raw source text stays out of the identity: hashing it relocates the whole
-        // immutable Generation on semantically neutral edits (comments, inline test
-        // modules), which defeats downstream incremental compilation of the include
-        // tree. The span-stripped family identities and explicit plan facts below
-        // cover every semantic input rendering consumes; publication still verifies
-        // byte-for-byte payload equality whenever an identity is reused.
+        // immutable Generation on semantically neutral edits that do not move Node
+        // declarations (for example, inline test modules), which defeats downstream
+        // incremental compilation of the include tree. Node loader anchors below retain
+        // the authored declaration positions required by the derive macros. The
+        // span-stripped family identities and explicit plan facts cover every other
+        // semantic input rendering consumes; publication still verifies byte-for-byte
+        // payload equality whenever an identity is reused.
         canonical.push_str(&format!(
             ";families=configured_traits:{:016x},private_abi:{:016x},capabilities:{:016x},pretty:{:?},diagrams:{:?},explorer:{:?}",
             plan_families.configured_traits,
@@ -1001,34 +963,13 @@ impl EmissionPlan {
         });
         #[cfg(not(feature = "diagrams"))]
         canonical.push_str(";capabilities=core");
-        canonical.push_str(&format!(
-            ";frozen_dispatch_sequences={frozen_dispatch_sequences};frozen_dispatch_nodes={};emitter_dispatch_decisions=0;frozen_parse_identity={frozen_parse_identity:016x}",
-            instrumentation.frozen_dispatch_nodes_consumed,
-        ));
-        // The implicit default contributes nothing, so the canonical facts of a
-        // grammar that names no parser are the same as before parser styles existed.
-        let parsers = resolved.build_inputs.parsers.clone();
-        if !parsers.is_implicit_default() {
-            canonical.push_str(";parsers=");
-            for parser in parsers.iter() {
-                canonical.push_str(&format!(
-                    "{}:{},",
-                    parser
-                        .name
-                        .as_ref()
-                        .map_or_else(String::new, ToString::to_string),
-                    parser.style.as_str()
-                ));
-            }
-        }
+        canonical.push_str(&format!(";lr_plan_identity={frozen_parse_identity:016x}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             identity,
-            parsers,
             facade,
             module_anchor,
             grammar_name: lowered.grammar.name.clone(),
-            text_equivalence: lowered.grammar.text_equivalence,
             pretty_max_width: resolved.build_inputs.pretty.max_width,
             pretty_indent: resolved.build_inputs.pretty.indent,
             kind_count,
@@ -1037,7 +978,6 @@ impl EmissionPlan {
             kind_static_texts,
             kind_names,
             atom_names,
-            expected_sets,
             nodes,
             tokens,
             token_bindings,
@@ -1053,7 +993,6 @@ impl EmissionPlan {
             diagrams,
             explorer,
             framing,
-            instrumentation,
             plan_families,
         };
         plan.validate()?;
@@ -1079,12 +1018,6 @@ impl EmissionPlan {
         {
             return Err("the generated token-kind plan has inconsistent width".to_owned());
         }
-        self.expected_sets.validate(
-            &self.nodes,
-            &self.tokens,
-            self.kind_count,
-            self.atom_names.len(),
-        )?;
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
         }
@@ -1137,7 +1070,6 @@ impl EmissionPlan {
             );
         }
         self.validate_plan_families()?;
-        let mut frozen_nodes = 0;
         let mut applications = BTreeSet::new();
         for node in &self.nodes {
             for application in &node.parse_applications {
@@ -1145,25 +1077,6 @@ impl EmissionPlan {
                     return Err(
                         "the Pretty plan contains a duplicate materialized application".to_owned(),
                     );
-                }
-                match &application.body {
-                    NodeBodyPlan::Enum { variants, dispatch } => {
-                        if dispatch.frozen_sequence_count == 0 && dispatch.balanced.is_none() {
-                            return Err(
-                                "the emitted predictive plan has no frozen sequences".to_owned()
-                            );
-                        }
-                        frozen_nodes += validate_predictive_dispatch(dispatch, variants.len())?;
-                    }
-                    NodeBodyPlan::Pratt(pratt) => {
-                        pratt.validate()?;
-                        frozen_nodes += pratt.nud_dispatch.frozen_node_count;
-                        frozen_nodes += pratt
-                            .led_dispatch
-                            .as_ref()
-                            .map_or(0, |dispatch| dispatch.frozen_node_count);
-                    }
-                    NodeBodyPlan::Struct { .. } => {}
                 }
                 let pretty_element_sets = match &application.body {
                     NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
@@ -1273,12 +1186,9 @@ impl EmissionPlan {
                 }
             }
         }
-        if self.instrumentation.frozen_dispatch_nodes_consumed != frozen_nodes
-            || self.plan_families.parse != parse_plan_identity(&self.nodes)
-        {
+        if self.plan_families.parse != parse_plan_identity(&self.nodes) {
             return Err(
-                "the emitted predictive plan diverges from frozen semantic analysis decisions"
-                    .to_owned(),
+                "the emitted LR plan diverges from its frozen structural identity".to_owned(),
             );
         }
         Ok(())

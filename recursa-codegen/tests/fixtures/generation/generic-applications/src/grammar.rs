@@ -4,7 +4,6 @@ recursa::grammar! {
     derives(Debug, Clone, PartialEq, Pretty, serde::Serialize, serde::Deserialize),
     spans = optional,
     keyword_matching = ascii_insensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

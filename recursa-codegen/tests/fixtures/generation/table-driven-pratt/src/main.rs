@@ -1,19 +1,17 @@
-//! Drives the Pratt fixture grammar and prints what the test compares between the two parser
-//! styles: the Debug value of every positive parse with the cursor it leaves, and for every
+//! Drives the Pratt fixture grammar and prints what the test checks through the sole LR parser:
+//! the Debug value of every positive parse with the cursor it leaves, and for every
 //! failing input the error and the restored cursor.
 
 use recursa_generated_table_driven_pratt::grammar;
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 
-/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// Drives every input through the parser: `$tag` prefixes each printed line and `$input` builds
+/// its input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -110,14 +108,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("table-driven-pratt-ok");
 }
 

@@ -124,8 +124,6 @@ pub(crate) struct SourceModel {
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     /// Located references to token definitions from grammar positions.
     pub(crate) token_uses: Vec<TokenUse>,
-    /// Authored `#[greedy(...)]` acceptances in source order.
-    pub(crate) greedy: Vec<GreedyDeclaration>,
     /// Compiled `lookahead { ... }` declarations in canonical source order.
     pub(crate) lookahead_filters: Vec<LookaheadFilter>,
     /// The compiled `precedence { ... }` declaration: its levels from lowest to highest binding
@@ -134,7 +132,7 @@ pub(crate) struct SourceModel {
     /// Every `#[parse(prec = NAME)]` override, resolved to a level of `precedence`.
     pub(crate) precedence_overrides: Vec<PrecedenceOverride>,
     /// Authored LR conflict resolutions, compiled to typed source identities and token
-    /// definitions. Recursive-descent generation deliberately ignores them.
+    /// definitions.
     pub(crate) lr_conflict_resolutions: Vec<LrConflictResolution>,
 }
 
@@ -188,7 +186,7 @@ pub(crate) enum LrLookaheadReference {
 /// One level of the `precedence { ... }` declaration, bison's `%left`, `%right` or
 /// `%nonassoc` line with the binding power that places it on the Pratt scale.
 ///
-/// Only the table-driven lowering reads it; recursive descent ignores the declaration.
+/// LR lowering reads this declaration when resolving shift/reduce conflicts.
 pub(crate) struct PrecedenceLevel {
     /// The level's associativity.
     pub(crate) associativity: crate::PrecedenceAssociativity,
@@ -211,8 +209,7 @@ pub(crate) struct PrecedenceLevel {
 /// parser's token feed produces. gram.y names both in its precedence table, `NOT_LA` beside
 /// `BETWEEN` (`gram.y:837`), because to bison the filtered token is a terminal like any other.
 pub(crate) enum PrecedenceKindReference {
-    /// A token definition: a fixed token by definition name, a content token by type name, as
-    /// `#[greedy(...)]` spells them.
+    /// A token definition: a fixed token by definition name or a content token by type name.
     Token(TokenDefinitionId),
     /// A lookahead filter's merged kind, by its index into [`SourceModel::lookahead_filters`],
     /// which materialization reads to find the merged kind's [`KindId`](crate::KindId).
@@ -259,82 +256,6 @@ pub(crate) struct LookaheadFilter {
     /// Fixed or single-semantic-kind content token definitions that trigger the merge, in
     /// authored order without duplicates.
     pub(crate) triggers: Vec<TokenDefinitionId>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// One authored `#[greedy(KIND, ...)]` acceptance and the fields it covers.
-pub(crate) struct GreedyDeclaration {
-    /// Fields whose semantic sites the acceptance covers.
-    pub(crate) owner: GreedyOwner,
-    /// Token definitions the attribute names, or every overlap kind for `#[greedy(all)]`.
-    pub(crate) kinds: GreedyKindNames,
-    /// Locates the authored attribute.
-    pub(crate) site: SourceSite,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// The token definitions one `#[greedy(...)]` attribute names.
-pub(crate) enum GreedyKindNames {
-    /// Exactly these definitions, in authored order without duplicates.
-    Exact(Vec<TokenDefinitionId>),
-    /// `#[greedy(all)]`: whatever overlap analysis finds at the covered sites.
-    All,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// The authored item that carries one `#[greedy(...)]` attribute.
-pub(crate) enum GreedyOwner {
-    /// A struct field or tuple-variant field.
-    Field(ResolvedFieldId),
-    /// A variant; the acceptance covers every site of the variant.
-    Variant {
-        /// The variant itself, for sites that belong to no field.
-        variant: ResolvedVariantId,
-        /// Fields of the variant.
-        fields: Vec<ResolvedFieldId>,
-    },
-    /// A Node; the acceptance covers every site of the Node, including all variants.
-    Type(NodeId),
-}
-
-impl GreedyOwner {
-    /// Reports whether the acceptance covers a site of `node`, optionally inside `variant`,
-    /// optionally materialized from `field`.
-    pub(crate) fn covers(
-        &self,
-        node: NodeId,
-        variant: Option<ResolvedVariantId>,
-        field: Option<ResolvedFieldId>,
-    ) -> bool {
-        match self {
-            Self::Field(owner) => field == Some(*owner),
-            Self::Variant {
-                variant: owner,
-                fields,
-            } => variant == Some(*owner) || field.is_some_and(|field| fields.contains(&field)),
-            Self::Type(owner) => *owner == node,
-        }
-    }
-
-    /// Orders owners from most to least specific so a field attribute wins over its variant
-    /// and a variant attribute over its Node.
-    pub(crate) const fn specificity(&self) -> u8 {
-        match self {
-            Self::Field(_) => 0,
-            Self::Variant { .. } => 1,
-            Self::Type(_) => 2,
-        }
-    }
-}
-
-/// One `#[greedy(...)]` attribute whose names await the completed token catalog.
-struct PendingGreedy {
-    /// The authored item that carries the attribute.
-    owner: GreedyOwner,
-    /// Token names as authored, or `None` for `#[greedy(all)]`.
-    names: Option<Vec<(String, SourceSite)>>,
-    /// Locates the authored attribute.
-    site: SourceSite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1160,7 +1081,7 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidPrattTokenPlacement,
     /// Identifies an invalid field-local Pratt extension restriction.
     InvalidPrattExtensionFilter,
-    /// Identifies malformed, duplicated, or unresolvable `#[greedy(...)]` syntax.
+    /// Identifies use of the removed `#[greedy(...)]` helper.
     InvalidGreedyAcceptance,
     /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
@@ -1271,8 +1192,6 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         pretty_boundary_analysis: RefCell::default(),
         resolved_field_positions,
         pretty_content_definitions: Vec::new(),
-        pending_greedy: Vec::new(),
-        greedy: Vec::new(),
         pending_precedence_overrides: Vec::new(),
         precedence: Vec::new(),
         precedence_overrides: Vec::new(),
@@ -1318,10 +1237,6 @@ struct SourceModelBuilder<'cfg> {
     pretty_content_definitions: Vec<Option<TokenDefinitionId>>,
     /// Supplies the diagnostics used to correlate authored source with normalized grammar.
     diagnostics: Vec<SourceModelDiagnostic>,
-    /// Authored `#[greedy(...)]` attributes awaiting name resolution.
-    pending_greedy: Vec<PendingGreedy>,
-    /// Resolved `#[greedy(...)]` acceptances.
-    greedy: Vec<GreedyDeclaration>,
     /// Authored `#[parse(prec = NAME)]` attributes awaiting the compiled declaration.
     pending_precedence_overrides: Vec<PendingPrecedenceOverride>,
     /// The compiled `precedence { ... }` declaration.
@@ -5249,7 +5164,6 @@ impl SourceModelBuilder<'_> {
             self.pretty_boundary_analysis.borrow().soft_node_evaluations;
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         self.tokens.compile_lookahead_filters(&mut self.diagnostics);
-        self.resolve_greedy();
         self.resolve_precedence();
         self.resolve_lr_conflict_resolutions();
         let source_modeled = self
@@ -5264,7 +5178,6 @@ impl SourceModelBuilder<'_> {
                     token_definitions: self.tokens.definitions,
                     lexer_records: self.tokens.lexer_records,
                     token_uses: self.tokens.uses,
-                    greedy: self.greedy,
                     lookahead_filters: self.tokens.lookahead_filters,
                     precedence: self.precedence,
                     precedence_overrides: self.precedence_overrides,
@@ -5455,14 +5368,7 @@ impl SourceModelBuilder<'_> {
                                             second_field_attachment,
                                         },
                                     );
-                                    self.lower_greedy(
-                                        origin,
-                                        &variant.metas,
-                                        GreedyOwner::Variant {
-                                            variant: variant.id,
-                                            fields: variant.fields.clone(),
-                                        },
-                                    );
+                                    self.lower_greedy(origin, &variant.metas);
                                     self.lower_precedence_override(
                                         origin,
                                         &variant.metas,
@@ -5525,14 +5431,7 @@ impl SourceModelBuilder<'_> {
                                         body.into_elements(),
                                         TokenAttachment::Variant,
                                     );
-                                    self.lower_greedy(
-                                        origin,
-                                        &variant.metas,
-                                        GreedyOwner::Variant {
-                                            variant: variant.id,
-                                            fields: variant.fields.clone(),
-                                        },
-                                    );
+                                    self.lower_greedy(origin, &variant.metas);
                                     self.lower_precedence_override(
                                         origin,
                                         &variant.metas,
@@ -5575,7 +5474,7 @@ impl SourceModelBuilder<'_> {
                 &mut self.diagnostics,
             );
             let pretty = self.lower_pretty_hints(origin, configured, node.range);
-            self.lower_greedy(origin, configured, GreedyOwner::Type(node.id));
+            self.lower_greedy(origin, configured);
             self.lower_precedence_override(
                 origin,
                 configured,
@@ -5593,155 +5492,21 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Records one authored `#[greedy(...)]` attribute for a field, variant, or Node.
+    /// Rejects the removed `#[greedy(...)]` helper at its authored location.
     ///
-    /// The attribute names token definitions as `#[tok(...)]` spells them: fixed tokens by
-    /// their definition identifier and content tokens by their type name, or the single word
-    /// `all`. Names resolve later, once every module is lowered, in [`Self::resolve_greedy`].
-    /// Malformed syntax, an empty list, a duplicate kind, `all` mixed with names, or a repeated
-    /// attribute is `RCA3131`; whether the site has an overlap is decided by analysis.
-    fn lower_greedy(&mut self, origin: SourceOrigin, metas: &[Meta], owner: GreedyOwner) {
-        let greedy_metas = metas
-            .iter()
-            .filter(|meta| meta.path().is_ident("greedy"))
-            .collect::<Vec<_>>();
-        let Some(meta) = greedy_metas.first() else {
-            return;
-        };
-        let site = self.site(origin, span_range(meta.span()));
-        if greedy_metas.len() > 1 {
-            self.diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidGreedyAcceptance,
-                sites: greedy_metas
-                    .iter()
-                    .map(|meta| self.site(origin, span_range(meta.span())))
-                    .collect(),
-                message: "a field, variant, or Node accepts at most one #[greedy(...)]".to_owned(),
-            });
-            return;
-        }
-        let Meta::List(list) = meta else {
+    /// The derive macro continues to admit the helper attribute only so this source-aware
+    /// diagnostic wins over Rust's unknown-attribute error.
+    fn lower_greedy(&mut self, origin: SourceOrigin, metas: &[Meta]) {
+        for meta in metas.iter().filter(|meta| meta.path().is_ident("greedy")) {
+            let site = self.site(origin, span_range(meta.span()));
             self.diagnostics
                 .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
                     site,
-                    "#[greedy(...)] must list the accepted token kinds, or `all`",
+                    "#[greedy(...)] has been removed; make the grammar LALR(1) or resolve its LR conflict explicitly",
                 ));
-            return;
-        };
-        let parser = syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated;
-        let idents = match parser.parse2(list.tokens.clone()) {
-            Ok(idents) => idents,
-            Err(error) => {
-                self.diagnostics.push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                    self.site(origin, span_range(error.span())),
-                    format!(
-                        "#[greedy(...)] accepts a comma-separated list of token kinds, or `all`: {error}"
-                    ),
-                ));
-                return;
-            }
-        };
-        if idents.is_empty() {
-            self.diagnostics
-                .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                    site,
-                    "#[greedy(...)] must name at least one token kind, or `all`",
-                ));
-            return;
-        }
-        let mut names = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut all = false;
-        for ident in &idents {
-            let name = ident.unraw().to_string();
-            let ident_site = self.site(origin, span_range(ident.span()));
-            if !seen.insert(name.clone()) {
-                self.diagnostics
-                    .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                        ident_site,
-                        format!("#[greedy(...)] names `{name}` more than once"),
-                    ));
-                return;
-            }
-            if name == "all" {
-                all = true;
-            } else {
-                names.push((name, ident_site));
-            }
-        }
-        if all && !names.is_empty() {
-            self.diagnostics
-                .push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                    site,
-                    "#[greedy(all)] accepts every overlap kind and takes no other names",
-                ));
-            return;
-        }
-        self.pending_greedy.push(PendingGreedy {
-            owner,
-            names: (!all).then_some(names),
-            site,
-        });
-    }
-
-    /// Resolves every pending `#[greedy(...)]` name against the completed, normalized token
-    /// catalog, so a token defined in a module lowered after its use still resolves and every
-    /// definition id is the one lowering will see.
-    fn resolve_greedy(&mut self) {
-        let pending = std::mem::take(&mut self.pending_greedy);
-        for PendingGreedy { owner, names, site } in pending {
-            let Some(names) = names else {
-                self.greedy.push(GreedyDeclaration {
-                    owner,
-                    kinds: GreedyKindNames::All,
-                    site,
-                });
-                continue;
-            };
-            let mut definitions = Vec::new();
-            let mut resolved = true;
-            for (name, name_site) in names {
-                let matches = self
-                    .tokens
-                    .definitions
-                    .iter()
-                    .filter(|definition| {
-                        definition.name == name
-                            && !matches!(definition.kind, TokenDefinitionKind::LexicalBase(_))
-                    })
-                    .map(|definition| definition.id)
-                    .collect::<Vec<_>>();
-                if matches.is_empty() {
-                    self.diagnostics.push(SourceModelDiagnosticKind::InvalidGreedyAcceptance.at(
-                        name_site,
-                        format!(
-                            "`{name}` in #[greedy(...)] is not a fixed token or a content token type"
-                        ),
-                    ));
-                    resolved = false;
-                    continue;
-                }
-                definitions.extend(matches);
-            }
-            if !resolved {
-                continue;
-            }
-            definitions.dedup();
-            self.greedy.push(GreedyDeclaration {
-                owner,
-                kinds: GreedyKindNames::Exact(definitions),
-                site,
-            });
         }
     }
 
-    /// Records one authored `#[parse(prec = NAME)]` attribute, bison's `%prec`, for a Node or
-    /// variant.
-    ///
-    /// The name is resolved against the compiled `precedence { ... }` declaration in
-    /// [`Self::resolve_precedence`]. Malformed syntax, a repeated attribute, or an attribute on
-    /// a Pratt operator variant (`operator`), whose binding powers already are its precedence,
-    /// is `RCA3133`.
     fn lower_precedence_override(
         &mut self,
         origin: SourceOrigin,
@@ -5813,13 +5578,12 @@ impl SourceModelBuilder<'_> {
     /// Compiles the `precedence { ... }` declaration against the completed, normalized token
     /// catalog and resolves every `#[parse(prec = NAME)]` against it.
     ///
-    /// A name resolves the way `#[greedy(...)]` spells kinds: a fixed token by its definition
-    /// identifier, a content token by its type name; failing both, a `lookahead { ... }`
-    /// filter's merged kind by its declared name, which gram.y's block names too (`NOT_LA`
-    /// beside `BETWEEN`). A name that is none of the three is a precedence-only name, bison's
-    /// `UMINUS`, and must be used by at least one override so a misspelt token is still an
-    /// error. A second block, an unused precedence-only name, and an override naming no level
-    /// are `RCA3133`.
+    /// A name resolves as a fixed token by its definition identifier or a content token by its
+    /// type name; failing both, a `lookahead { ... }` filter's merged kind by its declared name,
+    /// which gram.y's block names too (`NOT_LA` beside `BETWEEN`). A name that is none of the
+    /// three is a precedence-only name, bison's `UMINUS`, and must be used by at least one
+    /// override so a misspelt token is still an error. A second block, an unused precedence-only
+    /// name, and an override naming no level are `RCA3133`.
     ///
     /// Every name a level carries, a merged kind's included, also names that level for
     /// `#[parse(prec = NAME)]`, as gram.y writes `%prec NOT_LA` on the rules that shift the
@@ -5941,8 +5705,8 @@ impl SourceModelBuilder<'_> {
     ///
     /// The declaration owner is implicit in the attachment site. `against` is a fully qualified
     /// grammar-source path to the opposing Node or variant, `lookahead` is a nonempty exact token
-    /// set, and `expect` is a positive exact cell count. Resolution is table-driven-only data;
-    /// recursive descent does not consult it.
+    /// set, and `expect` is a positive exact cell count. Resolution is consumed only by LR
+    /// construction.
     fn lower_lr_conflict_resolutions(
         &mut self,
         origin: SourceOrigin,
@@ -6218,11 +5982,7 @@ impl SourceModelBuilder<'_> {
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
             let site = self.site(origin, span_range(field.span()));
-            self.lower_greedy(
-                origin,
-                field_configured,
-                GreedyOwner::Field(resolved_field.id),
-            );
+            self.lower_greedy(origin, field_configured);
             reject_obsolete_parser_postconditions(
                 &self.resolved,
                 origin,
@@ -11323,7 +11083,6 @@ struct IfPresence;
 recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
-    max_lookahead = 5,
 }
 recursa::tokens! {
     categories { UNRESERVED, RESERVED }
@@ -11715,6 +11474,30 @@ recursa::tokens! {
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn removed_greedy_helper_has_a_targeted_migration_diagnostic() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+#[greedy(all)]
+struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidGreedyAcceptance,
+            "RCA3131",
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message
+                == "#[greedy(...)] has been removed; make the grammar LALR(1) or resolve its LR conflict explicitly"
+        }));
     }
 
     #[test]

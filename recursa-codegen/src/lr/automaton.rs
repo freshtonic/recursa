@@ -28,7 +28,26 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
 use super::grammar::{LrGrammar, NonterminalId, RuleAction, RuleId, Symbol, TerminalId};
+use crate::profile::Span;
 use crate::{LrConflictAction, LrConflictResolution, LrRuleOwner, TypeId};
+
+#[cfg(test)]
+std::thread_local! {
+    /// Per-test observation of canonical LR(1) collection builds.
+    static CANONICAL_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Resets the current test thread's canonical LR(1) collection build count.
+pub(super) fn reset_canonical_build_count() {
+    CANONICAL_BUILD_COUNT.set(0);
+}
+
+#[cfg(test)]
+/// Returns the current test thread's canonical LR(1) collection build count.
+pub(super) fn canonical_build_count() -> usize {
+    CANONICAL_BUILD_COUNT.get()
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Dense automaton state identity in construction order; start states come first.
@@ -375,10 +394,9 @@ pub struct ScopedConflictResolution {
 /// which wrapper a prefix parse yields when the input stops after the wrapper; the explicit
 /// action of every continuation terminal is untouched, so a root that continues past the wrapper
 /// still reduces the right one. The choice is exact for each root context in which the
-/// earliest-declared wrapper can end the parse, which is every root that recursive descent
-/// resolves to its first alternative; a root context that can end only in a later-declared
-/// wrapper reports an unexpected end where recursive descent accepts. That case is an LALR(1)
-/// merge artefact of the per-type start rules, and the remedy is declaration order.
+/// earliest-declared wrapper can end the parse. A root context that can end only in a
+/// later-declared wrapper is an LALR(1) merge artefact of the per-type start rules, and its remedy
+/// is declaration order.
 pub struct EndMarkerResolution {
     /// The state in which the reductions competed.
     pub state: StateId,
@@ -486,10 +504,21 @@ impl Automaton {
         resolver: &dyn ConflictResolver,
         options: AutomatonOptions,
     ) -> Self {
-        let nullable = grammar.nullable_nonterminals();
-        let lr0 = Lr0Automaton::build(grammar);
-        let lookaheads = compute_lookaheads(grammar, &lr0, &nullable);
+        let _profile = Span::enter("lr.automaton");
+        let nullable = {
+            let _stage = Span::enter("nullable");
+            grammar.nullable_nonterminals()
+        };
+        let lr0 = {
+            let _stage = Span::enter("lr0");
+            Lr0Automaton::build(grammar)
+        };
+        let lookaheads = {
+            let _stage = Span::enter("lalr-lookaheads");
+            compute_lookaheads(grammar, &lr0, &nullable)
+        };
 
+        let _stage = Span::enter("actions");
         let mut states = Vec::with_capacity(lr0.states.len());
         let mut conflicts = Vec::new();
         let mut resolved = Vec::new();
@@ -538,14 +567,19 @@ impl Automaton {
             end_resolutions,
             merge_check: MergeArtefactCheck::Disabled,
         };
-        automaton.classify_merge_artefacts(grammar, options);
+        drop(_stage);
+        if options.check_merge_artefacts {
+            automaton.classify_merge_artefacts(grammar, options);
+        }
         automaton
     }
 
     /// Runs the merge-artefact check of `options` over the reduce/reduce conflicts, replacing
-    /// the previous outcome. [`build`](Self::build) runs it once; the helper-copy loop builds
-    /// its intermediate automata with the check disabled and runs it on the last one.
+    /// the previous outcome. [`build`](Self::build) runs it once when the options enable it; the
+    /// helper-copy loop builds its intermediate automata with the check disabled and runs it on
+    /// the last one.
     pub fn classify_merge_artefacts(&mut self, grammar: &LrGrammar, options: AutomatonOptions) {
+        let _stage = Span::enter("merge-artefact-classification");
         self.merge_check =
             classify_merge_artefacts(grammar, &self.states, &mut self.conflicts, options);
     }
@@ -1274,6 +1308,9 @@ fn classify_merge_artefacts(
     conflicts: &mut [Conflict],
     options: AutomatonOptions,
 ) -> MergeArtefactCheck {
+    for conflict in conflicts.iter_mut() {
+        conflict.merge_artefact = false;
+    }
     let has_reduce_reduce = conflicts
         .iter()
         .any(|conflict| matches!(conflict.kind, ConflictKind::ReduceReduce { .. }));
@@ -1317,6 +1354,9 @@ struct CanonicalLr1 {
 impl CanonicalLr1 {
     /// Builds the collection, or returns `None` once the state budget is exceeded.
     fn build(grammar: &LrGrammar, budget: usize) -> Option<Self> {
+        #[cfg(test)]
+        CANONICAL_BUILD_COUNT.set(CANONICAL_BUILD_COUNT.get().saturating_add(1));
+        let _profile = Span::enter("canonical-lr1");
         let width = grammar.terminal_count();
         let end = grammar.end_marker();
         let nullable = grammar.nullable_nonterminals();
@@ -1409,7 +1449,7 @@ impl CanonicalLr1 {
 }
 
 /// Computes FIRST of every nonterminal.
-pub(super) fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
+pub(crate) fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
     let width = grammar.terminal_count();
     let mut first = vec![TerminalSet::empty(width); grammar.nonterminal_count()];
     let mut changed = true;

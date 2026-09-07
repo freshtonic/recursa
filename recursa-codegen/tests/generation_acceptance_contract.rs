@@ -13,10 +13,10 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
     let document = fs::read_to_string(matrix_path()).expect("read generation acceptance contract");
     let rows = matrix_rows(&document);
 
-    assert_eq!(rows.len(), 17);
+    assert_eq!(rows.len(), 13);
     assert_eq!(
         rows.values().filter(|row| row.status == "Green").count(),
-        17,
+        13,
     );
     assert_eq!(
         rows.values().filter(|row| row.status == "Pending").count(),
@@ -45,10 +45,6 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
     assert_eq!(
         green,
         BTreeSet::from([
-            "M4-LEDGER",
-            "M4-SIX-PROJECTIONS",
-            "M4-FROZEN-PARSE-PLANS",
-            "M4-BALANCED-DISPATCH",
             "M4-GENERATED-CONTAINERS",
             "M4-DIAGRAM-DECL-LOCAL",
             "M4-PRATT-DIAGRAM",
@@ -72,16 +68,8 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
         .collect::<BTreeSet<_>>();
     assert!(pending.is_empty());
     assert_eq!(
-        rows["M4-LEDGER"].evidence,
-        "`cargo test -p recursa-codegen --lib --test legacy_case_ledger --test analysis_parity --test analysis_diagnostics --test analysis_conflicts --test analysis_pratt_conflicts --locked`",
-    );
-    assert_eq!(
         rows["M4-EXPLORER"].evidence,
         "`cargo test -p recursa-codegen --test generated_compound_nodes explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples --locked && cargo test -p recursa-codegen --test generated_generic_applications explorer_adapters_are_generated_for_each_closed_generic_application --locked`",
-    );
-    assert_eq!(
-        rows["M4-BALANCED-DISPATCH"].evidence,
-        "`cargo test -p recursa-codegen --test generated_predictive frozen_first_k_and_follow_plans_drive_generated_predictive_parsers --locked`",
     );
     assert_eq!(
         rows["M4-DEBUG-BUNDLE"].evidence,

@@ -1,8 +1,5 @@
-//! Drives the container grammar and prints what the test compares between the two parser
-//! styles: the Debug value of every positive parse with the cursor it leaves, where a root parse
-//! stops when tokens follow it, the value of every entry point, and for every failing input the
-//! error, the restored cursor and the number of heap allocations still live after the error is
-//! dropped.
+//! Drives every container shape through the sole Recursa parser and records values,
+//! provenance, cursors, errors, and allocation cleanup.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -130,14 +127,12 @@ const NEGATIVE: &[&str] = &[
 ];
 
 /// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// builds the Recursa parser's input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -234,8 +229,7 @@ macro_rules! drive {
         for source in NEGATIVE {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-            // those records by design, so the live count is taken on a warm second parse.
+            // Take the live count after a warm failure so it covers only this parse's values.
             drop(grammar::Statement::parse(&mut input).expect_err("failing input fails"));
             let baseline = LIVE.load(Ordering::SeqCst);
             let error = grammar::Statement::parse(&mut input).expect_err("failing input fails");
@@ -252,14 +246,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("table-driven-containers-ok");
 }
 

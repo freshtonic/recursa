@@ -232,9 +232,8 @@ impl SiteForm {
 /// The capture policy a provenance fold applies to an occurrence, as the runtime's
 /// `lr::provenance::FoldPolicy` decodes it (the codes are the protocol).
 ///
-/// The lowering emits `Inherited` for every site the generated recursive-descent code reads
-/// through `context.capture_policy()` and `Mandatory` for erased optional fixed-token groups,
-/// which that code hardcodes. A grammar with an authored override is rejected (`RCA0406`).
+/// The lowering emits `Inherited` for ordinary sites and `Mandatory` for erased optional
+/// fixed-token groups. A grammar with an authored override is rejected (`RCA0406`).
 pub enum FoldPolicy {
     /// The parse context's policy.
     Inherited,
@@ -299,13 +298,12 @@ impl FoldKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 /// The occurrence one site of a node fold builds; mirrors the runtime's
-/// `lr::provenance::SiteKind` (the codes are the protocol). Each kind names the shape the
-/// recursive-descent helper for that element produces.
+/// `lr::provenance::SiteKind` (the codes are the protocol). Each kind names the occurrence shape
+/// produced for that element.
 pub enum SiteKind {
-    /// A fixed token: `parse_fixed`'s leaf.
+    /// A fixed-token leaf.
     Leaf,
-    /// A semantic element, or an inlined present optional or erased group: `finish_group`
-    /// around the entries.
+    /// A semantic element, or an inlined present optional or erased group around the entries.
     Group,
     /// A helper's or attachment operand's entry unchanged.
     Through,
@@ -313,8 +311,7 @@ pub enum SiteKind {
     Absent,
     /// An inlined presence: the outer group over the inner group of the sequence tokens.
     Presence,
-    /// An inlined repetition, present or absent: `finish_repeated_group` over the list entry
-    /// and any trailing separator.
+    /// An inlined repetition, present or absent, over the list entry and any trailing separator.
     Repetition,
 }
 
@@ -347,8 +344,7 @@ pub struct FoldSite {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-/// The provenance fold of one rule: what its reduce builds on the occurrence stack so that the
-/// table-driven parser yields recursive descent's occurrence tree (#118).
+/// The provenance fold of one rule: what its reduce builds on the occurrence stack.
 pub struct RuleFold {
     /// What the popped entries fold into.
     pub kind: FoldKind,
@@ -408,16 +404,14 @@ impl RuleFold {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Whether recursive descent decides where a rule ends by its caller FOLLOW, which at the root
-/// rejects a following token outside the root FOLLOW (`docs/table-driven-parsing.md`, section
-/// 3). The runtime keeps one flag along the spine of last symbols; each reduce applies its
-/// rule's decision to it.
+/// Whether a rule's reduction spine requires a following token to belong to root FOLLOW. The
+/// runtime keeps one flag along the spine of last symbols; each reduce applies its rule's decision
+/// to it.
 pub enum TailDecision {
     /// The rule's last symbol decides: the flag is unchanged.
     Keep,
-    /// The rule is decided by its caller FOLLOW: an enum alternative exactly one token long,
-    /// which the predictive dispatch selects only when the next token continues the caller, or
-    /// a rule whose last site is a repetition, whose loop stops only before the caller FOLLOW.
+    /// The rule ends only before root FOLLOW, including a one-token enum alternative or a rule
+    /// whose final site is a repetition.
     Reject,
     /// A Pratt rule: the Pratt loop stops before any token, so the flag is cleared.
     Clear,

@@ -1,6 +1,6 @@
 # Use LALR(1) tables for the table-driven parser style
 
-Status: accepted
+Status: superseded by ADR 0005
 
 Design: [`docs/table-driven-parsing.md`](../table-driven-parsing.md).
 

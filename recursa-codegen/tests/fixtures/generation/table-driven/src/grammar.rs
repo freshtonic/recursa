@@ -4,14 +4,11 @@
 //! shifts `+` and reduces by default: the case where a default reduction hides a continuation
 //! from the failing state's row (#117).
 //!
-//! The integration test generates this file twice, once as written and once with the parser
-//! style flipped to `recursive_descent`, and compares what the two parsers produce.
+//! The integration test exercises the sole Recursa parser's values, provenance, and errors.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 2,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 

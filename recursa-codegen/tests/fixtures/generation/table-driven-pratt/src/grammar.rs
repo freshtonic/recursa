@@ -4,15 +4,12 @@
 //! delimited `a[b]`, and one exclusion site, the needle of `position(needle in haystack)`,
 //! which restricts the expression language the way gram.y's `b_expr` does inside `POSITION`.
 //!
-//! The integration test generates this file twice, once as written and once with the parser
-//! style flipped to `recursive_descent`, and compares what the two parsers produce. The LR
-//! fixture tests lower the same file to assert the precedence resolution directly.
+//! The integration test exercises the sole parser; the LR fixture asserts its precedence
+//! resolution directly.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 
@@ -81,7 +78,7 @@ pub enum Expr<'input> {
     /// An interleaved shape, written as pg-sql writes it: each operand carries the fixed token
     /// before it, so its own reduce decides where the operand stops (before any operator
     /// binding weaker than `between`); inside an exclusion clone both operands carry the
-    /// exclusion through their cloned attachments, as the recursive-descent operands do.
+    /// exclusion through their cloned attachments.
     #[parse(postfix, bp = 8)]
     Between(Box<Self>, #[tok(BETWEEN, this)] Box<Self>, #[tok(AND, this)] Box<Self>),
 

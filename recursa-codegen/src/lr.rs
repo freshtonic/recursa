@@ -1,16 +1,15 @@
 #![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
-//! LR lowering, LALR(1) construction, comb-vector tables and conflict reports for the
-//! table-driven parser style.
+//! LR lowering, LALR(1) construction, comb-vector tables and conflict reports for the Recursa
+//! parser.
 //!
 //! This is a source-independent analysis beside [`analyze`](crate::analyze): it lowers a
 //! normalized grammar to an [`LrGrammar`](crate::lr::grammar::LrGrammar), builds one LALR(1)
 //! [`Automaton`](crate::lr::automaton::Automaton) with a start state per grammar type, packs it
 //! into [`LrTables`](crate::lr::tables::LrTables) and reports every conflict as a diagnostic
 //! that names the shortest path to its state ([`paths`](crate::lr::paths)).
-//! Generation runs it from the renderer-selection point when the grammar selects the
-//! `table_driven` style (`generation::table_driven`). Shift/reduce conflicts between Pratt rules
-//! and operator tokens, and those the token grammar's `precedence` declaration covers
+//! Generation runs it for every grammar. Shift/reduce conflicts between Pratt rules and operator
+//! tokens, and those the token grammar's `precedence` declaration covers
 //! ([`declared_precedence`](crate::lr::declared_precedence)), are settled by
 //! [`BindingPowerPrecedence`](crate::lr::precedence::BindingPowerPrecedence) through the
 //! [`ConflictResolver`](crate::lr::automaton::ConflictResolver) seam. A shared helper whose
@@ -64,10 +63,11 @@ use std::path::Path;
 
 use crate::GenerateError;
 use crate::materialization::LoweredGrammar;
+use crate::profile::Span;
 
 #[derive(Clone, Debug)]
-/// The complete table-driven analysis of one grammar: rules, automaton, packed tables and the
-/// conflict diagnostics, which are hard build errors when non-empty.
+/// The complete LR analysis of one grammar: rules, automaton, packed tables and conflict
+/// diagnostics, which are hard build errors when non-empty.
 pub struct LrAnalysis {
     /// The lowered LR grammar.
     pub grammar: LrGrammar,
@@ -112,34 +112,52 @@ impl LrAnalysis {
         lowered: &LoweredGrammar,
         options: AutomatonOptions,
     ) -> Result<Self, Vec<LrDiagnostic>> {
+        let _profile = Span::enter("lr.analysis");
         let overrides = capture_override_diagnostics(lowered);
         if !overrides.is_empty() {
             return Err(overrides);
         }
         let roles = TypeRoles::from_lowered(lowered);
-        let grammar = lower(&lowered.grammar, &roles)?;
+        let grammar = {
+            let _stage = Span::enter("lowering");
+            lower(&lowered.grammar, &roles)?
+        };
+        let unclassified = AutomatonOptions {
+            check_merge_artefacts: false,
+            ..options
+        };
         let CopiedBuild {
             grammar,
             mut automaton,
             ..
-        } = build_with_helper_copies(grammar, BindingPowerPrecedence::new, options)?;
-        let scoped_diagnostics = automaton
-            .apply_scoped_resolutions(&grammar, &lowered.grammar.lr_conflict_resolutions)
-            .err()
-            .into_iter()
-            .flatten()
-            .map(|message| LrDiagnostic {
-                code: report::INVALID_SCOPED_RESOLUTION,
-                message,
-                path: String::new(),
-                items: Vec::new(),
-                actions: Vec::new(),
-                notes: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        let tables = LrTables::pack(&grammar, &automaton);
+        } = build_with_helper_copies(grammar, BindingPowerPrecedence::new, unclassified)?;
+        let scoped_diagnostics = {
+            let _stage = Span::enter("scoped-conflict-resolutions");
+            automaton
+                .apply_scoped_resolutions(&grammar, &lowered.grammar.lr_conflict_resolutions)
+                .err()
+                .into_iter()
+                .flatten()
+                .map(|message| LrDiagnostic {
+                    code: report::INVALID_SCOPED_RESOLUTION,
+                    message,
+                    path: String::new(),
+                    items: Vec::new(),
+                    actions: Vec::new(),
+                    notes: Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        };
+        automaton.classify_merge_artefacts(&grammar, options);
+        let tables = {
+            let _stage = Span::enter("table-packing");
+            LrTables::pack(&grammar, &automaton)
+        };
         let mut diagnostics = scoped_diagnostics;
-        diagnostics.extend(conflict_diagnostics(&grammar, &automaton));
+        {
+            let _stage = Span::enter("conflict-diagnostics");
+            diagnostics.extend(conflict_diagnostics(&grammar, &automaton));
+        }
         Ok(Self {
             grammar,
             automaton,
@@ -148,8 +166,8 @@ impl LrAnalysis {
         })
     }
 
-    /// Runs source analysis over a Rust 2024 grammar package and then the whole table-driven
-    /// analysis, with binding-power precedence.
+    /// Runs source analysis over a Rust 2024 grammar package and then the whole LR analysis, with
+    /// binding-power precedence.
     ///
     /// `selected_root` is the grammar's root file relative to `manifest_dir`, as
     /// [`generate`](crate::generate) takes it. The module tree is read under Cargo's default
@@ -180,19 +198,17 @@ impl LrAnalysis {
 
 /// Reports `RCA0406` for every node, variant or field that overrides the capture policy.
 ///
-/// The table-driven fold resolves an inherited policy from the entry type's context, as the
-/// generated recursive-descent code resolves `context.capture_policy()`; an override on a
-/// node, variant or field would reach its children through the site that passes it down, which
-/// a child rule is reduced before knowing. Rejecting the grammar keeps the two styles' provenance
-/// identical for every grammar the table-driven style accepts.
+/// The LR fold resolves an inherited policy from the entry type's context. An override on a node,
+/// variant or field would reach its children through the consuming site, which a child rule is
+/// reduced before knowing, so such overrides are rejected.
 fn capture_override_diagnostics(lowered: &LoweredGrammar) -> Vec<LrDiagnostic> {
     let mut diagnostics = Vec::new();
     let mut report = |what: String| {
         diagnostics.push(LrDiagnostic {
             code: report::CAPTURE_OVERRIDE,
             message: format!(
-                "{what} overrides the capture policy with `#[spanned(...)]`; the table-driven \
-                 parser style resolves capture policies from the entry type only"
+                "{what} overrides the capture policy with `#[spanned(...)]`; the Recursa parser \
+                 resolves capture policies from the entry type only"
             ),
             path: String::new(),
             items: Vec::new(),
@@ -342,7 +358,7 @@ mod tests {
 
     /// A normalized grammar with one token type refined by an exact-text predicate.
     fn grammar_with_text_predicate() -> GrammarDescription {
-        let mut grammar = GrammarDescription::new("predicated", 1, 1, TextEquivalence::Sensitive);
+        let mut grammar = GrammarDescription::new("predicated", 1, TextEquivalence::Sensitive);
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
         let declaration = grammar.push_declaration(Declaration::new("word", location));
         let kind = grammar.push_kind(KindDescription::new("WORD", declaration));
@@ -391,7 +407,7 @@ mod tests {
     /// A normalized Pratt grammar: `Expr` with a `Number` atom and an infix `Expr::Add` over
     /// `PLUS` with the given binding powers.
     fn pratt_grammar(lbp: u8, rbp: u8) -> GrammarDescription {
-        let mut grammar = GrammarDescription::new("pratt", 4, 1, TextEquivalence::Sensitive);
+        let mut grammar = GrammarDescription::new("pratt", 4, TextEquivalence::Sensitive);
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
         let number = push_token(&mut grammar, location, "Number", "NUMBER");
         let plus = push_token(&mut grammar, location, "Plus", "PLUS");
@@ -666,7 +682,7 @@ mod tests {
                 "Expr[min 20] -> Expr[min 20] Between Expr[min 20] And Expr",
             ]
         );
-        // Without a minimum both operands are the full language in both styles.
+        // Without a minimum both operands are the full language.
         let grammar = lower(&pratt_grammar_with_bare_between(0), &TypeRoles::default()).unwrap();
         assert_eq!(
             grammar.render_rule(crate::lr::RuleId::new(2)),
@@ -677,9 +693,9 @@ mod tests {
 
     #[test]
     fn a_delimited_operand_lowers_to_its_minimum_binding_power_clone_inside_the_attachment() {
-        // `a[b]` at postfix bp 50: recursive descent parses `b` with `parse_bp(50)`, so only
-        // the postfix operators at 50 or above may extend it; the attachment's operand is the
-        // same clone, and the attachment inherits the variant's precedence for its own reduce.
+        // `a[b]` at postfix bp 50 parses `b` through the minimum-binding-power clone, so only the
+        // postfix operators at 50 or above may extend it; the attachment's operand is the same
+        // clone, and the attachment inherits the variant's precedence for its own reduce.
         let (grammar, roles) = pratt_grammar_with_index_operand(50, true);
         let lowered = lower(&grammar, &roles).expect("a closed delimited operand lowers");
         assert_eq!(
@@ -708,7 +724,7 @@ mod tests {
             rules_named(&lowered, "Expr::__recursa_attachment"),
             ["Expr::__recursa_attachment -> Open Expr[min 50]"]
         );
-        // Without a minimum the delimited operand is the full language in both styles.
+        // Without a minimum the delimited operand is the full language.
         let (grammar, roles) = pratt_grammar_with_index_operand(0, true);
         let lowered = lower(&grammar, &roles).expect("an unrestricted delimited operand lowers");
         assert_eq!(
@@ -725,7 +741,7 @@ mod tests {
         assert_eq!(
             error[0].message,
             "Pratt variant `Expr::Add` has lbp = 10 and rbp = 13, which no rule precedence \
-             reproduces; the table-driven parser style needs rbp = lbp + 1 (left-associative), \
+             reproduces; the Recursa parser needs rbp = lbp + 1 (left-associative), \
              rbp = lbp or rbp = lbp - 1 (right-associative)"
         );
         assert!(
@@ -758,8 +774,6 @@ mod tests {
     recursa::grammar! {
         module = crate::grammar,
         keyword_matching = sensitive,
-        max_lookahead = 1,
-        parser_style = table_driven,
     }
 
     recursa::tokens! {
@@ -814,11 +828,11 @@ mod tests {
             messages,
             [
                 "variant `Statement::Let` overrides the capture policy with `#[spanned(...)]`; the \
-                 table-driven parser style resolves capture policies from the entry type only",
-                "node `Let` overrides the capture policy with `#[spanned(...)]`; the table-driven \
-                 parser style resolves capture policies from the entry type only",
+                 Recursa parser resolves capture policies from the entry type only",
+                "node `Let` overrides the capture policy with `#[spanned(...)]`; the Recursa \
+                 parser resolves capture policies from the entry type only",
                 "field `name` of node `Let` overrides the capture policy with `#[spanned(...)]`; \
-                 the table-driven parser style resolves capture policies from the entry type only",
+                 the Recursa parser resolves capture policies from the entry type only",
             ]
         );
     }
@@ -832,7 +846,7 @@ mod tests {
         assert_eq!(
             error[0].message,
             "token type `SelectWord` matches exact text `select`; text predicates are not \
-             supported by the table-driven parser style"
+             supported by the Recursa parser"
         );
     }
 }

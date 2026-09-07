@@ -290,7 +290,7 @@ mod tests {
             .find("#[derive(recursa::Node, Debug, Clone)]")
             .expect("the fixture has nodes");
         format!(
-            "recursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 3 }}\n{}{nodes}\n\
+            "recursa::grammar! {{ module = crate, keyword_matching = sensitive }}\n{}{nodes}\n\
              #[derive(recursa::Node)]\npub struct Name<'input> {{\n    #[lex(pattern = r\"[A-Za-z_][A-Za-z0-9_]*\")]\n    pub text: NameText<'input>,\n}}\n\
              #[derive(recursa::Node)]\n#[tok(BETWEEN)]\npub struct BetweenMark;\n",
             &FIXTURE[tokens_start..tokens_end]
@@ -425,7 +425,6 @@ mod tests {
 recursa::grammar! {
     module = crate,
     keyword_matching = sensitive,
-    max_lookahead = 2,
 }
 
 #[derive(recursa::Node)]
@@ -1183,7 +1182,7 @@ pub struct Other<'input> {
     fn frame_grammar(level: &str) -> String {
         format!(
             r#"
-recursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 3 }}
+recursa::grammar! {{ module = crate, keyword_matching = sensitive }}
 recursa::tokens! {{
     ignore = r"[ \t\n\r]+",
     keywords {{

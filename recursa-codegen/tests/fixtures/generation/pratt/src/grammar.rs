@@ -3,7 +3,6 @@ recursa::grammar! {
     derives(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize),
     spans = optional,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {
@@ -49,6 +48,18 @@ pub struct Name<'input> {
 pub struct EscapeClause<'input> {
     #[tok(ESCAPE, this)]
     pub value: Name<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum LikeSuffix<'input> {
+    #[parse(lr_conflict(
+        action = shift,
+        against = grammar::EscapeClause,
+        lookahead = { ESCAPE },
+        expect = 2
+    ))]
+    Plain,
+    Escaped(EscapeClause<'input>),
 }
 
 #[derive(recursa::Node)]
@@ -101,7 +112,7 @@ pub enum Expr<'input> {
     Like(
         Box<Self>,
         #[tok(LIKE, this)] Box<Self>,
-        Option<EscapeClause<'input>>,
+        LikeSuffix<'input>,
     ),
 
     #[parse(infix, lbp = 25, rbp = 26)]
@@ -111,20 +122,6 @@ pub enum Expr<'input> {
     #[parse(postfix, bp = 40)]
     #[tok(HAS, NULL)]
     IsNull(Box<Self>),
-}
-
-#[derive(recursa::Node)]
-pub struct Followed<'input> {
-    #[tok(this, PLUS)]
-    pub expression: Expr<'input>,
-    pub tail: Integer<'input>,
-}
-
-#[derive(recursa::Node)]
-pub struct NestedFollowed<'input> {
-    #[tok(this, STAR)]
-    pub expression: Expr<'input>,
-    pub tail: Integer<'input>,
 }
 
 #[derive(recursa::Node)]

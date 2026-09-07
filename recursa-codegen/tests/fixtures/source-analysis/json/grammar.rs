@@ -8,7 +8,6 @@
 recursa::grammar! {
     module = crate::json,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

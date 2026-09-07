@@ -23,6 +23,7 @@ mod tests {
     focused_case!(pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant);
     focused_case!(pretty_pratt_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context);
     focused_case!(pretty_pratt_variants_are_typechecked_in_isolated_helpers);
+    focused_case!(generated_pretty_scopes_do_not_emit_callback_boundaries);
     focused_case!(every_typed_pretty_pratt_decision_is_part_of_family_authority);
     focused_case!(recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds);
     focused_case!(every_local_pretty_hint_dimension_is_part_of_family_authority);
@@ -2112,18 +2113,30 @@ pub(super) fn render_pratt_node_pretty(
                                         *provenance,
                                         semantic,
                                     );
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            context.with_child(0, |context| { #unit Ok(()) })
-                                        })?;
-                                    }
+                                    let inner = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(0),
+                                        quote!(#unit Ok(())),
+                                    );
+                                    let outer = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(#index),
+                                        inner,
+                                    );
+                                    quote!(#outer?;)
                                 } else {
                                     let child = pretty_provenance_child_method(*provenance);
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            context.#child(0, |context| { #semantic })
-                                        })?;
-                                    }
+                                    let inner = render_pretty_context_scope(
+                                        &child,
+                                        quote!(0),
+                                        semantic,
+                                    );
+                                    let outer = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(#index),
+                                        inner,
+                                    );
+                                    quote!(#outer?;)
                                 };
                                 let rendered = if optional {
                                     let view = render_optional_view_reference(
@@ -2531,25 +2544,27 @@ pub(super) fn render_pretty_semantic(
         let leading = repetition.leading_separator;
         let space_before_separator = repetition.space_before_separator;
         let space_after_separator = repetition.space_after_separator;
-        quote! {
-            context.with_repetition_style(#separator, #trailing, #hard_break, #leading, (#space_before_separator, #space_after_separator), |context| {
-                #pretty
-            })
-        }
+        render_pretty_context_scope(
+            &format_ident!("repetition_scope_style"),
+            quote!(#separator, #trailing, #hard_break, #leading, (#space_before_separator, #space_after_separator)),
+            pretty,
+        )
     } else {
         pretty
     };
     if repetition.is_some() {
-        quote! {
-            context.with_child(#index, |context| #render_value)?;
-        }
+        let scoped = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#index),
+            render_value,
+        );
+        quote!(#scoped?;)
     } else {
         let child = pretty_provenance_child_method(provenance);
-        quote! {
-            context.with_child(#index, |context| {
-                context.#child(0, |context| #render_value)
-            })?;
-        }
+        let inner = render_pretty_context_scope(&child, quote!(0), render_value);
+        let outer =
+            render_pretty_context_scope(&format_ident!("child_scope"), quote!(#index), inner);
+        quote!(#outer?;)
     }
 }
 
@@ -2621,9 +2636,22 @@ pub(super) fn render_pretty_presence(
 /// Selects structured-child or opaque-span source mapping for a semantic field.
 pub(super) fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavior) -> Ident {
     match provenance {
-        PrettyProvenanceBehavior::Structured => format_ident!("with_child"),
-        PrettyProvenanceBehavior::Opaque => format_ident!("with_opaque_child"),
+        PrettyProvenanceBehavior::Structured => format_ident!("child_scope"),
+        PrettyProvenanceBehavior::Opaque => format_ident!("opaque_child_scope"),
     }
+}
+
+/// Enters one generated Pretty scope without creating a per-call-site callback.
+fn render_pretty_context_scope(
+    method: &Ident,
+    arguments: proc_macro2::TokenStream,
+    body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    quote!({
+        let mut __recursa_pretty_scope = context.#method(#arguments);
+        let context = &mut *__recursa_pretty_scope;
+        #body
+    })
 }
 
 /// Renders fixed syntax from matched source when available, otherwise canonically.
@@ -2645,12 +2673,15 @@ pub(super) fn render_pretty_fixed_with_method(
 ) -> proc_macro2::TokenStream {
     let method = pretty_fixed_method(rendering);
     let fallback = pretty_fixed_fallback(plan, spelling);
-    quote! {
-        context.with_child(#index, |context| {
+    let scoped = render_pretty_context_scope(
+        &format_ident!("child_scope"),
+        quote!(#index),
+        quote!(
             let matched = context.matched_text();
             context.#method(matched.as_deref().unwrap_or(#fallback))
-        })?;
-    }
+        ),
+    );
+    quote!(#scoped?;)
 }
 
 /// Renders a boolean-controlled fixed sequence inside its required attachment envelope.
@@ -2676,15 +2707,17 @@ fn render_pretty_fixed_token_presence(
         .enumerate()
         .map(|(offset, fixed)| render_pretty_attached_syntax(presence_index + 1 + offset, fixed));
     if before.is_empty() && after.is_empty() {
-        let rendered = quote! {
-            context.with_child(#index, |context| {
-                context.with_child(#presence_index, |context| {
-                    #(#sequence_tokens)*
-                    Ok(())
-                })?;
-                Ok(())
-            })?;
-        };
+        let presence = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#presence_index),
+            quote!(#(#sequence_tokens)* Ok(())),
+        );
+        let outer = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#index),
+            quote!(#presence?; Ok(())),
+        );
+        let rendered = quote!(#outer?;);
         let rendered = render_pretty_hints(pretty, rendered);
         return quote! {
             if #value {
@@ -2692,19 +2725,24 @@ fn render_pretty_fixed_token_presence(
             }
         };
     }
-    let rendered = quote! {
-        context.with_child(#index, |context| {
+    let presence = render_pretty_context_scope(
+        &format_ident!("child_scope"),
+        quote!(#presence_index),
+        quote!(#(#sequence_tokens)* Ok(())),
+    );
+    let outer = render_pretty_context_scope(
+        &format_ident!("child_scope"),
+        quote!(#index),
+        quote!(
             #(#before_tokens)*
             if #value {
-                context.with_child(#presence_index, |context| {
-                    #(#sequence_tokens)*
-                    Ok(())
-                })?;
+                #presence?;
             }
             #(#after_tokens)*
             Ok(())
-        })?;
-    };
+        ),
+    );
+    let rendered = quote!(#outer?;);
     render_pretty_hints(pretty, rendered)
 }
 
@@ -2717,14 +2755,17 @@ fn render_pretty_optional_fixed_group(
         .iter()
         .enumerate()
         .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed));
-    quote! {
-        context.with_child(#index, |context| {
+    let scoped = render_pretty_context_scope(
+        &format_ident!("child_scope"),
+        quote!(#index),
+        quote!(
             if context.has_source_span() {
                 #(#tokens)*
             }
             Ok(())
-        })?;
-    }
+        ),
+    );
+    quote!(#scoped?;)
 }
 
 /// Renders canonical fixed text for a synthetic document without source provenance.
@@ -2735,7 +2776,12 @@ pub(super) fn render_pretty_synthetic_fixed(
 ) -> proc_macro2::TokenStream {
     let method = pretty_fixed_method(rendering);
     let fallback = pretty_fixed_fallback(plan, spelling);
-    quote!(context.without_provenance(|context| context.#method(#fallback))?;)
+    let scoped = render_pretty_context_scope(
+        &format_ident!("without_provenance_scope"),
+        quote!(),
+        quote!(context.#method(#fallback)),
+    );
+    quote!(#scoped?;)
 }
 
 /// Selects the document-builder method for fixed-token placement.
@@ -2789,12 +2835,15 @@ pub(super) fn render_pretty_attached_fixed(
 ) -> proc_macro2::TokenStream {
     let method = pretty_fixed_method(fixed.rendering);
     let spelling = &fixed.spelling;
-    quote! {
-        context.with_child(#index, |context| {
+    let scoped = render_pretty_context_scope(
+        &format_ident!("child_scope"),
+        quote!(#index),
+        quote!(
             let matched = context.matched_text();
             context.#method(matched.as_deref().unwrap_or(#spelling))
-        })?;
-    }
+        ),
+    );
+    quote!(#scoped?;)
 }
 
 /// Renders one required or erased-optional attachment entry.
@@ -2824,9 +2873,8 @@ pub(super) fn render_pretty_attachment_unit(
         .collect::<Vec<_>>();
     let semantic_index = before.len();
     let child = pretty_provenance_child_method(provenance);
-    let semantic = quote! {
-        context.#child(#semantic_index, |context| { #semantic_body })?;
-    };
+    let semantic = render_pretty_context_scope(&child, quote!(#semantic_index), semantic_body);
+    let semantic = quote!(#semantic?;);
     let after = attachment
         .after
         .iter()
@@ -2907,21 +2955,23 @@ pub(super) fn render_pretty_attached_semantic(
         let space_before_separator = repetition.space_before_separator;
         let space_after_separator = repetition.space_after_separator;
         let render_collection = |collection: proc_macro2::TokenStream| {
-            quote! {
-                context.with_repetition_style(
+            let scoped = render_pretty_context_scope(
+                &format_ident!("repetition_scope_style"),
+                quote!(
                     #separator,
                     #trailing,
                     #hard_break,
                     #leading,
-                    (#space_before_separator, #space_after_separator),
-                    |context| {
-                        context.render_repeated_by(
-                            (#collection).iter(),
-                            |context, item| { #unit Ok(()) },
-                        )
-                    },
-                )?;
-            }
+                    (#space_before_separator, #space_after_separator)
+                ),
+                quote! {
+                    context.render_repeated_by(
+                        (#collection).iter(),
+                        |context, item| { #unit Ok(()) },
+                    )
+                },
+            );
+            quote!(#scoped?;)
         };
         let outer_optional = presence == PrettyPresence::Optional;
         let body = if outer_optional {
@@ -2936,30 +2986,44 @@ pub(super) fn render_pretty_attached_semantic(
             let collection = render_terminal_reference(value, outer, value_is_reference);
             render_collection(collection)
         };
-        quote! {
-            context.with_child(#element_index, |context| {
-                #body
-                Ok(())
-            })?;
-        }
+        let scoped = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#element_index),
+            quote!(#body Ok(())),
+        );
+        quote!(#scoped?;)
     } else if presence == PrettyPresence::Optional {
         let terminal = render_optional_view_reference(value, wrappers, value_is_reference);
         let unit = render_unit(quote!(terminal));
+        let inner = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(0),
+            quote!(#unit Ok(())),
+        );
+        let outer = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#element_index),
+            inner,
+        );
         quote! {
             if let Some(terminal) = #terminal {
-                context.with_child(#element_index, |context| {
-                    context.with_child(0, |context| { #unit Ok(()) })
-                })?;
+                #outer?;
             }
         }
     } else {
         let terminal = render_terminal_reference(value, wrappers, value_is_reference);
         let unit = render_unit(terminal);
-        quote! {
-            context.with_child(#element_index, |context| {
-                context.with_child(0, |context| { #unit Ok(()) })
-            })?;
-        }
+        let inner = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(0),
+            quote!(#unit Ok(())),
+        );
+        let outer = render_pretty_context_scope(
+            &format_ident!("child_scope"),
+            quote!(#element_index),
+            inner,
+        );
+        quote!(#outer?;)
     }
 }
 

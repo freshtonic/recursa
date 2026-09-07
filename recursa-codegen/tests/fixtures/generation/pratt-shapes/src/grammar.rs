@@ -1,5 +1,5 @@
 //! The Pratt shapes gram.y writes that the attribute forms did not admit before #122, #123 and
-//! #124, each generated once with both parsers so that the twin test can compare them:
+//! #124, generated for the sole LR parser:
 //!
 //! - `a like b [escape c]`: an optional operand attached behind a fixed token on an infix
 //!   variant (`#[tok(ESCAPE, this)] Option<Box<Self>>`), gram.y's
@@ -14,14 +14,12 @@
 //!   operand that must not start with a parenthesised query, gram.y's `c_expr` position in
 //!   `index_elem`, written `index (a)` (#122).
 //!
-//! The integration test generates this file once and compares what the two parsers of the
-//! generation produce; the LR fixture tests lower the same file to assert the rules directly.
+//! The integration test generates this file once and checks its runtime behavior; the LR fixture
+//! tests lower the same file to assert the rules directly.
 
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 2,
-    parsers(rd = recursive_descent, lr = table_driven),
     derives(Pretty),
 }
 
@@ -91,18 +89,14 @@ pub enum Expr<'input> {
     Index(#[tok(INDEX, LPAREN, this, RPAREN)] IndexElem<'input>),
 
     /// `a like b [escape c]`: the escape operand is optional and attached behind `escape`, so
-    /// it takes the operand minimum `rbp` in both styles and, in table mode, `escape` shifts
-    /// against the variant's own reduce (the variant's level plus one), as gram.y's
+    /// it takes the operand minimum `rbp`; `escape` shifts against the variant's own reduce
+    /// (the variant's level plus one), as gram.y's
     /// `%nonassoc ESCAPE` above `%nonassoc LIKE` decides it.
     #[parse(infix, lbp = 6, rbp = 7)]
     Like(
         Box<Self>,
         #[tok(LIKE, this)] Box<Self>,
-        /// Greedy: `escape` also follows an expression (the operand before it is one), and on
-        /// `escape` the parser commits to this operand, as gram.y's `%nonassoc ESCAPE` shifts.
-        /// The operand inherits the outer loop's continuation, so the acceptance names every
-        /// extender that continuation admits as well.
-        #[greedy(ESCAPE, PLUS, STAR, OperatorText)]
+        /// LR precedence shifts `escape` into the attached operand.
         #[tok(ESCAPE, this)]
         Option<Box<Self>>,
     ),
@@ -113,8 +107,7 @@ pub enum Expr<'input> {
     NotLike(
         Box<Self>,
         #[tok(NOT, LIKE, this)] Box<Self>,
-        /// Greedy: as on `Like`, plus the extenders this operand inherits from the loop.
-        #[greedy(ESCAPE, LIKE, NOT, PLUS, STAR, OperatorText)]
+        /// LR precedence shifts `escape` into the attached operand.
         #[tok(ESCAPE, this)]
         Option<Box<Self>>,
     ),

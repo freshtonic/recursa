@@ -1,7 +1,5 @@
 //! Grammar-erased runtime support for Recursa-generated parsers.
 
-/// Static grammar metadata and recursive FOLLOW storage.
-mod dispatch;
 #[cfg(feature = "explorer")]
 pub mod explorer;
 #[cfg(feature = "explorer")]
@@ -49,7 +47,6 @@ pub use visitor::{
 /// Recursa runtime.
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::dispatch::{DispatchTable, dispatch_table};
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
@@ -76,9 +73,7 @@ pub mod __private {
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData, frame_document,
         payload_plan as framing_payload_plan, plan as framing_plan,
     };
-    pub use crate::grammar::{
-        ExpectedAtomId, FollowSet, FollowSetError, FollowSiteCache, GrammarInfo, TokenKind,
-    };
+    pub use crate::grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
     pub use crate::input::{
         Input, LexResult, SourceGap, SourceGaps, TokenRecord, TriviaRecord, TriviaRecordView,
         TriviaRecords,
@@ -94,9 +89,9 @@ pub mod __private {
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedInput, GeneratedParse as Parse,
-        NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode,
-        ParserMarker, RecursiveDescent, Repeated, RepeatedIter, TableDriven, ViewCursor, parse,
-        parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
+        NodeElements, NodeViewFactory, Occurrence, Occurrences, ParseContext, ParsedNode, Repeated,
+        RepeatedIter, ViewCursor, parse, parse_seal::Sealed as ParseSealed, parse_spanned,
+        pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
@@ -159,7 +154,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        26,
+        27,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -247,7 +242,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            26,
+            27,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

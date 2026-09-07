@@ -9,7 +9,6 @@
 recursa::grammar! {
     module = crate::cskw,
     keyword_matching = ascii_insensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

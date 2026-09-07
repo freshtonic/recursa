@@ -1,8 +1,5 @@
-//! End-to-end proof of Pratt lowering to precedence (#115): a Pratt grammar generates once with
-//! `parsers(rd = recursive_descent, lr = table_driven)` (#119) and everything the `lr` parser's
-//! consumer observes equals what the `rd` parser of the same generation produces. Two grammars:
-//! the table-driven Pratt fixture (the textbook expression grammar with an exclusion site) and
-//! the `examples/pratt-expressions` grammar, given both parsers at test time.
+//! End-to-end proof of Pratt lowering to precedence (#115) through the sole Recursa parser.
+//! It covers the textbook expression fixture and the `examples/pratt-expressions` grammar.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,11 +9,8 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/table-driven-pratt";
 
-/// The configuration both grammars carry: both parsers, the recursive-descent one as default.
-const NAMED_PARSERS: &str = "parsers(rd = recursive_descent, lr = table_driven),";
-
 #[test]
-fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clone() {
+fn the_pratt_fixture_parses_and_dumps_the_clone() {
     let package = scaffold(FIXTURE, None);
     let debug = tempfile::tempdir().unwrap();
 
@@ -24,15 +18,11 @@ fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clon
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("table-driven-pratt-ok\n"), "{stdout}");
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
     let root = read_selected_root(&package);
     assert!(
         root.contains("__recursa_lr"),
         "root carries the tables and dispatcher"
-    );
-    assert!(
-        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
-        "one generation carries both parsers"
     );
 
     // Associativity and precedence through parsed values: `1 - 2 - 3` is `(1 - 2) - 3`,
@@ -136,30 +126,19 @@ fn the_pratt_fixture_parses_like_the_recursive_descent_parser_and_dumps_the_clon
     );
     assert!(dump.contains("resolved by precedence (reduce)."), "{dump}");
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
-
-    // The recursive-descent parser of the same generation prints the same lines.
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
-    );
 }
 
 #[test]
-fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_driven() {
+fn the_pratt_expressions_example_parses_through_the_recursa_parser() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_path_buf();
     let example = fs::read_to_string(workspace.join("examples/pratt-expressions/src/grammar.rs"))
         .expect("read the example grammar");
-    assert_eq!(example.matches("max_lookahead = 1,").count(), 1);
     assert_eq!(example.matches("    diagrams,\n").count(), 1);
     assert_eq!(example.matches("    derives(Visit),\n").count(), 1);
     let grammar = example
-        .replace(
-            "max_lookahead = 1,",
-            &format!("max_lookahead = 1,\n    {NAMED_PARSERS}"),
-        )
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace(
@@ -173,7 +152,7 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("example-ok\n"), "{stdout}");
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
     assert!(
         table_stdout.contains("ok \"1 + 2 + 3\" => Add(Add("),
         "{table_stdout}"
@@ -199,28 +178,23 @@ fn the_pratt_expressions_example_parses_like_recursive_descent_under_table_drive
         "{table_stdout}"
     );
     assert!(read_selected_root(&package).contains("__recursa_lr"));
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
-    );
 }
 
 /// The driver of the example grammar: every input the example's tests and binary use, and a
 /// few more that mix every operator.
-const EXAMPLE_MAIN: &str = r#"//! Drives the example grammar and prints every parse for the twin comparison.
+const EXAMPLE_MAIN: &str = r#"//! Drives the example grammar through the sole Recursa parser.
 
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_table_driven_pratt::grammar;
 
-/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// Drives every input through the Recursa parser: `$tag` prefixes each printed line and
+/// `$input` builds that parser's input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
         // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // records all three facets of the sole parser's result.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -291,14 +265,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("example-ok");
 }
 
@@ -331,21 +304,17 @@ fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     package
 }
 
-/// Splits the fixture's output into the lines of the two parsers, each without its tag and
-/// terminated by a newline so that the assertions can match whole lines.
-fn split_by_parser(stdout: &str) -> (String, String) {
-    let mut rd = String::new();
-    let mut lr = String::new();
+/// Selects the sole parser's tagged fixture lines and terminates each with a newline so the
+/// assertions can match whole lines.
+fn parser_lines(stdout: &str) -> String {
+    let mut parser = String::new();
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("rd ") {
-            rd.push_str(rest);
-            rd.push('\n');
-        } else if let Some(rest) = line.strip_prefix("lr ") {
-            lr.push_str(rest);
-            lr.push('\n');
+        if let Some(rest) = line.strip_prefix("lr ") {
+            parser.push_str(rest);
+            parser.push('\n');
         }
     }
-    (rd, lr)
+    parser
 }
 
 fn read_selected_root(package: &TempDir) -> String {

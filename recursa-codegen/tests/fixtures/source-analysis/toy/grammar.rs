@@ -7,7 +7,6 @@
 recursa::grammar! {
     module = crate::toy,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

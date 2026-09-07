@@ -515,7 +515,7 @@ mod tests {
                             link: Some("enum.Expr.html#variant.Neg".to_owned()),
                         },
                         DiagramNode::Annotated {
-                            note: "greedy(SELECT, \"WITH\")".to_owned(),
+                            note: "precedence(SELECT, \"WITH\")".to_owned(),
                             body: Box::new(DiagramNode::Terminal("SELECT".to_owned())),
                         },
                     ]),

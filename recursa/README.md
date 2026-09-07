@@ -33,7 +33,6 @@ A grammar module combines `grammar!`, `tokens!`, and `#[derive(Node)]`:
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {

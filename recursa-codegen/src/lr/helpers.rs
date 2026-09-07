@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::automaton::{Automaton, AutomatonOptions, ConflictKind, ConflictResolver};
 use super::grammar::{LrGrammar, NonterminalId, NonterminalOrigin, Rule, RuleId, Symbol};
 use super::report::LrDiagnostic;
+use crate::profile::Span;
 
 /// Upper bound on split-and-rebuild rounds. Each round copies only helpers with a kernel item
 /// in a reduce/reduce state, and a copy owns one class, so the rounds are bounded by the helper
@@ -298,6 +299,7 @@ pub fn build_with_helper_copies<R: ConflictResolver>(
     resolver: impl Fn(&LrGrammar) -> Result<R, Vec<LrDiagnostic>>,
     options: AutomatonOptions,
 ) -> Result<CopiedBuild, Vec<LrDiagnostic>> {
+    let _profile = Span::enter("helper-copies");
     let unclassified = AutomatonOptions {
         check_merge_artefacts: false,
         ..options
@@ -313,7 +315,9 @@ pub fn build_with_helper_copies<R: ConflictResolver>(
             Vec::new()
         };
         if round.is_empty() {
-            automaton.classify_merge_artefacts(&grammar, options);
+            if options.check_merge_artefacts {
+                automaton.classify_merge_artefacts(&grammar, options);
+            }
             return Ok(CopiedBuild {
                 grammar,
                 automaton,

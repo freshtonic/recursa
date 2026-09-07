@@ -237,68 +237,45 @@ _Avoid_: Grammar defaults, inferred configured traits
 The source-aware closed set of documented public bindings a generation introduces while preserving the visibility of their source declarations.
 _Avoid_: Generated prelude, hidden loader surface
 
-**Balanced delimiter pair**:
-A normalized pair of distinct fixed opening and closing token kinds whose properly nested occurrences may be proven structurally during analysis.
-_Avoid_: Arbitrary punctuation pair, runtime delimiter heuristic
-
-**Balanced dispatch**:
-A frozen predictive selection strategy for an otherwise unbounded shared opener prefix. Analysis proves the enclosed language balanced for one delimiter pair and freezes the residual post-close trie; generated parsing only counts that pair's nesting and executes the frozen residual decision.
-_Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
-
-**Selection prefix**:
-The shortest matched token prefix at which a frozen enum dispatch leaves one outer declaration. The trie commits there, and the selected declaration's own parser owns every later token; only an exhausted one-token alternative keeps a caller-FOLLOW leaf.
-_Avoid_: Complete-route validation, deep trie walk
-
-**Optional viability decision**:
-A frozen predictive consume-or-skip strategy for one optional parse site. Analysis compares one occurrence plus the owning sequence tail against that tail alone, retaining exact token-text partitions and an explicit caller-FOLLOW fallback; generated parsing only executes the frozen decision.
-_Avoid_: Trial parsing, first-token optional commitment
-
-**Suffix-proving viability**:
-The optional viability decision variant for an element whose FIRST overlaps caller FOLLOW and whose bounded prefix language is closed. The trie walks the element's own prefixes; a fully matched or depth-exhausted prefix consumes unconditionally, and a sticky unconditional Skip fallback below the root returns diverging input to the caller. Open element languages keep the greedy legacy selector.
-_Avoid_: Backtracking optional, speculative parse
-
 **Parse plan**:
-The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.
+The immutable executable plan for parsing one materialized grammar type, formed
+by joining LR analysis, source construction, and capture facts. Generation
+renders it without rediscovering grammar semantics.
 _Avoid_: Generated parse body, analysis facts
 
-**Parser style**:
-The generation-time choice of recognition strategy for a parser over one grammar: recursive descent or table-driven. It changes only the behavior behind the Parse capability; grammar types, lexing results, document framing, and derived traits are identical across styles.
-_Avoid_: Construction backend, parse mode flag, second grammar
-
-**Table-driven parser**:
-A parser style that recognizes an LALR(1) language with one grammar-wide automaton and a start state per grammar type, so every grammar type keeps its Parse capability as an entry point without composing other types' parsing.
-_Avoid_: Explicit-stack recursive descent, GLR parser, per-type automaton
-
-**Named parser**:
-One of several parsers a single generation emits over one grammar, each with its own parser style, declared at most once per style, and its own grammar-local input type that selects it through the Parse capability. The first declared parser is the default parser and owns the unqualified entry points, document framing and the explorer adapter.
-_Avoid_: Second grammar invocation, parser_name macro argument
-
-**Lookahead filter**:
-A token-grammar declaration that a fixed token immediately followed by a member of a closed trigger set is a distinct merged token kind. A trigger may be a fixed token or a content-token name whose definitions resolve to one lexical kind and one semantic token identity. Only a table-driven parser's token feed produces the merged kind, and lowering substitutes it into rules at every position where only a trigger can follow, and twins the rule where a trigger and a non-trigger can both follow.
-_Avoid_: Multi-token lookahead, scanner mode, lexer callback
+**Recursa parser**:
+The sole generated parser for one grammar. It recognizes the grammar through
+one LALR(1) automaton with a start state per grammar type, so every grammar
+type retains its Parse capability as an entry point.
+_Avoid_: Parser style, named parser, recursive-descent parser, parser mode
 
 **Reduce action**:
-The generated construction step for one rule of a table-driven parser: it takes the rule's semantic values from the value stack and yields the constructed grammar value. Fixed tokens carry no value and never reach the value stack.
+The generated construction step for one LR rule: it takes the rule's semantic
+values from the value stack and yields the constructed grammar value. Fixed
+tokens carry no value and never reach the value stack.
 _Avoid_: Parse body, semantic callback, bison action
 
 **Value stack**:
-The table-driven parser's runtime stack of semantic values only, kept apart from the automaton's state stack and from occurrence provenance.
+The Recursa parser's runtime stack of semantic values only, kept apart from the
+automaton's state stack and from occurrence provenance.
 _Avoid_: Symbol stack, union stack
 
 **Prefix acceptance**:
-A table-driven root parse accepts once the root type is reduced and the lookahead has no shift action; a shiftable lookahead always shifts. This equals the greedy boundary of a recursive-descent root parse, except where recursive descent decided the root's end by its caller FOLLOW (see tail decision), where the following token is rejected as recursive descent rejects it.
+A Recursa-parser root accepts once the root type is reduced and the lookahead
+has no shift action; a shiftable lookahead always shifts.
 _Avoid_: End-of-input accept, longest-match search
 
-**Tail decision**:
-The per-rule record of whether recursive descent decides the rule's end by its caller FOLLOW: an enum alternative exactly one token long or a rule ending in a repetition does, a Pratt rule never does, any other rule leaves it to its last symbol. The table-driven runtime tracks it along the reductions after the final shift and applies it at acceptance.
-_Avoid_: Strict root, trailing-input check
-
 **Occurrence stack**:
-The table-driven parser's runtime stack of occurrence provenance, parallel to the state stack: pushed on every shift with the token's span and folded on every reduce by the rule's fold into the occurrence recursive descent builds for the same rule. It exists only when the parse captures provenance or the grammar has a mandatory site.
+The Recursa parser's runtime stack of occurrence provenance, parallel to the
+state stack: it is pushed on every shift with the token's span and folded on
+every reduce by the rule's fold. It exists only when the parse captures
+provenance or the grammar has a mandatory site.
 _Avoid_: Span stack, location stack
 
 **Rule fold**:
-The static description of what a rule's reduce builds on the occurrence stack, rendered from the same site forms as its reduce action: a node with one child per site, a pass-through, a group, a repetition group, or a list step. Site kinds name the shape the recursive-descent helper for that element produces.
+The static description of what a rule's reduce builds on the occurrence stack,
+rendered from the same site forms as its reduce action: a node with one child
+per site, a pass-through, a group, a repetition group, or a list step.
 _Avoid_: Provenance action, span callback
 
 **Inlined choice**:
@@ -306,31 +283,54 @@ An optional grammar element lowered into its parent rule as one alternative with
 _Avoid_: Expanded optional, rule duplication
 
 **Helper nonterminal**:
-A nonterminal the table-driven lowering invents and shares between use sites: a nullable optional or presence helper, or a list core and its zero-or-more and trailing-separator forms. Its rules carry the element type and `Box` layers their reduce actions need.
+A nonterminal that LR lowering invents and shares between use sites: a nullable
+optional or presence helper, or a list core and its zero-or-more and
+trailing-separator forms. Its rules carry the element type and `Box` layers
+their reduce actions need.
 _Avoid_: Synthetic node, bison `opt_` rule
 
 **Helper copy**:
-A copy of a shared helper nonterminal (`opt(X)@site`) that the table-driven construction makes for one co-occurrence class of the helper's use sites when the shared helper's merged LALR(1) lookaheads are a reduce/reduce conflict. It carries the original's rules, reduce actions and folds, so parsing through it builds the same value and provenance.
+A copy of a shared helper nonterminal (`opt(X)@site`) that LR construction
+makes for one co-occurrence class of the helper's use sites when the shared
+helper's merged LALR(1) lookaheads are a reduce/reduce conflict. It carries the
+original's rules, reduce actions and folds, so parsing through it builds the
+same value and provenance.
 _Avoid_: Cloned helper, split nonterminal, per-site helper
 
 **Attachment unit**:
-The private sequence type materialized for one semantic field with attached fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one occurrence of the field's element. Under the table-driven style it is a nonterminal whose reduce passes the element's value through unchanged.
+The private sequence type materialized for one semantic field with attached
+fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one
+occurrence of the field's element. It is a nonterminal whose reduce passes the
+element's value through unchanged.
 _Avoid_: Surrounded node, per-element wrapper
 
 **Presence envelope**:
-The private sequence type materialized for a fixed-token presence with required fixed tokens before or after its optional sequence (`#[tok(IF, this, EXISTS)] #[presence(NOT)]`). Under the table-driven style it is a nonterminal with one alternative per presence value whose reduce yields the `bool`.
+The private sequence type materialized for a fixed-token presence with required
+fixed tokens before or after its optional sequence (`#[tok(IF, this, EXISTS)]
+#[presence(NOT)]`). It is a nonterminal with one alternative per presence value
+whose reduce yields the `bool`.
 _Avoid_: Presence wrapper, optional keyword node
 
 **Binding-power precedence**:
-The lowering of a Pratt Node's binding powers into rule precedence and associativity for a table-driven parser. A binding-power combination with no such lowering is a build error, and each distinct variant exclusion set (extenders, atoms or prefix variants) becomes its own lowered expression type.
+The lowering of a Pratt Node's binding powers into LR rule precedence and
+associativity. A binding-power combination with no such lowering is a build
+error, and each distinct variant exclusion set (extenders, atoms or prefix
+variants) becomes its own lowered expression type.
 _Avoid_: Runtime Pratt loop, precedence climbing
 
 **Declared precedence**:
-A token-grammar declaration of precedence levels, each left, right or non-associative over token names and placed on the binding-power scale, that a table-driven parser uses where binding-power precedence says nothing: a rule outside the Pratt hierarchy takes the level of its last declared token or of the level its Node or variant names as an override, and a lookahead at a declared level is compared with the reducing rule's level. A level names lexed token kinds and lookahead-filter merged kinds alike; a merged kind takes only the level that names it, never its token's. A precedence-only name is a level member that is neither and exists for overrides alone. Recursive descent ignores the declaration.
+A token-grammar declaration of precedence levels, each left, right or
+non-associative over token names and placed on the binding-power scale, that
+the Recursa parser uses where binding-power precedence says nothing: a rule
+outside the Pratt hierarchy takes the level of its last declared token or of
+the level its Node or variant names as an override, and a lookahead at a
+declared level is compared with the reducing rule's level. A precedence-only
+name is a level member that is neither and exists for overrides alone.
 _Avoid_: Token precedence table, %left line, keyword weight
 
 **Parse capability**:
-The sealed facade contract that gives a generated grammar type its safe grammar-bound input entry while keeping recursive FOLLOW-aware operations private.
+The sealed facade contract that gives a generated grammar type its safe
+grammar-bound input entry.
 _Avoid_: Manual parser trait, parse plan
 
 **Nested AST**:
@@ -348,14 +348,6 @@ _Avoid_: Second parser, output mode, parser callback
 **Selective construction**:
 A construction backend that retains or derives values only for chosen Node families while the parser still recognizes the complete grammar.
 _Avoid_: Partial parse, incomplete AST
-
-**FOLLOW recipe**:
-A per-parse-site runtime composition fixed by analysis: static suffix FIRST, caller FOLLOW, or their union when the suffix is nullable.
-_Avoid_: Static type FOLLOW, emitter-derived FOLLOW
-
-**Pratt continuation**:
-The extenders of a Pratt type as the FOLLOW of a led variant's last non-recursive element and of every site that element reaches through nullable suffixes. Analysis reports the resulting overlap at the Pratt operand or nullable site where the generated parser consults the boundary, and never carries it into the type's own recursive operands, whose loops decide their extenders themselves.
-_Avoid_: Continuation FOLLOW propagation, per-operand re-report
 
 **Node view**:
 The concrete, visibility-matched occurrence view generated for a Node, pairing a semantic reference with its private provenance cursor while implementing Recursa's common view protocol.
@@ -448,10 +440,6 @@ _Avoid_: Exit prose, implementation plan
 **Legacy-case ledger**:
 The 167-entry traceability inventory that maps every Recursa spike test case to executable replacement evidence or an explicit superseding contract.
 _Avoid_: New test count, copied test suite
-
-**Semantic projection**:
-The canonical source-independent representation used to compare accepted grammar meaning and behavior across implementations while excluding provenance, spans, build-local identities, and physical output layout.
-_Avoid_: Structural equality, generated-source snapshot
 
 **Publication barrier**:
 The boundary at which one complete successful generation becomes loadable; an attempted generation that fails before this boundary remains unselectable and never authorizes stale-output fallback.

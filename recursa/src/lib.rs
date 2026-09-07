@@ -11,10 +11,9 @@ pub use recursa_core::explorer;
 pub use recursa_core::framing;
 pub use recursa_core::{
     DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView,
-    OffsetOverflow,
-    Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,
-    Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
-    Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
+    OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext,
+    PrettySink, Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor,
+    TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
 
@@ -40,7 +39,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            26,
+            27,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

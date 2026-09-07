@@ -915,11 +915,9 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         module_anchor: anchor.clone(),
         facade: facade.clone(),
         text_equivalence: configuration.syntax.text_equivalence,
-        max_lookahead: configuration.syntax.max_lookahead,
         spans: configuration.syntax.spans,
         diagrams: configuration.syntax.diagrams,
         pretty: configuration.syntax.pretty,
-        parsers: configuration.syntax.parsers.clone(),
     };
     let mut resolver = Resolver {
         cfg: input.cfg,
@@ -3624,39 +3622,14 @@ mod tests {
     }
 
     #[test]
-    fn rca1017_reports_parser_style_together_with_named_parsers() {
-        assert_source_analysis_codes(
-            &TempDir::new().unwrap(),
-            "recursa::grammar! { module = crate, parser_style = table_driven, parsers(lr = table_driven) }",
-            &["RCA1017"],
-        );
-    }
-
-    #[test]
-    fn rca1017_reports_an_empty_named_parser_list() {
-        assert_source_analysis_codes(
-            &TempDir::new().unwrap(),
-            "recursa::grammar! { module = crate, parsers() }",
-            &["RCA1017"],
-        );
-    }
-
-    #[test]
-    fn rca1017_reports_a_duplicate_parser_name() {
-        assert_source_analysis_codes(
-            &TempDir::new().unwrap(),
-            "recursa::grammar! { module = crate, parsers(lr = table_driven, lr = recursive_descent) }",
-            &["RCA1017"],
-        );
-    }
-
-    #[test]
-    fn rca1017_reports_a_repeated_parser_style() {
-        assert_source_analysis_codes(
-            &TempDir::new().unwrap(),
-            "recursa::grammar! { module = crate, parsers(a = recursive_descent, b = recursive_descent) }",
-            &["RCA1017"],
-        );
+    fn rca1017_reports_removed_parser_configuration_settings() {
+        for source in [
+            "recursa::grammar! { module = crate, parser_style = recursive_descent }",
+            "recursa::grammar! { module = crate, parsers(rd = recursive_descent) }",
+            "recursa::grammar! { module = crate, max_lookahead = 3 }",
+        ] {
+            assert_source_analysis_codes(&TempDir::new().unwrap(), source, &["RCA1017"]);
+        }
     }
 
     #[test]

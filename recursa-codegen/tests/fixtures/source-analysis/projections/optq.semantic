@@ -1,7 +1,7 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/optq.rs description=src/descriptions/optq.rs
 transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
 recursa-semantic-projection-v1
-grammar edition=Rust2024 anchor=optq max_lookahead=2 equivalence=Sensitive
+grammar edition=Rust2024 anchor=optq equivalence=Sensitive
 
 [lexical]
 equivalence Sensitive
@@ -51,74 +51,13 @@ field optq::SetStmt::debug -> parse-site(optq::SetStmt::element0)
 field optq::SetStmt::rest -> parse-site(optq::SetStmt::element2)
 
 [analysis]
-facts Rest first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts fixed:DEBUG first=[fixed:DEBUG] nullable=false extenders=[-] follow=[fixed:PRINT,fixed:READ,fixed:SET,EOF] first^k=fixed:DEBUG -> caller-follow
-facts fixed:PRINT first=[fixed:PRINT] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:PRINT -> caller-follow
-facts fixed:READ first=[fixed:READ] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:READ -> caller-follow
-facts fixed:SET first=[fixed:SET] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:SET -> caller-follow
-facts optq::Debug first=[fixed:DEBUG] nullable=false extenders=[-] follow=[fixed:PRINT,fixed:READ,fixed:SET,EOF] first^k=fixed:DEBUG -> caller-follow
-facts optq::PrintStmt first=[fixed:DEBUG,fixed:PRINT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts optq::ReadStmt first=[fixed:DEBUG,fixed:READ] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts optq::SetStmt first=[fixed:DEBUG,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT,fixed:READ,fixed:SET | fixed:PRINT,fixed:READ,fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-
-[decisions]
-dispatch optq::Stmt enum depth=2 caller-fallback=-
-  optq::Stmt::Print: fixed:DEBUG fixed:PRINT | fixed:PRINT
-  optq::Stmt::Read: fixed:DEBUG fixed:READ | fixed:READ
-  optq::Stmt::Set: fixed:DEBUG fixed:SET | fixed:SET
-follow optq::Debug::element0 caller
-follow optq::Stmt::Print::element0 caller
-follow optq::Stmt::Read::element0 caller
-follow optq::Stmt::Set::element0 caller
-follow optq::PrintStmt::element0 static[fixed:PRINT]
-follow optq::PrintStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-follow optq::PrintStmt::element2 caller
-follow optq::ReadStmt::element0 static[fixed:READ]
-follow optq::ReadStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-follow optq::ReadStmt::element2 caller
-follow optq::SetStmt::element0 static[fixed:SET]
-follow optq::SetStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-follow optq::SetStmt::element2 caller
-container optq::Debug::element0 Direct element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[fixed:DEBUG]--> Done
-container optq::Stmt::Print::element0 Direct element=[fixed:DEBUG,fixed:PRINT] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[fixed:DEBUG,fixed:PRINT]--> Done
-container optq::Stmt::Read::element0 Direct element=[fixed:DEBUG,fixed:READ] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[fixed:DEBUG,fixed:READ]--> Done
-container optq::Stmt::Set::element0 Direct element=[fixed:DEBUG,fixed:SET] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[fixed:DEBUG,fixed:SET]--> Done
-container optq::PrintStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:PRINT]
-  transition Start --ParseElement/static[fixed:DEBUG]--> Done
-  transition Start --Stop/static[fixed:PRINT]--> Done
-container optq::PrintStmt::element1 Direct element=[fixed:PRINT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-  transition Start --ParseElement/static[fixed:PRINT]--> Done
-container optq::PrintStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
-container optq::ReadStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:READ]
-  transition Start --ParseElement/static[fixed:DEBUG]--> Done
-  transition Start --Stop/static[fixed:READ]--> Done
-container optq::ReadStmt::element1 Direct element=[fixed:READ] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-  transition Start --ParseElement/static[fixed:READ]--> Done
-container optq::ReadStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
-container optq::SetStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:SET]
-  transition Start --ParseElement/static[fixed:DEBUG]--> Done
-  transition Start --Stop/static[fixed:SET]--> Done
-container optq::SetStmt::element1 Direct element=[fixed:SET] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-  transition Start --ParseElement/static[fixed:SET]--> Done
-container optq::SetStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
-
-[failures]
-failure optq::Debug optq::Debug::element0 RequiredSite expected=static[fixed:DEBUG]
-failure optq::Stmt - EnumDispatch expected=static[fixed:DEBUG|fixed:PRINT|fixed:READ|fixed:SET]
-failure optq::Stmt optq::Stmt::Print::element0 RequiredSite expected=static[fixed:DEBUG,fixed:PRINT]
-failure optq::Stmt optq::Stmt::Read::element0 RequiredSite expected=static[fixed:DEBUG,fixed:READ]
-failure optq::Stmt optq::Stmt::Set::element0 RequiredSite expected=static[fixed:DEBUG,fixed:SET]
-failure optq::PrintStmt optq::PrintStmt::element1 RequiredSite expected=static[fixed:PRINT]
-failure optq::PrintStmt optq::PrintStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-failure optq::ReadStmt optq::ReadStmt::element1 RequiredSite expected=static[fixed:READ]
-failure optq::ReadStmt optq::ReadStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
-failure optq::SetStmt optq::SetStmt::element1 RequiredSite expected=static[fixed:SET]
-failure optq::SetStmt optq::SetStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+facts Rest first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false
+facts fixed:DEBUG first=[fixed:DEBUG] nullable=false
+facts fixed:PRINT first=[fixed:PRINT] nullable=false
+facts fixed:READ first=[fixed:READ] nullable=false
+facts fixed:SET first=[fixed:SET] nullable=false
+facts optq::Debug first=[fixed:DEBUG] nullable=false
+facts optq::PrintStmt first=[fixed:DEBUG,fixed:PRINT] nullable=false
+facts optq::ReadStmt first=[fixed:DEBUG,fixed:READ] nullable=false
+facts optq::SetStmt first=[fixed:DEBUG,fixed:SET] nullable=false
+facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false

@@ -1,5 +1,5 @@
-//! Drives the precedence grammar and prints what the test compares between the parser styles
-//! and between the recursive-descent grammar with and without its `precedence` declaration:
+//! Drives the precedence grammar and prints the sole LR parser's behavior with the authored
+//! `precedence` declaration:
 //! the Debug value of every positive parse with the cursor it leaves, its provenance, and for
 //! every failing input the error, the restored cursor and the number of heap allocations still
 //! live after the error is dropped.
@@ -35,7 +35,7 @@ unsafe impl GlobalAlloc for LiveCounting {
 #[global_allocator]
 static ALLOCATOR: LiveCounting = LiveCounting;
 
-/// The positive inputs both parsers accept, one or more per gram.y family.
+/// Positive inputs the parser accepts, one or more per gram.y family.
 const ACCEPTED: &[&str] = &[
     // `%nonassoc ESCAPE` above `LIKE`: the escape clause, after a tighter operand too.
     "select a like b escape 'c';",
@@ -74,7 +74,7 @@ const ACCEPTED: &[&str] = &[
     "set characteristics = 1;",
 ];
 
-/// Inputs both parsers reject.
+/// Inputs the parser rejects.
 const REJECTED: &[&str] = &[
     "",
     "select a like;",
@@ -87,35 +87,29 @@ const REJECTED: &[&str] = &[
     "rows between - 1 preceding;",
 ];
 
-/// The inputs the two parser styles part on, where the declared precedence decides the
-/// keyword before the token that recursive descent decides it by is read. The driver asserts
-/// nothing about the direction: it prints what each parser makes of each input, accepted or
-/// rejected, and the integration test pins both lines. In every one of them the table-driven
-/// outcome is PostgreSQL's, because it is what the gram.y declaration of the family says.
+/// Inputs whose LR action is decided by the declared precedence. The integration test pins
+/// the accepted or rejected result; each matches PostgreSQL's `gram.y` declaration.
 const PARTING: &[&str] = &[
     // `%nonassoc ESCAPE` above `LIKE`: the escape clause is shifted, so a bare `escape`
-    // before `;` is no label. Recursive descent reads the token after `ESCAPE` first.
+    // before `;` is no label.
     "select a like b escape;",
-    // `VALUE` at IDENT's level: both parsers accept, and the trees differ. The declaration
-    // shifts `VALUE` into the `IS JSON` type; recursive descent returns it to the caller,
-    // which takes it as the bare label.
+    // `VALUE` at IDENT's level shifts into the `IS JSON` type.
     "select a is json value;",
     // The same shift, which then leaves the second `value` for the label.
     "select a is json value value;",
     // `%nonassoc NESTED` below `PATH`: `PATH` is shifted into the nested column, which then
     // wants its path string, so `nested path` is no pair of column names.
     "columns ( nested path );",
-    // `BETWEEN` (5) below `'+'` (10): no frame bound starts with `'+'`, so the only action
-    // reduces `between` to a column name. Recursive descent commits to the frame extent.
+    // `BETWEEN` (5) below `'+'` (10): no frame bound starts with `'+'`, so the action
+    // reduces `between` to a column name.
     "rows between + 1 preceding;",
     // `SESSION` below `CHARACTERISTICS`: the transaction form is shifted, so `characteristics`
     // is no assignable name after `session`.
     "set session characteristics = 1;",
 ];
 
-/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// Drives every input through Recursa's parser: `$tag` prefixes each printed line and `$input`
+/// builds its input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
@@ -155,8 +149,7 @@ macro_rules! drive {
         let failure = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-            // those records by design, so the live count is taken on a warm second parse.
+            // The first failure exercises partial-value cleanup before the checked parse.
             drop(grammar::Stmt::parse(&mut input).expect_err("failing input fails"));
             let baseline = LIVE.load(Ordering::SeqCst);
             let error = grammar::Stmt::parse(&mut input).expect_err("failing input fails");
@@ -182,17 +175,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    // lr-parser-start: the integration test removes this block when it generates the
-    // grammar with the recursive-descent parser alone.
-    drive!("lr", grammar::parsers::lr::input);
-    // lr-parser-end
+    drive!("lr", parser_input);
     println!("precedence-ok");
 }
 

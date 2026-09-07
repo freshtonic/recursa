@@ -1,11 +1,11 @@
-//! Drives the Pratt shapes grammar and prints what the test compares between the two parser
-//! styles: the Debug value of every positive parse with the cursor it leaves, its provenance,
+//! Drives the Pratt shapes grammar and prints what the test checks through the sole LR parser:
+//! the Debug value of every positive parse with the cursor it leaves, its provenance,
 //! elements and Pretty rendering, and for every failing input the error and the restored cursor.
 
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_pratt_shapes::grammar;
 
-/// The inputs every parser parses; each prints its value, cursor, provenance, elements and
+/// The inputs the parser accepts; each prints its value, cursor, provenance, elements and
 /// Pretty rendering. An input that stops before its end prints `eof=false` with the cursor.
 const POSITIVE: &[&str] = &[
     "a like b",
@@ -50,7 +50,7 @@ const POSITIVE: &[&str] = &[
     "(select a) + b",
 ];
 
-/// The inputs every parser rejects; each prints the error and asserts the restored cursor.
+/// The inputs the parser rejects; each prints the error and asserts the restored cursor.
 const FAILING: &[&str] = &[
     "",
     "a like",
@@ -75,15 +75,13 @@ const FAILING: &[&str] = &[
     "index",
 ];
 
-/// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
-/// builds that parser's input over a lexing result. The test compares the lines of the two
-/// parsers of the one generation.
+/// Drives every input through the parser: `$tag` prefixes each printed line and `$input` builds
+/// its input over a lexing result.
 macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -134,14 +132,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("pratt-shapes-ok");
 }
 

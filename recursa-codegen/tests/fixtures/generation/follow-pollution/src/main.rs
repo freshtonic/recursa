@@ -1,6 +1,5 @@
-//! Drives every root through the default (`rd`) surface: `lexed.input()`, the inherent `parse`
-//! and `parse_spanned`. `src/bin/lr.rs` drives the same inputs through the `lr` parser and the
-//! integration test compares the two.
+//! Drives every root through the sole LR parser surface: `lexed.input()`, the inherent `parse`,
+//! and `parse_spanned`.
 
 use recursa::{NodeView as _, Pretty as _};
 use recursa_generated_follow_pollution::grammar;
@@ -14,7 +13,7 @@ pub const EXPRS: &[&str] = &["foo", "foo()", "foo(", "foo bar"];
 /// The `FuncName` inputs: a root that can end only in the later-declared wrapper.
 pub const FUNC_NAMES: &[&str] = &["foo.bar", "foo", "foo."];
 
-/// Parses `source` as `$root` through the default surface and prints what happened.
+/// Parses `source` as `$root` and prints what happened.
 macro_rules! drive {
     ($root:ident, $label:literal, $source:expr) => {{
         let source = $source;
@@ -61,5 +60,5 @@ fn main() {
     for source in FUNC_NAMES {
         drive!(FuncName, "FuncName", *source);
     }
-    println!("rd-ok");
+    println!("follow-pollution-ok");
 }

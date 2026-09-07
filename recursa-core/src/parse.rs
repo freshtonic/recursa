@@ -29,8 +29,6 @@ pub enum ParseErrorKind {
     UnexpectedToken,
     /// Required syntax remains after the final token.
     UnexpectedEof,
-    /// A Pratt extender is also admitted by the caller's FOLLOW set.
-    PrattAmbiguity,
     /// The generated lexer emitted its distinguished error kind.
     LexicalError,
     /// A token record refers to an invalid source range.
@@ -45,7 +43,6 @@ impl ParseErrorKind {
         match self {
             Self::UnexpectedToken => "RCA4100",
             Self::UnexpectedEof => "RCA4101",
-            Self::PrattAmbiguity => "RCA4102",
             Self::LexicalError => "RCA4000",
             Self::InvalidTokenSpan => "RCA4103",
             Self::GrammarMismatch => "RCA4104",
@@ -119,23 +116,6 @@ impl ParseError {
         }
     }
 
-    /// Reports an extender that cannot be assigned safely to Pratt or its caller.
-    pub(crate) fn pratt_ambiguity<A>(input: &Input<'_, A>, expected: &FollowSet) -> Self {
-        let record = input
-            .peek(0)
-            .expect("a Pratt ambiguity is reported only for a matched extender");
-        let kind = ParseErrorKind::PrattAmbiguity;
-        Self {
-            kind,
-            lexical_code: None,
-            span: record.span,
-            anchor: record.span,
-            found: Some(record.kind),
-            expected: expected.expected().to_vec(),
-            grammar: input.grammar(),
-        }
-    }
-
     /// Reports parser input bound to different static grammar metadata.
     pub(crate) fn grammar_mismatch<A>(input: &Input<'_, A>) -> Self {
         let (span, found) = input.peek(0).map_or_else(
@@ -201,9 +181,6 @@ impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             ParseErrorKind::UnexpectedEof => formatter.write_str("unexpected end of input"),
-            ParseErrorKind::PrattAmbiguity => {
-                formatter.write_str("Pratt extender overlaps caller FOLLOW")
-            }
             ParseErrorKind::LexicalError => formatter.write_str("lexical error"),
             ParseErrorKind::InvalidTokenSpan => formatter.write_str("invalid token span"),
             ParseErrorKind::GrammarMismatch => {

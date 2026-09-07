@@ -44,7 +44,6 @@ Then declare tokens and semantic types. This excerpt comes from the
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    max_lookahead = 1,
 }
 
 recursa::tokens! {
@@ -93,48 +92,6 @@ pub struct CreateIndex<'input> {
 Both forms match the entire fixed-token sequence atomically. An incomplete
 optional sequence consumes nothing; synthetic Pretty output emits a presence
 sequence only when its boolean is true and omits erased optional groups.
-
-When an optional or repeated element can start with a token that may also
-follow the whole node, analysis reports the overlap as an advisory `RCA0300`.
-The generated parser resolves it greedily: it commits to the element when it
-sees the shared token. A Pratt extender that may also follow its use site is
-the advisory `RCA0301`, and there the parser refuses to choose and fails with
-`RCA4102` at run time. Accept a reviewed overlap where it lives with
-`#[greedy(KIND, ...)]` on the field or variant, which keeps the nullable
-commitment and makes the expression keep extending on the accepted kinds:
-
-```rust,ignore
-#[derive(recursa::Node)]
-pub struct DropDatabase<'input> {
-    pub name: Identifier<'input>,
-    /// `WITH (FORCE)` wins over a caller's `WITH` continuation.
-    #[greedy(WITH)]
-    pub options: Option<DropOptions>,
-}
-```
-
-The kinds are spelled as in `#[tok(...)]`, and they must match the overlap
-exactly: a declared kind that no overlap produces is `RCA0302`, and an overlap
-kind the attribute omits is `RCA0303`. Both fail the build, so an acceptance
-never hides a new or changed ambiguity. Content tokens are named by their type.
-
-The attribute also goes on a variant, or on a Node such as a Pratt enum, and
-then covers every site of the variant or Node; the declared kinds must equal
-the union of those sites' overlaps. `#[greedy(all)]` accepts whatever overlap
-exists at the site, the deliberate opt-out of exactness for sites whose overlap
-is every identifier-capable keyword; at a Pratt site it therefore covers every
-extender of that site's type. It still fails with `RCA0302` when there is no
-overlap at all.
-
-Two facts shape what a Pratt site's overlap contains. A field that restricts
-the expression with `#[parse(pratt(exclude(...)))]` never selects the excluded
-extenders, so their starters are not part of its overlap, and an acceptance
-naming one of them is stale. And the last element of a Pratt led variant is
-followed by every extender of the expression, because the enclosing expression
-may continue after the variant; analysis reports that continuation at each
-Pratt operand the element reaches, as in `ESCAPE expr` inside `LIKE`, so the
-exact acceptance there names the extenders that the generated parser would
-otherwise report as `RCA4102`.
 
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a

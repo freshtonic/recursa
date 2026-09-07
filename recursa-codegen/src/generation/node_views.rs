@@ -10,7 +10,7 @@ pub(super) fn validate_accessor_names(
     node: &ResolvedNode,
     body: &NodeBodyPlan,
 ) -> Result<(), String> {
-    let mut names = BTreeSet::new();
+    let mut names = BTreeMap::new();
     let mut check = |element: &ElementParsePlan| -> Result<(), String> {
         let name = match &element.kind {
             ElementParseKind::Fixed { accessor, .. } => accessor.unraw().to_string(),
@@ -24,10 +24,11 @@ pub(super) fn validate_accessor_names(
                 accessor.unraw().to_string()
             }
         };
-        if !names.insert(name.clone()) {
+        let description = format!("{} {:?}", element.metadata_name, element.explorer_source);
+        if let Some(previous) = names.insert(name.clone(), description.clone()) {
             return Err(format!(
-                "generated accessor `{name}` collides within Node `{}`",
-                node.ident
+                "generated accessor `{name}` collides within Node `{}` (`{previous}` and `{}`)",
+                node.ident, description
             ));
         }
         Ok(())

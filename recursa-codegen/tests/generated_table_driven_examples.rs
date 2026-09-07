@@ -1,8 +1,5 @@
-//! Every non-Pratt example grammar in the repository parses all of its inputs identically under
-//! both parser styles (#114). The JSON example is the one Pratt-free example; its grammar is
-//! copied from `examples/json` at scaffold time, so the example stays the single source of
-//! truth, and generated once with `parsers(rd = recursive_descent, lr = table_driven)` (#119),
-//! so that the fixture drives every input through both parsers in one binary.
+//! The JSON example is copied from `examples/json` at scaffold time, so the example remains the
+//! single source of truth while its public behavior runs through the sole Recursa parser.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,29 +9,19 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = "tests/fixtures/generation/table-driven-json";
 
-/// The example grammar's configuration line after which the parser style is inserted.
-const LOOKAHEAD: &str = "max_lookahead = 1,";
-
-/// The line the scaffold inserts: both parsers, the recursive-descent one as the default.
-const NAMED_PARSERS: &str = "parsers(rd = recursive_descent, lr = table_driven),";
-
 #[test]
-fn the_json_example_parses_every_input_identically_under_both_styles() {
+fn the_json_example_parses_every_input_through_the_recursa_parser() {
     let package = scaffold_fixture();
 
     let output = run_fixture(&package);
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("table-driven-json-ok\n"), "{stdout}");
-    let (recursive_stdout, table_stdout) = split_by_parser(&stdout);
+    let table_stdout = parser_lines(&stdout);
     let root = read_selected_root(&package);
     assert!(
         root.contains("__recursa_lr"),
         "root carries the tables and dispatcher"
-    );
-    assert!(
-        root.contains("RecursiveDescent") && root.contains("pub mod lr"),
-        "one generation carries both parsers"
     );
     // The example's own expectations, seen through the table-driven parser.
     assert!(
@@ -65,8 +52,8 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
         table_stdout.contains("err \"@\" => code=RCA4000 kind=LexicalError"),
         "{table_stdout}"
     );
-    // A root whose selected alternative is one token long rejects the token after it, as
-    // recursive descent's dispatch does (#118); a closing token above accepted the prefix.
+    // A root whose selected alternative is one token long rejects the token after it (#118);
+    // a closing token above accepted the prefix.
     assert!(table_stdout.contains("trailing \"null,\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 4, end: 5 } found=Some(\"fixed:,\") cursor=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing \"null true\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 5, end: 9 } found=Some(\"fixed:true\") cursor=0\n"), "{table_stdout}");
     assert!(table_stdout.contains("trailing \"42 ]\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 3, end: 4 } found=Some(\"fixed:]\") cursor=0\n"), "{table_stdout}");
@@ -75,7 +62,7 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
         "{table_stdout}"
     );
     // Provenance (#118): the occurrence tree, the root's elements and the Pretty rendering of
-    // every positive input are printed and compared line by line with the `rd` parser below.
+    // every positive input are printed for the sole parser.
     assert!(
         table_stdout.contains("prov \"{}\" => captured 0..2 ("),
         "{table_stdout}"
@@ -87,11 +74,6 @@ fn the_json_example_parses_every_input_identically_under_both_styles() {
     assert!(
         table_stdout.contains("pretty \"{\\\"answer\\\":[true,null,42]}\" => \""),
         "{table_stdout}"
-    );
-
-    assert_eq!(
-        table_stdout, recursive_stdout,
-        "the two parsers must agree on every line"
     );
 }
 
@@ -108,8 +90,7 @@ fn scaffold_fixture() -> TempDir {
     copy(&fixture, package.path(), "src/lib.rs");
     copy(&fixture, package.path(), "src/main.rs");
 
-    // The example grammar, with the diagrams feature dropped (the fixture enables no features)
-    // and both parsers declared.
+    // The example grammar, with the diagrams feature dropped (the fixture enables no features).
     let example = fs::read_to_string(workspace.join("examples/json/src/grammar.rs"))
         .expect("read the JSON example grammar");
     assert_eq!(
@@ -118,19 +99,13 @@ fn scaffold_fixture() -> TempDir {
         "the example declares diagrams once"
     );
     assert_eq!(
-        example.matches(LOOKAHEAD).count(),
-        1,
-        "the example configures lookahead once"
-    );
-    assert_eq!(
         example.matches("    derives(Visit),\n").count(),
         1,
         "the example declares derives once"
     );
     let grammar = example
         .replace("    diagrams,\n", "")
-        .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
-        .replace(LOOKAHEAD, &format!("{LOOKAHEAD}\n    {NAMED_PARSERS}"));
+        .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n");
     fs::write(package.path().join("src/grammar.rs"), grammar)
         .expect("write the scaffolded grammar");
 
@@ -220,21 +195,17 @@ fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// Splits the fixture's output into the lines of the two parsers, each without its tag and
-/// terminated by a newline so that the assertions can match whole lines.
-fn split_by_parser(stdout: &str) -> (String, String) {
-    let mut rd = String::new();
-    let mut lr = String::new();
+/// Selects the sole parser's tagged fixture lines and terminates each with a newline so the
+/// assertions can match whole lines.
+fn parser_lines(stdout: &str) -> String {
+    let mut parser = String::new();
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("rd ") {
-            rd.push_str(rest);
-            rd.push('\n');
-        } else if let Some(rest) = line.strip_prefix("lr ") {
-            lr.push_str(rest);
-            lr.push('\n');
+        if let Some(rest) = line.strip_prefix("lr ") {
+            parser.push_str(rest);
+            parser.push('\n');
         }
     }
-    (rd, lr)
+    parser
 }
 
 fn assert_success(output: &Output) {

@@ -1,5 +1,5 @@
 //! Drives the JSON example grammar (copied from `examples/json` by the test) and prints what the
-//! test compares between the two parser styles: a structural rendering of every positive parse
+//! test checks through the sole LR parser: a structural rendering of every positive parse
 //! (the example derives no `Debug`) with the cursor it leaves, where a root parse stops when tokens follow it, the value of every
 //! entry point, and for every failing input the error, the restored cursor and the number of
 //! heap allocations still live after the error is dropped.
@@ -120,8 +120,7 @@ macro_rules! drive {
     ($tag:expr, $input:expr) => {{
         let tag: &str = $tag;
         // Prints the provenance of one positive input parsed with capture requested: the
-        // occurrence tree, the root's elements and the Pretty rendering. The comparison
-        // requires all three to be identical between the parsers.
+        // occurrence tree, the root's elements and the Pretty rendering.
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -157,10 +156,8 @@ macro_rules! drive {
             provenance(source);
         }
 
-        // Roots that end in a closing token, so that both styles accept the prefix: a
-        // recursive-descent root that ends in a keyword or content token rejects any token after
-        // it, while the table-driven parser accepts the prefix (design section 3), so a `null true`
-        // sequence is not compared here.
+        // Roots that end in a closing token accept their prefix. A root that ends in a keyword
+        // or content token has a distinct strict-boundary behavior.
         let source = r#"{} [] {"a":[null]} [true]"#;
         let lexed = grammar::lex(source);
         let mut input = $input(&lexed);
@@ -178,9 +175,8 @@ macro_rules! drive {
         };
         println!("{tag} prefix sixth code={} found={:?} cursor={}", error.code(), error.found(), input.cursor());
 
-        // A root whose selected alternative is one token long (a keyword or a content token) is
-        // accepted only at the end of input, as recursive descent's dispatch decides it, while a
-        // root that ends in a closing token above accepted the prefix (#118).
+        // A root whose selected alternative is one token long (a keyword or a content token)
+        // has a different boundary from a root ending in a closing token (#118).
         for source in ["null,", "null true", "42 ]", "\"s\" {", "true"] {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
@@ -225,8 +221,7 @@ macro_rules! drive {
         for source in NEGATIVE {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            // The recursive-descent parser interns composed FOLLOW sets on first use and leaks
-            // those records by design, so the live count is taken on a warm second parse.
+            // Take the live count after a warm failure so it covers only this parse's values.
             assert!(grammar::Value::parse(&mut input).is_err(), "failing input {source:?} fails");
             let baseline = LIVE.load(Ordering::SeqCst);
             let Err(error) = grammar::Value::parse(&mut input) else {
@@ -245,14 +240,13 @@ macro_rules! drive {
     }};
 }
 
-/// The default parser's input.
-fn rd_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
+/// Builds the sole generated parser input.
+fn parser_input<'input>(lexed: &grammar::LexResult<'input>) -> grammar::Input<'input> {
     lexed.input()
 }
 
 fn main() {
-    drive!("rd", rd_input);
-    drive!("lr", grammar::parsers::lr::input);
+    drive!("lr", parser_input);
     println!("table-driven-json-ok");
 }
 

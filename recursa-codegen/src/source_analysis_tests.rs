@@ -214,26 +214,15 @@ struct Root { missing: Missing }
     }
 
     #[test]
-    fn successful_analysis_warnings_cross_the_cargo_output_boundary_once() {
+    fn successful_lr_source_analysis_emits_invalidation_without_predictive_warnings() {
         let package = fixture(
             r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "SELECT" } }
 
 #[derive(recursa::Node)]
 #[tok(SELECT)]
-struct Select;
-
-#[derive(recursa::Node)]
-struct Inner {
-    maybe: Option<Select>,
-}
-
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(SELECT)]
-    items: Vec<Inner>,
-}
+struct Root;
 "#,
         );
         let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
@@ -247,26 +236,14 @@ struct Root {
             crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut cargo,
         )
-        .expect("a nullable FOLLOW warning must coexist with analysis output");
+        .expect("the LR source grammar is valid");
         drop(cargo);
 
         let warnings = success.build_report.warnings().collect::<Vec<_>>();
-        assert!(!warnings.is_empty());
-        assert!(warnings.iter().all(|warning| {
-            warning.code().as_str() == "RCA0300"
-                && matches!(
-                    warning.remedies(),
-                    [crate::DiagnosticRemedy::ReviewNullableFollow { site }]
-                        if site.contains("::")
-                            && !site.chars().all(|character| character.is_ascii_digit())
-                )
-        }));
+        assert!(warnings.is_empty());
         let directives =
             std::fs::read_to_string(directives.path()).expect("read Cargo output boundary capture");
-        assert_eq!(
-            directives.matches("cargo::warning=[RCA0300]").count(),
-            warnings.len(),
-        );
+        assert!(!directives.contains("cargo::warning="));
         assert_eq!(
             directives
                 .matches("cargo::rerun-if-changed=grammar.rs")
@@ -313,8 +290,7 @@ struct Root {
     }
 
     #[test]
-    fn source_analysis_reuses_published_decision_validation_but_corruption_checks_remain_available()
-    {
+    fn source_analysis_output_builds_one_conflict_free_lr_automaton() {
         let package = fixture(
             r#"
 recursa::grammar! { module = crate }
@@ -325,44 +301,19 @@ recursa::tokens! { keywords { SELECT => "select" } }
 struct Root;
 "#,
         );
-        crate::decision_plan::reset_independent_decision_validations_for_test();
-        crate::decision_plan::reset_decision_plan_constructions_for_test();
-
         let success = crate::source_analysis::analyze_source_tree(
             crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("the source grammar is valid");
 
-        assert_eq!(
-            crate::decision_plan::independent_decision_validations_for_test(),
-            0,
-            "publication already validated the originating decision product",
-        );
-        assert_eq!(
-            crate::decision_plan::decision_plan_constructions_for_test(),
-            1,
-            "publication must validate the product without reconstructing it",
-        );
-
-        let output = success
-            .analyzed
-            .analysis
-            .output
-            .as_ref()
-            .expect("successful analysis output");
-        let mut corrupted = output.decisions().clone();
-        corrupted.corrupt_site_product_for_test();
-        assert!(
-            corrupted
-                .validate(&success.analyzed.lowered.grammar, output.first_by_type())
-                .is_err(),
-            "the independent validation seam must still reject corrupted products",
-        );
-        assert_eq!(
-            crate::decision_plan::independent_decision_validations_for_test(),
-            1,
-        );
+        let analysis = crate::lr::LrAnalysis::from_lowered(
+            &success.analyzed.lowered,
+            crate::lr::AutomatonOptions::default(),
+        )
+        .expect("the source grammar lowers to LR");
+        assert!(analysis.diagnostics.is_empty());
+        assert!(!analysis.automaton.states().is_empty());
     }
 
     #[test]
@@ -561,408 +512,49 @@ struct Root { #[presence(this)] value: bool }
         );
     }
 
-    const GREEDY_GRAMMAR_PREFIX: &str = r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-recursa::tokens! { keywords { SELECT => "SELECT", FROM => "FROM" } }
-
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Select;
-
-#[derive(recursa::Node)]
-#[tok(FROM)]
-struct From;
-"#;
-
-    /// `Inner = Select?` repeated with a `SELECT` separator: the separator is caller FOLLOW
-    /// of `Inner::maybe`, so `Inner::maybe` and `Root::items` each report RCA0300 with overlap
-    /// `SELECT`. The root site is always accepted, so only the inner attribute varies.
-    fn greedy_grammar(inner_attribute: &str) -> String {
-        format!(
-            r#"{GREEDY_GRAMMAR_PREFIX}
-#[derive(recursa::Node)]
-struct Inner {{
-    {inner_attribute}
-    maybe: Option<Select>,
-}}
-
-#[derive(recursa::Node)]
-struct Root {{
-    #[greedy(SELECT)]
-    #[sep(SELECT)]
-    items: Vec<Inner>,
-}}
-"#
-        )
-    }
-
-    fn greedy_analysis(source: &str) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
-        let package = fixture(source);
-        let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
-        let mut cargo = CargoFile(directives.reopen().expect("open Cargo output capture"));
-        let outcome = crate::source_analysis::analyze_source_tree(
-            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
-            &mut cargo,
-        );
-        drop(cargo);
-        let lines = std::fs::read_to_string(directives.path())
-            .expect("read Cargo output capture")
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect();
-        let outcome = match outcome {
-            Ok(success) => Ok(success
-                .build_report
-                .warnings()
-                .map(|warning| warning.code().as_str().to_owned())
-                .collect()),
-            Err(error) => Err(error
-                .diagnostics()
-                .iter()
-                .map(|diagnostic| diagnostic.code().as_str().to_owned())
-                .collect()),
-        };
-        (lines, outcome)
-    }
-
     #[test]
-    fn greedy_acceptance_suppresses_the_rca0300_warning_across_the_cargo_boundary() {
-        let (baseline_lines, baseline) = greedy_analysis(&greedy_grammar(""));
-        assert_eq!(baseline, Ok(vec!["RCA0300".to_owned()]));
-        assert!(baseline_lines.iter().any(|line| line.contains("[RCA0300]")));
-
-        let (lines, accepted) = greedy_analysis(&greedy_grammar("#[greedy(SELECT)]"));
-        assert_eq!(
-            accepted,
-            Ok(Vec::new()),
-            "the matching acceptance retires the warning"
-        );
-        assert!(
-            lines.iter().all(|line| !line.contains("cargo::warning=")),
-            "no warning crosses the Cargo boundary:\n{}",
-            lines.join("\n"),
-        );
-    }
-
-    #[test]
-    fn stale_and_undeclared_greedy_acceptances_fail_source_analysis() {
-        let (_, stale) = greedy_analysis(&greedy_grammar("#[greedy(SELECT, FROM)]"));
-        let stale = stale.expect_err("a declared kind outside the overlap is a stale acceptance");
-        assert!(stale.contains(&"RCA0302".to_owned()), "{stale:?}");
-        assert!(
-            stale.contains(&"RCA0300".to_owned()),
-            "the mismatched site keeps its advisory warning: {stale:?}"
-        );
-
-        let (_, undeclared) = greedy_analysis(&format!(
-            r#"{GREEDY_GRAMMAR_PREFIX}
-#[derive(recursa::Node)]
-enum Either {{
-    Select(Select),
-    From(From),
-}}
-
-#[derive(recursa::Node)]
-struct Inner {{
-    #[greedy(SELECT)]
-    maybe: Option<Either>,
-}}
-
-#[derive(recursa::Node)]
-struct SelectList {{
-    #[greedy(SELECT)]
-    #[sep(SELECT)]
-    items: Vec<Inner>,
-}}
-
-#[derive(recursa::Node)]
-struct FromList {{
-    #[greedy(FROM)]
-    #[sep(FROM)]
-    items: Vec<Inner>,
-}}
-"#
-        ));
-        let undeclared =
-            undeclared.expect_err("an overlap kind outside the declaration is undeclared");
-        assert!(undeclared.contains(&"RCA0303".to_owned()), "{undeclared:?}");
-        assert!(
-            !undeclared.contains(&"RCA0302".to_owned()),
-            "{undeclared:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_greedy_acceptances_report_source_analysis_diagnostics() {
-        for attribute in [
-            "#[greedy]",
-            "#[greedy()]",
-            "#[greedy(NOPE)]",
-            "#[greedy(SELECT, SELECT)]",
-        ] {
-            let (_, outcome) = greedy_analysis(&greedy_grammar(attribute));
-            assert_eq!(
-                outcome,
-                Err(vec!["RCA3131".to_owned()]),
-                "{attribute} must be rejected with RCA3131",
-            );
-        }
-        let (_, repeated) =
-            greedy_analysis(&greedy_grammar("#[greedy(SELECT)]\n    #[greedy(SELECT)]"));
-        assert_eq!(repeated, Err(vec!["RCA3131".to_owned()]));
-    }
-
-    fn fixture_files(files: &[(&str, &str)]) -> tempfile::TempDir {
-        let package = tempfile::tempdir().expect("temporary source-analysis fixture");
-        for (name, source) in files {
-            std::fs::write(package.path().join(name), source)
-                .expect("write source-analysis fixture file");
-        }
-        package
-    }
-
-    fn greedy_analysis_in(
-        package: &tempfile::TempDir,
-    ) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
-        let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
-        let mut cargo = CargoFile(directives.reopen().expect("open Cargo output capture"));
-        let outcome = crate::source_analysis::analyze_source_tree(
-            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
-            &mut cargo,
-        );
-        drop(cargo);
-        let lines = std::fs::read_to_string(directives.path())
-            .expect("read Cargo output capture")
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect();
-        let outcome = match outcome {
-            Ok(success) => Ok(success
-                .build_report
-                .warnings()
-                .map(|warning| format!("{}: {}", warning.code().as_str(), warning.summary()))
-                .collect()),
-            Err(error) => Err(error
-                .diagnostics()
-                .iter()
-                .map(|diagnostic| {
-                    format!("{}: {}", diagnostic.code().as_str(), diagnostic.summary())
-                })
-                .collect()),
-        };
-        (lines, outcome)
-    }
-
-    /// Two modules: `ast` uses tokens that `tokens`, lowered afterwards, defines, and the
-    /// content token appears before the keywords, so source-model definition ids are
-    /// renumbered before lowering. `Ident` is a content token named by its type. `Stmt`
-    /// takes its acceptance at Node level, covering its `expr` site.
-    fn greedy_two_module_grammar(
-        inner_attribute: &str,
-        expr_attribute: &str,
-    ) -> Vec<(String, String)> {
-        vec![
-            (
-                "grammar.rs".to_owned(),
-                "recursa::grammar! { module = crate, max_lookahead = 1 }\nmod ast;\nmod tokens;\n"
-                    .to_owned(),
-            ),
-            (
-                "ast.rs".to_owned(),
-                format!(
-                    r#"
-use crate::tokens::{{From, Ident, Select}};
-
-#[derive(recursa::Node)]
-pub enum Head {{
-    Select(Select),
-    Ident(Ident),
-}}
-
-#[derive(recursa::Node)]
-pub struct Inner {{
-    {inner_attribute}
-    pub maybe: Option<Head>,
-}}
-
-#[derive(recursa::Node)]
-pub struct Root {{
-    #[greedy(SELECT, IdentText)]
-    #[sep(SELECT)]
-    pub items: Vec<Inner>,
-    pub tail: Option<Ident>,
-}}
-
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr {{
-    Ident(Ident),
-    #[parse(postfix, bp = 10)]
-    #[tok(FROM)]
-    FromTail(Box<Self>),
-    #[parse(postfix, bp = 10)]
-    #[tok(SELECT)]
-    SelectTail(Box<Self>),
-}}
-
-#[derive(recursa::Node)]
-{expr_attribute}
-pub struct Stmt {{
-    pub expr: Expr,
-    pub terminator: From,
-}}
-
-#[derive(recursa::Node)]
-pub struct Other {{
-    #[greedy(SELECT)]
-    pub expr: Expr,
-    pub terminator: Select,
-}}
-"#
-                ),
-            ),
-            (
-                "tokens.rs".to_owned(),
-                r#"
-#[derive(recursa::Node)]
-pub struct Ident {
-    #[lex(pattern = "[a-z]+")]
-    pub text: IdentText,
-}
-
-recursa::tokens! { keywords { FROM => "FROM", SELECT => "SELECT" } }
-
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-pub struct Select;
-
-#[derive(recursa::Node)]
-#[tok(FROM)]
-pub struct From;
-"#
-                .to_owned(),
-            ),
-        ]
-    }
-
-    fn analyze_two_module_grammar(
-        inner_attribute: &str,
-        expr_attribute: &str,
-    ) -> (Vec<String>, Result<Vec<String>, Vec<String>>) {
-        let files = greedy_two_module_grammar(inner_attribute, expr_attribute);
-        let borrowed = files
-            .iter()
-            .map(|(name, source)| (name.as_str(), source.as_str()))
-            .collect::<Vec<_>>();
-        greedy_analysis_in(&fixture_files(&borrowed))
-    }
-
-    #[test]
-    fn greedy_names_resolve_after_renumbering_and_across_modules() {
-        let (_, baseline) = analyze_two_module_grammar("", "");
-        let baseline = baseline.expect("the two-module grammar analyzes with warnings only");
-        assert!(
-            baseline
-                .iter()
-                .any(|warning| warning.starts_with("RCA0300: `maybe` in `Inner`")),
-            "{baseline:?}"
-        );
-        assert!(
-            baseline
-                .iter()
-                .any(|warning| warning.starts_with("RCA0301: `expr` in `Stmt`")),
-            "{baseline:?}"
-        );
-        assert!(
-            baseline
-                .iter()
-                .any(|warning| warning.contains("`#[greedy(IdentText, SELECT)]` on `maybe`")),
-            "the suggestion spells the content token by its type: {baseline:?}"
-        );
-
-        let (_, accepted) =
-            analyze_two_module_grammar("#[greedy(SELECT, IdentText)]", "#[greedy(FROM)]");
-        assert_eq!(
-            accepted,
-            Ok(Vec::new()),
-            "field-level and Node-level acceptances retire every overlap when names resolve to the right kinds",
-        );
-
-        let (_, wrong) = analyze_two_module_grammar("#[greedy(FROM, IdentText)]", "#[greedy(all)]");
-        let wrong = wrong.expect_err("a wrong fixed token is stale and undeclared");
-        assert!(
-            wrong
-                .iter()
-                .any(|line| line.starts_with("RCA0302: ") && line.contains("accepts FROM")),
-            "{wrong:?}"
-        );
-        assert!(
-            wrong
-                .iter()
-                .any(|line| line.starts_with("RCA0303: ")
-                    && line.contains("does not declare SELECT")),
-            "{wrong:?}"
-        );
-    }
-
-    #[test]
-    fn presence_and_variant_sites_are_named_after_their_authored_field() {
+    fn removed_greedy_attribute_reports_a_targeted_source_diagnostic() {
         let package = fixture(
             r#"
-recursa::grammar! { module = crate, max_lookahead = 1 }
-recursa::tokens! { keywords { SELECT => "SELECT", FROM => "FROM" } }
-
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Select;
-
-#[derive(recursa::Node)]
-struct Flag {
-    #[presence(SELECT)]
-    concurrently: bool,
-}
-
-#[derive(recursa::Node)]
-enum Item {
-    Flagged(Flag),
-    Plain(#[tok(FROM)] Option<Select>),
-}
-
+recursa::grammar! { module = crate }
 #[derive(recursa::Node)]
 struct Root {
     #[greedy(all)]
-    #[sep(SELECT)]
-    items: Vec<Item>,
+    value: Option<Value>,
 }
+#[derive(recursa::Node)]
+struct Value;
 "#,
         );
-        let (_, outcome) = greedy_analysis_in(&package);
-        let warnings = outcome.expect("presence and variant sites warn without acceptances");
-        assert!(
-            warnings.iter().any(|warning| {
-                warning.starts_with("RCA0300: the presence of `concurrently` in `Flag`")
-                    && warning.contains("`#[greedy(SELECT)]` on `concurrently`")
-            }),
-            "{warnings:?}"
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect_err("the removed greedy helper must fail source analysis");
+        assert_eq!(
+            error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str())
+                .collect::<Vec<_>>(),
+            ["RCA3131"],
         );
         assert!(
-            warnings.iter().any(|warning| {
-                warning.starts_with("RCA0300: field 0 of `Plain` in `Item`")
-                    && warning.contains("on field 0 of `Plain`")
-            }),
-            "{warnings:?}"
+            error.diagnostics()[0]
+                .summary()
+                .contains("#[greedy(...)] has been removed")
         );
     }
 
     #[test]
-    fn an_excluded_atom_leaves_the_site_first_set_so_a_sibling_alternative_may_start_with_it() {
+    fn an_excluded_atom_clones_the_pratt_language_even_when_lr_disambiguates_the_sibling() {
         // gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr` with `DEFAULT` also
         // an expression atom: the alternatives share `default` unless the first one's operand
         // excludes the atom, and one token decides them.
         let grammar = |exclusion: &str| {
             format!(
                 r#"
-recursa::grammar! {{ module = crate, max_lookahead = 1 }}
+recursa::grammar! {{ module = crate }}
 recursa::tokens! {{
     keywords {{ DEFAULT => "default", AS => "as" }}
     punctuation {{ PLUS => "+" }}
@@ -1000,21 +592,53 @@ pub enum Expr<'input> {{
         };
         let analyze = |source: String| {
             let package = fixture(&source);
-            crate::source_analysis::analyze_source_tree(
+            let success = crate::source_analysis::analyze_source_tree(
                 crate::source_analysis::SourceAnalysisInput::rust_2024(
                     package.path(),
                     "grammar.rs",
                 ),
                 &mut Vec::new(),
             )
-            .map(|_| ())
-            .map_err(|error| error.report().canonical_rendering())
+            .map_err(|error| error.report().canonical_rendering())?;
+            let analysis = crate::lr::LrAnalysis::from_lowered(
+                &success.analyzed.lowered,
+                crate::lr::AutomatonOptions::default(),
+            )
+            .map_err(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .map(crate::lr::LrDiagnostic::render)
+                    .collect::<String>()
+            })?;
+            if analysis.diagnostics.is_empty() {
+                Ok(analysis)
+            } else {
+                Err(analysis
+                    .diagnostics
+                    .iter()
+                    .map(crate::lr::LrDiagnostic::render)
+                    .collect::<String>())
+            }
         };
-        let without = analyze(grammar("")).expect_err("both alternatives start with `default`");
-        assert!(without.contains("Namespace"), "{without}");
-        analyze(grammar("#[parse(pratt(exclude(Default)))]")).unwrap_or_else(|report| {
-            panic!("the exclusion narrows the site's FIRST set:\n{report}")
-        });
+        let without = analyze(grammar(""))
+            .unwrap_or_else(|report| panic!("LR disambiguates the shared first token:\n{report}"));
+        assert!(
+            without
+                .grammar
+                .nonterminals()
+                .iter()
+                .all(|nonterminal| !nonterminal.name.contains("[excl Default]")),
+        );
+
+        let with = analyze(grammar("#[parse(pratt(exclude(Default)))]"))
+            .unwrap_or_else(|report| panic!("the excluded language is conflict-free:\n{report}"));
+        assert!(
+            with.grammar
+                .nonterminals()
+                .iter()
+                .any(|nonterminal| nonterminal.name.contains("[excl Default]")),
+            "the excluded site gets a distinct Pratt nonterminal",
+        );
     }
 
     #[test]
@@ -1047,68 +671,35 @@ struct Root {
     }
 
     #[test]
-    fn semantic_analysis_conflict_remedies_keep_typed_semantic_operands_without_ids() {
-        let mut grammar = crate::GrammarDescription::new(
-            "remedy-adaptation",
-            0,
-            2,
-            crate::TextEquivalence::Sensitive,
-        );
-        let declaration = |grammar: &mut crate::GrammarDescription, name: &str| {
-            let location =
-                grammar.push_location(crate::Location::new(crate::SourceId::new(0), 0..1));
-            grammar.push_declaration(crate::Declaration::new(name, location))
-        };
-        let left = declaration(&mut grammar, "Expr::Left");
-        let right = declaration(&mut grammar, "Expr::Right");
-        let expr_declaration = declaration(&mut grammar, "Expr");
-        let expr = grammar.push_type(crate::TypeDescription::new(
-            "Expr",
-            expr_declaration,
-            crate::TypeShape::Sequence { sites: Vec::new() },
-        ));
-        let site_declaration = declaration(&mut grammar, "Expr::operand");
-        let site = grammar.push_site(crate::ParseSite::new(
-            expr,
-            expr,
-            site_declaration,
-            crate::ContainerShape::Direct,
-        ));
+    fn ambiguous_source_grammar_reports_an_lr_conflict() {
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { SELECT => "select" } }
 
-        let shared = crate::source_analysis::adapt_conflict_remedy(
-            &crate::ConflictRemedy::RestructureSharedPrefix { left, right },
-            &grammar,
+#[derive(recursa::Node)]
+enum Root {
+    #[tok(SELECT)] Left,
+    #[tok(SELECT)] Right,
+}
+"#,
         );
-        assert!(matches!(
-            shared,
-            crate::DiagnosticRemedy::RestructureSharedPrefix { left, right }
-                if left == "Expr::Left" && right == "Expr::Right"
-        ));
-        let pratt = crate::source_analysis::adapt_conflict_remedy(
-            &crate::ConflictRemedy::RestructurePrattSharedPrefix {
-                pratt: expr,
-                left,
-                right,
-            },
-            &grammar,
+        let success = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("source lowering succeeds before LR conflict analysis");
+        let analysis = crate::lr::LrAnalysis::from_lowered(
+            &success.analyzed.lowered,
+            crate::lr::AutomatonOptions::default(),
+        )
+        .expect("the grammar is representable as LR rules");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == crate::lr::report::REDUCE_REDUCE),
         );
-        assert!(matches!(
-            pratt,
-            crate::DiagnosticRemedy::RestructurePrattSharedPrefix {
-                pratt,
-                left,
-                right,
-            } if pratt == "Expr" && left == "Expr::Left" && right == "Expr::Right"
-        ));
-        let nullable = crate::source_analysis::adapt_conflict_remedy(
-            &crate::ConflictRemedy::ReviewNullableFollow { site },
-            &grammar,
-        );
-        assert!(matches!(
-            nullable,
-            crate::DiagnosticRemedy::ReviewNullableFollow { site }
-                if site == "Expr::operand"
-        ));
     }
 
     #[test]

@@ -23,19 +23,21 @@ use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, V
 use crate::PrattPosition;
 use crate::TypeShape;
 use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
-use crate::decision_plan::{
-    ContainerOperation, DispatchKind, ExpectedRecipe, FailureEdgeKind, FollowRecipe,
-};
 use crate::lexical::{
     KeywordRecognition, LexicalMatcher, LexicalPriority, NonTokenLexicalOutcome, TokenKindIdentity,
 };
 use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
 use crate::materialization::{
-    ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
-    MaterializedNodeApplication, MaterializedNodeBody, MaterializedPrattLed,
-    MaterializedPrattLedPosition, MaterializedPrattNud, MaterializedPrattNudPosition,
-    MaterializedPrattVariant, MaterializedSemanticFieldProjection, MaterializedVariant,
+    ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedNodeApplication,
+    MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattVariant,
+    MaterializedSemanticFieldProjection,
 };
+#[cfg(feature = "diagrams")]
+use crate::materialization::{
+    MaterializedFixedAttachment, MaterializedPrattLedPosition, MaterializedPrattNud,
+    MaterializedPrattNudPosition,
+};
+use crate::profile::{ENVIRONMENT as PROFILE_ENVIRONMENT, Span};
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle,
     ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType,
@@ -52,8 +54,23 @@ use crate::source_model::{
     NodeBody as SourceNodeBody, PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition,
     PrettySpacing, PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
 };
-use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, ParserStyle, span_range};
-use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Cardinality operation implemented by one generated container projection.
+enum ContainerOperation {
+    /// A required value.
+    Direct,
+    /// An optional value.
+    Optional,
+    /// Zero or more values.
+    ZeroOrMore,
+    /// One or more values.
+    OneOrMore,
+    /// An optional wrapper around one or more values.
+    OptionalOneOrMore,
+}
+use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
+use crate::{AtomExpression, TextEquivalence};
 
 mod configured_traits;
 mod debug_bundle;
@@ -169,6 +186,7 @@ pub(crate) fn generate_with(
     request: &GenerateRequest,
     cargo: &mut impl CargoOutput,
 ) -> Result<Generation, GenerateError> {
+    let _profile = Span::enter("generation");
     let root = request.selected_root.as_path();
     let out_dir = request.out_dir.as_path();
     emit_debug_directory_invalidation(cargo);
@@ -179,12 +197,20 @@ pub(crate) fn generate_with(
         crate::lowering::RustEdition::Rust2024,
         request.cfg.clone(),
     );
-    let discovered = discover_source_tree(&input, cargo)?;
+    let discovered = {
+        let _stage = Span::enter("discovery");
+        discover_source_tree(&input, cargo)?
+    };
     let reuse_key = reuse_key(&discovered, &request.cfg);
-    if request.debug_directory.is_none()
-        && let Some(reused) =
+    let reused = {
+        let _stage = Span::enter("reuse-lookup");
+        if request.debug_directory.is_none() {
             reuse_published(out_dir, &reuse_key).map_err(|detail| failure(root, &detail))?
-    {
+        } else {
+            None
+        }
+    };
+    if let Some(reused) = reused {
         for directive in reused.warnings {
             cargo.emit(directive);
         }
@@ -193,7 +219,10 @@ pub(crate) fn generate_with(
             reused: true,
         });
     }
-    let success = analyze_discovered_tree(discovered, &input, cargo)?;
+    let success = {
+        let _stage = Span::enter("source-analysis");
+        analyze_discovered_tree(discovered, &input, cargo)?
+    };
     if success
         .analyzed
         .lowered
@@ -208,56 +237,61 @@ pub(crate) fn generate_with(
             "diagram generation was requested but recursa-codegen was built without its `diagrams` capability",
         ));
     }
-    let plan = EmissionPlan::join(&success.analyzed, &request.cfg)
+    let plan = {
+        let _stage = Span::enter("emission-plan");
+        EmissionPlan::join(&success.analyzed, &request.cfg)
+            .map_err(|detail| failure(root, &detail))?
+    };
+    let rendered = {
+        let _stage = Span::enter("render");
+        render_lr_parser(&plan, &success.analyzed.lowered)
+            .map_err(|detail| failure(root, &detail))?
+    };
+    let debug_bundle = {
+        let _stage = Span::enter("debug-bundle");
+        request
+            .debug_directory
+            .as_deref()
+            .map(|directory| stage_debug_bundle(directory, &plan, &rendered))
+            .transpose()
+            .map_err(|detail| failure(root, &detail))?
+    };
+    {
+        let _stage = Span::enter("publication");
+        publish_generation_and_debug(out_dir, &plan.identity, &rendered, debug_bundle)
+            .map_err(|detail| failure(root, &detail))?;
+    }
+    {
+        let _stage = Span::enter("reuse-record");
+        record_reuse(
+            out_dir,
+            &reuse_key,
+            &plan.identity,
+            &rendered.selector,
+            &warning_directives(&success.build_report),
+        )
         .map_err(|detail| failure(root, &detail))?;
-    let rendered = render_by_parser_style(&plan, &success.analyzed.lowered)
-        .map_err(|detail| failure(root, &detail))?;
-    let debug_bundle = request
-        .debug_directory
-        .as_deref()
-        .map(|directory| stage_debug_bundle(directory, &plan, &rendered))
-        .transpose()
-        .map_err(|detail| failure(root, &detail))?;
-    publish_generation_and_debug(out_dir, &plan.identity, &rendered, debug_bundle)
-        .map_err(|detail| failure(root, &detail))?;
-    record_reuse(
-        out_dir,
-        &reuse_key,
-        &plan.identity,
-        &rendered.selector,
-        &warning_directives(&success.build_report),
-    )
-    .map_err(|detail| failure(root, &detail))?;
+    }
     Ok(Generation {
         report: success.build_report,
         reused: false,
     })
 }
 
-/// Selects the renderer for the plan's declared parsers.
-///
-/// This is the one point where the declared parsers choose their rendering.
-/// The single implicit or explicit recursive-descent parser renders through
-/// [`render`], byte for byte as before parser styles existed. Any other
-/// declaration, a `table_driven` style or named parsers, renders through
-/// [`render_declared`], which runs the LALR(1) analysis over the lowered
-/// grammar for a table-driven parser and fails on any conflict.
-fn render_by_parser_style(
+/// Renders the grammar through Recursa's sole LR parser.
+fn render_lr_parser(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<RenderedGeneration, String> {
-    if plan.emission_plan().parsers.is_implicit_default() {
-        render(plan)
-    } else {
-        render_declared(plan, lowered)
-    }
+    render_declared(plan, lowered)
 }
 
-/// Registers the optional debug destination as a Cargo build input.
+/// Registers optional debug and profiling controls as Cargo build inputs.
 fn emit_debug_directory_invalidation(cargo: &mut impl CargoOutput) {
     cargo.emit(format!(
         "cargo::rerun-if-env-changed={DEBUG_DIRECTORY_ENVIRONMENT}"
     ));
+    cargo.emit(format!("cargo::rerun-if-env-changed={PROFILE_ENVIRONMENT}"));
 }
 
 /// Converts an emission invariant into a stable-coded diagnostic at the selected root.

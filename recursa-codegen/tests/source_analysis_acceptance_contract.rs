@@ -13,9 +13,8 @@ const FIXTURES: [(&str, &str); 6] = [
     ("cskw", "crate::cskw"),
 ];
 
-const REQUIRED_IDS: [&str; 22] = [
+const REQUIRED_IDS: [&str; 14] = [
     "M3-NORM-001",
-    "M3-LOWER-001",
     "M3-DISC-001",
     "M3-RESOLVE-001",
     "M3-RESOLVE-002",
@@ -27,20 +26,12 @@ const REQUIRED_IDS: [&str; 22] = [
     "M3-DIAG-003",
     "M3-DIAG-004",
     "M3-DIAG-005",
-    "M3-PROJ-001",
-    "M3-PROJ-002",
-    "M3-PROJ-003",
-    "M3-PROJ-004",
-    "M3-PROJ-005",
-    "M3-PROJ-006",
-    "M3-PROJ-007",
     "M3-SCOPE-001",
     "M3-CI-001",
 ];
 
-const KNOWN_EVIDENCE: [&str; 22] = [
+const KNOWN_EVIDENCE: [&str; 14] = [
     "cargo test -p recursa-codegen --test normalized_analysis recursive_container_shape_preserves_box_placement_and_optional_vec1_cardinality --locked",
-    "cargo test -p recursa-codegen lowering::tests::canonical_projection_is_symbolic_and_byte_deterministic --locked",
     "cargo test -p recursa-codegen discovery::tests::cargo_1_88_invalidation_covers_edits_failures_candidates_and_cfg_switches --locked",
     "cargo test -p recursa-codegen resolution::tests::resolves_anchored_local_paths_self_and_the_closed_catalog --locked",
     "cargo test -p recursa-codegen resolution::tests::synthesizes_module_local_content_token_bindings_with_one_semantic_identity --locked",
@@ -52,13 +43,6 @@ const KNOWN_EVIDENCE: [&str; 22] = [
     "cargo test -p recursa-codegen source_analysis_contract_tests::every_registered_code_has_real_producer_evidence --locked",
     "cargo test -p recursa-codegen source_analysis_tests::tests::successful_analysis_warnings_cross_the_cargo_output_boundary_once --locked",
     "cargo test -p recursa-codegen source_analysis_tests::tests::malformed_full_pipeline_inputs_return_diagnostics_without_panicking --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_toy --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_arith --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_json --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_sql --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_optq --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_cskw --locked",
-    "cargo test -p recursa-codegen source_analysis_tests::tests::projection_candidate_command_never_updates_reviewed_expectations --locked",
     "cargo test -p recursa-codegen source_analysis_tests::tests::source_analysis_stays_private_and_generation_owns_the_publication_surface --locked",
     "cargo test --workspace --all-targets --locked",
 ];
@@ -131,14 +115,7 @@ fn source_analysis_acceptance_matrix_is_complete_green_and_uses_known_evidence()
         assert_local_link_exists(&path, row[3], row[0]);
     }
 
-    assert_eq!(
-        rows.iter()
-            .filter(|row| row[0].starts_with("M3-PROJ-") && row[0] != "M3-PROJ-007")
-            .count(),
-        6
-    );
-
-    for issue in [34, 40, 43, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58] {
+    for issue in [34, 40, 43, 49, 50, 51, 52, 54, 55, 56, 57, 58] {
         assert!(
             document.contains(&format!("/issues/{issue}")),
             "matrix omits originating decision #{issue}"
@@ -154,25 +131,6 @@ fn source_analysis_acceptance_matrix_is_complete_green_and_uses_known_evidence()
         )
     );
     assert!(!document.contains("real line-oriented Cargo-output file boundary"));
-}
-
-#[test]
-fn projection_candidate_command_is_immutable_and_never_auto_accepts() {
-    let path = repository_root().join("docs/acceptance/source-analysis.md");
-    let document = fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-
-    assert!(document.contains(
-        "cargo test -p recursa-codegen --lib semantic_projection_tests::write_semantic_projection_candidates --locked -- --ignored --exact --nocapture"
-    ));
-    assert!(document.contains("target/semantic-projection-candidates"));
-    assert!(document.contains("stages all six"));
-    assert!(document.contains("publishes none"));
-    assert!(document.contains("prints the complete candidate directory"));
-    assert!(document.contains("compares its six files"));
-    assert!(document.contains("manually copies"));
-    assert!(document.contains("linked semantic decision"));
-    assert!(document.contains("never writes reviewed expectations"));
 }
 
 fn matrix_rows(document: &str) -> Vec<Vec<&str>> {

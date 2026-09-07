@@ -373,6 +373,51 @@ fn diagram_pratt_production(
         .map(DiagramNode::Choice)
 }
 
+/// Verifies that diagram projection retained the materialized nud role and binding power.
+fn validate_pratt_position(
+    planned: Option<PrattPosition>,
+    materialized: &MaterializedPrattNud,
+) -> Result<(), String> {
+    let matches = match (planned, materialized.position) {
+        (Some(PrattPosition::Atom), MaterializedPrattNudPosition::Atom) => true,
+        (
+            Some(PrattPosition::Prefix { bp: planned }),
+            MaterializedPrattNudPosition::Prefix { bp: actual },
+        ) => planned == actual,
+        _ => false,
+    };
+    matches
+        .then_some(())
+        .ok_or_else(|| "Pratt diagram nud position diverges from materialization".to_owned())
+}
+
+/// Verifies that diagram projection retained the materialized led role and binding powers.
+fn validate_pratt_led_position(
+    planned: Option<PrattPosition>,
+    materialized: &MaterializedPrattLed,
+) -> Result<(), String> {
+    let matches = match (planned, materialized.position) {
+        (
+            Some(PrattPosition::Infix {
+                lbp: planned_lbp,
+                rbp: planned_rbp,
+            }),
+            MaterializedPrattLedPosition::Infix {
+                lbp: actual_lbp,
+                rbp: actual_rbp,
+            },
+        ) => planned_lbp == actual_lbp && planned_rbp == actual_rbp,
+        (
+            Some(PrattPosition::Postfix { bp: planned }),
+            MaterializedPrattLedPosition::Postfix { bp: actual },
+        ) => planned == actual,
+        _ => false,
+    };
+    matches
+        .then_some(())
+        .ok_or_else(|| "Pratt diagram led position diverges from materialization".to_owned())
+}
+
 /// Finds the sole prefix/atom parse branch for a materialized source variant.
 fn unique_pratt_nud(
     pratt: &PrattParsePlan,
@@ -448,45 +493,13 @@ fn diagram_pratt_role(position: PrattPosition) -> String {
     }
 }
 
-/// Annotates a semantic element with the `#[greedy(...)]` acceptance that covers its field.
-///
-/// The note names the accepted kinds as the attribute spells them, so a reader who points
-/// at the element sees where the parser commits greedily on a shared token and why no
-/// advisory warning is reported for that site. The annotation is hover text, so it adds
-/// nothing to the drawn syntax.
-fn annotate_greedy(
+/// Returns a semantic diagram element unchanged.
+fn annotate_field(
     element: DiagramNode,
-    field: crate::resolution::ResolvedFieldId,
-    lowered: &crate::materialization::LoweredGrammar,
+    _field: crate::resolution::ResolvedFieldId,
+    _lowered: &crate::materialization::LoweredGrammar,
 ) -> DiagramNode {
-    let source_model = lowered.source_modeled.source_model();
-    let Some(greedy) = source_model
-        .greedy
-        .iter()
-        .find(|greedy| match &greedy.owner {
-            crate::source_model::GreedyOwner::Field(owner) => *owner == field,
-            crate::source_model::GreedyOwner::Variant { fields, .. } => fields.contains(&field),
-            crate::source_model::GreedyOwner::Type(_) => false,
-        })
-    else {
-        return element;
-    };
-    let kinds = match &greedy.kinds {
-        crate::source_model::GreedyKindNames::All => "all".to_owned(),
-        crate::source_model::GreedyKindNames::Exact(definitions) => definitions
-            .iter()
-            .map(|definition| {
-                source_model.token_definitions[definition.index()]
-                    .name
-                    .clone()
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    DiagramNode::Annotated {
-        note: format!("greedy({kinds})"),
-        body: Box::new(element),
-    }
+    element
 }
 
 /// Projects fixed and semantic elements in their frozen parse order.
@@ -552,7 +565,7 @@ fn diagram_sequence(
                     let separator = diagram_separator_spelling(separator.as_ref(), lowered)?
                         .map(DiagramNode::Terminal);
                     diagram_semantic_element(node, separator, container)
-                        .map(|element| annotate_greedy(element, *field, lowered))
+                        .map(|element| annotate_field(element, *field, lowered))
                 }
                 (
                     ElementParseKind::Semantic {
@@ -920,11 +933,11 @@ fn diagram_semantic_element(
         }
         PlannedContainer::Repeated {
             operation,
-            separator_selector,
+            has_separator,
             optional_trailing,
             ..
         } => {
-            if separator.is_some() != separator_selector.is_some() {
+            if separator.is_some() != *has_separator {
                 return Err("diagram separator diverges from container".to_owned());
             }
             if *optional_trailing && separator.is_none() {

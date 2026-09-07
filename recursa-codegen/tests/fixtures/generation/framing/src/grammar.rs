@@ -1,7 +1,6 @@
 recursa::grammar! {
     module = crate::grammar,
     spans = mandatory,
-    max_lookahead = 2,
     framing(
         island = Entry,
         boundary = SEMI,
