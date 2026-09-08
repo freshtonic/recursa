@@ -39,6 +39,9 @@ pub use value_stack::ValueStack;
 /// The token index of a state-stack frame entered by a goto rather than a shift.
 const NO_TOKEN: u32 = u32::MAX;
 
+/// Initial state-stack capacity, avoiding geometric growth for ordinary generated parses.
+const INITIAL_STATE_CAPACITY: usize = 32;
+
 #[derive(Clone, Copy, Debug)]
 /// One state-stack frame: the automaton state and, for a frame entered by a shift, the index of
 /// the token shifted into it.
@@ -225,16 +228,16 @@ where
     // The one thing the error path needs from the hot path: where this parse began, so that
     // lookahead correction can replay the state stack up to the failing token.
     let origin = context.cursor();
-    let mut states = vec![Frame {
+    let mut states = Vec::with_capacity(INITIAL_STATE_CAPACITY);
+    states.push(Frame {
         state: start_state,
         token: NO_TOKEN,
-    }];
+    });
+    // Keep bison's `yystate` shape: the current state lives in a local as well as at the top of
+    // the stack, so the action loop does not reload the frame it just pushed.
+    let mut state = start_state;
     let mut tail = false;
     loop {
-        let state = states
-            .last()
-            .expect("the state stack keeps the start state")
-            .state;
         let action = if decoded.acts_by_default(state) {
             decoded.default_action(state)
         } else {
@@ -264,6 +267,7 @@ where
                     state: target,
                     token,
                 });
+                state = target;
                 tail = false;
             }
             TableAction::Reduce(rule) if rule == accept_rule => {
@@ -326,8 +330,9 @@ where
                     .last()
                     .expect("the state stack keeps the start state")
                     .state;
+                state = decoded.goto(top, decoded.r1[rule as usize]);
                 states.push(Frame {
-                    state: decoded.goto(top, decoded.r1[rule as usize]),
+                    state,
                     token: NO_TOKEN,
                 });
             }
