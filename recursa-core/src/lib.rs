@@ -219,6 +219,11 @@ pub mod __private {
         lexed.trivia()
     }
 
+    /// Transfers raw lexical records into generated grammar finalization.
+    pub fn lex_into_parts(lexed: LexResult<'_>) -> (Vec<TokenRecord>, Option<Vec<TriviaRecord>>) {
+        lexed.into_parts()
+    }
+
     /// Returns immutable source gaps when the grammar opted into classified trivia.
     pub fn lex_source_gaps<'lexed>(lexed: &'lexed LexResult<'_>) -> Option<SourceGaps<'lexed>> {
         lexed.source_gaps()

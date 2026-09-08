@@ -121,6 +121,11 @@ impl<'src> LexResult<'src> {
         self.trivia.as_deref()
     }
 
+    /// Transfers the owned records into generated grammar finalization.
+    pub(crate) fn into_parts(self) -> (Vec<TokenRecord>, Option<Vec<TriviaRecord>>) {
+        (self.records, self.trivia)
+    }
+
     /// Projects immutable beginning, inter-record, and end gaps.
     pub fn source_gaps(&self) -> Option<SourceGaps<'_>> {
         SourceGaps::new(

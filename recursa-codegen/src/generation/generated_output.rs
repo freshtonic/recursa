@@ -1756,8 +1756,7 @@ pub(super) fn render_root(
                 source,
                 &__RECURSA_LEX_PLAN,
             );
-            let records = #facade::__private::lex_records(&scanned).to_vec();
-            let trivia = #facade::__private::lex_trivia(&scanned).map(<[_]>::to_vec);
+            let (records, trivia) = #facade::__private::lex_into_parts(scanned);
             LexResult { inner: __recursa_finalize(source, records, trivia) }
         }
 
