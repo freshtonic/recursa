@@ -77,21 +77,26 @@ mod tests {
     }
 
     #[test]
-    fn word_classification_reads_source_once_through_one_perfect_hash_probe() {
-        let classifiers = (0_u16..4_097)
+    fn word_classification_buckets_normal_vocabularies_and_bounds_dense_ones() {
+        let mut classifiers = (0_u16..4_097)
             .map(|kind| WordClassifierPlan {
                 canonical_spelling: format!("large_word_{kind}"),
                 kind,
                 ascii_insensitive: true,
             })
             .collect::<Vec<_>>();
+        classifiers.push(WordClassifierPlan {
+            canonical_spelling: "unique".to_owned(),
+            kind: 5_000,
+            ascii_insensitive: true,
+        });
 
         let facade: syn::Ident = syn::parse_quote!(recursa);
         let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
 
-        // Exactly one classifier function and one backing map, regardless of vocabulary
-        // size: the perfect hash replaces every sharded helper level with one probe.
-        assert_eq!(rendered.matches("fn __recursa_classify_words").count(), 1);
+        // Exactly one bucket classifier and one bounded fallback, regardless of
+        // vocabulary size: no sharded linear helper tree is emitted.
+        assert_eq!(rendered.matches("fn __recursa_classify_words (").count(), 1);
         assert_eq!(
             rendered.matches("static __RECURSA_WORD_KEYWORDS").count(),
             1
@@ -100,11 +105,15 @@ mod tests {
         assert!(rendered.contains("let Some (text) = source . get"));
         assert!(rendered.contains("record . kind = kind"));
         assert_eq!(rendered.matches("record . kind =").count(), 1);
+        assert!(rendered.contains("match record . kind"));
+        assert!(!rendered.contains(". contains"));
+        assert!(rendered.contains("match (bytes . len () , first)"));
+        assert!(rendered.contains("bytes . eq_ignore_ascii_case"));
         assert!(rendered.contains("recursa :: __private :: phf :: Map"));
         assert!(rendered.contains("__RECURSA_WORD_KEYWORDS . get"));
-        // Non-keyword identifiers are rejected without probing the map at all: by an
-        // empty check and by a length check bounding the fixed-size fold buffer.
-        assert!(rendered.contains("bytes . is_empty ()"));
+        // Empty candidates and over-length fallback candidates are rejected
+        // before probing the map.
+        assert!(rendered.contains("bytes . first () . copied () ?"));
         assert!(rendered.contains("bytes . len () > MAX_KEYWORD_LEN"));
         assert!(rendered.contains("to_ascii_lowercase ()"));
     }
@@ -154,7 +163,7 @@ mod tests {
         // must still expose the winning kind number literally as an entry value.
         let facade: syn::Ident = syn::parse_quote!(recursa);
         let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
-        assert_eq!(rendered.matches("fn __recursa_classify_words").count(), 1);
+        assert_eq!(rendered.matches("fn __recursa_classify_words (").count(), 1);
     }
 
     #[test]
@@ -198,7 +207,7 @@ fn word_classifier_key(canonical_spelling: &str, ascii_insensitive: bool) -> Vec
         .collect()
 }
 
-/// Folds and deduplicates one grammar's word classifiers into perfect-hash map inputs.
+/// Folds and deduplicates one grammar's word classifiers into lookup keys.
 ///
 /// First occurrence wins on a folded-key collision, matching the flat if-chain this
 /// rendering replaces: earlier keywords in declaration order shadowed later duplicate
@@ -222,9 +231,9 @@ fn deduplicated_word_classifier_keys(
 
 /// Renders bounded private keyword classifiers and their single record-update entry point.
 ///
-/// Classification is a perfect-hash lookup (`phf`) over the folded UTF-8 bytes of the
-/// candidate text: non-keyword identifiers, the overwhelming common case, are rejected by a
-/// length check or a single hash probe rather than a scan across every keyword.
+/// Classification first partitions folded UTF-8 keys by byte length and first byte. Small
+/// buckets compare directly; unusually dense buckets use a perfect-hash lookup so generated
+/// work remains bounded independently of vocabulary shape.
 fn render_word_classifiers(
     classifiers: &[WordClassifierPlan],
     candidate_kinds: &[u16],
@@ -243,6 +252,45 @@ fn render_word_classifiers(
     let (keys, kinds) = deduplicated_word_classifier_keys(classifiers, ascii_insensitive);
     let max_key_len = keys.iter().map(Vec::len).max().unwrap_or(0);
 
+    // Most real keyword vocabularies become tiny buckets after partitioning by
+    // byte length and first folded byte. Compare those few candidates directly,
+    // while retaining the bounded perfect-hash fallback for unusually dense
+    // generated vocabularies.
+    const DIRECT_BUCKET_LIMIT: usize = 8;
+    let mut buckets = std::collections::BTreeMap::<(usize, u8), Vec<usize>>::new();
+    for (index, key) in keys.iter().enumerate() {
+        if let Some(first) = key.first() {
+            buckets.entry((key.len(), *first)).or_default().push(index);
+        }
+    }
+    let bucket_arms = buckets.iter().map(|(&(length, first), indexes)| {
+        if indexes.len() > DIRECT_BUCKET_LIMIT {
+            return quote! {
+                (#length, #first) => __recursa_classify_words_phf(bytes),
+            };
+        }
+        let comparisons = indexes.iter().map(|&index| {
+            let key = proc_macro2::Literal::byte_string(&keys[index]);
+            let kind = kinds[index];
+            let matches = if ascii_insensitive {
+                quote!(bytes.eq_ignore_ascii_case(#key))
+            } else {
+                quote!(bytes == #key)
+            };
+            quote! {
+                if #matches {
+                    return Some(#kind);
+                }
+            }
+        });
+        quote! {
+            (#length, #first) => {
+                #(#comparisons)*
+                None
+            }
+        }
+    });
+
     let phf_path = format!("{facade}::__private::phf");
     let mut builder = phf_codegen::Map::<&[u8]>::new();
     builder.phf_path(&phf_path);
@@ -259,15 +307,19 @@ fn render_word_classifiers(
     } else {
         quote!(bytes[index])
     };
+    let fold_first = if ascii_insensitive {
+        quote!(first.to_ascii_lowercase())
+    } else {
+        quote!(first)
+    };
 
     quote! {
         static __RECURSA_WORD_KEYWORDS: #facade::__private::phf::Map<&'static [u8], u16> =
             #map_tokens;
 
-        fn __recursa_classify_words(text: &str) -> Option<u16> {
+        fn __recursa_classify_words_phf(bytes: &[u8]) -> Option<u16> {
             const MAX_KEYWORD_LEN: usize = #max_key_len;
-            let bytes = text.as_bytes();
-            if bytes.is_empty() || bytes.len() > MAX_KEYWORD_LEN {
+            if bytes.len() > MAX_KEYWORD_LEN {
                 return None;
             }
             let mut folded = [0_u8; MAX_KEYWORD_LEN];
@@ -279,12 +331,23 @@ fn render_word_classifiers(
             __RECURSA_WORD_KEYWORDS.get(&folded[..bytes.len()]).copied()
         }
 
+        fn __recursa_classify_words(text: &str) -> Option<u16> {
+            let bytes = text.as_bytes();
+            let first = bytes.first().copied()?;
+            let first = #fold_first;
+            match (bytes.len(), first) {
+                #(#bucket_arms)*
+                _ => None,
+            }
+        }
+
         fn __recursa_classify(
             source: &str,
             record: &mut #facade::__private::TokenRecord,
         ) {
-            if ![#(#candidate_kinds),*].contains(&record.kind) {
-                return;
+            match record.kind {
+                #(#candidate_kinds => {},)*
+                _ => return,
             }
             let Some(text) = source.get(record.span.range()) else {
                 return;
