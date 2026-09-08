@@ -93,6 +93,30 @@ impl<'input, 'arena, A> Reduction<'_, '_, 'input, 'arena, A> {
         unsafe { self.values.pop::<V>() }
     }
 
+    /// Moves the next value directly from the value stack into an arena box.
+    ///
+    /// This is the generated-code path for an arena-boxed field. It avoids materializing a large
+    /// semantic value between [`ValueStack::pop`] and its final arena allocation.
+    ///
+    /// # Safety
+    ///
+    /// `V` must be the type the value was pushed with; see [`ValueStack::pop`].
+    pub unsafe fn pop_boxed<V>(&mut self) -> bumpalo::boxed::Box<'arena, V> {
+        let destination = self
+            .context
+            .arena()
+            .alloc_layout(std::alloc::Layout::new::<V>())
+            .cast::<V>()
+            .as_ptr();
+        // SAFETY: the arena allocation is aligned, writable, non-overlapping storage for one
+        // `V`; the pushed-type invariant is forwarded to the caller. `from_raw` binds ownership
+        // of the initialized allocation to the returned arena box.
+        unsafe {
+            self.values.pop_into(destination);
+            bumpalo::boxed::Box::from_raw(destination)
+        }
+    }
+
     /// Returns the token a rule of one terminal shifted (`r2 == 1`).
     pub fn token(&self) -> TokenRecord {
         let [frame] = self.frames else {

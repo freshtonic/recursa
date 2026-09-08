@@ -506,6 +506,7 @@ impl<T: ExplorerRoot> ErasedDocument for TypedDocument<'_, T> {
 
 /// Typed backing allocation for one self-contained arena parse.
 struct ArenaTypedDocument<'input, F: ArenaAstFamily> {
+    /// Arena owner, parsed root, source, and provenance retained as one self-referential value.
     parsed: ArenaParsed<'input, F>,
 }
 

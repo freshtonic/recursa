@@ -87,11 +87,13 @@ pub const fn plan(
 
 /// A fully strict exact-source document partition.
 pub struct CompleteFrame<'input, T> {
+    /// Shared source partition whose typed islands use ordinary parsed storage.
     inner: FrameStorage<'input, Parsed<'input, T>>,
 }
 
 /// A fully strict exact-source document partition retaining arena-backed islands.
 pub struct ArenaCompleteFrame<'input, F: ArenaAstFamily> {
+    /// Shared source partition whose typed islands retain their arena owner.
     inner: FrameStorage<'input, ArenaParsed<'input, F>>,
 }
 

@@ -146,6 +146,38 @@ impl ValueStack {
         value
     }
 
+    /// Moves the top value into caller-provided storage without materializing an intermediate
+    /// `V`.
+    ///
+    /// # Safety
+    ///
+    /// `V` must be the type the top value was pushed with, and `destination` must be aligned,
+    /// writable storage for one `V` that does not overlap the value stack. After this returns,
+    /// the caller owns the initialized value at `destination`.
+    pub(super) unsafe fn pop_into<V>(&mut self, destination: *mut V) {
+        let slot = self.slots.pop().expect(
+            "value stack underflow: a reduce action popped more values than its rule holds",
+        );
+        debug_assert_eq!(
+            slot.size,
+            size_of::<V>(),
+            "value stack type mismatch: the popped type has a different size from the pushed type"
+        );
+        // SAFETY: the caller guarantees the destination, while the source has the same validity
+        // and type invariant as `pop`. Copying transfers ownership of the bytes; truncating the
+        // stack then forgets the source without running its drop glue.
+        unsafe {
+            let source = self
+                .units
+                .as_ptr()
+                .cast::<u8>()
+                .add(slot.offset)
+                .cast::<V>();
+            ptr::copy_nonoverlapping(source, destination, 1);
+        }
+        self.len = slot.start;
+    }
+
     /// Drops every value on the stack, top first, and empties it.
     pub fn unwind(&mut self) {
         while let Some(slot) = self.slots.pop() {
@@ -218,6 +250,24 @@ mod tests {
         let value = unsafe { stack.pop::<Counted>() };
         assert_eq!(drops.get(), 0);
         drop(value);
+        assert_eq!(drops.get(), 1);
+        drop(stack);
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn pop_into_transfers_ownership_without_an_intermediate_value() {
+        let drops = Rc::new(Cell::new(0));
+        let mut stack = ValueStack::new();
+        let mut destination = std::mem::MaybeUninit::uninit();
+        stack.push(Counted(drops.clone()));
+        // SAFETY: the pop mirrors the push and `destination` is distinct, aligned storage for a
+        // `Counted`.
+        unsafe { stack.pop_into::<Counted>(destination.as_mut_ptr()) };
+        assert_eq!(stack.depth(), 0);
+        assert_eq!(drops.get(), 0);
+        // SAFETY: `pop_into` initialized the destination and transferred ownership to it.
+        drop(unsafe { destination.assume_init() });
         assert_eq!(drops.get(), 1);
         drop(stack);
         assert_eq!(drops.get(), 1);
