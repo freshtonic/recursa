@@ -384,12 +384,17 @@ impl<'arena> OccurrenceStack<'arena> {
                 }
             },
         };
-        self.entries.truncate(kept);
-        self.entries.push(Entry {
+        let entry = Entry {
             first,
             end,
             payload,
-        });
+        };
+        if pops == 0 {
+            self.entries.push(entry);
+        } else {
+            self.entries[kept] = entry;
+            self.entries.truncate(kept + 1);
+        }
     }
 
     /// Returns the root's occurrence once the accept rule has popped everything else: the
@@ -427,12 +432,45 @@ fn item_occurrence<'arena, A>(
 ) -> Occurrence<'arena> {
     match payload {
         Payload::Folded(occurrence) => occurrence,
-        Payload::Token(span) => context.collect_occurrence(
-            policy.resolve(context),
+        Payload::Token(span) => {
+            let policy = policy.resolve(context);
+            token_occurrence(context, policy, context.captures_policy(policy), span)
+        }
+        Payload::List { .. } => unreachable!("a list helper never stands for an item"),
+    }
+}
+
+/// The occurrence of a content token under an already-resolved policy.
+#[inline(always)]
+fn token_occurrence<'arena, A>(
+    context: &ParseContext<'_, '_, 'arena, A>,
+    policy: CapturePolicy,
+    captures: bool,
+    span: Span,
+) -> Occurrence<'arena> {
+    if captures {
+        context.collect_occurrence(
+            policy,
             Some(span),
             BumpVec::new_in(context.provenance_arena()),
             BumpVec::new_in(context.provenance_arena()),
-        ),
+        )
+    } else {
+        Occurrence::absent()
+    }
+}
+
+/// The occurrence of an item under an already-resolved policy.
+#[inline(always)]
+fn item_occurrence_resolved<'arena, A>(
+    context: &ParseContext<'_, '_, 'arena, A>,
+    policy: CapturePolicy,
+    captures: bool,
+    payload: Payload<'arena>,
+) -> Occurrence<'arena> {
+    match payload {
+        Payload::Folded(occurrence) => occurrence,
+        Payload::Token(span) => token_occurrence(context, policy, captures, span),
         Payload::List { .. } => unreachable!("a list helper never stands for an item"),
     }
 }
@@ -465,7 +503,6 @@ fn fold_site<'arena, A>(
 ) -> Occurrence<'arena> {
     let start = site.start as usize;
     let range = start..start + site.len as usize;
-    let policy = site.policy.resolve(context);
     let extent = |popped: &[Entry<'_>]| -> (u32, u32) {
         if range.is_empty() {
             let position = popped.get(start).map_or(rule_end, |entry| entry.first);
@@ -481,6 +518,7 @@ fn fold_site<'arena, A>(
             item_occurrence(context, site.policy, take(&mut popped[start]))
         }
         SiteKind::Group => {
+            let policy = site.policy.resolve(context);
             let (first, end) = extent(popped);
             let captures_span = context.captures_policy(policy);
             let mut children = Occurrences::with_capacity_in(
@@ -489,7 +527,12 @@ fn fold_site<'arena, A>(
                 captures_span,
             );
             for entry in &mut popped[range] {
-                children.push(item_occurrence(context, site.policy, take(entry)));
+                children.push(item_occurrence_resolved(
+                    context,
+                    policy,
+                    captures_span,
+                    take(entry),
+                ));
             }
             context.collect_occurrence(
                 policy,
@@ -501,6 +544,7 @@ fn fold_site<'arena, A>(
             )
         }
         SiteKind::Presence => {
+            let policy = site.policy.resolve(context);
             let (first, end) = extent(popped);
             let captures_span = context.captures_policy(policy);
             let span = captures_span
@@ -515,7 +559,12 @@ fn fold_site<'arena, A>(
                     captures_span,
                 );
                 for entry in &mut popped[range] {
-                    leaves.push(item_occurrence(context, site.policy, take(entry)));
+                    leaves.push(item_occurrence_resolved(
+                        context,
+                        policy,
+                        captures_span,
+                        take(entry),
+                    ));
                 }
                 context.collect_occurrence(
                     policy,
@@ -535,6 +584,7 @@ fn fold_site<'arena, A>(
             )
         }
         SiteKind::Repetition => {
+            let policy = site.policy.resolve(context);
             let (first, end) = extent(popped);
             let mut items = Occurrences::new_in(context.provenance_arena());
             let mut separators = BumpVec::new_in(context.provenance_arena());
