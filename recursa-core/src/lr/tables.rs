@@ -118,7 +118,20 @@ pub struct DecodedTables {
     lookahead_index: Vec<u32>,
     /// The tail decision of each rule; see [`LrTables::new`].
     pub tail: Vec<u32>,
+    /// Rule metadata co-located for the parser's reduction hot path.
+    pub(super) rules: Vec<DecodedRule>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DecodedRule {
+    pub(super) lhs: u32,
+    pub(super) pops: u32,
+    pub(super) value_pops: u32,
+    pub(super) has_reduce_action: bool,
+    pub(super) tail: u8,
+}
+
+const _: () = assert!(std::mem::size_of::<DecodedRule>() == 16);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// One decoded table action.
@@ -199,6 +212,12 @@ impl LrTables {
     pub fn decoded(&self) -> &DecodedTables {
         self.decoded.get_or_init(|| {
             let lookahead = decode_unsigned(self.lookahead);
+            let r1 = decode_unsigned(self.r1);
+            let r2 = decode_unsigned(self.r2);
+            let value_pops = decode_unsigned(self.value_pops);
+            let reduce_actions = decode_unsigned(self.reduce_actions);
+            let tail = decode_unsigned(self.tail);
+            let rules = collate_rules(&r1, &r2, &value_pops, &reduce_actions, &tail);
             DecodedTables {
                 pact: decode_signed(self.pact),
                 table: decode_signed(self.table),
@@ -206,13 +225,14 @@ impl LrTables {
                 defact: decode_unsigned(self.defact),
                 pgoto: decode_signed(self.pgoto),
                 defgoto: decode_unsigned(self.defgoto),
-                r1: decode_unsigned(self.r1),
-                r2: decode_unsigned(self.r2),
-                value_pops: decode_unsigned(self.value_pops),
-                reduce_actions: decode_unsigned(self.reduce_actions),
+                r1,
+                r2,
+                value_pops,
+                reduce_actions,
                 lookahead_index: build_lookahead_index(&lookahead, self.end_marker),
                 lookahead,
-                tail: decode_unsigned(self.tail),
+                tail,
+                rules,
             }
         })
     }
@@ -226,6 +246,37 @@ impl LrTables {
         self.atoms
             .get_or_init(|| decode_unsigned(self.expected_atoms))
     }
+}
+
+fn collate_rules(
+    r1: &[u32],
+    r2: &[u32],
+    value_pops: &[u32],
+    reduce_actions: &[u32],
+    tail: &[u32],
+) -> Vec<DecodedRule> {
+    let rule_count = r1.len();
+    assert_eq!(r2.len(), rule_count, "r2 has one cell per rule");
+    assert_eq!(
+        value_pops.len(),
+        rule_count,
+        "value_pops has one cell per rule"
+    );
+    assert_eq!(
+        reduce_actions.len(),
+        rule_count,
+        "reduce_actions has one cell per rule"
+    );
+    assert_eq!(tail.len(), rule_count, "tail has one cell per rule");
+    (0..rule_count)
+        .map(|rule| DecodedRule {
+            lhs: r1[rule],
+            pops: r2[rule],
+            value_pops: value_pops[rule],
+            has_reduce_action: reduce_actions[rule] != 0,
+            tail: u8::try_from(tail[rule]).expect("a tail decision fits in one byte"),
+        })
+        .collect()
 }
 
 impl DecodedTables {
@@ -506,6 +557,12 @@ pub(super) mod tests {
 
     /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
     pub(in crate::lr) fn textbook_decoded() -> DecodedTables {
+        let r1 = vec![1, 0, 0, 2, 2, 3, 3];
+        let r2 = vec![1, 3, 1, 3, 1, 3, 1];
+        let value_pops = vec![1, 2, 1, 2, 1, 1, 0];
+        let reduce_actions = vec![0, 1, 0, 1, 0, 0, 1];
+        let tail = vec![0; 7];
+        let rules = collate_rules(&r1, &r2, &value_pops, &reduce_actions, &tail);
         DecodedTables {
             pact: vec![
                 2, 2, PACT_NINF, 1, 4, PACT_NINF, 0, 2, 2, PACT_NINF, 4, PACT_NINF,
@@ -515,13 +572,14 @@ pub(super) mod tests {
             defact: vec![0, 0, 7, 1, 3, 5, 0, 0, 0, 6, 2, 4],
             pgoto: vec![6, PACT_NINF, -5, 3],
             defgoto: vec![3, 0, 4, 5],
-            r1: vec![1, 0, 0, 2, 2, 3, 3],
-            r2: vec![1, 3, 1, 3, 1, 3, 1],
-            value_pops: vec![1, 2, 1, 2, 1, 1, 0],
-            reduce_actions: vec![0, 1, 0, 1, 0, 0, 1],
+            r1,
+            r2,
+            value_pops,
+            reduce_actions,
             lookahead: Vec::new(),
             lookahead_index: vec![u32::MAX; 5],
-            tail: vec![0; 7],
+            tail,
+            rules,
         }
     }
 
@@ -591,6 +649,7 @@ pub(super) mod tests {
             lookahead_index: build_lookahead_index(&lookahead, 9),
             lookahead,
             tail: Vec::new(),
+            rules: Vec::new(),
         };
 
         assert_eq!(

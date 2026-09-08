@@ -295,8 +295,9 @@ where
                 return Ok((value, occurrence));
             }
             TableAction::Reduce(rule) => {
-                let pops = decoded.r2[rule as usize] as usize;
-                let value_pops = decoded.value_pops[rule as usize] as usize;
+                let rule_info = &decoded.rules[rule as usize];
+                let pops = rule_info.pops as usize;
+                let value_pops = rule_info.value_pops as usize;
                 let depth = values.depth();
                 debug_assert!(
                     value_pops <= depth,
@@ -309,7 +310,7 @@ where
                     context,
                     capturing: occurrences.is_some(),
                 };
-                if decoded.reduce_actions[rule as usize] != 0 {
+                if rule_info.has_reduce_action {
                     reduce(rule, &mut reduction)?;
                 }
                 debug_assert!(
@@ -320,7 +321,7 @@ where
                 if let Some(stack) = occurrences.as_mut() {
                     stack.reduce(context, tables.folds(), rule, pops);
                 }
-                match decoded.tail[rule as usize] {
+                match rule_info.tail {
                     1 => tail = true,
                     2 => tail = false,
                     _ => {}
@@ -330,7 +331,7 @@ where
                     .last()
                     .expect("the state stack keeps the start state")
                     .state;
-                state = decoded.goto(top, decoded.r1[rule as usize]);
+                state = decoded.goto(top, rule_info.lhs);
                 states.push(Frame {
                     state,
                     token: NO_TOKEN,
