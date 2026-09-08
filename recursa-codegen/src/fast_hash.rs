@@ -2,7 +2,7 @@
 
 //! Fast deterministic hashing for analysis-internal interning tables.
 //!
-//! Every map in this crate keyed through [`FxHasher`] is a pure lookup
+//! Every map in this crate keyed through [`FxHasher`](crate::fast_hash::FxHasher) is a pure lookup
 //! structure: entries are only inserted and queried, never iterated in an
 //! order that reaches published output. The hasher is the Fx polynomial used
 //! by rustc: seedless, deterministic across runs, and far cheaper than the

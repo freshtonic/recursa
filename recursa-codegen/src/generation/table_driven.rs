@@ -1189,6 +1189,16 @@ fn boxed(
     expression
 }
 
+/// Pops one stack value and applies `boxes` ownership layers, moving an arena AST's innermost
+/// boxed value directly into its final allocation.
+fn boxed_stack_value(plan: &EmissionPlan, boxes: usize) -> proc_macro2::TokenStream {
+    if plan.arena_ast && boxes > 0 {
+        boxed(plan, quote!(unsafe { reduction.pop_boxed() }), boxes - 1)
+    } else {
+        boxed(plan, quote!(unsafe { reduction.pop() }), boxes)
+    }
+}
+
 /// One direct field as a reduce action sees it: the authored terminal type and wrappers from the
 /// plan, and the site form and symbols from the lowered rule.
 struct FieldSite<'a> {
@@ -1228,7 +1238,7 @@ fn render_field_value(
             .first()
             .is_some_and(|symbol| lr.symbol_carries_value(*symbol));
         let value = if carries {
-            quote!(unsafe { reduction.pop() })
+            return Ok(boxed_stack_value(plan, boxes));
         } else {
             unit_value(plan, node, terminal, terminal_node)?
         };
@@ -1239,7 +1249,7 @@ fn render_field_value(
     };
     if !form.inlined {
         // A required list or a helper: the symbol's value is the field value from `depth` on.
-        return Ok(boxed(plan, quote!(unsafe { reduction.pop() }), depth));
+        return Ok(boxed_stack_value(plan, depth));
     }
     let inner = match (&wrappers[depth], form.present) {
         (FieldWrapper::Optional, false) => quote!(None),
@@ -1261,7 +1271,7 @@ fn render_field_value(
             let rest = &wrappers[depth + 1..];
             let inner = match rest.iter().position(is_choice) {
                 None => element(rest.len())?,
-                Some(list_depth) => boxed(plan, quote!(unsafe { reduction.pop() }), list_depth),
+                Some(list_depth) => boxed_stack_value(plan, list_depth),
             };
             quote!(Some(#inner))
         }
@@ -1436,6 +1446,57 @@ mod nested {
                 .contains("pub (in crate) fn __recursa_reduce_lr_0_0"),
             "the Node output must expose its action shim to the grammar root: {}",
             rendered.nodes[0].1,
+        );
+    }
+
+    #[test]
+    fn arena_boxed_fields_move_stack_values_directly_into_the_arena() {
+        let package = tempfile::tempdir().expect("temporary arena AST fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+recursa::grammar! {
+    module = crate,
+    arena_ast,
+}
+
+#[derive(recursa::Node)]
+#[tok("leaf")]
+struct Leaf;
+
+#[derive(recursa::Node)]
+struct Root<'input>(recursa::ArenaBox<'input, Leaf>);
+"#,
+        )
+        .expect("write arena AST fixture");
+        let success = analyze_source_tree(
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze arena AST fixture");
+        let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join arena AST emission plan");
+        let rendered = render(&plan).expect("render arena AST generation");
+        let root = rendered
+            .nodes
+            .iter()
+            .find_map(|(_, output)| {
+                output
+                    .contains("reduction . push (Self (")
+                    .then_some(output)
+            })
+            .expect("rendered Root node");
+
+        assert!(
+            root.contains("unsafe { reduction . pop_boxed () }"),
+            "an arena-boxed stack value must move directly into its allocation: {root}",
+        );
+        assert!(
+            !root.contains(
+                "ArenaBox :: new_in (unsafe { reduction . pop () } , reduction . arena ())"
+            ),
+            "the generated action must not materialize the value between pop and allocation: \
+             {root}",
         );
     }
 }

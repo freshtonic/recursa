@@ -123,11 +123,20 @@ pub struct DecodedTables {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Rule metadata co-located in one cache-friendly parser hot-path record.
+///
+/// The field order keeps the record at 16 bytes; the compile-time size assertion below prevents
+/// layout drift from silently increasing the cost of every reduction.
 pub(super) struct DecodedRule {
+    /// Left-hand-side nonterminal passed to the goto lookup after reducing.
     pub(super) lhs: u32,
+    /// Number of parser-state frames removed by the rule.
     pub(super) pops: u32,
+    /// Number of semantic values the generated action consumes.
     pub(super) value_pops: u32,
+    /// Whether the reduction dispatches generated semantic construction work.
     pub(super) has_reduce_action: bool,
+    /// Compact encoded provenance-tail policy used by occurrence folding.
     pub(super) tail: u8,
 }
 
@@ -248,6 +257,10 @@ impl LrTables {
     }
 }
 
+/// Joins the generated structure-of-arrays rule metadata into hot-path records.
+///
+/// Every input has exactly one cell per rule. Mismatched generated literals are protocol bugs and
+/// therefore fail immediately instead of producing a partial table.
 fn collate_rules(
     r1: &[u32],
     r2: &[u32],

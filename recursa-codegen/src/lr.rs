@@ -3,7 +3,8 @@
 //! LR lowering, LALR(1) construction, comb-vector tables and conflict reports for the Recursa
 //! parser.
 //!
-//! This is a source-independent analysis beside [`analyze`](crate::analyze): it lowers a
+//! This is a source-independent analysis beside
+//! [`LrAnalysis::analyze_source`](crate::lr::LrAnalysis::analyze_source): it lowers a
 //! normalized grammar to an [`LrGrammar`](crate::lr::grammar::LrGrammar), builds one LALR(1)
 //! [`Automaton`](crate::lr::automaton::Automaton) with a start state per grammar type, packs it
 //! into [`LrTables`](crate::lr::tables::LrTables) and reports every conflict as a diagnostic

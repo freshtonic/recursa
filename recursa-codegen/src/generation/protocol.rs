@@ -78,7 +78,7 @@ fn canonical_debug_identity(value: &(impl std::fmt::Debug + ?Sized)) -> u64 {
 
 /// Streaming identity hasher that erases `bytes(N..M)` span renderings outside quoted strings.
 ///
-/// It applies the same rewrite as [`debug_without_span_offsets`] byte by byte, so a value
+/// It applies the same rewrite as `debug_without_span_offsets` byte by byte, so a value
 /// hashes to the same identity whether its Debug text arrives in one write or many.
 struct SpanErasingHasher {
     /// Running FNV-1a state, identical to [`stable_hash`].
