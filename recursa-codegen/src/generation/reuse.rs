@@ -34,10 +34,11 @@ pub(super) struct ReusedGeneration {
 pub(super) fn reuse_key(discovered: &DiscoveredSourceTree, cfg: &CargoCfgSnapshot) -> String {
     let inputs = &discovered.discovery_inputs;
     let mut canonical = format!(
-        "{};diagrams={};explorer={};edition={:?};cfg={cfg:?};cfg_snapshot={:?};root={}",
+        "{};diagrams={};explorer={};spans={};edition={:?};cfg={cfg:?};cfg_snapshot={:?};root={}",
         generation_protocol_identity(),
         cfg!(feature = "diagrams"),
         cfg!(feature = "explorer"),
+        cfg!(feature = "spans"),
         inputs.edition,
         inputs.cfg_snapshot,
         inputs.selected_root.display(),

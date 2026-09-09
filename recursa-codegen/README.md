@@ -44,6 +44,9 @@ No features are enabled by default.
   use `#[lex(pattern = r"...", diagram = "human label")]`, otherwise the regex
   is the deterministic label. Fixed-token terminals are syntax-only.
 - `explorer` generates grammar-erased Explorer adapters for eligible roots.
+- Generated parsers always expose `parse_without_spans` alongside ordinary
+  parse entry points. `spans` generates exact-source framing and, with the
+  matching facade feature, permits ordinary provenance capture.
 
 Enable the matching capability on the `recursa` facade when a generated grammar
 uses it.

@@ -282,10 +282,10 @@ rust-version = "1.88"
 build = "build.rs"
 
 [dependencies]
-recursa = {{ path = {:?} }}
+recursa = {{ path = {:?}, features = ["spans"] }}
 
 [build-dependencies]
-recursa-codegen = {{ path = {:?} }}
+recursa-codegen = {{ path = {:?}, features = ["spans"] }}
 
 [workspace]
 "#,

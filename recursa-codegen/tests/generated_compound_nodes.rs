@@ -111,7 +111,10 @@ fn configured_feature_recipes_require_the_matching_facade_capability_once() {
     let source = fs::read_to_string(&manifest).expect("read fixture manifest");
     fs::write(
         &manifest,
-        source.replace("\", features = [\"arbitrary\", \"serde\"] }", "\" }"),
+        source.replace(
+            "\", features = [\"arbitrary\", \"serde\", \"spans\"] }",
+            "\" }",
+        ),
     )
     .expect("disable facade capabilities");
 
@@ -173,8 +176,8 @@ fn unrequested_diagram_capability_is_rejected_exactly_once() {
     fs::write(
         &manifest,
         source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\", \"diagrams\"]",
         ),
     )
     .expect("enable an unrequested facade capability");
@@ -681,8 +684,8 @@ fn a_core_generation_does_not_claim_an_unselected_diagram_payload() {
     fs::write(
         manifest,
         source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\", \"diagrams\"]",
         ),
     )
     .expect("request an unavailable diagram loader");
@@ -711,8 +714,8 @@ fn an_unused_generator_diagram_capability_does_not_change_core_identity() {
     fs::write(
         manifest,
         source.replace(
-            "recursa-codegen = { path = \"",
-            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
         ),
     )
     .expect("enable the unused generator capability");
@@ -828,7 +831,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_27", "protocol_999"))
+    fs::write(&root, source.replace("protocol_28", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
@@ -1497,14 +1500,14 @@ fn configure_diagrams(package: &Fixture, generator: bool, facade: bool) {
     let mut source = fs::read_to_string(&manifest).expect("read fixture manifest");
     if facade {
         source = source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\", \"diagrams\"]",
         );
     }
     if generator {
         source = source.replace(
-            "recursa-codegen = { path = \"",
-            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
         );
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         fs::copy(
@@ -1521,14 +1524,14 @@ fn configure_explorer(package: &Fixture, generator: bool, facade: bool) {
     let mut source = fs::read_to_string(&manifest).expect("read fixture manifest");
     if facade {
         source = source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\", \"explorer\"]",
         );
     }
     if generator {
         source = source.replace(
-            "recursa-codegen = { path = \"",
-            "recursa-codegen = { features = [\"explorer\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"explorer\"]",
         );
     }
     fs::write(manifest, source).expect("configure explorer capabilities");

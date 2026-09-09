@@ -212,9 +212,12 @@ No features are enabled by default.
   returns one complete document or structured diagnostics.
 - `serde` supplies facade support for configured generated Serde
   implementations.
+- `spans` makes ordinary parses retain occurrence provenance and enables
+  exact-source framing. Generated parsers always expose `parse_without_spans`
+  for an explicitly provenance-free parse.
 
-Build-time diagram or Explorer generation also enables the same feature on
-`recursa-codegen`.
+Build-time diagram, Explorer, or spans generation also enables the same
+feature on `recursa-codegen`.
 
 ## Public boundary
 

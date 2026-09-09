@@ -140,7 +140,6 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
                 tables.pact.len(),
                 100.0 * default_only as f64 / tables.pact.len() as f64
             );
-
             let conflicts = automaton.conflicts();
             let shift_reduce = conflicts
                 .iter()
@@ -169,6 +168,8 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
             std::fs::create_dir_all(&out_dir).expect("create the report directory");
             std::fs::write(out_dir.join("automaton.txt"), analysis.dump())
                 .expect("write the automaton dump");
+            std::fs::write(out_dir.join("statistics.txt"), analysis.statistics.render())
+                .expect("write the structural statistics");
             let mut report = String::new();
             for diagnostic in &analysis.diagnostics {
                 report.push_str(&diagnostic.render());

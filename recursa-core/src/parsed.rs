@@ -1142,19 +1142,29 @@ pub enum CapturePolicy {
 /// Capture mode selected by the public root entry point.
 #[derive(Clone, Copy)]
 pub(crate) enum CaptureRequest {
-    /// Use only captures required by the grammar plan.
-    Default,
     /// Request optional captures for public occurrence views.
     Spanned,
+    /// Suppress every optional and mandatory provenance capture.
+    WithoutSpans,
+}
+
+impl CaptureRequest {
+    /// Reports whether this build and entry point permit provenance collection.
+    const fn permits_spans(self) -> bool {
+        cfg!(feature = "spans") && !matches!(self, Self::WithoutSpans)
+    }
 }
 
 impl CapturePolicy {
     /// Resolves grammar policy and caller request to an effective capture flag.
     fn captures(self, request: CaptureRequest) -> bool {
+        if !request.permits_spans() {
+            return false;
+        }
         match (self, request) {
             (Self::Off, _) => false,
-            (Self::Optional, CaptureRequest::Default) => false,
             (Self::Optional, CaptureRequest::Spanned) | (Self::Mandatory, _) => true,
+            (Self::Optional, CaptureRequest::WithoutSpans) => false,
         }
     }
 }
@@ -1174,7 +1184,7 @@ impl<'arena> Occurrence<'arena> {
     }
 
     /// Renders the retained node as [`Parsed::debug_provenance`] renders it, or `_`.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "spans"))]
     pub(crate) fn render(&self) -> String {
         struct Render<'occurrence, 'arena>(&'occurrence Occurrence<'arena>);
         impl fmt::Display for Render<'_, '_> {
@@ -1436,6 +1446,11 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
         self.policy.captures(self.request)
     }
 
+    /// Reports whether this invocation needs an occurrence stack, including mandatory sites.
+    pub(crate) fn captures_provenance(&self, has_mandatory_sites: bool) -> bool {
+        self.request.permits_spans() && (self.captures() || has_mandatory_sites)
+    }
+
     /// Reports whether one resolved fold policy retains its own span for this parse.
     #[inline(always)]
     pub(crate) fn captures_policy(&self, policy: CapturePolicy) -> bool {
@@ -1602,14 +1617,14 @@ where
     }
 }
 
-/// Runs the generated root parser with the default capture request.
+/// Runs the generated root parser with provenance enabled exactly when the `spans` feature is.
 ///
 #[doc(hidden)]
 pub fn parse<'input, T, A>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
 where
     T: GeneratedParse<'input, A>,
 {
-    parse_with_request::<T, A>(input, CaptureRequest::Default)
+    parse_with_request::<T, A>(input, ordinary_capture_request())
 }
 
 /// Runs the generated root parser with the explicit span-capture request.
@@ -1624,7 +1639,19 @@ where
     parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
 
-/// Runs one generated arena-backed root parser with the default capture request.
+/// Runs the generated root parser while suppressing all provenance capture.
+///
+#[doc(hidden)]
+pub fn parse_without_spans<'input, T, A>(
+    input: &mut Input<'input, A>,
+) -> Result<Parsed<'input, T>, ParseError>
+where
+    T: GeneratedParse<'input, A>,
+{
+    parse_with_request::<T, A>(input, CaptureRequest::WithoutSpans)
+}
+
+/// Runs one generated arena-backed root parser with provenance selected by the `spans` feature.
 #[doc(hidden)]
 pub fn parse_arena<'input, T, A>(
     input: &mut Input<'input, A>,
@@ -1632,7 +1659,16 @@ pub fn parse_arena<'input, T, A>(
 where
     T: ArenaGeneratedParse<'input, A>,
 {
-    parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Default, T::root_follow())
+    parse_arena_with_request_and_follow::<T, A>(input, ordinary_capture_request(), T::root_follow())
+}
+
+/// Selects the ordinary public parse behavior for this runtime feature set.
+const fn ordinary_capture_request() -> CaptureRequest {
+    if cfg!(feature = "spans") {
+        CaptureRequest::Spanned
+    } else {
+        CaptureRequest::WithoutSpans
+    }
 }
 
 /// Runs one generated arena-backed root parser with explicit span capture.
@@ -1644,6 +1680,21 @@ where
     T: ArenaGeneratedParse<'input, A>,
 {
     parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, T::root_follow())
+}
+
+/// Runs one generated arena-backed root parser while suppressing all provenance capture.
+#[doc(hidden)]
+pub fn parse_arena_without_spans<'input, T, A>(
+    input: &mut Input<'input, A>,
+) -> Result<ArenaParsed<'input, T::Family>, ParseError>
+where
+    T: ArenaGeneratedParse<'input, A>,
+{
+    parse_arena_with_request_and_follow::<T, A>(
+        input,
+        CaptureRequest::WithoutSpans,
+        T::root_follow(),
+    )
 }
 
 /// Owns an arena-backed semantic root and provenance under one transactional parse.
@@ -1703,6 +1754,7 @@ where
 /// Document framing uses this seam to keep its separator outside the authored
 /// root while preserving ordinary transactional parse behavior.
 #[cfg(feature = "explorer")]
+#[cfg(all(feature = "explorer", feature = "spans"))]
 pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
     input: &mut Input<'input, A>,
     follow: &FollowSet,
@@ -1715,6 +1767,7 @@ where
 
 /// Runs an arena-backed generated root parser with one framing caller FOLLOW.
 #[cfg(feature = "explorer")]
+#[cfg(all(feature = "explorer", feature = "spans"))]
 pub(crate) fn parse_arena_spanned_with_root_follow<'input, T, A>(
     input: &mut Input<'input, A>,
     follow: &FollowSet,
@@ -1792,11 +1845,11 @@ pub(crate) fn test_context<'input, A, R>(
     input: &mut Input<'input, A>,
     operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
 ) -> R {
-    test_context_with_request(input, CaptureRequest::Default, operation)
+    test_context_with_request(input, CaptureRequest::WithoutSpans, operation)
 }
 
 /// Binds a root-style [`ParseContext`] with the span-capture request, as `parse_spanned` does.
-#[cfg(test)]
+#[cfg(all(test, feature = "spans"))]
 pub(crate) fn test_context_spanned<'input, A, R>(
     input: &mut Input<'input, A>,
     operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
@@ -2037,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn root_capture_policy_and_request_cover_all_six_combinations() {
+    fn root_capture_policy_and_request_cover_feature_and_entry_point_combinations() {
         macro_rules! assert_case {
             ($token:ident, $spanned:expr, $captured:expr) => {{
                 let lexed = one_word("word");
@@ -2047,18 +2100,34 @@ mod tests {
                 } else {
                     parse::<$token<'_>, _>(&mut input).unwrap()
                 };
-                assert_eq!(parsed.source().is_some(), $captured);
-                assert_eq!(parsed.root().span().is_some(), $captured);
+                let captured = cfg!(feature = "spans") && $captured;
+                assert_eq!(parsed.source().is_some(), captured);
+                assert_eq!(parsed.root().span().is_some(), captured);
                 assert_eq!(parsed.root().value().text.as_str(), "word");
             }};
         }
 
         assert_case!(OffToken, false, false);
         assert_case!(OffToken, true, false);
-        assert_case!(OptionalToken, false, false);
+        assert_case!(OptionalToken, false, true);
         assert_case!(OptionalToken, true, true);
         assert_case!(MandatoryToken, false, true);
         assert_case!(MandatoryToken, true, true);
+
+        macro_rules! assert_without_spans {
+            ($token:ident) => {{
+                let lexed = one_word("word");
+                let mut input = lexed.input(&GRAMMAR);
+                let parsed = parse_without_spans::<$token<'_>, _>(&mut input).unwrap();
+                assert_eq!(parsed.source(), None);
+                assert_eq!(parsed.root().span(), None);
+                assert_eq!(parsed.root().value().text.as_str(), "word");
+            }};
+        }
+
+        assert_without_spans!(OffToken);
+        assert_without_spans!(OptionalToken);
+        assert_without_spans!(MandatoryToken);
     }
 
     #[test]

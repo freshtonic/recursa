@@ -77,7 +77,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
         }
     };
     let inherited = parse_default!(grammar::InheritedCapture<'_>, "capture word");
-    let default_captures = mode == CaptureMode::Mandatory;
+    let default_captures = mode != CaptureMode::Off;
     assert_eq!(inherited.source().is_some(), default_captures);
     assert_eq!(
         inherited.root().span(),
@@ -106,7 +106,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
     macro_rules! assert_root_policy {
         ($ty:ty, $source:expr) => {{
             let ordinary = parse_default!($ty, $source);
-            assert_eq!(ordinary.source().is_some(), mode == CaptureMode::Mandatory);
+            assert_eq!(ordinary.source().is_some(), mode != CaptureMode::Off);
             let spanned = parse_spanned!($ty, $source);
             assert_eq!(spanned.source().is_some(), mode != CaptureMode::Off);
         }};
@@ -484,7 +484,8 @@ fn assert_repetition_behavior() {
 
     let unspanned_lexed = grammar::lex("many left,right");
     let mut unspanned_input = unspanned_lexed.input();
-    let unspanned = grammar::Many::parse(&mut unspanned_input).expect("ordinary parse succeeds");
+    let unspanned = grammar::Many::parse_without_spans(&mut unspanned_input)
+        .expect("provenance-free parse succeeds");
     assert_eq!(unspanned.root().span(), None);
     assert_eq!(unspanned.root().values().span(), None);
     assert_eq!(unspanned.root().values().get(0).unwrap().span(), None);

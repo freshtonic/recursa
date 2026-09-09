@@ -1255,72 +1255,78 @@ pub(super) fn render_root(
             }
         }
     });
-    let framing_root = plan.framing.as_ref().map(|framing| {
-        let framing_root_schema = explorer_schema_static(
-            plan.nodes[framing.node_index].parse_applications[framing.application_index]
-                .parse_index,
-            None,
-        );
-        let boundary_kind = framing.boundary_kind;
-        let line_kinds = &framing.line_kinds;
-        let delimited_kinds = &framing.delimited_kinds;
-        let mut boundary_words = vec![0_u64; plan.kind_count.div_ceil(64)];
-        boundary_words[usize::from(boundary_kind) / 64] |=
-            1_u64 << (usize::from(boundary_kind) % 64);
-        let node = &plan.nodes[framing.node_index];
-        let application = &node.parse_applications[framing.application_index];
-        let payload = framing.payload.as_ref().map_or_else(
-            || quote!(None),
-            |payload| {
-                let variant =
-                    explorer_schema_static(application.parse_index, Some(payload.variant_index));
-                let terminator = &payload.terminator;
-                quote!(Some(#facade::__private::framing_payload_plan(
-                    &#variant,
-                    #terminator,
-                )))
-            },
-        );
-        let framing_exports = if plan.arena_ast {
+    let framing_root = plan
+        .framing
+        .as_ref()
+        .filter(|_| cfg!(feature = "spans"))
+        .map(|framing| {
+            let framing_root_schema = explorer_schema_static(
+                plan.nodes[framing.node_index].parse_applications[framing.application_index]
+                    .parse_index,
+                None,
+            );
+            let boundary_kind = framing.boundary_kind;
+            let line_kinds = &framing.line_kinds;
+            let delimited_kinds = &framing.delimited_kinds;
+            let mut boundary_words = vec![0_u64; plan.kind_count.div_ceil(64)];
+            boundary_words[usize::from(boundary_kind) / 64] |=
+                1_u64 << (usize::from(boundary_kind) % 64);
+            let node = &plan.nodes[framing.node_index];
+            let application = &node.parse_applications[framing.application_index];
+            let payload = framing.payload.as_ref().map_or_else(
+                || quote!(None),
+                |payload| {
+                    let variant = explorer_schema_static(
+                        application.parse_index,
+                        Some(payload.variant_index),
+                    );
+                    let terminator = &payload.terminator;
+                    quote!(Some(#facade::__private::framing_payload_plan(
+                        &#variant,
+                        #terminator,
+                    )))
+                },
+            );
+            let framing_exports = if plan.arena_ast {
+                quote! {
+                    pub use #facade::framing::{
+                        ArenaCompleteFrame as CompleteFrame,
+                        ArenaCompleteIsland as CompleteIsland,
+                        FramePart as CompletePart,
+                        FrameDiagnostic, FrameDiagnosticKind, FrameError, FrameFailure,
+                        FrameRejection, PayloadRegion, SourceRegion,
+                    };
+                }
+            } else {
+                quote! {
+                    pub use #facade::framing::{
+                        CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
+                        FrameDiagnosticKind, FrameError, FrameFailure, FrameRejection,
+                        PayloadRegion, SourceRegion,
+                    };
+                }
+            };
             quote! {
-                pub use #facade::framing::{
-                    ArenaCompleteFrame as CompleteFrame,
-                    ArenaCompleteIsland as CompleteIsland,
-                    FramePart as CompletePart,
-                    FrameDiagnostic, FrameDiagnosticKind, FrameError, FrameFailure,
-                    FrameRejection, PayloadRegion, SourceRegion,
-                };
-            }
-        } else {
-            quote! {
-                pub use #facade::framing::{
-                    CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
-                    FrameDiagnosticKind, FrameError, FrameFailure, FrameRejection,
-                    PayloadRegion, SourceRegion,
-                };
-            }
-        };
-        quote! {
-            static __RECURSA_FRAMING_BOUNDARY_FOLLOW: #facade::__private::FollowSet =
-                #facade::__private::follow_set(
-                    #kind_count as u32,
-                    &[#(#boundary_words),*],
-                    &[],
-                );
-            static __RECURSA_FRAMING_PLAN: #facade::__private::FramingPlanData =
-                #facade::__private::framing_plan(
-                    &__RECURSA_GRAMMAR,
-                    &#framing_root_schema,
-                    #boundary_kind,
-                    &[#(#line_kinds),*],
-                    &[#(#delimited_kinds),*],
-                    #payload,
-                    &__RECURSA_FRAMING_BOUNDARY_FOLLOW,
-                );
+                static __RECURSA_FRAMING_BOUNDARY_FOLLOW: #facade::__private::FollowSet =
+                    #facade::__private::follow_set(
+                        #kind_count as u32,
+                        &[#(#boundary_words),*],
+                        &[],
+                    );
+                static __RECURSA_FRAMING_PLAN: #facade::__private::FramingPlanData =
+                    #facade::__private::framing_plan(
+                        &__RECURSA_GRAMMAR,
+                        &#framing_root_schema,
+                        #boundary_kind,
+                        &[#(#line_kinds),*],
+                        &[#(#delimited_kinds),*],
+                        #payload,
+                        &__RECURSA_FRAMING_BOUNDARY_FOLLOW,
+                    );
 
-            #framing_exports
-        }
-    });
+                #framing_exports
+            }
+        });
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
         let ident = &node.ident;
         let anchor = syn::LitStr::new(&node.loader_anchor, proc_macro2::Span::call_site());
@@ -1905,6 +1911,37 @@ pub(super) fn render_node(
     } else {
         quote!(<#input_lifetime, A>)
     };
+    let without_spans_entry_point = if plan.arena_ast {
+        quote! {
+            /// Parses this Node without retaining occurrence provenance.
+            pub fn parse_without_spans #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<
+                #facade::ArenaParsed<
+                    #input_lifetime,
+                    <Self as #facade::__private::ArenaGeneratedParse<#input_lifetime, A>>::Family,
+                >,
+                #facade::ParseError,
+            >
+            where
+                Self: #facade::__private::ArenaGeneratedParse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_arena_without_spans::<Self, A>(&mut input.inner)
+            }
+        }
+    } else {
+        quote! {
+            /// Parses this Node without retaining occurrence provenance.
+            pub fn parse_without_spans #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_without_spans(&mut input.inner)
+            }
+        }
+    };
     let entry_points = if plan.arena_ast {
         quote! {
             pub fn parse #inherent_method_generics(
@@ -1935,6 +1972,7 @@ pub(super) fn render_node(
             {
                 #facade::__private::parse_arena_spanned::<Self, A>(&mut input.inner)
             }
+            #without_spans_entry_point
         }
     } else {
         quote! {
@@ -1954,6 +1992,7 @@ pub(super) fn render_node(
             {
                 #facade::__private::parse_spanned(&mut input.inner)
             }
+            #without_spans_entry_point
         }
     };
     let metadata = render_metadata(plan, node, node_index);

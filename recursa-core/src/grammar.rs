@@ -120,6 +120,7 @@ impl FollowSet {
 
     /// Reports whether this set is exactly one kind at the supplied width.
     #[cfg(feature = "explorer")]
+    #[cfg(all(feature = "explorer", feature = "spans"))]
     pub(crate) fn is_exact_kind(&self, kind_count: usize, kind: TokenKind) -> bool {
         self.kind_count as usize == kind_count
             && usize::from(kind) < kind_count

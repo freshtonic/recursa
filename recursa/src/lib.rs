@@ -7,7 +7,7 @@
 pub use recursa_core::__private::arbitrary::Arbitrary;
 #[cfg(feature = "explorer")]
 pub use recursa_core::explorer;
-#[cfg(feature = "explorer")]
+#[cfg(all(feature = "explorer", feature = "spans"))]
 pub use recursa_core::framing;
 pub use recursa_core::{
     ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, DebugProvenance,
@@ -40,7 +40,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            27,
+            28,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

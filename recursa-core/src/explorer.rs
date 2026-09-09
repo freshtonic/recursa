@@ -1343,6 +1343,7 @@ pub unsafe trait ArenaExplorerRootFamily: 'static {
 }
 
 /// Tests one complete strict root against a generated static variant identity.
+#[cfg(feature = "spans")]
 pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
     parsed: &Parsed<'_, T>,
     expected: &'static VariantSchemaData,
@@ -1355,6 +1356,7 @@ pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
 }
 
 /// Tests one arena-backed strict root against a generated static variant identity.
+#[cfg(feature = "spans")]
 pub(crate) fn arena_parsed_active_variant_is<F>(
     parsed: &ArenaParsed<'_, F>,
     expected: &'static VariantSchemaData,
@@ -1371,6 +1373,7 @@ where
 }
 
 /// Reports whether one static variant belongs directly to the selected root.
+#[cfg(feature = "spans")]
 pub(crate) fn root_contains_variant(
     root: &'static NodeSchemaData,
     variant: &'static VariantSchemaData,

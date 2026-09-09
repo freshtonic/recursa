@@ -163,7 +163,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_27", "protocol_999");
+        .replace("protocol_28", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -929,7 +929,7 @@ fn debug_emission_preserves_compiled_semantics_for_every_capability_combination(
 }
 
 fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
-    let mut features = Vec::new();
+    let mut features = vec!["\"spans\""];
     let grammar = package.path().join("src/grammar.rs");
     let mut source = fs::read_to_string(&grammar).expect("read capability matrix grammar");
     source = source
@@ -967,10 +967,6 @@ fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
         .expect("select capability-complete fixture lock");
     }
     fs::write(grammar, source).expect("configure capability matrix grammar");
-    if features.is_empty() {
-        return;
-    }
-
     let manifest_path = package.path().join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("read capability matrix manifest");
     let features = features.join(", ");
@@ -980,10 +976,11 @@ fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
             if line.starts_with("recursa = { path = ")
                 || line.starts_with("recursa-codegen = { path = ")
             {
-                format!(
-                    "{}, features = [{features}] }}",
-                    line.trim_end_matches(" }")
-                )
+                let dependency = line
+                    .split(", features = [")
+                    .next()
+                    .unwrap_or_else(|| line.trim_end_matches(" }"));
+                format!("{dependency}, features = [{features}] }}")
             } else {
                 line.to_owned()
             }
@@ -1106,9 +1103,10 @@ fn enable_arbitrary_and_serde(package: &TempDir) {
     let manifest_path = package.path().join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path)
         .expect("read generated grammar fixture manifest")
-        .replace(
-            "recursa = { path = ",
-            "recursa = { features = [\"arbitrary\", \"serde\"], path = ",
+        .replacen(
+            "features = [\"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            1,
         )
         .replace(
             "\n[build-dependencies]",

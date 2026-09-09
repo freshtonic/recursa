@@ -52,12 +52,12 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
         &manifest,
         source
             .replace(
-                "features = [\"serde\", \"diagrams\"]",
-                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\", \"explorer\"]",
             )
             .replace(
-                "features = [\"diagrams\"]",
-                "features = [\"diagrams\", \"explorer\"]",
+                "features = [\"diagrams\", \"spans\"]",
+                "features = [\"diagrams\", \"spans\", \"explorer\"]",
             ),
     )
     .expect("enable explorer facade payload");
@@ -135,12 +135,12 @@ fn a_generic_explorer_entry_method_collision_is_diagnosed_before_emission() {
         &manifest,
         source
             .replace(
-                "features = [\"serde\", \"diagrams\"]",
-                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\", \"explorer\"]",
             )
             .replace(
-                "features = [\"diagrams\"]",
-                "features = [\"diagrams\", \"explorer\"]",
+                "features = [\"diagrams\", \"spans\"]",
+                "features = [\"diagrams\", \"spans\", \"explorer\"]",
             ),
     )
     .expect("enable explorer facade payload");
@@ -183,12 +183,12 @@ fn a_secondary_generic_application_schema_collision_is_diagnosed_before_emission
         &manifest,
         source
             .replace(
-                "features = [\"serde\", \"diagrams\"]",
-                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\"]",
+                "features = [\"serde\", \"diagrams\", \"spans\", \"explorer\"]",
             )
             .replace(
-                "features = [\"diagrams\"]",
-                "features = [\"diagrams\", \"explorer\"]",
+                "features = [\"diagrams\", \"spans\"]",
+                "features = [\"diagrams\", \"spans\", \"explorer\"]",
             ),
     )
     .expect("enable explorer facade payload");

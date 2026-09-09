@@ -91,8 +91,14 @@ fn main() {
         parsed.root().value().text.text().as_ptr(),
         source.as_ptr(),
     ));
-    assert_eq!(parsed.root().span(), None);
-    assert_eq!(parsed.root().text().span(), None);
+    assert_eq!(
+        parsed.root().span(),
+        Some(recursa::Span::new(0, 5).unwrap())
+    );
+    assert_eq!(
+        parsed.root().text().span(),
+        Some(recursa::Span::new(0, 5).unwrap())
+    );
     assert_eq!(input.cursor(), 1);
     assert!(input.is_eof());
     let mut ast = parsed.into_ast();

@@ -88,13 +88,17 @@ macro_rules! drive {
         // strictly less than the same parse with capture requested, whose occurrence tree is heap
         // Both counts are taken on warm parses so one-time initialization is excluded.
         let lexed = grammar::lex("print(!!false);");
+        let mut without_spans_input = $input(&lexed);
+        let without_spans = grammar::Statement::parse_without_spans(&mut without_spans_input)
+            .expect("positive input parses without spans");
+        assert!(without_spans.source().is_none());
         let allocations = |spanned: bool| {
             let mut input = $input(&lexed);
             let before = ALLOCATIONS.load(Ordering::SeqCst);
             let parsed = if spanned {
                 grammar::Statement::parse_spanned(&mut input)
             } else {
-                grammar::Statement::parse(&mut input)
+                grammar::Statement::parse_without_spans(&mut input)
             };
             let count = ALLOCATIONS.load(Ordering::SeqCst) - before;
             drop(parsed.expect("positive input parses"));

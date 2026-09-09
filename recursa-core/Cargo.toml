@@ -19,6 +19,7 @@ default = []
 arbitrary = ["dep:arbitrary"]
 explorer = []
 serde = ["dep:serde"]
+spans = []
 
 [dependencies]
 arbitrary = { version = "1", optional = true }

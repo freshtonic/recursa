@@ -86,6 +86,7 @@ impl<'src> LexResult<'src> {
     /// Records are ordered and non-overlapping, so the window's records are the contiguous
     /// run that `bounds` contains.
     #[cfg(feature = "explorer")]
+    #[cfg(all(feature = "explorer", feature = "spans"))]
     pub(crate) fn input_window(
         &self,
         grammar: &'static GrammarInfo,
@@ -142,6 +143,7 @@ impl<'src> LexResult<'src> {
 /// Lexical records are ordered by start and never overlap, so both edges of the window
 /// are found by binary search rather than a scan of every record.
 #[cfg(feature = "explorer")]
+#[cfg(all(feature = "explorer", feature = "spans"))]
 fn contained<T>(records: &[T], bounds: Span, span: impl Fn(&T) -> Span) -> &[T] {
     let start = records.partition_point(|record| span(record).start() < bounds.start());
     let end = records.partition_point(|record| span(record).end() <= bounds.end());
