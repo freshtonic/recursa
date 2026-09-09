@@ -55,6 +55,8 @@ No features are enabled by default.
   values.
 - `explorer` exposes grammar-erased schema, lexing, document, and occurrence
   contracts. It does not include a server or browser UI.
+- `spans` makes ordinary generated parse entry points retain occurrence
+  provenance. Without it, all parse requests are provenance-free.
 
 Recursa uses Rust edition 2024 and requires Rust 1.88 or newer. See the
 [API reference](https://docs.rs/recursa-core/latest/recursa_core/) and the

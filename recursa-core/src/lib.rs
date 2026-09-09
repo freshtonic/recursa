@@ -2,7 +2,7 @@
 
 #[cfg(feature = "explorer")]
 pub mod explorer;
-#[cfg(feature = "explorer")]
+#[cfg(all(feature = "explorer", feature = "spans"))]
 pub mod framing;
 /// Static grammar identity, token kinds, and compact follow-set representation.
 mod grammar;
@@ -74,7 +74,7 @@ pub mod __private {
         token_node as explorer_token_node, token_schema as explorer_token_schema,
         variant_schema as explorer_variant_schema,
     };
-    #[cfg(feature = "explorer")]
+    #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
         frame_arena_document, frame_document, payload_plan as framing_payload_plan,
@@ -96,7 +96,8 @@ pub mod __private {
         ArenaGeneratedParse, CapturePolicy, ContentText, ElementMetadata, GeneratedInput,
         GeneratedParse as Parse, NodeElements, NodeViewFactory, Occurrence, Occurrences,
         ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor, parse, parse_arena,
-        parse_arena_spanned, parse_seal::Sealed as ParseSealed, parse_spanned, pretty_view,
+        parse_arena_spanned, parse_arena_without_spans, parse_seal::Sealed as ParseSealed,
+        parse_spanned, parse_without_spans, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
@@ -159,7 +160,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        27,
+        28,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -252,7 +253,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            27,
+            28,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

@@ -269,7 +269,9 @@ _Avoid_: End-of-input accept, longest-match search
 The Recursa parser's runtime stack of occurrence provenance, parallel to the
 state stack: it is pushed on every shift with the token's span and folded on
 every reduce by the rule's fold. It exists only when the parse captures
-provenance or the grammar has a mandatory site.
+provenance or the grammar has a mandatory site, and only when the `spans`
+feature permits provenance. Every generated parser exposes
+`parse_without_spans` to suppress the stack even for mandatory sites.
 _Avoid_: Span stack, location stack
 
 **Rule fold**:

@@ -1836,6 +1836,7 @@ pub(super) fn render_node_application_explorer(
         let framing_method = plan
             .framing
             .as_ref()
+            .filter(|_| cfg!(feature = "spans"))
             .filter(|framing| {
                 plan.nodes[framing.node_index].node == node.node
                     && plan.nodes[framing.node_index].parse_applications[framing.application_index]

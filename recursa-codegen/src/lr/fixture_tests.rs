@@ -394,6 +394,39 @@ fn the_whole_analysis_runs_from_one_entry_point() {
 }
 
 #[test]
+fn analysis_statistics_account_for_the_complete_machine() {
+    let lowered = lowered_fixture("json");
+    let analysis = LrAnalysis::from_lowered(&lowered, AutomatonOptions::default())
+        .expect("json has no text predicates");
+    let statistics = analysis.statistics();
+
+    assert_eq!(statistics.terminals, analysis.grammar.terminal_count());
+    assert_eq!(
+        statistics.nonterminals.total(),
+        analysis.grammar.nonterminal_count()
+    );
+    assert_eq!(statistics.rules.total(), analysis.grammar.rules().len());
+    assert_eq!(statistics.states.total(), analysis.automaton.states().len());
+    assert_eq!(statistics.starts.len(), analysis.grammar.starts().len());
+    assert_eq!(
+        statistics
+            .tables
+            .iter()
+            .map(|table| table.cells)
+            .sum::<usize>(),
+        analysis.tables.cell_count()
+            + analysis.tables.lookahead.len()
+            + analysis.tables.folds.len()
+            + analysis.tables.tail.len()
+    );
+    assert!(
+        statistics
+            .render()
+            .starts_with("lr-statistics-v1\nterminals=")
+    );
+}
+
+#[test]
 fn cskw_admission_sets_lower_to_one_rule_per_member_kind_yielding_the_token() {
     let (_, grammar) = lr_fixture("cskw");
     let column_name = grammar

@@ -28,7 +28,6 @@ fn the_recursa_parser_preserves_tracer_behavior() {
         root.contains("__recursa_reduce"),
         "root carries the reduce dispatcher"
     );
-
     // Positive inputs parse to equal values and leave the cursor at the end.
     assert!(
         table_stdout.contains("ok \"let x = 5;\" => Let { assignment: Assignment { name: Name { text: __RecursaContentToken0 { text: ContentText(\"x\") } }, value: Number(Number { text: __RecursaContentToken1 { text: ContentText(\"5\") } }) } } cursor=5 eof=true"),

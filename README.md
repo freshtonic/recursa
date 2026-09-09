@@ -187,8 +187,10 @@ The `recursa` facade has no default features. Optional features are:
 | `diagrams` | Matching facade support for generated Rustdoc railroad diagrams, rendered only under `cargo doc` |
 | `explorer` | Grammar-erased strict Explorer adapter and document-framing contracts |
 | `serde` | Generated Serde implementations when configured by the grammar |
+| `spans` | Occurrence provenance for ordinary parses; exact-source framing support |
 
-Build-time `diagrams` and `explorer` generation also require the corresponding
+Generated grammars always expose `parse_without_spans`. Build-time `diagrams`,
+`explorer`, and `spans` generation also require the corresponding
 `recursa-codegen` feature. Configured generated capabilities must match the
 facade features used to compile the grammar.
 

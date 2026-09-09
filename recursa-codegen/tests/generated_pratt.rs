@@ -289,12 +289,12 @@ fn enable_explorer(package: &TempDir) {
         &manifest,
         source
             .replace(
-                "features = [\"arbitrary\", \"serde\"]",
-                "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+                "features = [\"arbitrary\", \"serde\", \"spans\"]",
+                "features = [\"arbitrary\", \"serde\", \"spans\", \"explorer\"]",
             )
             .replace(
-                "recursa-codegen = { path = \"",
-                "recursa-codegen = { features = [\"explorer\"], path = \"",
+                "features = [\"spans\"]",
+                "features = [\"spans\", \"explorer\"]",
             ),
     )
     .expect("enable Pratt explorer facade payload");
@@ -316,12 +316,12 @@ fn configure_diagrams(package: &TempDir) {
     let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
     let source = source
         .replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\"]",
+            "features = [\"arbitrary\", \"serde\", \"spans\", \"diagrams\"]",
         )
         .replace(
-            "recursa-codegen = { path = \"",
-            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
         );
     fs::write(manifest, source).expect("enable Pratt diagram capabilities");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

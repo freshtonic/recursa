@@ -183,7 +183,8 @@ where
 {
     let checkpoint = context.cursor();
     let mut values = ValueStack::new();
-    let mut occurrences = (context.captures() || tables.mandatory_provenance())
+    let mut occurrences = context
+        .captures_provenance(tables.mandatory_provenance())
         .then(|| OccurrenceStack::new(context.provenance_arena()));
     match drive::<T, A, _>(
         context,
@@ -706,6 +707,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "spans")]
     fn a_capturing_parse_folds_the_generated_occurrence_tree() {
         // With capture requested every reduce sees the stack and the textbook folds build the
         // tree: each rule a node over the rule's extent whose children are its sites, a

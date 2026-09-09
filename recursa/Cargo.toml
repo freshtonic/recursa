@@ -20,6 +20,7 @@ arbitrary = ["recursa-core/arbitrary", "recursa-macros/arbitrary"]
 diagrams = ["recursa-macros/diagrams"]
 explorer = ["recursa-core/explorer", "recursa-macros/explorer"]
 serde = ["recursa-core/serde", "recursa-macros/serde"]
+spans = ["recursa-core/spans"]
 
 [dependencies]
 recursa-core = { version = "=0.1.0", path = "../recursa-core" }

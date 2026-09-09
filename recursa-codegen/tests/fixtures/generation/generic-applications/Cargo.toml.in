@@ -6,9 +6,9 @@ rust-version = "1.88"
 build = "build.rs"
 
 [dependencies]
-recursa = { path = "{{RECURSA}}", features = ["serde", "diagrams"] }
+recursa = { path = "{{RECURSA}}", features = ["serde", "diagrams", "spans"] }
 
 [build-dependencies]
-recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["diagrams"] }
+recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["diagrams", "spans"] }
 
 [workspace]

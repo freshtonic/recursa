@@ -190,12 +190,12 @@ fn configure_diagrams(package: &TempDir) {
     let source = fs::read_to_string(&manifest).expect("read repetition manifest");
     let source = source
         .replace(
-            "recursa = { path = \"",
-            "recursa = { features = [\"diagrams\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
         )
         .replace(
-            "recursa-codegen = { path = \"",
-            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
         );
     fs::write(manifest, source).expect("enable repetition diagram capabilities");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

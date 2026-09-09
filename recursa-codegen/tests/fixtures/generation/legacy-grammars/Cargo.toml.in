@@ -3,5 +3,5 @@ members = ["toy", "arith", "json", "sql", "optq", "cskw"]
 resolver = "2"
 
 [workspace.dependencies]
-recursa = { path = "{{RECURSA}}" }
-recursa-codegen = { path = "{{RECURSA_CODEGEN}}" }
+recursa = { path = "{{RECURSA}}", features = ["spans"] }
+recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["spans"] }

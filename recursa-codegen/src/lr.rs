@@ -35,6 +35,8 @@ pub mod paths;
 pub mod precedence;
 /// Bison-style automaton dump and conflict diagnostics.
 pub mod report;
+/// Deterministic structural statistics for generated LR machines.
+pub mod statistics;
 /// Comb-vector table packing and its deterministic encoding.
 pub mod tables;
 
@@ -58,6 +60,11 @@ pub use lowering::{TypeRoles, lower};
 pub use paths::{SymbolPath, render_path, shortest_paths};
 pub use precedence::BindingPowerPrecedence;
 pub use report::{LrDiagnostic, automaton_dump, conflict_diagnostics};
+pub use statistics::{
+    ContentTokenStatistics, KernelMixStatistics, LrOrigin, LrStatistics, NormalizedShapeStatistics,
+    OriginStatistics, PrattRestrictionStatistics, RuleActionStatistics, StartStatistics,
+    StateStatistics, TableStatistics, TypeRoleStatistics,
+};
 pub use tables::{EncodedLrTables, LrTables, PACT_NINF, TABLE_NINF};
 
 use std::path::Path;
@@ -78,6 +85,8 @@ pub struct LrAnalysis {
     pub tables: LrTables,
     /// One diagnostic per conflict, in (state, lookahead) order.
     pub diagnostics: Vec<LrDiagnostic>,
+    /// Deterministic structural statistics for this analysis.
+    pub statistics: LrStatistics,
 }
 
 #[derive(Debug)]
@@ -154,6 +163,7 @@ impl LrAnalysis {
             let _stage = Span::enter("table-packing");
             LrTables::pack(&grammar, &automaton)
         };
+        let statistics = LrStatistics::collect(lowered, &roles, &grammar, &automaton, &tables);
         let mut diagnostics = scoped_diagnostics;
         {
             let _stage = Span::enter("conflict-diagnostics");
@@ -164,6 +174,7 @@ impl LrAnalysis {
             automaton,
             tables,
             diagnostics,
+            statistics,
         })
     }
 
@@ -194,6 +205,12 @@ impl LrAnalysis {
     /// Renders the bison-style automaton dump.
     pub fn dump(&self) -> String {
         automaton_dump(&self.grammar, &self.automaton)
+    }
+
+    /// Returns deterministic structural statistics for the normalized grammar and generated
+    /// LR machine.
+    pub fn statistics(&self) -> &LrStatistics {
+        &self.statistics
     }
 }
 
