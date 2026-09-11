@@ -738,6 +738,17 @@ fn inline_references(
 /// reference is admitted before the first depth-two candidate is considered,
 /// so deep sub-trees cannot starve a node's own top-level clauses. Within one
 /// depth, candidates are admitted in traversal order.
+///
+/// Depth zero — every production's own direct references, which for a
+/// multi-variant Node means every variant's own immediate structure — is
+/// never budget-limited. `root` for such a Node is the single `Choice` of
+/// all its variants, so a shared, order-sensitive budget applied here would
+/// let whichever variants happen to enumerate their references first exhaust
+/// it, leaving every later variant a bare opaque link with no expansion at
+/// all; a variant's own first level of detail must not depend on how many
+/// unrelated sibling variants precede it. `budget` still bounds every deeper
+/// level exactly as before, which is what actually protects generation time
+/// against runaway recursive drill-down.
 fn plan_inline_depths(
     root: &DiagramNode,
     bodies: &BTreeMap<String, DiagramNode>,
@@ -747,14 +758,17 @@ fn plan_inline_depths(
     let mut planned = BTreeMap::new();
     let mut level = vec![root];
     let mut depth = 0usize;
-    while !level.is_empty() && *budget > 0 {
+    loop {
+        if level.is_empty() || (depth > 0 && *budget == 0) {
+            break;
+        }
         let mut candidates = Vec::new();
         for node in level {
             collect_body_references(node, &mut candidates);
         }
         let mut admitted = Vec::new();
         for reference in candidates {
-            if *budget == 0 {
+            if depth > 0 && *budget == 0 {
                 break;
             }
             if seeded.contains(&reference) || planned.contains_key(&reference) {
@@ -767,7 +781,9 @@ fn plan_inline_depths(
                 continue;
             }
             planned.insert(reference, depth);
-            *budget -= 1;
+            if depth > 0 {
+                *budget -= 1;
+            }
             admitted.push(body);
         }
         level = admitted;
@@ -1118,8 +1134,9 @@ mod tests {
             }
         }
         assert_eq!(
-            depth, INLINE_EXPANSION_BUDGET,
-            "expansions stop exactly at the budget and the rest stay linked",
+            depth,
+            INLINE_EXPANSION_BUDGET + 1,
+            "the first (depth-zero) expansion is free, then the rest stop exactly at the budget",
         );
         assert_eq!(budget, 0);
     }
@@ -1180,6 +1197,60 @@ mod tests {
             matches!(&elements[2], DiagramNode::Inline { label, .. } if label == "WhereClause"),
             "a later depth-one reference expands before any grandchild starves it: {:?}",
             elements[2],
+        );
+    }
+
+    #[test]
+    fn every_variants_own_first_level_expands_regardless_of_variant_count() {
+        fn reference(name: &str) -> DiagramNode {
+            DiagramNode::NonTerminal {
+                label: shorten_label(name),
+                link: None,
+                reference: Some(name.to_owned()),
+            }
+        }
+
+        // More variants than the budget, each with its own small referenced production — the
+        // real-world shape that starved every variant after the budget ran out.
+        let variant_count = INLINE_EXPANSION_BUDGET * 3;
+        let mut bodies = BTreeMap::new();
+        for index in 0..variant_count {
+            bodies.insert(
+                format!("grammar::Detail{index}"),
+                sequence(vec![DiagramNode::Terminal(format!("D{index}"))]),
+            );
+        }
+        let root = DiagramNode::Choice(
+            (0..variant_count)
+                .map(|index| {
+                    sequence(vec![
+                        DiagramNode::Comment(format!("Variant{index}")),
+                        reference(&format!("grammar::Detail{index}")),
+                    ])
+                })
+                .collect(),
+        );
+
+        let mut expanded = BTreeSet::from(["grammar::Root".to_owned()]);
+        let mut budget = INLINE_EXPANSION_BUDGET;
+        let inlined = inline_references(&root, &bodies, &mut expanded, &mut budget);
+        let DiagramNode::Choice(variants) = &inlined else {
+            panic!("the root stays a choice: {inlined:?}");
+        };
+        for (index, variant) in variants.iter().enumerate() {
+            let DiagramNode::Sequence(elements) = variant else {
+                panic!("each variant stays a sequence: {variant:?}");
+            };
+            assert!(
+                matches!(&elements[1], DiagramNode::Inline { .. }),
+                "variant {index} of {variant_count} shows its own detail, not just the earliest \
+                 variants: {:?}",
+                elements[1],
+            );
+        }
+        assert_eq!(
+            budget, INLINE_EXPANSION_BUDGET,
+            "depth-zero expansion — every variant's own first level — never spends the budget",
         );
     }
 }
