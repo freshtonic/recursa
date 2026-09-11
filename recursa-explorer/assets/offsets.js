@@ -57,6 +57,27 @@ export function partitionDecorations(source, decorations) {
   return result;
 }
 
+/// Byte offsets where each source line begins, line 0 first, for byte-offset-to-line lookups.
+export function lineStarts(source) {
+  const starts = [0];
+  const bytes = encoder.encode(source);
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x0a) starts.push(index + 1);
+  }
+  return starts;
+}
+
+/// The zero-based line containing `byteOffset`, per a `lineStarts` table.
+export function lineAtByte(starts, byteOffset) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (starts[mid] <= byteOffset) low = mid; else high = mid - 1;
+  }
+  return low;
+}
+
 export function parseHexSeed(value) {
   const compact = value.replace(/\s+/gu, "").replace(/^0x/u, "");
   if (!compact || compact.length % 2 !== 0 || !/^[0-9a-f]+$/iu.test(compact)) {

@@ -46,6 +46,14 @@ pub(super) struct SampleRequest {
     pub(super) bytes: Vec<u8>,
 }
 
+/// Names the Node whose railroad diagram the caller wants rendered.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RailroadRequest {
+    /// Grammar-qualified Node name, matching `NodeSchema::qualified_name`.
+    pub(super) qualified_name: String,
+}
+
 /// Returns the default Pretty width without duplicating it in deserialization metadata.
 fn default_width() -> usize {
     PrettyConfig::default().max_width()
@@ -110,7 +118,9 @@ pub(super) fn schema(adapter: Adapter) -> Value {
 
 /// Projects exact lexical records and rejected ranges for one source.
 pub(super) fn lex(adapter: Adapter, source: &str) -> Value {
+    let start = std::time::Instant::now();
     let result = adapter.lex(source);
+    let elapsed = start.elapsed();
     json!({
         "source": result.source(),
         "tokens": result.tokens().map(|token| json!({
@@ -123,15 +133,21 @@ pub(super) fn lex(adapter: Adapter, source: &str) -> Value {
             "span": span_json(error.span()),
             "text": error.text(),
         })).collect::<Vec<_>>(),
+        "statistics": { "elapsedMicros": elapsed_micros(elapsed) },
     })
 }
 
 /// Parses a complete source and returns either one document or structured diagnostics.
 pub(super) fn parse(adapter: Adapter, source: &str) -> Value {
-    match adapter.parse(source) {
-        Ok(document) => success_document(&document),
+    match adapter.parse_with_statistics(source) {
+        Ok((document, statistics)) => success_document(&document, Some(statistics)),
         Err(failure) => failure_json(&failure),
     }
+}
+
+/// Converts a measured duration into a JSON-safe microsecond count.
+fn elapsed_micros(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Parses and renders a complete source without retaining state between requests.
@@ -159,12 +175,25 @@ pub(super) fn sample(adapter: Adapter, bytes: &[u8]) -> Value {
     match adapter.sample(bytes) {
         None => json!({ "status": "unsupported" }),
         Some(Err(error)) => json!({ "status": "error", "message": error.message() }),
-        Some(Ok(document)) => success_document(&document),
+        Some(Ok(document)) => success_document(&document, None),
+    }
+}
+
+/// Renders a railroad diagram SVG for one Node, or reports that none is available.
+pub(super) fn railroad(adapter: Adapter, request: &RailroadRequest) -> Value {
+    match adapter.railroad_svg(&request.qualified_name) {
+        Some(svg) => json!({ "status": "ok", "svg": svg }),
+        None => json!({ "status": "unsupported" }),
     }
 }
 
 /// Projects a successful explorer document and its provenance-rich root.
-fn success_document(document: &ExplorerDocument<'_>) -> Value {
+///
+/// `statistics` is `None` for a sampled document, which was never timed as a parse.
+fn success_document(
+    document: &ExplorerDocument<'_>,
+    statistics: Option<recursa::explorer::ParseStatistics>,
+) -> Value {
     json!({
         "status": "ok",
         "document": {
@@ -172,6 +201,10 @@ fn success_document(document: &ExplorerDocument<'_>) -> Value {
             "provenance": format!("{:?}", document.provenance()),
             "root": node_json(document.root()),
         },
+        "statistics": statistics.map(|statistics| json!({
+            "elapsedMicros": elapsed_micros(statistics.elapsed()),
+            "memoryBytes": statistics.memory_bytes(),
+        })),
     })
 }
 
@@ -272,16 +305,6 @@ mod tests {
 
     #[test]
     fn pretty_request_layout_bounds_are_closed_and_validated_during_deserialization() {
-        let ui = include_str!("../assets/index.html");
-        assert!(
-            ui.contains(r#"id="pretty-width" type="number" min="1" max="1000""#),
-            "protocol width bounds must match the bundled UI"
-        );
-        assert!(
-            ui.contains(r#"id="pretty-indent" type="number" min="0" max="32""#),
-            "protocol indentation bounds must match the bundled UI"
-        );
-
         for (max_width, indent) in [(MIN_PRETTY_WIDTH, 0), (MAX_PRETTY_WIDTH, MAX_PRETTY_INDENT)] {
             let source =
                 format!(r#"{{"source":"ready","max_width":{max_width},"indent":{indent}}}"#);

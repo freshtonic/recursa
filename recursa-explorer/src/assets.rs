@@ -43,6 +43,42 @@ pub(super) fn get(path: &str) -> Option<Asset> {
             content_type: "text/javascript; charset=utf-8",
             body: include_bytes!("../assets/views.js"),
         }),
+        "/panzoom.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/panzoom.js"),
+        }),
+        "/graph.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/graph.js"),
+        }),
+        "/grain.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/grain.js"),
+        }),
+        "/strata.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/strata.js"),
+        }),
+        "/railroad-path.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/railroad-path.js"),
+        }),
+        "/fonts/inter-variable.woff2" => Some(Asset {
+            content_type: "font/woff2",
+            body: include_bytes!("../assets/fonts/inter-variable.woff2"),
+        }),
+        "/fonts/ibmplexmono-400.woff2" => Some(Asset {
+            content_type: "font/woff2",
+            body: include_bytes!("../assets/fonts/ibmplexmono-400.woff2"),
+        }),
+        "/fonts/ibmplexmono-500.woff2" => Some(Asset {
+            content_type: "font/woff2",
+            body: include_bytes!("../assets/fonts/ibmplexmono-500.woff2"),
+        }),
+        "/fonts/ibmplexmono-600.woff2" => Some(Asset {
+            content_type: "font/woff2",
+            body: include_bytes!("../assets/fonts/ibmplexmono-600.woff2"),
+        }),
         _ => None,
     }
 }

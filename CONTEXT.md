@@ -274,6 +274,10 @@ feature permits provenance. Every generated parser exposes
 `parse_without_spans` to suppress the stack even for mandatory sites.
 _Avoid_: Span stack, location stack
 
+**UI occurrence**:
+The Explorer UI's render-layer unit: one Explorer node or Explorer element flattened into a row for display (`occurrenceEntries()` in `recursa-explorer/assets/model.js`). Distinct from the parser-internal Occurrence stack and from OccurrenceSchema; the JS layer keeps the shorter name "occurrence" by established precedent, so context (Rust vs. Explorer UI) disambiguates rather than the name itself.
+_Avoid_: Occurrence stack (parser provenance, not this), Explorer node/Explorer element used alone when the row spans both
+
 **Rule fold**:
 The static description of what a rule's reduce builds on the occurrence stack,
 rendered from the same site forms as its reduce action: a node with one child
@@ -382,6 +386,10 @@ _Avoid_: Public registry, UI model
 **Explorer capability**:
 The explorer-adapter declaration that a configured Pretty or Arbitrary operation is available for one generated root.
 _Avoid_: Runtime trait reflection, feature flag
+
+**Explorer statistics**:
+The optional elapsed parse time, elapsed lex time, and Flat-AST arena memory usage returned alongside an Explorer parse, gated behind the `statistics` feature (which `explorer` enables transitively). Memory usage is reported only when the document is arena-backed; a Nested-AST document reports no memory figure.
+_Avoid_: Parse statistics, timing metadata
 
 **Railroad diagram**:
 A Rustdoc-embedded SVG that renders a Node's grammar structure or a content-bearing regex token through compositional railroad geometry. The generator publishes only the semantic diagram plan; the facade renders SVG and writes standalone files while `cargo doc` expands generated attributes.

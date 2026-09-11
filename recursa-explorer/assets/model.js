@@ -1,31 +1,44 @@
 "use strict";
 
-function spanText(span) {
+const CARDINALITY_DISPLAY = {
+  One: "One",
+  Optional: "Optional",
+  ZeroOrMore: "ZeroOrMore",
+  OneOrMore: "OneOrMore",
+  OptionalOneOrMore: "Optional<OneOrMore>",
+};
+
+export function cardinalityDisplay(raw) {
+  return CARDINALITY_DISPLAY[raw] || raw;
+}
+
+export function spanText(span) {
   return span ? `${span.start}..${span.end}` : "synthetic";
 }
 
+/// Flattens one parsed root into UI occurrences: one entry per node or element occurrence, in
+/// document order, each addressable by its own key and reachable from every other by that key.
 export function occurrenceEntries(root) {
   const entries = [];
   let order = 0;
   function visitNode(node, depth, parentKey) {
     const key = `occurrence-${order}`;
-    const variant = node.activeVariant ? `::${node.activeVariant}` : "";
     const entry = {
-      key, parentKey, depth, order: order++, type: "node", span: node.span,
-      label: `${node.schema.name}${variant}`,
-      meta: [node.text == null ? null : JSON.stringify(node.text), spanText(node.span)].filter(Boolean).join(" · "),
+      key, parentKey, depth, order: order++, kind: "node",
+      name: node.schema.name, variant: node.activeVariant || null,
+      role: null, cardinality: null, cardinalityRaw: null,
+      span: node.span, text: node.text ?? null,
       children: [], raw: node,
     };
     entries.push(entry);
     for (const element of node.elements || []) {
       const elementKey = `occurrence-${order}`;
-      const role = element.schema.role;
-      const cardinality = element.schema.cardinality;
       const elementEntry = {
-        key: elementKey, parentKey: key, depth: depth + 1, order: order++, type: "element",
-        span: element.span, label: element.schema.name,
-        meta: [element.text == null ? null : JSON.stringify(element.text), spanText(element.span), role, cardinality]
-          .filter(Boolean).join(" · "),
+        key: elementKey, parentKey: key, depth: depth + 1, order: order++, kind: "element",
+        name: element.schema.name, variant: null,
+        role: element.schema.role, cardinalityRaw: element.schema.cardinality,
+        cardinality: cardinalityDisplay(element.schema.cardinality),
+        span: element.span, text: element.text ?? null,
         children: [], raw: element,
       };
       entries.push(elementEntry);
@@ -38,23 +51,26 @@ export function occurrenceEntries(root) {
     return entry;
   }
   const rootEntry = visitNode(root, 0, null);
+  computeSpans(entries);
   return { entries, rootKey: rootEntry.key };
 }
 
-export function schemaSummary(schema) {
-  return {
-    grammar: schema.name,
-    root: schema.root.qualifiedName,
-    nodes: schema.nodes.map((node) => ({
-      name: node.qualifiedName,
-      elements: node.elements,
-      variants: node.variants,
-    })),
-    tokens: schema.tokens.map((token) => ({
-      name: token.name,
-      spelling: token.canonicalText,
-      className: token.highlightClass,
-      kind: token.kind,
-    })),
-  };
+/// Fills in `span: null` occurrences (a Node with no directly captured token, or a container
+/// element with no fixed token of its own) with the min/max of their children's spans, bottom-up.
+/// A span stays `null` only when the occurrence and every descendant are all synthetic.
+function computeSpans(entries) {
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.span) continue;
+    let start = null;
+    let end = null;
+    for (const key of entry.children) {
+      const child = byKey.get(key);
+      if (!child.span) continue;
+      start = start === null ? child.span.start : Math.min(start, child.span.start);
+      end = end === null ? child.span.end : Math.max(end, child.span.end);
+    }
+    if (start !== null) entry.span = { start, end };
+  }
 }
