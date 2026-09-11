@@ -302,18 +302,27 @@ async function runPretty() {
 
 /// Drag-to-resize the Source/Parsed-structure split, persisted across sessions.
 const SOURCE_WIDTH_KEY = "recursa-explorer:source-width";
-const MIN_SOURCE_WIDTH = 260;
-const MAX_SOURCE_WIDTH = 640;
+// The floor is what the column used to always start at, before it grew to a third of the
+// workspace by default; the ceiling tracks the workspace's own width so it always allows resizing
+// up to at least half the available area, rather than a fixed pixel cap that stops mattering on a
+// wide window.
+const MIN_SOURCE_WIDTH = 352;
+
+function maxSourceWidth() {
+  const workspaceWidth = elements.workspace.getBoundingClientRect().width || window.innerWidth;
+  return Math.max(MIN_SOURCE_WIDTH, workspaceWidth / 2);
+}
 
 function setSourceWidth(width) {
-  const clamped = Math.min(MAX_SOURCE_WIDTH, Math.max(MIN_SOURCE_WIDTH, width));
+  const clamped = Math.min(maxSourceWidth(), Math.max(MIN_SOURCE_WIDTH, width));
   elements.workspace.style.setProperty("--source-width", `${clamped}px`);
   return clamped;
 }
 
 function setupResizer() {
   const stored = Number(localStorage.getItem(SOURCE_WIDTH_KEY));
-  setSourceWidth(Number.isFinite(stored) && stored > 0 ? stored : 352);
+  const defaultWidth = Math.max(MIN_SOURCE_WIDTH, window.innerWidth / 3);
+  setSourceWidth(Number.isFinite(stored) && stored > 0 ? stored : defaultWidth);
 
   let dragging = false;
   let startX = 0;
@@ -351,10 +360,15 @@ function setupResizer() {
 /// Drag-to-resize the bottom (Occurrence / Railroad diagram) panel's height.
 const BOTTOM_HEIGHT_KEY = "recursa-explorer:bottom-height";
 const MIN_BOTTOM_HEIGHT = 80;
-const MAX_BOTTOM_HEIGHT = 480;
+
+function maxBottomHeight() {
+  const columnHeight = elements.bottomPanel.closest(".structure-column")?.getBoundingClientRect().height
+    || window.innerHeight;
+  return Math.max(MIN_BOTTOM_HEIGHT, columnHeight / 2);
+}
 
 function setBottomHeight(height) {
-  const clamped = Math.min(MAX_BOTTOM_HEIGHT, Math.max(MIN_BOTTOM_HEIGHT, height));
+  const clamped = Math.min(maxBottomHeight(), Math.max(MIN_BOTTOM_HEIGHT, height));
   elements.bottomPanel.style.setProperty("--bottom-height", `${clamped}px`);
   return clamped;
 }
