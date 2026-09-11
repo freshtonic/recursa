@@ -5131,8 +5131,31 @@ impl SourceModelBuilder<'_> {
 
     /// Lowers central content definitions.
     fn lower_central_content_definitions(&mut self) {
+        // A central `matchers { .. }`/`content { .. }` entry has no enclosing field to anchor a
+        // per-declaration origin the way `lower_content_definition` does, so this uses the same
+        // root-module origin `TraitPlanner::from_grammar` computes for grammar-wide diagnostics.
+        let origin = SourceOrigin {
+            module: self
+                .resolved
+                .tree
+                .inclusions
+                .first()
+                .expect("a resolved grammar has a root module inclusion")
+                .id,
+            source: self.resolved.configuration.source,
+        };
         for definition in std::mem::take(&mut self.tokens.central_content) {
             if let Some(semantic) = definition.semantic {
+                // A `#[node(derive(...), omit(...))]` attribute placed before this entry's name
+                // (see `CentralTokensSyntax`'s `matchers`/`literals`/`lexer_tokens` parsing)
+                // overrides this specific content token's configured traits, reusing `node_plan`
+                // exactly like a `#[lex(...)]`-tagged field does in `lower_content_definition`.
+                let configured_traits = self.trait_planner.node_plan(
+                    &self.resolved,
+                    origin,
+                    &definition.metas,
+                    &mut self.diagnostics,
+                );
                 self.tokens.define_content(
                     semantic,
                     definition.name,
@@ -5146,7 +5169,7 @@ impl SourceModelBuilder<'_> {
                         definitions: Vec::new(),
                     },
                     definition.site,
-                    &self.trait_planner.grammar_defaults,
+                    configured_traits,
                 );
             } else {
                 self.tokens.define_lexical_base(definition);
@@ -6263,6 +6286,8 @@ struct CentralContentDefinition {
     priority: Option<u32>,
     /// Locates the authored construct represented by this source-model value.
     site: SourceSite,
+    /// Preserves an optional `#[node(derive(...), omit(...))]` trait delta for this entry.
+    metas: Vec<Meta>,
 }
 
 #[derive(Clone)]
@@ -7223,6 +7248,7 @@ impl TokenCatalog {
                 closed_matcher: None,
                 priority: None,
                 site: source_site(resolved, origin, span_range(content.name.span())),
+                metas: content.metas,
             });
         }
         for content in syntax.matchers {
@@ -7239,6 +7265,7 @@ impl TokenCatalog {
                 closed_matcher: Some(content.matcher.matcher),
                 priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
+                metas: content.metas,
             });
         }
         self.lexer_records
@@ -8588,6 +8615,15 @@ impl TokenCatalog {
             });
             return;
         }
+        // A content-token-declaring field's own `#[node(...)]` attribute (alongside `#[lex(...)]`
+        // on the same field) can add or omit configured traits for this specific token, exactly
+        // like `#[node(...)]` already does for a whole Node — reused verbatim via `node_plan`,
+        // which only ever scans `metas` for a `#[node(...)]` entry and has no other dependency on
+        // what it's attached to.
+        let configured_traits = TraitPlanner {
+            grammar_defaults: grammar_defaults.to_vec(),
+        }
+        .node_plan(resolved, origin, metas, diagnostics);
         self.define_content(
             semantic,
             name,
@@ -8598,7 +8634,7 @@ impl TokenCatalog {
             admission_set,
             authored,
             definition_site,
-            grammar_defaults,
+            configured_traits,
         );
     }
 
@@ -8615,7 +8651,7 @@ impl TokenCatalog {
         admission_set: Vec<TokenDefinitionId>,
         authored: AuthoredAdmissions,
         site: SourceSite,
-        grammar_defaults: &[ConfiguredTraitSelection],
+        configured_traits: ConfiguredTraitPlan,
     ) {
         let compatible = self.content_by_name.get(&name).and_then(|definitions| {
             definitions.iter().copied().find(|id| {
@@ -8658,11 +8694,7 @@ impl TokenCatalog {
                 admission_set,
                 authored_admissions: vec![authored],
                 text: ContentTextStorage::BorrowedOrOwnedMatchedText,
-                configured_traits: ConfiguredTraitPlan {
-                    effective: grammar_defaults.to_vec(),
-                    additions: Vec::new(),
-                    omissions: Vec::new(),
-                },
+                configured_traits,
             }),
             definition_sites: vec![site],
         });
@@ -8772,6 +8804,8 @@ struct CentralContentSyntax {
     pattern: LitStr,
     /// Retains an obsolete callback path only long enough to diagnose its source site.
     obsolete_callback: Option<syn::Path>,
+    /// Preserves an optional `#[node(derive(...), omit(...))]` trait delta for this entry.
+    metas: Vec<Meta>,
 }
 
 /// Carries one named emitting closed matcher before source locations are retained.
@@ -8780,6 +8814,8 @@ struct CentralMatcherSyntax {
     name: syn::Ident,
     /// Preserves the closed matcher and its source literals.
     matcher: ClosedMatcherSyntax,
+    /// Preserves an optional `#[node(derive(...), omit(...))]` trait delta for this entry.
+    metas: Vec<Meta>,
 }
 
 /// Parsed closed matcher together with its common arbitration metadata.
@@ -9230,9 +9266,16 @@ impl Parse for CentralTokensSyntax {
                     }
                 } else if section == "matchers" || section == "ignore" || section == "trivia" {
                     while !body.is_empty() {
+                        let attrs = body.call(syn::Attribute::parse_outer)?;
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         if section == "trivia" && body.peek(LitStr) {
+                            if let Some(attr) = attrs.first() {
+                                return Err(syn::Error::new(
+                                    attr.span(),
+                                    "`trivia` entries accept no attributes",
+                                ));
+                            }
                             non_token_lexer_records.push(CentralNonTokenLexerRecordSyntax {
                                 pattern: body.parse()?,
                                 outcome: NonTokenLexerOutcome::RetainedTrivia {
@@ -9242,8 +9285,22 @@ impl Parse for CentralTokensSyntax {
                         } else {
                             let matcher = body.parse()?;
                             if section == "matchers" {
-                                matchers.push(CentralMatcherSyntax { name, matcher });
+                                let metas = attrs
+                                    .iter()
+                                    .map(|attr| attr.meta.clone())
+                                    .collect::<Vec<_>>();
+                                matchers.push(CentralMatcherSyntax {
+                                    name,
+                                    matcher,
+                                    metas,
+                                });
                             } else {
+                                if let Some(attr) = attrs.first() {
+                                    return Err(syn::Error::new(
+                                        attr.span(),
+                                        "`ignore`/`trivia` entries accept no attributes",
+                                    ));
+                                }
                                 let outcome = if section == "ignore" {
                                     NonTokenLexerOutcome::NonEmitting
                                 } else {
@@ -9266,6 +9323,7 @@ impl Parse for CentralTokensSyntax {
                     }
                 } else if section == "literals" || section == "lexer_tokens" {
                     while !body.is_empty() {
+                        let attrs = body.call(syn::Attribute::parse_outer)?;
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let pattern = body.parse()?;
@@ -9281,10 +9339,12 @@ impl Parse for CentralTokensSyntax {
                         } else {
                             None
                         };
+                        let metas = attrs.iter().map(|attr| attr.meta.clone()).collect();
                         content.push(CentralContentSyntax {
                             name,
                             pattern,
                             obsolete_callback,
+                            metas,
                         });
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
