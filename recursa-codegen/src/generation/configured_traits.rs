@@ -1191,10 +1191,12 @@ pub(super) fn render_node_arbitrary(
                 // forever once entropy is exhausted, so without this the recursion genuinely never
                 // ends rather than just becoming unlikely.
                 quote! {
-                    if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
-                        return Err(#facade::__private::arbitrary::Error::NotEnoughData);
+                    {
+                        if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
+                            return Err(#facade::__private::arbitrary::Error::NotEnoughData);
+                        }
+                        input.int_in_range(0usize..=#last)?
                     }
-                    input.int_in_range(0usize..=#last)?
                 }
             } else {
                 let leaf_count = leaf_indices.len();
