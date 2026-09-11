@@ -148,6 +148,14 @@ impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
     }
 }
 
+#[cfg(feature = "statistics")]
+impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
+    /// Reports the total bytes this parse's arena has allocated.
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.cell.borrow_owner().arena.allocated_bytes()
+    }
+}
+
 impl<F> fmt::Debug for ArenaParsed<'_, F>
 where
     F: ArenaAstFamily,
@@ -321,6 +329,65 @@ impl Drop for ErasedArenaAst<'_> {
         // SAFETY: `new` installs the matching monomorphized destructor and the self cell drops its
         // dependent before its arena owner.
         unsafe { (self.drop)(self.pointer) };
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+self_cell::self_cell! {
+    /// Move-owned arena and one synthesized (sample-generated, sourceless) root allocated inside
+    /// it — the arena-backed counterpart of [`Parsed::synthetic`], with no provenance tree since a
+    /// sampled document was never lexed or parsed.
+    struct ArenaSyntheticCell {
+        owner: Bump,
+
+        #[covariant]
+        dependent: ErasedArenaAst,
+    }
+}
+
+/// A synthesized (Arbitrary-sampled), arena-backed root with no source or provenance.
+#[cfg(feature = "arbitrary")]
+pub struct ArenaSynthetic<F: ArenaAstFamily> {
+    cell: ArenaSyntheticCell,
+    family: PhantomData<F>,
+}
+
+#[cfg(feature = "arbitrary")]
+impl<F: ArenaAstFamily> ArenaSynthetic<F> {
+    /// Allocates a fresh arena and materializes one root inside it via `build`.
+    pub fn new(build: impl for<'arena> FnOnce(&'arena Bump) -> F::Ast<'arena>) -> Self {
+        let cell = ArenaSyntheticCell::try_new(Bump::new(), |arena| {
+            Ok::<_, std::convert::Infallible>(ErasedArenaAst::new(build(arena), arena))
+        })
+        .unwrap_or_else(|error: std::convert::Infallible| match error {});
+        Self {
+            cell,
+            family: PhantomData,
+        }
+    }
+
+    /// Borrows the authored AST for at most as long as this wrapper is borrowed.
+    pub fn ast(&self) -> &F::Ast<'_> {
+        // SAFETY: `new` constructs the erased pointer from exactly `F::Ast<'arena>`, matching
+        // `ArenaParsed::ast`'s identical invariant.
+        unsafe { self.cell.borrow_dependent().cast::<F>() }
+    }
+}
+
+#[cfg(all(feature = "arbitrary", feature = "explorer"))]
+impl<F: ArenaAstFamily> ArenaSynthetic<F> {
+    /// Exposes the typed root and an empty (no source, no provenance) cursor to the Explorer ABI.
+    pub(crate) fn explorer_parts(&self) -> (&F::Ast<'_>, ViewCursor<'_>) {
+        (
+            self.ast(),
+            ViewCursor {
+                occurrence: None,
+                source: None,
+                bounds: None,
+                records: None,
+                trivia: None,
+            },
+        )
     }
 }
 

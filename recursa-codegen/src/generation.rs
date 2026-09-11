@@ -72,6 +72,7 @@ enum ContainerOperation {
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, TextEquivalence};
 
+mod arbitrary_seed;
 mod configured_traits;
 mod debug_bundle;
 #[cfg(feature = "diagrams")]
@@ -91,6 +92,7 @@ mod rust_names;
 mod table_driven;
 mod visit;
 
+use arbitrary_seed::*;
 use configured_traits::*;
 use debug_bundle::*;
 #[cfg(feature = "diagrams")]

@@ -1221,6 +1221,7 @@ pub(super) fn render_root(
         .map(|(index, token)| render_token(plan, token, index, parsers));
     let content_token_pretty_helper = render_content_token_pretty_helper(plan);
     let content_token_optional_trait_helpers = render_content_token_optional_trait_helpers(plan);
+    let arbitrary_seed_module = render_arbitrary_seed_module(plan);
     let TriviaRootFragments {
         state_initial: trivia_state_initial,
         builder_append_method: builder_append_trivia,
@@ -1849,6 +1850,7 @@ pub(super) fn render_root(
 
         #content_token_pretty_helper
         #content_token_optional_trait_helpers
+        #arbitrary_seed_module
         #visit_events
         #explorer_schema
         #explorer_lex
