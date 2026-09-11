@@ -118,9 +118,8 @@ fn handle(
     }
     let expected_method = match path.as_str() {
         "/api/schema" => Some(Method::Get),
-        "/api/lex" | "/api/parse" | "/api/pretty" | "/api/sample" | "/api/shutdown" => {
-            Some(Method::Post)
-        }
+        "/api/lex" | "/api/parse" | "/api/pretty" | "/api/sample" | "/api/railroad"
+        | "/api/shutdown" => Some(Method::Post),
         _ => None,
     };
     let Some(expected_method) = expected_method else {
@@ -197,6 +196,8 @@ fn handle(
             .map(|request| protocol::pretty(adapter, &request)),
         "/api/sample" => parse_body::<protocol::SampleRequest>(&body)
             .map(|request| protocol::sample(adapter, &request.bytes)),
+        "/api/railroad" => parse_body::<protocol::RailroadRequest>(&body)
+            .map(|request| protocol::railroad(adapter, &request)),
         "/api/shutdown" => {
             parse_body::<serde_json::Map<String, Value>>(&body).and_then(|request| {
                 request

@@ -1,34 +1,89 @@
 "use strict";
 
 import { getSchema, post } from "./api.js";
-import { deepestContaining, parseHexSeed, utf8ByteAtUtf16 } from "./offsets.js";
-import { occurrenceEntries } from "./model.js";
+import { deepestContaining, utf8ByteAtUtf16 } from "./offsets.js";
+import { occurrenceEntries, spanText } from "./model.js";
 import { createTree } from "./tree.js";
-import { renderDiagnostics, renderPretty, renderSchema, renderSourceOverlay, selectTextareaSpan } from "./views.js";
+import { createGraph } from "./graph.js";
+import { createGrain } from "./grain.js";
+import { createStrata } from "./strata.js";
+import { highlightTakenPath } from "./railroad-path.js";
+import {
+  renderDiagnostics, renderSourceOverlay, renderGutter, selectTextareaSpan,
+  renderBreadcrumb, renderOccurrenceFooter,
+} from "./views.js";
+
+const MODE_LABELS = { graph: "Constellation", outline: "Outline", grain: "Grain", strata: "Strata" };
+const PAN_ZOOM_MODES = new Set(["graph"]);
 
 const elements = Object.fromEntries([
-  ["status", "status"], ["source", "source"], ["sourceOverlay", "source-overlay"],
+  ["source", "source"], ["sourceOverlay", "source-overlay"], ["sourceGutter", "source-gutter"],
   ["diagnostics", "diagnostics"], ["tree", "tree"], ["treeEmpty", "tree-empty"],
-  ["sourceContext", "source-context"],
-  ["provenance", "provenance"], ["schema", "schema"], ["parseNow", "parse-now"],
-  ["prettyPanel", "pretty-panel"], ["prettyRun", "pretty-run"], ["prettyWidth", "pretty-width"],
-  ["prettyIndent", "pretty-indent"], ["prettyOutput", "pretty-output"], ["prettyApply", "pretty-apply"],
-  ["samplePanel", "sample-panel"], ["sampleRun", "sample-run"], ["sampleSeed", "sample-seed"],
-  ["sampleError", "sample-error"], ["shutdown", "shutdown"],
+  ["outlineSurface", "outline-surface"], ["shapeStripBars", "shape-strip-bars"],
+  ["parseNow", "parse-now"], ["shuffleSample", "shuffle-sample"], ["prettyRun", "pretty-run"],
+  ["sourceContext", "source-context"], ["shutdown", "shutdown"],
+  ["grammarIdentity", "grammar-identity"], ["parseStatusText", "parse-status"],
+  ["structureHeading", "structure-heading"],
+  ["occurrenceCount", "occurrence-count"], ["breadcrumb", "breadcrumb"],
+  ["foldControls", "fold-controls"], ["foldToggle", "fold-toggle"], ["expandAll", "expand-all"],
+  ["zoomControls", "zoom-controls"], ["zoomLevel", "zoom-level"],
+  ["zoomOut", "zoom-out"], ["zoomIn", "zoom-in"], ["zoomFit", "zoom-fit"],
+  ["selectionSpan", "selection-span"], ["occurrenceFooter", "occurrence-footer"],
+  ["modeSwitcher", "mode-switcher"],
+  ["graphSurface", "graph-surface"], ["graphLayer", "graph-layer"], ["graphEdges", "graph-edges"],
+  ["grainSurface", "grain-surface"], ["grainGutter", "grain-gutter"], ["grainSource", "grain-source"],
+  ["grainCaption", "grain-caption"], ["grainCaptionTitle", "grain-caption-title"], ["grainCaptionMeta", "grain-caption-meta"],
+  ["strataSurface", "strata-surface"], ["strataTrack", "strata-track"], ["strataHover", "strata-hover"], ["strataTotal", "strata-total"],
+  ["workspace", "workspace"], ["columnResizer", "column-resizer"],
+  ["rowResizer", "row-resizer"], ["bottomPanel", "bottom-panel"], ["railroadPanel", "railroad-panel"],
 ].map(([name, id]) => [name, document.getElementById(id)]));
+
+const SURFACES = {
+  outline: elements.outlineSurface, graph: elements.graphSurface,
+  grain: elements.grainSurface, strata: elements.strataSurface,
+};
 
 const state = {
   revision: 0, controller: null, timer: null, schema: null, source: "", tokens: [], lexErrors: [],
-  diagnostics: [], occurrence: null, treeView: null, selected: null, pretty: null, tokenClasses: new Map(),
-  samples: new Map(),
+  diagnostics: [], occurrence: null, byKey: new Map(), treeView: null, selected: null,
+  tokenClasses: new Map(), fold: true, mode: "graph", bottomPanel: "occurrence",
+  panState: { graph: { x: 0, y: 0, z: 1 } },
+  modeViews: { graph: null, grain: null, strata: null },
+  railroads: new Map(),
 };
 
-function status(message) { elements.status.textContent = message; }
+function grammarStatus(message) { elements.grammarIdentity.textContent = message; }
+function parseStatus(message) { elements.parseStatusText.textContent = message; }
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function totalBytes() {
+  return state.occurrence?.entries[0]?.span?.end ?? new TextEncoder().encode(state.source).length;
+}
+
+function maxDepth() {
+  return state.occurrence ? state.occurrence.entries.reduce((max, entry) => Math.max(max, entry.depth), 0) : 0;
+}
+
+function destroyModeViews() {
+  state.modeViews.graph?.destroy?.();
+  state.modeViews = { graph: null, grain: null, strata: null };
+  elements.grainCaption.hidden = true; elements.strataHover.textContent = "";
+}
 
 function clearDocument(message = "Parsing…") {
-  state.occurrence = null; state.treeView = null; state.selected = null; state.diagnostics = [];
-  elements.tree.replaceChildren(); elements.tree.hidden = true; elements.treeEmpty.hidden = false;
-  elements.treeEmpty.textContent = message; elements.provenance.hidden = true;
+  state.occurrence = null; state.byKey = new Map(); state.treeView = null; state.selected = null; state.diagnostics = [];
+  elements.tree.replaceChildren(); elements.shapeStripBars.replaceChildren();
+  destroyModeViews();
+  for (const surface of Object.values(SURFACES)) surface.hidden = true;
+  elements.treeEmpty.hidden = false;
+  elements.treeEmpty.textContent = message;
+  elements.occurrenceCount.textContent = ""; elements.breadcrumb.replaceChildren();
+  elements.selectionSpan.textContent = ""; elements.occurrenceFooter.replaceChildren();
   renderDiagnostics(elements.diagnostics, [], "", () => {});
 }
 
@@ -39,12 +94,101 @@ function renderOverlay() {
   );
   elements.sourceOverlay.scrollTop = elements.source.scrollTop;
   elements.sourceOverlay.scrollLeft = elements.source.scrollLeft;
+  elements.sourceGutter.scrollTop = elements.source.scrollTop;
+  renderSourceOverlay(
+    elements.grainSource, state.source, state.tokens, state.lexErrors, state.diagnostics,
+    state.selected?.span || null, state.tokenClasses,
+  );
+}
+
+function updateOccurrenceCount() {
+  if (!state.occurrence) { elements.occurrenceCount.textContent = ""; return; }
+  const parts = [`${state.occurrence.entries.length} occurrences`];
+  if (state.mode === "outline" && state.treeView) parts.push(`${state.treeView.rowCount} rows`);
+  parts.push(`depth ${maxDepth()}`);
+  elements.occurrenceCount.textContent = parts.join(" · ");
+}
+
+function updateZoomLevel(panState) {
+  elements.zoomLevel.textContent = `${Math.round(panState.z * 100)}%`;
+}
+
+function handleGrainHover(entry) {
+  if (!entry) { elements.grainCaption.hidden = true; return; }
+  elements.grainCaption.hidden = false;
+  elements.grainCaptionTitle.textContent = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name;
+  const parts = entry.kind === "element" ? [entry.role, entry.cardinality] : [];
+  parts.push(`bytes ${spanText(entry.span)}`);
+  elements.grainCaptionMeta.textContent = parts.join(" · ");
+}
+
+function handleStrataHover(entry) {
+  elements.strataHover.textContent = entry ? (entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name) : "";
+}
+
+/// Lazily builds (and caches, per current document) the view for `mode`, so switching modes never
+/// loses pan/zoom state and never rebuilds a mode that hasn't changed.
+function buildModeView(mode) {
+  if (mode === "outline") {
+    if (!state.treeView) renderTree(false);
+    return state.treeView;
+  }
+  if (state.modeViews[mode]) return state.modeViews[mode];
+  let view = null;
+  if (mode === "graph") {
+    view = createGraph(
+      elements.graphSurface, elements.graphLayer, elements.graphEdges, state.occurrence,
+      state.panState.graph, (entry) => selectOccurrence(entry), updateZoomLevel,
+    );
+    view.fit();
+  } else if (mode === "grain") {
+    view = createGrain(elements.grainGutter, state.occurrence, state.source, (entry) => selectOccurrence(entry), handleGrainHover);
+  } else if (mode === "strata") {
+    view = createStrata(elements.strataTrack, state.occurrence, totalBytes(), (entry) => selectOccurrence(entry), handleStrataHover);
+    elements.strataTotal.textContent = `byte ${totalBytes()}`;
+  }
+  state.modeViews[mode] = view;
+  return view;
+}
+
+function renderActiveMode() {
+  for (const [mode, button] of modeButtons()) button.classList.toggle("is-active", mode === state.mode);
+  elements.structureHeading.textContent = MODE_LABELS[state.mode];
+  elements.foldControls.hidden = state.mode !== "outline";
+  elements.zoomControls.hidden = !PAN_ZOOM_MODES.has(state.mode);
+  updateOccurrenceCount();
+  if (!state.occurrence) return;
+  for (const [mode, surface] of Object.entries(SURFACES)) surface.hidden = mode !== state.mode;
+  const view = buildModeView(state.mode);
+  if (PAN_ZOOM_MODES.has(state.mode)) updateZoomLevel(state.panState[state.mode]);
+  if (state.selected) view?.select(state.selected.key);
+}
+
+function modeButtons() {
+  return [...elements.modeSwitcher.querySelectorAll(".mode-option")].map((button) => [button.dataset.mode, button]);
+}
+
+function renderTree(expandAllOnce) {
+  if (!state.occurrence) return;
+  state.treeView = createTree(
+    elements.tree, elements.shapeStripBars, state.occurrence,
+    { fold: state.fold, expandAll: expandAllOnce },
+    (entry) => selectOccurrence(entry),
+  );
+  updateOccurrenceCount();
 }
 
 function selectOccurrence(entry, focusSource = false) {
   if (!entry) return;
-  state.selected = entry; state.treeView?.select(entry.key); renderOverlay();
-  if (state.pretty) renderPretty(elements.prettyOutput, state.pretty.rendered, state.pretty.sourceMap, entry.span);
+  state.selected = entry;
+  state.treeView?.select(entry.key);
+  for (const view of Object.values(state.modeViews)) view?.select(entry.key);
+  updateOccurrenceCount();
+  renderOverlay();
+  renderBreadcrumb(elements.breadcrumb, state.occurrence?.entries || [], state.byKey, entry.key, (crumbEntry) => selectOccurrence(crumbEntry));
+  renderOccurrenceFooter(elements.occurrenceFooter, entry);
+  elements.selectionSpan.textContent = spanText(entry.span);
+  if (state.bottomPanel === "railroad") renderRailroadPanel(entry);
   if (focusSource && entry.span) selectTextareaSpan(elements.source, state.source, entry.span);
 }
 
@@ -56,9 +200,9 @@ function selectSourceOffset(utf16Offset) {
 
 function showDocument(documentValue) {
   state.occurrence = occurrenceEntries(documentValue.root);
-  elements.tree.hidden = false; elements.treeEmpty.hidden = true;
-  elements.provenance.hidden = false; elements.provenance.textContent = documentValue.provenance;
-  state.treeView = createTree(elements.tree, state.occurrence, (entry, focusSource) => selectOccurrence(entry, focusSource));
+  state.byKey = new Map(state.occurrence.entries.map((entry) => [entry.key, entry]));
+  elements.treeEmpty.hidden = true;
+  renderActiveMode();
   selectOccurrence(state.occurrence.entries[0]);
 }
 
@@ -73,19 +217,22 @@ async function parseRevision(revision, signal) {
     if (parsed.status === "ok") {
       state.diagnostics = [];
       showDocument(parsed.document);
-      status(`Parsed ${state.tokens.length} token${state.tokens.length === 1 ? "" : "s"}`);
+      const ms = (parsed.statistics.elapsedMicros / 1000).toFixed(2);
+      const tokenCount = state.tokens.length;
+      const memory = parsed.statistics.memoryBytes != null ? ` · ${formatBytes(parsed.statistics.memoryBytes)} AST` : "";
+      parseStatus(`parsed · ${ms} ms · ${tokenCount} token${tokenCount === 1 ? "" : "s"}${memory}`);
     } else {
       state.diagnostics = parsed.diagnostics || [];
       clearDocument("Invalid input has no partial AST.");
       state.diagnostics = parsed.diagnostics || [];
-      status(`${state.diagnostics.length} diagnostic${state.diagnostics.length === 1 ? "" : "s"}`);
+      parseStatus(`${state.diagnostics.length} diagnostic${state.diagnostics.length === 1 ? "" : "s"}`);
       renderDiagnostics(elements.diagnostics, state.diagnostics, state.source, (span) => {
         state.selected = { span }; renderOverlay(); selectTextareaSpan(elements.source, state.source, span);
       });
     }
     renderOverlay();
   } catch (error) {
-    if (error.name !== "AbortError" && revision === state.revision) status(error.message);
+    if (error.name !== "AbortError" && revision === state.revision) parseStatus(error.message);
   }
 }
 
@@ -93,65 +240,237 @@ function scheduleParse(immediate = false) {
   state.source = elements.source.value;
   state.revision += 1; const revision = state.revision;
   state.controller?.abort(); clearTimeout(state.timer); state.controller = new AbortController();
-  state.tokens = []; state.lexErrors = []; state.pretty = null; elements.prettyOutput.textContent = "";
+  state.tokens = []; state.lexErrors = [];
   elements.sourceContext.hidden = true;
-  elements.prettyApply.disabled = true; clearDocument(); renderOverlay(); status("Parsing…");
+  clearDocument(); renderOverlay(); renderGutter(elements.sourceGutter, state.source);
+  parseStatus("Parsing…");
   state.timer = setTimeout(() => parseRevision(revision, state.controller.signal), immediate ? 0 : 140);
-}
-
-async function runPretty() {
-  const revision = state.revision;
-  state.controller?.abort();
-  const controller = new AbortController(); state.controller = controller;
-  try {
-    const result = await post("pretty", {
-      source: state.source,
-      max_width: Number(elements.prettyWidth.value),
-      indent: Number(elements.prettyIndent.value),
-    }, controller.signal);
-    if (revision !== state.revision) return;
-    if (result.status !== "ok") { status(result.message || "Pretty is unavailable for this input."); return; }
-    state.pretty = result; elements.prettyApply.disabled = false;
-    renderPretty(elements.prettyOutput, result.rendered, result.sourceMap, state.selected?.span || null);
-    status("Pretty output is ready.");
-  } catch (error) {
-    if (error.name !== "AbortError" && revision === state.revision) status(error.message);
-  }
-}
-
-async function runSample() {
-  elements.sampleError.textContent = "";
-  const seed = elements.sampleSeed.value.replace(/\s+/gu, "").toLowerCase();
-  let bytes;
-  try { bytes = parseHexSeed(seed); }
-  catch (error) { elements.sampleError.textContent = error.message; return; }
-  const revision = ++state.revision; clearTimeout(state.timer); state.controller?.abort(); state.controller = new AbortController();
-  clearDocument("Generating deterministic sample…");
-  try {
-    const result = await post("sample", { bytes }, state.controller.signal);
-    if (revision !== state.revision) return;
-    if (result.status === "ok") {
-      const signature = JSON.stringify(result.document);
-      const repeated = state.samples.get(seed) === signature; state.samples.set(seed, signature);
-      showDocument(result.document); elements.sourceContext.hidden = false;
-      status(repeated ? "Same seed reproduced the identical synthetic tree." : `Synthetic sample from ${bytes.length} seed bytes.`);
-    } else {
-      elements.sampleError.textContent = result.message || "Sample generation is unavailable.";
-      status("Sample generation failed.");
-    }
-  } catch (error) {
-    if (error.name !== "AbortError" && revision === state.revision) elements.sampleError.textContent = error.message;
-  }
 }
 
 async function start() {
   try {
-    state.schema = await getSchema(); renderSchema(elements.schema, state.schema);
+    state.schema = await getSchema();
     state.tokenClasses = new Map(state.schema.tokens.map((token) => [token.kind, token.highlightClass]));
-    elements.prettyPanel.hidden = !state.schema.capabilities.pretty;
-    elements.samplePanel.hidden = !state.schema.capabilities.sample;
-    status(`Ready · ${state.schema.root.name}`); renderOverlay();
-  } catch (error) { status(error.message); }
+    elements.shuffleSample.hidden = !state.schema.capabilities.sample;
+    elements.prettyRun.hidden = !state.schema.capabilities.pretty;
+    grammarStatus(`${state.schema.name} · root ${state.schema.root.qualifiedName}`);
+    parseStatus("Ready");
+    renderOverlay(); renderGutter(elements.sourceGutter, state.source);
+    renderActiveMode();
+  } catch (error) { grammarStatus(error.message); }
+}
+
+/// Generates a fresh random statement via the grammar's Arbitrary capability and loads it — this
+/// document has no source text (it was never parsed from any), so the editor's draft is untouched.
+async function runShuffle() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  state.revision += 1; const revision = state.revision;
+  clearTimeout(state.timer); state.controller?.abort(); state.controller = new AbortController();
+  clearDocument("Generating a random statement…");
+  try {
+    const result = await post("sample", { bytes: Array.from(bytes) }, state.controller.signal);
+    if (revision !== state.revision) return;
+    if (result.status === "ok") {
+      showDocument(result.document);
+      elements.sourceContext.hidden = false;
+      parseStatus("Synthetic sample generated.");
+    } else {
+      parseStatus(result.message || "Sample generation is unavailable.");
+    }
+  } catch (error) {
+    if (error.name !== "AbortError" && revision === state.revision) parseStatus(error.message);
+  }
+}
+
+/// Replaces the editor's text with its Pretty-rendered form, then reparses it as ordinary source.
+async function runPretty() {
+  const revision = state.revision;
+  state.controller?.abort();
+  const controller = new AbortController(); state.controller = controller;
+  parseStatus("Rendering…");
+  try {
+    const result = await post("pretty", { source: elements.source.value, max_width: 80, indent: 2 }, controller.signal);
+    if (revision !== state.revision) return;
+    if (result.status !== "ok") { parseStatus(result.message || "Pretty is unavailable for this input."); return; }
+    elements.source.value = result.rendered;
+    scheduleParse(true);
+  } catch (error) {
+    if (error.name !== "AbortError" && revision === state.revision) parseStatus(error.message);
+  }
+}
+
+/// Drag-to-resize the Source/Parsed-structure split, persisted across sessions.
+const SOURCE_WIDTH_KEY = "recursa-explorer:source-width";
+const MIN_SOURCE_WIDTH = 260;
+const MAX_SOURCE_WIDTH = 640;
+
+function setSourceWidth(width) {
+  const clamped = Math.min(MAX_SOURCE_WIDTH, Math.max(MIN_SOURCE_WIDTH, width));
+  elements.workspace.style.setProperty("--source-width", `${clamped}px`);
+  return clamped;
+}
+
+function setupResizer() {
+  const stored = Number(localStorage.getItem(SOURCE_WIDTH_KEY));
+  setSourceWidth(Number.isFinite(stored) && stored > 0 ? stored : 352);
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+  elements.columnResizer.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    startX = event.clientX;
+    startWidth = elements.source.closest(".source-column").getBoundingClientRect().width;
+    elements.columnResizer.setPointerCapture(event.pointerId);
+  });
+  elements.columnResizer.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    setSourceWidth(startWidth + (event.clientX - startX));
+  });
+  elements.columnResizer.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = false;
+    const width = elements.source.closest(".source-column").getBoundingClientRect().width;
+    localStorage.setItem(SOURCE_WIDTH_KEY, String(Math.round(width)));
+  });
+  elements.columnResizer.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 40 : 12;
+    if (event.key === "ArrowLeft") {
+      const width = setSourceWidth(elements.source.closest(".source-column").getBoundingClientRect().width - step);
+      localStorage.setItem(SOURCE_WIDTH_KEY, String(Math.round(width)));
+      event.preventDefault();
+    } else if (event.key === "ArrowRight") {
+      const width = setSourceWidth(elements.source.closest(".source-column").getBoundingClientRect().width + step);
+      localStorage.setItem(SOURCE_WIDTH_KEY, String(Math.round(width)));
+      event.preventDefault();
+    }
+  });
+}
+
+/// Drag-to-resize the bottom (Occurrence / Railroad diagram) panel's height.
+const BOTTOM_HEIGHT_KEY = "recursa-explorer:bottom-height";
+const MIN_BOTTOM_HEIGHT = 80;
+const MAX_BOTTOM_HEIGHT = 480;
+
+function setBottomHeight(height) {
+  const clamped = Math.min(MAX_BOTTOM_HEIGHT, Math.max(MIN_BOTTOM_HEIGHT, height));
+  elements.bottomPanel.style.setProperty("--bottom-height", `${clamped}px`);
+  return clamped;
+}
+
+function setupRowResizer() {
+  const stored = Number(localStorage.getItem(BOTTOM_HEIGHT_KEY));
+  setBottomHeight(Number.isFinite(stored) && stored > 0 ? stored : 150);
+
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
+  elements.rowResizer.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    startY = event.clientY;
+    startHeight = elements.bottomPanel.getBoundingClientRect().height;
+    elements.rowResizer.setPointerCapture(event.pointerId);
+  });
+  elements.rowResizer.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    // Dragging the handle up (negative deltaY) grows the panel below it.
+    setBottomHeight(startHeight - (event.clientY - startY));
+  });
+  elements.rowResizer.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = false;
+    const height = elements.bottomPanel.getBoundingClientRect().height;
+    localStorage.setItem(BOTTOM_HEIGHT_KEY, String(Math.round(height)));
+  });
+  elements.rowResizer.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 40 : 12;
+    if (event.key === "ArrowDown") {
+      const height = setBottomHeight(elements.bottomPanel.getBoundingClientRect().height - step);
+      localStorage.setItem(BOTTOM_HEIGHT_KEY, String(Math.round(height)));
+      event.preventDefault();
+    } else if (event.key === "ArrowUp") {
+      const height = setBottomHeight(elements.bottomPanel.getBoundingClientRect().height + step);
+      localStorage.setItem(BOTTOM_HEIGHT_KEY, String(Math.round(height)));
+      event.preventDefault();
+    }
+  });
+}
+
+/// Toggles the bottom panel between the Occurrence fields and the Railroad diagram.
+function bottomTabButtons() {
+  return [...elements.bottomPanel.querySelectorAll(".bottom-tabs .mode-option")].map(
+    (button) => [button.dataset.panel, button],
+  );
+}
+
+function setupBottomTabs() {
+  for (const [panelName, button] of bottomTabButtons()) {
+    button.addEventListener("click", () => {
+      if (state.bottomPanel === panelName) return;
+      state.bottomPanel = panelName;
+      for (const [name, tab] of bottomTabButtons()) tab.classList.toggle("is-active", name === state.bottomPanel);
+      elements.occurrenceFooter.hidden = state.bottomPanel !== "occurrence";
+      elements.railroadPanel.hidden = state.bottomPanel !== "railroad";
+      if (state.bottomPanel === "railroad" && state.selected) renderRailroadPanel(state.selected);
+    });
+  }
+}
+
+/// Parses one SVG document string into a real `<svg>` element via the DOM parser, not raw markup
+/// assignment. Strips the railroad crate's embedded `<style>` elements and `style="..."`
+/// attributes from the source text before parsing — even a detached, unattached document builds
+/// their stylesheets at parse time, which the explorer's CSP (style-src 'self', no inline styles)
+/// blocks and reports regardless of whether the parsed nodes are later inserted. `style.css`
+/// carries the equivalent Nocturne-colored rules for the same selectors.
+function parseSvg(source) {
+  const cleaned = source
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/g, "")
+    .replace(/\s+style="[^"]*"/g, "");
+  const doc = new DOMParser().parseFromString(cleaned, "image/svg+xml");
+  return doc.documentElement;
+}
+
+/// Renders (and caches, per document) the railroad diagram for `entry`'s Node type.
+async function renderRailroadPanel(entry) {
+  if (entry.kind !== "node") {
+    elements.railroadPanel.replaceChildren();
+    const empty = document.createElement("p");
+    empty.className = "railroad-empty";
+    empty.textContent = "Select a node occurrence to see its railroad diagram.";
+    elements.railroadPanel.append(empty);
+    return;
+  }
+  const qualifiedName = entry.raw?.schema?.qualifiedName;
+  if (!qualifiedName) return;
+  const requestKey = entry.key;
+  let result = state.railroads.get(qualifiedName);
+  if (!result) {
+    try {
+      result = await post("railroad", { qualified_name: qualifiedName });
+    } catch (error) {
+      result = { status: "error", message: error.message };
+    }
+    state.railroads.set(qualifiedName, result);
+  }
+  // Selection may have moved on while the request was in flight.
+  if (state.selected?.key !== requestKey || state.bottomPanel !== "railroad") return;
+  elements.railroadPanel.replaceChildren();
+  const title = document.createElement("p");
+  title.className = "railroad-title";
+  title.textContent = qualifiedName;
+  elements.railroadPanel.append(title);
+  if (result.status !== "ok") {
+    const empty = document.createElement("p");
+    empty.className = "railroad-empty";
+    empty.textContent = "No railroad diagram is available for this grammar.";
+    elements.railroadPanel.append(empty);
+    return;
+  }
+  const svg = parseSvg(result.svg);
+  svg.classList.add("railroad-svg");
+  if (entry.raw) highlightTakenPath(svg, entry.raw);
+  elements.railroadPanel.append(svg);
 }
 
 elements.source.addEventListener("input", () => scheduleParse());
@@ -171,31 +490,36 @@ elements.source.addEventListener("pointermove", (event) => {
   selectSourceOffset(range.toString().length);
 });
 elements.parseNow.addEventListener("click", () => scheduleParse(true));
+elements.shuffleSample.addEventListener("click", runShuffle);
 elements.prettyRun.addEventListener("click", runPretty);
-elements.prettyApply.addEventListener("click", () => {
-  if (!state.pretty) return; elements.source.value = state.pretty.rendered; scheduleParse(true); elements.source.focus();
+elements.foldToggle.addEventListener("click", () => {
+  state.fold = !state.fold;
+  elements.foldToggle.classList.toggle("is-on", state.fold);
+  elements.foldToggle.setAttribute("aria-pressed", String(state.fold));
+  renderTree(false);
+  if (state.selected) selectOccurrence(state.selected);
 });
-function selectPrettyTarget(target) {
-  if (!state.pretty) return;
-  const mapped = target.closest("span[data-source-start]");
-  if (!mapped || !state.occurrence) return;
-  const span = { start: Number(mapped.dataset.sourceStart), end: Number(mapped.dataset.sourceEnd) };
-  const entry = deepestContaining(state.occurrence.entries, span.start); if (entry) selectOccurrence(entry);
+elements.expandAll.addEventListener("click", () => {
+  renderTree(true);
+  if (state.selected) selectOccurrence(state.selected);
+});
+for (const [mode, button] of modeButtons()) {
+  button.addEventListener("click", () => {
+    if (state.mode === mode) return;
+    state.mode = mode;
+    renderActiveMode();
+  });
 }
-elements.prettyOutput.addEventListener("pointermove", (event) => selectPrettyTarget(event.target));
-elements.prettyOutput.addEventListener("focusin", (event) => selectPrettyTarget(event.target));
-elements.sampleRun.addEventListener("click", runSample);
-elements.sampleSeed.addEventListener("input", () => {
-  state.revision += 1; state.controller?.abort(); elements.sampleError.textContent = "";
-  if (!elements.provenance.hidden && elements.provenance.textContent === "Synthetic") {
-    clearDocument("Seed changed; generate a new sample.");
-  }
-  status("Sample seed changed.");
-});
+elements.zoomOut.addEventListener("click", () => state.modeViews[state.mode]?.zoomOut());
+elements.zoomIn.addEventListener("click", () => state.modeViews[state.mode]?.zoomIn());
+elements.zoomFit.addEventListener("click", () => state.modeViews[state.mode]?.fit());
 elements.shutdown.addEventListener("click", async () => {
-  elements.shutdown.disabled = true; status("Stopping…");
-  try { await post("shutdown", {}); status("Explorer stopped. This tab can be closed."); }
-  catch (error) { status(error.message); elements.shutdown.disabled = false; }
+  elements.shutdown.disabled = true; parseStatus("Stopping…");
+  try { await post("shutdown", {}); parseStatus("Explorer stopped. This tab can be closed."); }
+  catch (error) { parseStatus(error.message); elements.shutdown.disabled = false; }
 });
 
+setupResizer();
+setupRowResizer();
+setupBottomTabs();
 start();

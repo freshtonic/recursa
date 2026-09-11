@@ -8,62 +8,134 @@
 </head>
 <body>
   <header class="app-header">
-    <div><p class="eyebrow">Local grammar workspace</p><h1>Recursa Explorer</h1></div>
-    <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
+    <div class="header-group">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span class="brand-name">recursa</span>
+      <span class="brand-suffix">Explorer</span>
+      <span class="header-divider" aria-hidden="true"></span>
+      <span id="grammar-identity" class="grammar-identity">Connecting…</span>
+    </div>
+    <div class="header-group">
+      <span id="parse-status" class="parse-status" role="status" aria-live="polite"></span>
+      <button id="shutdown" class="btn btn-ghost" type="button">Stop Explorer</button>
+    </div>
   </header>
-  <main class="workspace">
-    <section class="card source-card" aria-labelledby="source-heading">
-      <div class="card-heading">
+  <main id="workspace" class="workspace">
+    <section class="column source-column" aria-labelledby="source-heading">
+      <div class="column-header">
         <div><p class="eyebrow">Input</p><h2 id="source-heading">Source</h2></div>
-        <button id="parse-now" type="button">Parse now</button>
+        <div class="header-actions">
+          <button id="shuffle-sample" class="btn btn-ghost btn-icon" type="button" aria-label="Generate a random statement" hidden>
+            <svg class="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="16 3 21 3 21 8"></polyline>
+              <line x1="4" y1="20" x2="21" y2="3"></line>
+              <polyline points="21 16 21 21 16 21"></polyline>
+              <line x1="15" y1="15" x2="21" y2="21"></line>
+              <line x1="4" y1="4" x2="9" y2="9"></line>
+            </svg>
+          </button>
+          <button id="parse-now" class="btn btn-primary" type="button">Parse now</button>
+          <button id="pretty-run" class="btn btn-ghost" type="button" hidden>Pretty</button>
+        </div>
       </div>
-      <div class="source-editor">
-        <pre id="source-overlay" aria-hidden="true"></pre>
-        <textarea id="source" aria-label="Grammar source" spellcheck="false" autocomplete="off"></textarea>
+      <div class="source-body">
+        <div id="source-gutter" class="source-gutter" aria-hidden="true"></div>
+        <div class="source-editor">
+          <pre id="source-overlay" aria-hidden="true"></pre>
+          <textarea id="source" aria-label="Grammar source" spellcheck="false" autocomplete="off"></textarea>
+        </div>
       </div>
       <p id="source-context" class="source-context" hidden>The synthetic sample has no source; the editor is retained only as your draft.</p>
-      <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
-    </section>
-    <section class="card tree-card" aria-labelledby="tree-heading">
-      <div class="card-heading">
-        <div><p class="eyebrow">Parsed structure</p><h2 id="tree-heading">AST</h2></div>
-        <span id="provenance" class="badge" hidden></span>
+      <div class="diagnostics-footer">
+        <p class="eyebrow eyebrow-neutral">Diagnostics</p>
+        <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
+        <p class="diagnostics-hint">Selection maps both ways. Hover a token to select the deepest containing occurrence.</p>
       </div>
-      <p id="tree-empty" class="empty">Enter valid source to inspect its tree.</p>
-      <div id="tree" class="tree" role="tree" aria-label="Explorer AST" hidden></div>
     </section>
-    <aside class="inspector" aria-label="Explorer tools">
-      <section class="card" aria-labelledby="grammar-heading">
-        <p class="eyebrow">Static contract</p><h2 id="grammar-heading">Grammar</h2>
-        <div id="schema"></div>
-      </section>
-      <section id="pretty-panel" class="card" aria-labelledby="pretty-heading" hidden>
-        <div class="card-heading">
-          <div><p class="eyebrow">Capability</p><h2 id="pretty-heading">Pretty</h2></div>
-          <button id="pretty-run" type="button">Render</button>
+
+    <div id="column-resizer" class="column-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Source panel" tabindex="0"></div>
+
+    <section class="column structure-column" aria-labelledby="structure-heading">
+      <div class="column-header">
+        <div>
+          <p class="eyebrow">Parsed structure</p>
+          <div class="structure-title-row">
+            <h2 id="structure-heading">Constellation</h2>
+            <span id="occurrence-count" class="occurrence-count"></span>
+          </div>
         </div>
-        <div class="settings-row">
-          <label>Width <input id="pretty-width" type="number" min="1" max="1000" value="80"></label>
-          <label>Indent <input id="pretty-indent" type="number" min="0" max="32" value="2"></label>
+        <div id="mode-switcher" class="mode-switcher" role="tablist" aria-label="Render mode">
+          <button type="button" class="mode-option is-active" data-mode="graph">Constellation</button>
+          <button type="button" class="mode-option" data-mode="outline">Outline</button>
+          <button type="button" class="mode-option" data-mode="grain">Grain</button>
+          <button type="button" class="mode-option" data-mode="strata">Strata</button>
         </div>
-        <pre id="pretty-output" class="pretty-output" tabindex="0" aria-label="Pretty output"></pre>
-        <button id="pretty-apply" type="button" disabled>Apply to source</button>
-      </section>
-      <section id="sample-panel" class="card" aria-labelledby="sample-heading" hidden>
-        <div class="card-heading">
-          <div><p class="eyebrow">Capability</p><h2 id="sample-heading">Sample</h2></div>
-          <button id="sample-run" type="button">Generate</button>
+      </div>
+      <div class="breadcrumb-strip">
+        <nav id="breadcrumb" class="breadcrumb" aria-label="Occurrence path"></nav>
+        <div class="breadcrumb-controls">
+          <div id="fold-controls" class="mode-controls" hidden>
+            <button id="fold-toggle" class="fold-toggle is-on" type="button" aria-pressed="true">
+              <span class="fold-glyph" aria-hidden="true">◼</span> Fold chains
+            </button>
+            <button id="expand-all" class="btn btn-ghost" type="button">Expand all</button>
+          </div>
+          <div id="zoom-controls" class="mode-controls" hidden>
+            <span id="zoom-level" class="zoom-level"></span>
+            <button id="zoom-out" class="btn btn-ghost" type="button" aria-label="Zoom out">−</button>
+            <button id="zoom-in" class="btn btn-ghost" type="button" aria-label="Zoom in">+</button>
+            <button id="zoom-fit" class="btn btn-ghost" type="button">Fit</button>
+          </div>
+          <span id="selection-span" class="selection-span"></span>
         </div>
-        <label for="sample-seed">Hex seed</label>
-        <input id="sample-seed" class="seed" value="07111d2f43596d83" inputmode="text" spellcheck="false">
-        <p id="sample-error" class="field-error" role="alert"></p>
-      </section>
-    </aside>
+      </div>
+      <div class="render-surface">
+        <p id="tree-empty" class="empty">Enter valid source to inspect its tree.</p>
+
+        <div id="outline-surface" class="outline-surface" hidden>
+          <div id="tree" class="outline-tree" role="tree" aria-label="Explorer AST"></div>
+          <div class="shape-strip">
+            <p class="shape-strip-heading">Shape</p>
+            <div id="shape-strip-bars" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <div id="graph-surface" class="pan-field graph-field" hidden>
+          <div id="graph-layer" class="pan-layer graph-layer">
+            <svg id="graph-edges" class="graph-edges"></svg>
+          </div>
+          <p class="field-hint">drag to pan · scroll to zoom</p>
+        </div>
+
+        <div id="grain-surface" class="grain-surface" hidden>
+          <div id="grain-gutter" class="grain-gutter"></div>
+          <pre id="grain-source" class="grain-source" aria-hidden="true"></pre>
+          <div id="grain-caption" class="grain-caption" hidden>
+            <span id="grain-caption-title" class="grain-caption-title"></span>
+            <span id="grain-caption-meta" class="grain-caption-meta"></span>
+          </div>
+        </div>
+
+        <div id="strata-surface" class="strata-surface" hidden>
+          <div id="strata-track" class="strata-track"></div>
+          <div class="strata-axis">
+            <span>byte 0</span>
+            <span id="strata-hover"></span>
+            <span id="strata-total"></span>
+          </div>
+        </div>
+      </div>
+      <div id="row-resizer" class="row-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel" tabindex="0"></div>
+      <div id="bottom-panel" class="bottom-panel">
+        <div class="bottom-tabs" role="tablist" aria-label="Bottom panel view">
+          <button type="button" class="mode-option is-active" data-panel="occurrence">Occurrence</button>
+          <button type="button" class="mode-option" data-panel="railroad">Railroad diagram</button>
+        </div>
+        <div id="occurrence-footer" class="occurrence-footer bottom-panel-body"></div>
+        <div id="railroad-panel" class="railroad-panel bottom-panel-body" hidden></div>
+      </div>
+    </section>
   </main>
-  <footer>
-    <span>Private matching-version protocol · loopback only</span>
-    <button id="shutdown" class="quiet" type="button">Stop Explorer</button>
-  </footer>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
