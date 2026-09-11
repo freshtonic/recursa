@@ -476,9 +476,15 @@ pub(super) fn render_node_configured_traits(
     }) {
         implementations.push(render_node_serde(plan, node));
     }
-    if node
-        .configured_traits
-        .contains(&ConfiguredTraitRecipe::Arbitrary)
+    // An arena_ast Node's own field types (`ArenaBox`/`ArenaVec`/`ArenaVec1`) cannot implement
+    // `arbitrary::Arbitrary` directly (its `arbitrary(u)` has no channel for a `&Bump` handle) —
+    // Arbitrary support for an arena_ast grammar is instead provided by a separate, always-heap
+    // "seed" mirror type plus mechanical materialization into the arena (see `arbitrary_seed.rs`
+    // and `render_arbitrary_seed_module`), not a direct impl on this Node itself.
+    if !plan.arena_ast
+        && node
+            .configured_traits
+            .contains(&ConfiguredTraitRecipe::Arbitrary)
     {
         implementations.push(render_node_arbitrary(plan, node));
     }
@@ -1060,6 +1066,24 @@ pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream
     }
 }
 
+/// Reports whether a variant has any Node-typed element — a variant with none of these can
+/// always be constructed without recursing into another generated `arbitrary()` call, so it is
+/// safe to prefer once sampling depth is bounded (see `render_node_arbitrary`'s enum/Pratt case).
+fn variant_has_node_element(variant: &VariantParsePlan) -> bool {
+    variant.elements.iter().any(|element| {
+        let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+            return false;
+        };
+        matches!(
+            projection.as_ref(),
+            SemanticParseProjection::Direct {
+                explorer_terminal: ExplorerTerminalPlan::Node(_),
+                ..
+            }
+        )
+    })
+}
+
 /// Renders bounded arbitrary construction for the Node's semantic shape.
 pub(super) fn render_node_arbitrary(
     plan: &EmissionPlan,
@@ -1070,7 +1094,11 @@ pub(super) fn render_node_arbitrary(
     let node_ident = &node.ident;
     let mut generics = node.generics.clone();
     generics.params.insert(0, syn::parse_quote!('arbitrary));
-    for field_type in non_content_semantic_field_types(facade, node) {
+    // Only the node's own generic type parameters need a `where` bound here — a concrete field
+    // type (the overwhelming common case) already has whatever `Arbitrary` impl it has, and
+    // restating that as an explicit predicate creates a genuine infinite trait-solver cycle for
+    // any mutually-recursive pair of Nodes (see `generic_type_dependencies`'s doc comment).
+    for field_type in generic_type_dependencies(node) {
         generics
             .make_where_clause()
             .predicates
@@ -1137,8 +1165,51 @@ pub(super) fn render_node_arbitrary(
                 quote!(#index => #value)
             });
             let last = variants.len().saturating_sub(1);
+            // `int_in_range` deterministically returns the range's lower bound once the input is
+            // exhausted (confirmed empirically, not merely a rare edge case), so a plain uniform
+            // choice can deterministically re-select a recursive variant forever once a
+            // mutually-recursive grammar (any real one) runs out of entropy. Past a bounded
+            // sampling depth, prefer a variant with no Node-typed element at all — one that can
+            // always be constructed without recursing further — falling back to the plain choice
+            // when there is nothing to gain from restricting it (every variant already recurses,
+            // or none does).
+            let leaf_indices = variants
+                .iter()
+                .enumerate()
+                .filter(|(_, variant)| !variant_has_node_element(variant))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let variant_index = if leaf_indices.len() == variants.len() {
+                // Every variant is already a leaf (never recurses) — nothing to restrict.
+                quote!(input.int_in_range(0usize..=#last)?)
+            } else if leaf_indices.is_empty() {
+                // No variant can be constructed without recursing into another Node at all (e.g.
+                // even an "atom" case wraps a dedicated Node type rather than a bare content
+                // token) — there is no variant to prefer, so the only way to guarantee
+                // termination once already deep is to refuse to go deeper. This is not merely a
+                // deeper search: `int_in_range` deterministically returns the same variant index
+                // forever once entropy is exhausted, so without this the recursion genuinely never
+                // ends rather than just becoming unlikely.
+                quote! {
+                    if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
+                        return Err(#facade::__private::arbitrary::Error::NotEnoughData);
+                    }
+                    input.int_in_range(0usize..=#last)?
+                }
+            } else {
+                let leaf_count = leaf_indices.len();
+                let leaf_upper = leaf_count - 1;
+                quote! {
+                    if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
+                        const __RECURSA_LEAF_VARIANTS: [usize; #leaf_count] = [#(#leaf_indices),*];
+                        __RECURSA_LEAF_VARIANTS[input.int_in_range(0usize..=#leaf_upper)?]
+                    } else {
+                        input.int_in_range(0usize..=#last)?
+                    }
+                }
+            };
             quote! {
-                match input.int_in_range(0usize..=#last)? {
+                match #variant_index {
                     #(#arms,)*
                     _ => unreachable!("the arbitrary variant index is in range"),
                 }
@@ -1153,6 +1224,14 @@ pub(super) fn render_node_arbitrary(
             fn arbitrary(
                 input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
             ) -> #facade::__private::arbitrary::Result<Self> {
+                // Tracks nested Node-construction depth across the whole `arbitrary()` call tree,
+                // not just within this Node — every generated Node increments it on entry, so an
+                // enum/Pratt body several levels below can still see how deep its ancestors
+                // already went. The guard's own binding keeps it alive for this whole function,
+                // including every nested call `#body` makes before returning.
+                let (__recursa_arbitrary_depth_guard, __recursa_arbitrary_depth) =
+                    #facade::__private::ArbitraryDepthGuard::enter();
+                let _ = &__recursa_arbitrary_depth_guard;
                 Ok(#body)
             }
         }
@@ -1346,7 +1425,7 @@ pub(super) fn add_serde_bounds(
 ) {
     for field_type in non_content_semantic_field_types(facade, node)
         .into_iter()
-        .chain(serde_generic_dependencies(node))
+        .chain(generic_type_dependencies(node))
     {
         generics
             .make_where_clause()
@@ -1390,8 +1469,15 @@ fn serde_content_adapter(
     quote!(#[serde(#(#adapters),*)])
 }
 
-/// Collects generic type parameters reached by serializable semantic fields.
-pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
+/// Collects the node's own declared generic type parameters (`T`, not a concrete field type)
+/// actually reached by its semantic fields — the minimal set a generated impl's `where` clause
+/// needs to bound. A concrete field type never needs restating here: the compiler already knows
+/// whatever that type's own trait impls are without a redundant explicit predicate, and for a
+/// mutually-recursive grammar (any real one), restating bounds on concrete types creates a
+/// genuine infinite proof cycle in the trait solver (`A: Arbitrary` requires `B: Arbitrary`
+/// requires `A: Arbitrary`...), not merely a deep one — confirmed via a minimal two-Node
+/// reproduction; no `recursion_limit` bump fixes it, because it never terminates.
+pub(super) fn generic_type_dependencies(node: &NodeParsePlan) -> Vec<Type> {
     let candidates = node
         .generics
         .type_params()

@@ -1,8 +1,12 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
 use crate::input::TokenRecord;
+#[cfg(feature = "arbitrary")]
+use bumpalo::Bump;
 use crate::parsed::ViewCursor;
 use crate::parsed::{ArenaAstFamily, ArenaGeneratedParse, GeneratedParse};
+#[cfg(feature = "arbitrary")]
+use crate::parsed::ArenaSynthetic;
 use crate::{
     ArenaParsed, ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap,
     Span,
@@ -37,6 +41,8 @@ pub struct Adapter {
     parse: RootParseFn,
     /// Optional static sample callback when `Arbitrary` is configured.
     sample: Option<SampleFn>,
+    /// Encoded railroad-diagram plan, present when this Generation was built with `diagrams`.
+    diagram_plan: Option<&'static str>,
 }
 
 impl Adapter {
@@ -67,6 +73,107 @@ impl Adapter {
     /// `None` means this root does not configure `Arbitrary`.
     pub fn sample(self, bytes: &[u8]) -> Option<Result<ExplorerDocument<'static>, SampleError>> {
         self.sample.map(|sample| sample(bytes))
+    }
+
+    /// Parses a complete source exactly like [`Adapter::parse`], additionally timing the parse
+    /// and reporting the resulting explorer document's arena memory usage.
+    #[cfg(feature = "statistics")]
+    pub fn parse_with_statistics(
+        self,
+        source: &str,
+    ) -> Result<(ExplorerDocument<'_>, ParseStatistics), ParseFailure<'_>> {
+        let start = std::time::Instant::now();
+        let document = (self.parse)(self.raw_lex, source)?;
+        let elapsed = start.elapsed();
+        let memory_bytes = document.memory_bytes();
+        Ok((
+            document,
+            ParseStatistics {
+                elapsed,
+                memory_bytes,
+            },
+        ))
+    }
+
+    /// Renders a railroad (syntax) diagram SVG for the Node named `qualified_name`, with every
+    /// Rustdoc link stripped since a consumer of this adapter has no documentation pages to link
+    /// into.
+    ///
+    /// `None` when this Generation was not built with the `diagrams` feature, or when no Node in
+    /// this grammar carries that qualified name.
+    #[cfg(feature = "diagrams")]
+    pub fn railroad_svg(self, qualified_name: &str) -> Option<String> {
+        let encoded = self.diagram_plan?;
+        let plan = recursa_diagrams::DiagramPlan::decode(encoded).ok()?;
+        let node = plan
+            .nodes
+            .iter()
+            .find(|node| node.semantic_key == qualified_name)?;
+        let production = strip_diagram_links(node.production.clone());
+        Some(recursa_diagrams::render_svg(&production, qualified_name, ""))
+    }
+}
+
+/// Recursively clears every Rustdoc link carried by a diagram production, since a running
+/// Explorer adapter has no documentation pages for those links to resolve against.
+#[cfg(feature = "diagrams")]
+fn strip_diagram_links(node: recursa_diagrams::DiagramNode) -> recursa_diagrams::DiagramNode {
+    use recursa_diagrams::DiagramNode;
+    match node {
+        DiagramNode::NonTerminal {
+            label, reference, ..
+        } => DiagramNode::NonTerminal {
+            label,
+            link: None,
+            reference,
+        },
+        DiagramNode::Inline { label, body, .. } => DiagramNode::Inline {
+            label,
+            link: None,
+            body: Box::new(strip_diagram_links(*body)),
+        },
+        DiagramNode::LinkedComment { label, .. } => DiagramNode::LinkedComment { label, link: None },
+        DiagramNode::Annotated { note, body } => DiagramNode::Annotated {
+            note,
+            body: Box::new(strip_diagram_links(*body)),
+        },
+        DiagramNode::Sequence(items) => {
+            DiagramNode::Sequence(items.into_iter().map(strip_diagram_links).collect())
+        }
+        DiagramNode::Choice(items) => {
+            DiagramNode::Choice(items.into_iter().map(strip_diagram_links).collect())
+        }
+        DiagramNode::Optional(inner) => DiagramNode::Optional(Box::new(strip_diagram_links(*inner))),
+        DiagramNode::Repeat { item, separator } => DiagramNode::Repeat {
+            item: Box::new(strip_diagram_links(*item)),
+            separator: Box::new(strip_diagram_links(*separator)),
+        },
+        other @ (DiagramNode::Empty | DiagramNode::Terminal(_) | DiagramNode::Comment(_)) => other,
+    }
+}
+
+/// Timing and arena memory usage measured for one Explorer parse.
+#[cfg(feature = "statistics")]
+#[derive(Clone, Copy, Debug)]
+pub struct ParseStatistics {
+    /// Wall-clock time spent inside the strict parse.
+    elapsed: std::time::Duration,
+    /// Concrete AST arena memory usage, or `None` for a Nested-AST construction backend.
+    memory_bytes: Option<usize>,
+}
+
+#[cfg(feature = "statistics")]
+impl ParseStatistics {
+    /// Returns the wall-clock time spent inside the strict parse.
+    pub const fn elapsed(self) -> std::time::Duration {
+        self.elapsed
+    }
+
+    /// Returns the concrete AST's arena memory usage in bytes.
+    ///
+    /// `None` when the root's construction backend does not materialize into an arena.
+    pub const fn memory_bytes(self) -> Option<usize> {
+        self.memory_bytes
     }
 }
 
@@ -439,6 +546,18 @@ impl<'input> ExplorerDocument<'input> {
         }
     }
 
+    /// Erases a complete arena-backed, sample-generated root while retaining its allocator.
+    #[cfg(feature = "arbitrary")]
+    pub fn from_arena_synthetic<F>(synthetic: ArenaSynthetic<F>) -> Self
+    where
+        F: ArenaAstFamily + 'input,
+        for<'arena> F::Ast<'arena>: ExplorerRoot,
+    {
+        Self {
+            storage: Box::new(ArenaSyntheticDocument { synthetic }),
+        }
+    }
+
     /// Returns whether this document was parsed or synthesized.
     pub fn provenance(&self) -> Provenance {
         self.storage.provenance()
@@ -460,6 +579,15 @@ impl<'input> ExplorerDocument<'input> {
     pub fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput> {
         self.storage.pretty(config)
     }
+
+    /// Returns the concrete AST's arena memory usage in bytes.
+    ///
+    /// `None` when the root's construction backend does not materialize into an arena (a Nested
+    /// AST), which has no generic way to report its owned-heap footprint.
+    #[cfg(feature = "statistics")]
+    pub fn memory_bytes(&self) -> Option<usize> {
+        self.storage.memory_bytes()
+    }
 }
 
 /// Object-safe operations needed to inspect one owned typed document.
@@ -472,6 +600,9 @@ trait ErasedDocument {
     fn root(&self) -> NodeData<'_>;
     /// Renders Pretty output when the root configured that capability.
     fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput>;
+    /// Reports arena memory usage in bytes, or `None` for a Nested-AST backend.
+    #[cfg(feature = "statistics")]
+    fn memory_bytes(&self) -> Option<usize>;
 }
 
 /// Typed backing allocation retained behind [`ExplorerDocument`].
@@ -502,6 +633,11 @@ impl<T: ExplorerRoot> ErasedDocument for TypedDocument<'_, T> {
         let (value, cursor) = self.parsed.explorer_parts();
         T::__recursa_explorer_pretty(value, cursor, config)
     }
+
+    #[cfg(feature = "statistics")]
+    fn memory_bytes(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Typed backing allocation for one self-contained arena parse.
@@ -531,6 +667,48 @@ where
     fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput> {
         let (value, cursor) = self.parsed.explorer_parts();
         <F::Ast<'_> as ExplorerRoot>::__recursa_explorer_pretty(value, cursor, config)
+    }
+
+    #[cfg(feature = "statistics")]
+    fn memory_bytes(&self) -> Option<usize> {
+        Some(self.parsed.allocated_bytes())
+    }
+}
+
+/// Typed backing allocation for one self-contained, sample-generated arena root.
+#[cfg(feature = "arbitrary")]
+struct ArenaSyntheticDocument<F: ArenaAstFamily> {
+    /// Arena owner and materialized root retained as one self-referential value.
+    synthetic: ArenaSynthetic<F>,
+}
+
+#[cfg(feature = "arbitrary")]
+impl<F> ErasedDocument for ArenaSyntheticDocument<F>
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: ExplorerRoot,
+{
+    fn provenance(&self) -> Provenance {
+        Provenance::Synthetic
+    }
+
+    fn source(&self) -> Option<&str> {
+        None
+    }
+
+    fn root(&self) -> NodeData<'_> {
+        let (value, cursor) = self.synthetic.explorer_parts();
+        value.__recursa_explorer_node(cursor)
+    }
+
+    fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput> {
+        let (value, cursor) = self.synthetic.explorer_parts();
+        <F::Ast<'_> as ExplorerRoot>::__recursa_explorer_pretty(value, cursor, config)
+    }
+
+    #[cfg(feature = "statistics")]
+    fn memory_bytes(&self) -> Option<usize> {
+        None
     }
 }
 
@@ -1342,6 +1520,47 @@ pub unsafe trait ArenaExplorerRootFamily: 'static {
     ) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>;
 }
 
+/// Private root family for one arena-backed, Arbitrary-sample-generated root application.
+///
+/// `arbitrary::Arbitrary::arbitrary(u)` has no channel for an allocator handle, so an arena
+/// AST's own field types (`ArenaBox`/`ArenaVec`/`ArenaVec1`) cannot implement it directly.
+/// Generated code instead binds [`Seed`](Self::Seed) to an always-heap mirror type it emits
+/// alongside the primary AST (`Box`/`Vec`/`Vec1` standing in for the arena containers), reusing
+/// ordinary Nested-AST `Arbitrary` codegen unmodified, and implements
+/// [`materialize`](Self::materialize) as a purely mechanical, recursive copy from a sampled seed
+/// value into a freshly arena-allocated root — no interaction with `Unstructured` at all, since
+/// every random choice was already made while sampling the seed.
+///
+/// # Safety
+/// `Ast` must be the same generated arena family [`ArenaAstFamily::Ast`] names for every allocator
+/// lifetime, and `materialize` must allocate its result entirely within the arena it is given.
+#[cfg(feature = "arbitrary")]
+#[doc(hidden)]
+pub unsafe trait ArenaArbitraryRootFamily: ArenaAstFamily {
+    /// The family's own always-heap mirror of its root type, sampled directly via `Arbitrary`.
+    type Seed: for<'seed> arbitrary::Arbitrary<'seed>;
+
+    /// Copies one sampled seed value into a freshly arena-allocated root, field by field.
+    fn materialize<'arena>(seed: Self::Seed, bump: &'arena Bump) -> Self::Ast<'arena>;
+}
+
+/// Samples one root through its family's Arbitrary-configured seed type, then mechanically
+/// materializes it into a freshly arena-allocated document.
+#[cfg(feature = "arbitrary")]
+#[doc(hidden)]
+pub fn sample_arena_root<F: ArenaArbitraryRootFamily + 'static>(
+    bytes: &[u8],
+) -> Result<ExplorerDocument<'static>, SampleError>
+where
+    for<'arena> F::Ast<'arena>: ExplorerRoot,
+{
+    let mut input = arbitrary::Unstructured::new(bytes);
+    let seed = <F::Seed as arbitrary::Arbitrary<'_>>::arbitrary(&mut input)
+        .map_err(|error| sample_error(error.to_string()))?;
+    let synthetic = crate::parsed::ArenaSynthetic::<F>::new(|bump| F::materialize(seed, bump));
+    Ok(ExplorerDocument::from_arena_synthetic(synthetic))
+}
+
 /// Tests one complete strict root against a generated static variant identity.
 #[cfg(feature = "spans")]
 pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
@@ -1751,6 +1970,7 @@ pub const unsafe fn construct_adapter(
     raw_lex: RawLexFn,
     parse: RootParseFn,
     sample: Option<SampleFn>,
+    diagram_plan: Option<&'static str>,
 ) -> Adapter {
     Adapter {
         schema: GrammarSchemaData { tables, root },
@@ -1759,6 +1979,7 @@ pub const unsafe fn construct_adapter(
         raw_lex,
         parse,
         sample,
+        diagram_plan,
     }
 }
 
@@ -1937,8 +2158,9 @@ mod tests {
             })
         }
 
-        let adapter =
-            unsafe { construct_adapter(&TABLES, &ROOT, false, false, lex, raw_lex, parse, None) };
+        let adapter = unsafe {
+            construct_adapter(&TABLES, &ROOT, false, false, lex, raw_lex, parse, None, None)
+        };
         assert!(!adapter.capabilities().arbitrary());
         assert!(adapter.sample(&[]).is_none());
     }

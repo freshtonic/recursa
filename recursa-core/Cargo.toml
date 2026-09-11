@@ -17,14 +17,17 @@ include = ["src/**", "README.md", "LICENSE"]
 [features]
 default = []
 arbitrary = ["dep:arbitrary"]
-explorer = []
+diagrams = ["dep:recursa-diagrams"]
+explorer = ["statistics"]
 serde = ["dep:serde"]
 spans = []
+statistics = []
 
 [dependencies]
 arbitrary = { version = "1", optional = true }
 bumpalo = { version = "3.20", features = ["boxed", "collections"] }
 logos = { version = "0.16", default-features = false, features = ["std", "export_derive"] }
 phf = "0.11.3"
+recursa-diagrams = { version = "=0.1.0", path = "../recursa-diagrams", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 self_cell = "1.2"

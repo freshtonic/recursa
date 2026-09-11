@@ -1,5 +1,8 @@
 //! Grammar-erased runtime support for Recursa-generated parsers.
 
+#[cfg(feature = "arbitrary")]
+/// Recursion-depth guard bounding `Arbitrary`-generated Node construction.
+mod arbitrary_depth;
 #[cfg(feature = "explorer")]
 pub mod explorer;
 #[cfg(all(feature = "explorer", feature = "spans"))]
@@ -52,6 +55,12 @@ pub use visitor::{
 pub mod __private {
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::sample_root as explorer_sample_root;
+    #[cfg(all(feature = "explorer", feature = "arbitrary"))]
+    pub use crate::explorer::sample_arena_root as explorer_sample_arena_root;
+    #[cfg(all(feature = "explorer", feature = "arbitrary"))]
+    pub use crate::explorer::ArenaArbitraryRootFamily;
+    #[cfg(feature = "arbitrary")]
+    pub use crate::parsed::ArenaSynthetic;
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
         ArenaExplorerRootFamily, ElementSchemaData as ExplorerElementSchemaData,
@@ -102,6 +111,12 @@ pub mod __private {
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
     pub use arbitrary;
+    #[cfg(feature = "arbitrary")]
+    pub use bumpalo;
+    #[cfg(feature = "arbitrary")]
+    pub use crate::arbitrary_depth::{
+        DepthGuard as ArbitraryDepthGuard, MAX_DEPTH as ARBITRARY_MAX_DEPTH,
+    };
     pub use logos;
     /// Perfect-hash runtime backing generated word-keyword classification.
     ///

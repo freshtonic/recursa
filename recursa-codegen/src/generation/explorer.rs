@@ -1682,6 +1682,25 @@ pub(super) fn render_node_explorer(
 /// Rationale: keeps an application adapter's schema, occurrence traversal, parsing, Pretty, and sampling in one emitted impl.
 /// Invariants: the erased API never exposes semantic Rust types or outlives its input.
 /// Phases: renders identity and schema, occurrence access, parse entry, then optional capabilities.
+/// Builds the `explorer_adapter` diagram-plan argument: `Some(include_str!(...))` embedding this
+/// generation's on-disk encoded diagram plan (published next to `root.rs` by [`super::publication`])
+/// when this grammar has one, otherwise `None`.
+fn explorer_diagram_plan_arg(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    #[cfg(feature = "diagrams")]
+    {
+        if plan.diagrams.is_some() {
+            let path = format!(
+                "/recursa-generations/{}/diagrams/diagrams.plan",
+                plan.identity
+            );
+            return quote! { Some(include_str!(concat!(env!("OUT_DIR"), #path))) };
+        }
+    }
+    #[cfg(not(feature = "diagrams"))]
+    let _ = plan;
+    quote! { None }
+}
+
 pub(super) fn render_node_application_explorer(
     plan: &EmissionPlan,
     explorer_plan: &ExplorerPlan,
@@ -1694,6 +1713,7 @@ pub(super) fn render_node_application_explorer(
     let node_index = application.parse_index;
     let ty = &application.ty;
     let static_ty = &application.static_ty;
+    let diagram_plan_arg = explorer_diagram_plan_arg(plan);
     let explorer_node = explorer_plan
         .nodes
         .iter()
@@ -1892,11 +1912,26 @@ pub(super) fn render_node_application_explorer(
         // The sample gate expands to `(false, None)` unless the facade enables both
         // `explorer` and `arbitrary`, so the generic sample path is named only when
         // the runtime provides it.
+        //
+        // `ArenaAstFamily` (needed for `sample_arena_root`'s allocator-aware materialization) is
+        // implemented for the arena family *marker* `render_parse_impl` (`table_driven.rs`)
+        // generates per application — `__RecursaArenaFamilyNode{parse_index}` — not for `#static_ty`
+        // itself, so the arena sample path is named against that marker, reconstructed here by the
+        // exact same deterministic naming `table_driven.rs` uses.
         let sample_binding = if arbitrary && !plan.arena_ast {
             quote! {
                 let (arbitrary, sample): (bool, Option<#facade::__private::ExplorerSampleFn>) =
                     __recursa_explorer_sample!(
                         #facade::__private::explorer_sample_root::<#static_ty>
+                    );
+            }
+        } else if arbitrary && plan.arena_ast {
+            let arena_family_ident =
+                format_ident!("__RecursaArenaFamilyNode{}", application.parse_index);
+            quote! {
+                let (arbitrary, sample): (bool, Option<#facade::__private::ExplorerSampleFn>) =
+                    __recursa_explorer_sample!(
+                        #facade::__private::explorer_sample_arena_root::<#arena_family_ident>
                     );
             }
         } else {
@@ -1928,6 +1963,30 @@ pub(super) fn render_node_application_explorer(
                 }
             }
         };
+        // `ArenaArbitraryRootFamily` binds this application's own seed/mirror type and its
+        // mechanical materialization method for `sample_arena_root` — see the note on
+        // `sample_binding` above for why it targets the arena family marker, not `#static_ty`.
+        let arena_arbitrary_family_impl = if arbitrary && plan.arena_ast {
+            let arena_family_ident =
+                format_ident!("__RecursaArenaFamilyNode{}", application.parse_index);
+            let seed_ty = seed_type_path(plan, application.parse_index);
+            quote! {
+                __recursa_if_arbitrary! {
+                    unsafe impl #facade::__private::ArenaArbitraryRootFamily for #arena_family_ident {
+                        type Seed = #seed_ty;
+
+                        fn materialize<'__recursa_bump>(
+                            seed: Self::Seed,
+                            bump: &'__recursa_bump #facade::__private::bumpalo::Bump,
+                        ) -> Self::Ast<'__recursa_bump> {
+                            seed.__recursa_arbitrary_into_arena(bump)
+                        }
+                    }
+                }
+            }
+        } else {
+            quote!()
+        };
         let parse_root = if plan.arena_ast {
             quote!(#facade::__private::explorer_parse_arena_root::<#static_ty>)
         } else {
@@ -1941,6 +2000,7 @@ pub(super) fn render_node_application_explorer(
             }
 
             #family_impl
+            #arena_arbitrary_family_impl
 
             impl #entry_impl_generics #ty #entry_where_clause {
                 /// Returns this source-visible Node family's opaque explorer adapter.
@@ -1959,6 +2019,7 @@ pub(super) fn render_node_application_explorer(
                             #module_anchor::__recursa_lexical::#raw_lex,
                             #parse_root,
                             sample,
+                            #diagram_plan_arg,
                         )
                     }
                 }
