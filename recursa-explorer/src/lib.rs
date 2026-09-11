@@ -6,6 +6,7 @@ mod assets;
 mod browser;
 mod protocol;
 mod server;
+mod worker;
 
 use recursa::explorer::Adapter;
 use std::fmt;
@@ -16,11 +17,18 @@ use std::fmt;
 /// the system browser, then blocks while it serves the bundled application and
 /// grammar-specific protocol.
 ///
+/// When re-invoked as a sample worker (the mechanism the running server itself uses to
+/// isolate Arbitrary sampling in a disposable child process — see [`worker`]), this instead
+/// samples, renders, and exits without ever binding a listener.
+///
 /// # Errors
 ///
 /// Returns [`RunError`] when the listener cannot be bound, the browser cannot be
 /// launched, or the server cannot receive or answer a request.
 pub fn run(adapter: Adapter) -> Result<(), RunError> {
+    if let Some(bytes) = worker::requested_sample_bytes() {
+        worker::run_sample_worker(adapter, &bytes);
+    }
     server::run(adapter)
 }
 

@@ -12,13 +12,20 @@ const MAX_REQUEST_BYTES: usize = 256 * 1024;
 /// CSP for the dependency-free same-origin asset and protocol surface.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/// Grammar-erased in-process worker seam: given caller entropy, produces the rendered source
+/// text of one Arbitrary sample, or the reason it could not. Production passes
+/// [`crate::worker::spawn_and_sample`], which isolates the actual sampling in a disposable
+/// subprocess; tests substitute a deterministic in-process fake instead of truly spawning one.
+type Sampler<'a> = &'a (dyn Fn(&[u8]) -> Result<String, String> + Sync);
+
 /// Binds the listener before opening the system browser and serves until shutdown.
 pub(super) fn run(adapter: Adapter) -> Result<(), RunError> {
-    run_with(adapter, browser::open)
+    run_with(adapter, browser::open, &crate::worker::spawn_and_sample)
 }
 
-/// Internal browser seam used to prove readiness and cleanup without opening a real browser.
-fn run_with<O, S>(adapter: Adapter, opener: O) -> Result<(), RunError>
+/// Internal browser and sampler seams used to prove behavior without opening a real browser or
+/// spawning a real subprocess.
+fn run_with<O, S>(adapter: Adapter, opener: O, sampler: Sampler<'_>) -> Result<(), RunError>
 where
     O: FnOnce(&str) -> io::Result<S>,
 {
@@ -33,18 +40,24 @@ where
     let url = format!("{origin}/");
     let opener_session = opener(&url).map_err(|error| RunError::new("browser launch", error))?;
 
-    let result = serve(&server, adapter, &authority, &origin);
+    let result = serve(&server, adapter, &authority, &origin, sampler);
     drop(opener_session);
     result
 }
 
 /// Processes one request at a time so shutdown is ordered after its response is written.
-fn serve(server: &Server, adapter: Adapter, authority: &str, origin: &str) -> Result<(), RunError> {
+fn serve(
+    server: &Server,
+    adapter: Adapter,
+    authority: &str,
+    origin: &str,
+    sampler: Sampler<'_>,
+) -> Result<(), RunError> {
     loop {
         let request = server
             .recv()
             .map_err(|error| RunError::new("request receive", error))?;
-        let outcome = handle(request, adapter, authority, origin)
+        let outcome = handle(request, adapter, authority, origin, sampler)
             .map_err(|error| RunError::new("response", error))?;
         if outcome == Outcome::Shutdown {
             return Ok(());
@@ -67,6 +80,7 @@ fn handle(
     adapter: Adapter,
     authority: &str,
     origin: &str,
+    sampler: Sampler<'_>,
 ) -> io::Result<Outcome> {
     if !request
         .remote_addr()
@@ -195,7 +209,7 @@ fn handle(
         "/api/pretty" => parse_body::<protocol::PrettyRequest>(&body)
             .map(|request| protocol::pretty(adapter, &request)),
         "/api/sample" => parse_body::<protocol::SampleRequest>(&body)
-            .map(|request| protocol::sample(adapter, &request.bytes)),
+            .map(|request| protocol::sample(adapter, sampler, &request.bytes)),
         "/api/railroad" => parse_body::<protocol::RailroadRequest>(&body)
             .map(|request| protocol::railroad(adapter, &request)),
         "/api/shutdown" => {
@@ -320,12 +334,16 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let dropped_in_thread = Arc::clone(&dropped);
         let handle = thread::spawn(move || {
-            super::run_with(adapter, move |url| {
-                let authority = url.strip_prefix("http://").unwrap().trim_end_matches('/');
-                TcpStream::connect(authority).expect("listener is ready before opener");
-                url_sender.send(url.to_owned()).unwrap();
-                Ok(DropProbe(dropped_in_thread))
-            })
+            super::run_with(
+                adapter,
+                move |url| {
+                    let authority = url.strip_prefix("http://").unwrap().trim_end_matches('/');
+                    TcpStream::connect(authority).expect("listener is ready before opener");
+                    url_sender.send(url.to_owned()).unwrap();
+                    Ok(DropProbe(dropped_in_thread))
+                },
+                &unsupported_sampler,
+            )
         });
         let url = url_receiver.recv().unwrap();
         let authority = url.strip_prefix("http://").unwrap().trim_end_matches('/');
@@ -348,9 +366,11 @@ mod tests {
 
     #[test]
     fn browser_launch_failure_reports_the_failed_operation() {
-        let error = super::run_with(recursa_example_json::grammar::Value::explorer(), |_| {
-            Err::<(), _>(std::io::Error::other("test opener unavailable"))
-        })
+        let error = super::run_with(
+            recursa_example_json::grammar::Value::explorer(),
+            |_| Err::<(), _>(std::io::Error::other("test opener unavailable")),
+            &unsupported_sampler,
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -555,8 +575,10 @@ mod tests {
 
     #[test]
     fn pretty_and_sample_capabilities_round_trip_deterministically() {
-        let (authority, handle, _) =
-            spawn_with_adapter(recursa_explorer_capabilities_fixture::grammar::Root::explorer());
+        let (authority, handle, _) = spawn_with_adapter_and_sampler(
+            recursa_explorer_capabilities_fixture::grammar::Root::explorer(),
+            &fake_sampler,
+        );
         let origin = format!("http://{authority}");
 
         let pretty = request(
@@ -594,8 +616,30 @@ mod tests {
             Some(&origin),
         );
         assert!(first.contains(r#""status":"ok""#), "{first}");
-        assert!(first.contains(r#""provenance":"Synthetic""#), "{first}");
+        assert!(first.contains(r#""rendered":"7,11,13""#), "{first}");
         assert_eq!(response_body(&first), response_body(&repeated));
+
+        shutdown(&authority);
+        handle.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn sample_reports_the_sampler_failure_so_the_frontend_can_retry() {
+        let (authority, handle, _) = spawn_with_adapter_and_sampler(
+            recursa_explorer_capabilities_fixture::grammar::Root::explorer(),
+            &failing_sampler,
+        );
+        let origin = format!("http://{authority}");
+
+        let sample = request(
+            &authority,
+            "POST",
+            "/api/sample",
+            Some(r#"{"bytes":[1]}"#),
+            Some(&origin),
+        );
+        assert!(sample.contains(r#""status":"error""#), "{sample}");
+        assert!(sample.contains("likely a stack overflow"), "{sample}");
 
         shutdown(&authority);
         handle.join().unwrap().unwrap();
@@ -609,16 +653,36 @@ mod tests {
         }
     }
 
+    /// Reports every sample request unsupported, for tests that never exercise `/api/sample`.
+    fn unsupported_sampler(_bytes: &[u8]) -> Result<String, String> {
+        Err("sampling is not exercised by this test".to_owned())
+    }
+
+    /// Deterministically "renders" its input bytes as digits, standing in for a real subprocess
+    /// worker without spawning one.
+    fn fake_sampler(bytes: &[u8]) -> Result<String, String> {
+        Ok(bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(","))
+    }
+
+    /// Always fails, standing in for a subprocess worker that crashed or errored.
+    fn failing_sampler(_bytes: &[u8]) -> Result<String, String> {
+        Err("sample generation process was terminated by signal 4 (likely a stack overflow)".to_owned())
+    }
+
     fn spawn_server() -> (
         String,
         thread::JoinHandle<Result<(), crate::RunError>>,
         Arc<AtomicBool>,
     ) {
-        spawn_with_adapter(recursa_example_json::grammar::Value::explorer())
+        spawn_with_adapter_and_sampler(
+            recursa_example_json::grammar::Value::explorer(),
+            &unsupported_sampler,
+        )
     }
 
-    fn spawn_with_adapter(
+    fn spawn_with_adapter_and_sampler(
         adapter: recursa::explorer::Adapter,
+        sampler: super::Sampler<'static>,
     ) -> (
         String,
         thread::JoinHandle<Result<(), crate::RunError>>,
@@ -628,10 +692,14 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let dropped_in_thread = Arc::clone(&dropped);
         let handle = thread::spawn(move || {
-            super::run_with(adapter, move |url| {
-                url_sender.send(url.to_owned()).unwrap();
-                Ok(DropProbe(dropped_in_thread))
-            })
+            super::run_with(
+                adapter,
+                move |url| {
+                    url_sender.send(url.to_owned()).unwrap();
+                    Ok(DropProbe(dropped_in_thread))
+                },
+                sampler,
+            )
         });
         let url = url_receiver.recv().unwrap();
         (

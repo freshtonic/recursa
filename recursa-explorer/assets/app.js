@@ -21,7 +21,7 @@ const elements = Object.fromEntries([
   ["diagnostics", "diagnostics"], ["tree", "tree"], ["treeEmpty", "tree-empty"],
   ["outlineSurface", "outline-surface"], ["shapeStripBars", "shape-strip-bars"],
   ["parseNow", "parse-now"], ["shuffleSample", "shuffle-sample"], ["prettyRun", "pretty-run"],
-  ["sourceContext", "source-context"], ["shutdown", "shutdown"],
+  ["shutdown", "shutdown"],
   ["grammarIdentity", "grammar-identity"], ["parseStatusText", "parse-status"],
   ["structureHeading", "structure-heading"],
   ["occurrenceCount", "occurrence-count"], ["breadcrumb", "breadcrumb"],
@@ -241,7 +241,6 @@ function scheduleParse(immediate = false) {
   state.revision += 1; const revision = state.revision;
   state.controller?.abort(); clearTimeout(state.timer); state.controller = new AbortController();
   state.tokens = []; state.lexErrors = [];
-  elements.sourceContext.hidden = true;
   clearDocument(); renderOverlay(); renderGutter(elements.sourceGutter, state.source);
   parseStatus("Parsing…");
   state.timer = setTimeout(() => parseRevision(revision, state.controller.signal), immediate ? 0 : 140);
@@ -260,27 +259,46 @@ async function start() {
   } catch (error) { grammarStatus(error.message); }
 }
 
-/// Generates a fresh random statement via the grammar's Arbitrary capability and loads it — this
-/// document has no source text (it was never parsed from any), so the editor's draft is untouched.
+/// Generates a fresh random statement via the grammar's Arbitrary capability, renders it to
+/// source text in an isolated sample-worker subprocess, and loads it exactly like Pretty output
+/// — reparsed through the ordinary strict parser, so the result carries genuine spans rather
+/// than a synthetic document's provenance. Isolating each attempt in its own subprocess means a
+/// worker that overflows its stack only takes down that attempt; a failed attempt (a crash or a
+/// graceful generation error) is retried with fresh entropy up to MAX_SHUFFLE_ATTEMPTS times.
+const MAX_SHUFFLE_ATTEMPTS = 10;
+
 async function runShuffle() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  state.revision += 1; const revision = state.revision;
-  clearTimeout(state.timer); state.controller?.abort(); state.controller = new AbortController();
-  clearDocument("Generating a random statement…");
-  try {
-    const result = await post("sample", { bytes: Array.from(bytes) }, state.controller.signal);
-    if (revision !== state.revision) return;
-    if (result.status === "ok") {
-      showDocument(result.document);
-      elements.sourceContext.hidden = false;
-      parseStatus("Synthetic sample generated.");
-    } else {
-      parseStatus(result.message || "Sample generation is unavailable.");
+  const revision = state.revision;
+  state.controller?.abort();
+  const controller = new AbortController(); state.controller = controller;
+  for (let attempt = 1; attempt <= MAX_SHUFFLE_ATTEMPTS; attempt += 1) {
+    parseStatus(
+      attempt === 1
+        ? "Generating a random statement…"
+        : `Generating a random statement… (retry ${attempt}/${MAX_SHUFFLE_ATTEMPTS})`,
+    );
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    try {
+      const result = await post("sample", { bytes: Array.from(bytes) }, controller.signal);
+      if (revision !== state.revision) return;
+      if (result.status === "ok") {
+        elements.source.value = result.rendered;
+        scheduleParse(true);
+        return;
+      }
+      if (result.status === "unsupported") {
+        parseStatus(result.message || "Sample generation is unavailable.");
+        return;
+      }
+      // result.status === "error": the sample worker failed (possibly a stack overflow);
+      // fall through and retry with fresh entropy.
+    } catch (error) {
+      if (error.name === "AbortError" || revision !== state.revision) return;
+      // Network/transport failure: fall through and retry too.
     }
-  } catch (error) {
-    if (error.name !== "AbortError" && revision === state.revision) parseStatus(error.message);
   }
+  parseStatus(`Random generation failed after ${MAX_SHUFFLE_ATTEMPTS} attempts.`);
 }
 
 /// Replaces the editor's text with its Pretty-rendered form, then reparses it as ordinary source.

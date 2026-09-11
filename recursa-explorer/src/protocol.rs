@@ -140,7 +140,7 @@ pub(super) fn lex(adapter: Adapter, source: &str) -> Value {
 /// Parses a complete source and returns either one document or structured diagnostics.
 pub(super) fn parse(adapter: Adapter, source: &str) -> Value {
     match adapter.parse_with_statistics(source) {
-        Ok((document, statistics)) => success_document(&document, Some(statistics)),
+        Ok((document, statistics)) => success_document(&document, statistics),
         Err(failure) => failure_json(&failure),
     }
 }
@@ -170,12 +170,21 @@ pub(super) fn pretty(adapter: Adapter, request: &PrettyRequest) -> Value {
     })
 }
 
-/// Produces a deterministic synthetic document when the root supports sampling.
-pub(super) fn sample(adapter: Adapter, bytes: &[u8]) -> Value {
-    match adapter.sample(bytes) {
-        None => json!({ "status": "unsupported" }),
-        Some(Err(error)) => json!({ "status": "error", "message": error.message() }),
-        Some(Ok(document)) => success_document(&document, None),
+/// Renders one random statement's source text via an isolated sample worker, when the root
+/// supports sampling. The rendered text is handed back exactly like a Pretty result — the
+/// frontend loads it into the editor and re-parses it through the ordinary strict parser,
+/// rather than loading a synthetic document directly.
+pub(super) fn sample(
+    adapter: Adapter,
+    sampler: &dyn Fn(&[u8]) -> Result<String, String>,
+    bytes: &[u8],
+) -> Value {
+    if !adapter.capabilities().arbitrary() {
+        return json!({ "status": "unsupported" });
+    }
+    match sampler(bytes) {
+        Ok(rendered) => json!({ "status": "ok", "rendered": rendered }),
+        Err(message) => json!({ "status": "error", "message": message }),
     }
 }
 
@@ -187,12 +196,10 @@ pub(super) fn railroad(adapter: Adapter, request: &RailroadRequest) -> Value {
     }
 }
 
-/// Projects a successful explorer document and its provenance-rich root.
-///
-/// `statistics` is `None` for a sampled document, which was never timed as a parse.
+/// Projects a successful explorer document, its provenance-rich root, and its parse timing.
 fn success_document(
     document: &ExplorerDocument<'_>,
-    statistics: Option<recursa::explorer::ParseStatistics>,
+    statistics: recursa::explorer::ParseStatistics,
 ) -> Value {
     json!({
         "status": "ok",
@@ -201,10 +208,10 @@ fn success_document(
             "provenance": format!("{:?}", document.provenance()),
             "root": node_json(document.root()),
         },
-        "statistics": statistics.map(|statistics| json!({
+        "statistics": {
             "elapsedMicros": elapsed_micros(statistics.elapsed()),
             "memoryBytes": statistics.memory_bytes(),
-        })),
+        },
     })
 }
 
