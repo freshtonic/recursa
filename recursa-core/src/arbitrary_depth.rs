@@ -17,14 +17,22 @@ thread_local! {
 /// Maximum nested Node-construction depth before generated code is asked to prefer a
 /// non-recursive ("leaf") variant instead of choosing uniformly at random.
 ///
-/// Deliberately conservative: a real generated Node's own `arbitrary()` body is not one thin
-/// stack frame — it can pass through several generated helpers per level (`arbitrary()`,
-/// `__recursa_arbitrary_with()`, per-field construction closures), and a large real grammar's
-/// Node types are far larger than a minimal reproduction's. 64 was empirically still enough to
-/// overflow the main thread's stack against a ~1,400-node-type real-world grammar; this value
-/// needs to stay well below the actual stack limit, not just below the *number* of frames a
-/// trivial recursive type would use.
-pub const MAX_DEPTH: u32 = 12;
+/// A real generated Node's own `arbitrary()` body is not one thin stack frame — it can pass
+/// through several generated helpers per level (`arbitrary()`, `__recursa_arbitrary_with()`,
+/// per-field construction closures), and a large real grammar's Node types are far larger than a
+/// minimal reproduction's. 64 was empirically still enough to overflow an 8 MiB (default) main
+/// thread's stack against a ~1,400-node-type real-world grammar.
+///
+/// `recursa-explorer`'s sample worker now runs sampling on a dedicated 64 MiB thread stack (see
+/// `SAMPLE_WORKER_STACK_SIZE` in its `worker.rs`) instead of a process's default stack, which is
+/// what makes 64 safe now: re-verified empirically against pg-sql's real ~1,400-node-type grammar
+/// with well over 1,000 live `/api/sample` requests spread across `MAX_DEPTH` values from 12 up
+/// to 128 (including a stress pass with a much larger entropy buffer, to make deep recursion more
+/// likely rather than less) — zero crashes at any tested depth, so 64 lands with real headroom
+/// below the highest depth actually exercised crash-free. This value must stay well below
+/// whatever stack a caller actually runs sampling on; raising it again needs the same empirical
+/// re-check, not a guess.
+pub const MAX_DEPTH: u32 = 64;
 
 /// RAII guard incrementing the shared sampling-depth counter for its lifetime; decrements on
 /// drop, including on an early return, so a stray non-zero counter cannot outlive one `arbitrary`
