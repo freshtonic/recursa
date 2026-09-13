@@ -277,7 +277,7 @@ async function runShuffle() {
         ? "Generating a random statement…"
         : `Generating a random statement… (retry ${attempt}/${MAX_SHUFFLE_ATTEMPTS})`,
     );
-    const bytes = new Uint8Array(16);
+    const bytes = new Uint8Array(4096);
     crypto.getRandomValues(bytes);
     try {
       const result = await post("sample", { bytes: Array.from(bytes) }, controller.signal);

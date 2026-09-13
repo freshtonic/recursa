@@ -12,6 +12,15 @@ use recursa::explorer::Adapter;
 /// Argv flag this process was re-invoked with to act as a one-shot sample worker.
 const WORKER_FLAG: &str = "--recursa-explorer-sample-worker";
 
+/// Stack size given to the thread that actually samples and renders, instead of relying on this
+/// process's default main-thread stack. Isolating sampling in its own subprocess (see the module
+/// doc comment) only bounds the blast radius of a stack overflow — it does not by itself raise
+/// how deep sampling can safely recurse. A generously large stack does: it is what lets
+/// `recursa_core::arbitrary_depth::MAX_DEPTH` be tuned higher than a default OS stack (typically
+/// ~8 MiB) would allow before a genuine overflow. 64 MiB was empirically crash-free up to
+/// `MAX_DEPTH = 128` against pg-sql's real grammar (see the tuning notes on `MAX_DEPTH` itself).
+const SAMPLE_WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 /// Returns the hex-decoded entropy this process should sample from, when invoked as a worker.
 pub(crate) fn requested_sample_bytes() -> Option<Vec<u8>> {
     let mut args = std::env::args();
@@ -31,13 +40,27 @@ pub(crate) fn requested_sample_bytes() -> Option<Vec<u8>> {
 /// genuine stack overflow instead terminates this process by signal. The parent treats every
 /// non-zero or signal-terminated exit identically — see [`spawn_and_sample`].
 pub(crate) fn run_sample_worker(adapter: Adapter, bytes: &[u8]) -> ! {
-    match sample_and_render(adapter, bytes) {
-        Ok(rendered) => {
+    // Run on a spawned thread with an explicit large stack rather than this process's default
+    // main-thread stack, so a deep sample has real headroom before it genuinely overflows.
+    let bytes = bytes.to_vec();
+    let result = std::thread::Builder::new()
+        .stack_size(SAMPLE_WORKER_STACK_SIZE)
+        .spawn(move || sample_and_render(adapter, &bytes))
+        .expect("spawning the sample worker's large-stack thread")
+        .join();
+    match result {
+        Ok(Ok(rendered)) => {
             print!("{rendered}");
             std::process::exit(0);
         }
-        Err(message) => {
+        Ok(Err(message)) => {
             eprintln!("{message}");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            // The spawned thread itself panicked (distinct from a stack overflow, which kills
+            // this whole process rather than unwinding): still just a detected failure.
+            eprintln!("sample worker thread panicked");
             std::process::exit(1);
         }
     }
