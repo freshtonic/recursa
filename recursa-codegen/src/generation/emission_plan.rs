@@ -446,6 +446,23 @@ impl EmissionPlan {
             let kind = u16::try_from(target.base_kind.index())
                 .map_err(|_| "generated token kind exceeds runtime width".to_owned())?;
             let accepted_kinds = target.accepted_kinds();
+            let token_configured_traits = lowered
+                .source_modeled
+                .source_model()
+                .token_definitions
+                .iter()
+                .find_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) if token.semantic == content.id => {
+                        Some(&token.configured_traits)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "content token `{}` lacks a configured trait plan",
+                        content.ident
+                    )
+                })?;
             tokens.push(TokenParsePlan {
                 semantic: content.id,
                 ident: format_ident!("__RecursaContentToken{index}"),
@@ -467,30 +484,15 @@ impl EmissionPlan {
                         })?
                         .pattern,
                 )?,
-                configured_traits: lowered
-                    .source_modeled
-                    .source_model()
-                    .token_definitions
+                configured_traits: token_configured_traits
+                    .effective
                     .iter()
-                    .find_map(|definition| match &definition.kind {
-                        TokenDefinitionKind::Content(token) if token.semantic == content.id => {
-                            Some(
-                                token
-                                    .configured_traits
-                                    .effective
-                                    .iter()
-                                    .map(|selection| selection.recipe)
-                                    .collect(),
-                            )
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "content token `{}` lacks a configured trait plan",
-                            content.ident
-                        )
-                    })?,
+                    .map(|selection| selection.recipe)
+                    .collect(),
+                arbitrary_omitted: token_configured_traits
+                    .omissions
+                    .iter()
+                    .any(|omission| omission.recipe == ConfiguredTraitRecipe::Arbitrary),
             });
         }
         let token_bindings = resolved
