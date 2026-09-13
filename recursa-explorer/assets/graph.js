@@ -1,6 +1,7 @@
 "use strict";
 
 import { createPanZoom, fin } from "./panzoom.js";
+import { displayName } from "./model.js";
 
 const ROW_GAP = 172;
 const DEPTH_GAP = 46;
@@ -13,7 +14,7 @@ function pillMeta(entry) {
 }
 
 function pillSize(entry) {
-  const nameLength = (entry.name?.length || 0) + (entry.variant?.length || 0) + 2;
+  const nameLength = (displayName(entry)?.length || 0) + (entry.variant?.length || 0) + 2;
   const meta = pillMeta(entry);
   const width = fin(Math.max(nameLength * CHAR_W, meta.length * META_CHAR_W) + 22, 60);
   const height = entry.kind === "element" ? 37 : 26;
@@ -103,7 +104,7 @@ export function createGraph(field, layer, edgesSvg, model, panState, onSelect, o
     pill.style.height = `${box.height}px`;
     const name = document.createElement("span");
     name.className = "graph-pill-name";
-    name.textContent = entry.name || "";
+    name.textContent = displayName(entry) || "";
     if (entry.kind === "node" && entry.variant) {
       const variant = document.createElement("span");
       variant.className = "graph-pill-variant";

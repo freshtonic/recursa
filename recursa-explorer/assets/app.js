@@ -2,7 +2,7 @@
 
 import { getSchema, post } from "./api.js";
 import { deepestContaining, utf8ByteAtUtf16 } from "./offsets.js";
-import { occurrenceEntries, spanText } from "./model.js";
+import { occurrenceEntries, spanText, displayName } from "./model.js";
 import { createTree } from "./tree.js";
 import { createGraph } from "./graph.js";
 import { createGrain } from "./grain.js";
@@ -116,14 +116,14 @@ function updateZoomLevel(panState) {
 function handleGrainHover(entry) {
   if (!entry) { elements.grainCaption.hidden = true; return; }
   elements.grainCaption.hidden = false;
-  elements.grainCaptionTitle.textContent = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name;
+  elements.grainCaptionTitle.textContent = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : displayName(entry);
   const parts = entry.kind === "element" ? [entry.role, entry.cardinality] : [];
   parts.push(`bytes ${spanText(entry.span)}`);
   elements.grainCaptionMeta.textContent = parts.join(" · ");
 }
 
 function handleStrataHover(entry) {
-  elements.strataHover.textContent = entry ? (entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name) : "";
+  elements.strataHover.textContent = entry ? (entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : displayName(entry)) : "";
 }
 
 /// Lazily builds (and caches, per current document) the view for `mode`, so switching modes never

@@ -16,6 +16,19 @@ export function spanText(span) {
   return span ? `${span.start}..${span.end}` : "synthetic";
 }
 
+/// True for an element occurrence that is itself a field of an active enum variant. Its name is
+/// a codegen artifact (the authored field name, or an auto-generated `field_N` slot for an
+/// unnamed field) prefixed with the variant — information the variant label (`Enum::Variant`)
+/// already carries, so the UI never renders it.
+export function isEnumField(entry) {
+  return entry.kind === "element" && Boolean(entry.enumField);
+}
+
+/// The name to render for `entry`, empty for a suppressed enum-field occurrence.
+export function displayName(entry) {
+  return isEnumField(entry) ? "" : entry.name;
+}
+
 /// Flattens one parsed root into UI occurrences: one entry per node or element occurrence, in
 /// document order, each addressable by its own key and reachable from every other by that key.
 export function occurrenceEntries(root) {
@@ -35,7 +48,7 @@ export function occurrenceEntries(root) {
       const elementKey = `occurrence-${order}`;
       const elementEntry = {
         key: elementKey, parentKey: key, depth: depth + 1, order: order++, kind: "element",
-        name: element.schema.name, variant: null,
+        name: element.schema.name, variant: null, enumField: Boolean(entry.variant),
         role: element.schema.role, cardinalityRaw: element.schema.cardinality,
         cardinality: cardinalityDisplay(element.schema.cardinality),
         span: element.span, text: element.text ?? null,

@@ -1,7 +1,7 @@
 "use strict";
 
 import { partitionDecorations, spanToUtf16, byteToUtf16Map, utf8ByteAtUtf16 } from "./offsets.js";
-import { spanText } from "./model.js";
+import { spanText, isEnumField, displayName } from "./model.js";
 
 function clear(element) { element.replaceChildren(); }
 
@@ -72,7 +72,7 @@ export function renderBreadcrumb(element, entries, byKey, selectedKey, onSelect)
     chain.unshift(cursor);
     cursor = cursor.parentKey ? byKey.get(cursor.parentKey) : null;
   }
-  chain.forEach((entry, index) => {
+  chain.filter((entry) => !isEnumField(entry)).forEach((entry, index) => {
     if (index > 0) {
       const sep = document.createElement("span");
       sep.className = "crumb-sep";
@@ -81,8 +81,8 @@ export function renderBreadcrumb(element, entries, byKey, selectedKey, onSelect)
     }
     const crumb = document.createElement("button");
     crumb.type = "button";
-    crumb.className = `crumb${index === chain.length - 1 ? " is-current" : ""}`;
-    crumb.textContent = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name;
+    crumb.className = `crumb${entry.key === selectedKey ? " is-current" : ""}`;
+    crumb.textContent = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : displayName(entry);
     crumb.addEventListener("click", () => onSelect(entry));
     element.append(crumb);
   });
@@ -98,7 +98,7 @@ export function renderOccurrenceFooter(element, entry) {
   eyebrow.textContent = "Occurrence";
   const name = document.createElement("span");
   name.className = "occurrence-name";
-  name.textContent = entry.name;
+  name.textContent = displayName(entry);
   title.append(eyebrow, name);
   if (entry.variant) {
     const variant = document.createElement("span");
