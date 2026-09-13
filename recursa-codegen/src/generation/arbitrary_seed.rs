@@ -54,9 +54,11 @@ pub(super) fn render_arbitrary_seed_module(plan: &EmissionPlan) -> proc_macro2::
         .flat_map(|node| node.parse_applications.iter().map(move |application| (node, application)))
         .map(|(node, application)| render_seed_entry(plan, node, application, facade));
     quote! {
-        #[doc(hidden)]
-        pub(crate) mod __recursa_arbitrary_seed {
-            #(#entries)*
+        __recursa_if_arbitrary! {
+            #[doc(hidden)]
+            pub(crate) mod __recursa_arbitrary_seed {
+                #(#entries)*
+            }
         }
     }
 }

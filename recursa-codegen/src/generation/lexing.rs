@@ -24,6 +24,11 @@ pub(super) struct TokenParsePlan {
     pub(super) arbitrary_spelling: String,
     /// Effective optional recipes in addition to intrinsic structural value traits.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
+    /// Whether `#[node(omit(Arbitrary))]` was authored directly on this token — distinct from
+    /// `Arbitrary` merely being absent from `configured_traits`, which is also true whenever the
+    /// grammar-wide defaults never included it in the first place. Only an explicit omission
+    /// implies a hand-written `impl arbitrary::Arbitrary` exists for this token to delegate to.
+    pub(super) arbitrary_omitted: bool,
 }
 
 #[derive(Clone)]
@@ -451,7 +456,26 @@ fn render_token_impl(
     let arbitrary_with_impl =
         content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Arbitrary)
             .then(|| {
-                let spelling = &token.arbitrary_spelling;
+                // `Arbitrary` absent from `configured_traits` is not by itself proof of an
+                // omission — it's also true whenever the grammar-wide defaults never selected it
+                // for this token in the first place. Only `arbitrary_omitted` (an authored
+                // `#[node(omit(Arbitrary))]`) implies a hand-written `impl arbitrary::Arbitrary
+                // for #ident` exists on this very type to delegate to, so a real Node's
+                // `arbitrary()` (which calls into this `__RecursaArbitraryWith` bridge for
+                // content-typed fields, not the plain `Arbitrary` trait) actually reaches the
+                // hand-written sampler rather than silently bypassing it. Otherwise, emit the
+                // canonical fixed-spelling witness as before.
+                let body = if token.arbitrary_omitted {
+                    quote! {
+                        <Self as #facade::__private::arbitrary::Arbitrary<'arbitrary>>::arbitrary(input)
+                    }
+                } else {
+                    let spelling = &token.arbitrary_spelling;
+                    quote! {
+                        let _ = input;
+                        Ok(Self::new(#spelling))
+                    }
+                };
                 quote! {
                     __recursa_if_arbitrary! {
                         impl<'arbitrary, 'input> #module_anchor::__RecursaArbitraryWith<'arbitrary>
@@ -460,8 +484,7 @@ fn render_token_impl(
                             fn __recursa_arbitrary_with(
                                 input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
                             ) -> #facade::__private::arbitrary::Result<Self> {
-                                let _ = input;
-                                Ok(Self::new(#spelling))
+                                #body
                             }
                         }
                     }
