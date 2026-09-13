@@ -1,5 +1,7 @@
 "use strict";
 
+import { isEnumField, displayName } from "./model.js";
+
 const ROW_INDENT_PX = 22;
 
 /// Returns the run of entries starting at `entry` while each has exactly one child, per the
@@ -39,7 +41,7 @@ function chainSegment(entry) {
   span.dataset.key = entry.key;
   if (entry.kind === "element") {
     span.className = "outline-seg outline-seg-element";
-    span.textContent = entry.name;
+    span.textContent = displayName(entry);
   } else {
     span.className = "outline-seg outline-seg-node";
     span.textContent = entry.name;
@@ -104,7 +106,7 @@ export function createTree(element, shapeElement, model, options, onSelect) {
 
     const label = document.createElement("span");
     label.className = "outline-label";
-    chain.forEach((entry, index) => {
+    chain.filter((entry) => !isEnumField(entry)).forEach((entry, index) => {
       if (index > 0) {
         const sep = document.createElement("span");
         sep.className = "outline-sep";

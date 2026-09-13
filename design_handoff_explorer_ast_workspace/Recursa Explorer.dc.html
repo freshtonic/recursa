@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/nocturne-28bc87f2-633c-4462-85e1-ca56e74c65a8/styles.css">
+<script src="_ds/nocturne-28bc87f2-633c-4462-85e1-ca56e74c65a8/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+body{margin:0;background:#101220;color:var(--color-text);font-family:var(--font-body)}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid color-mix(in srgb,#e9e9ed 10%,transparent);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px "IBM Plex Mono",monospace;padding:3px 7px;background:var(--color-accent-900);color:var(--color-accent-300);border-radius:4px;text-decoration:none}
+.dv-tname{font:500 13px/1.2 var(--font-heading);color:var(--color-text)}
+.dv-opts{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px "IBM Plex Mono",monospace;padding:3px 7px;background:color-mix(in srgb,#e9e9ed 9%,transparent);color:var(--color-text);border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.4 var(--font-body);color:color-mix(in srgb,#e9e9ed 55%,transparent);max-width:760px}
+.dv-card{max-width:100%;background:var(--color-bg);border-radius:10px;box-shadow:var(--shadow-md);overflow:hidden}
+.dv-opt:target .dv-oid{background:var(--color-accent);color:#161826}
+.dv-next{margin:24px 0 0;font:12px/1.6 var(--font-body);color:color-mix(in srgb,#e9e9ed 45%,transparent)}
+@keyframes rowIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+@keyframes glow{0%,100%{opacity:.55}50%{opacity:1}}
+</style>
+</helmet>
+
+<section class="dv-turn" id="notes" style="padding-bottom:24px">
+  <div style="max-width:860px;display:flex;flex-direction:column;gap:14px">
+    <div style="display:flex;align-items:baseline;gap:12px">
+      <span style="font:600 10px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400)">Recursa Explorer</span>
+      <span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">AST render study · four directions</span>
+    </div>
+    <h3 style="margin:0;font-size:23px;letter-spacing:-.02em">The AST panel's real problem is not the tree. It is the depth tax.</h3>
+    <p style="margin:0;font:400 13.5px/1.7 var(--font-body);color:var(--color-neutral-400);max-width:760px;text-wrap:pretty">In the current model every level of user-visible nesting costs three or four tree levels: an enum <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--color-neutral-200)">Value</span> node, its variant element, the concrete node, then the element that holds the children. <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--color-neutral-200)">{"items":[true,null,{"name":"café"}],"ok":true}</span> is 34 occurrence rows and 18 levels of indent. At thousands of nodes the indent runs off the panel before the structure is legible.</p>
+    <p style="margin:0;font:400 13.5px/1.7 var(--font-body);color:var(--color-neutral-400);max-width:760px;text-wrap:pretty">So the load-bearing idea in all four options below is <em style="font-style:normal;color:var(--color-accent-300)">chain folding</em>: any run of single-child occurrences collapses into one typographic line — <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--color-neutral-200)">Value::Object › object › Object › members</span> — which takes those 34 rows to 12 and 18 levels to 4, while every name, variant, role and cardinality stays on screen. Nothing is hidden; the chain is just set on one line instead of four. Toggle it live in <a class="dv-oid" href="#1a">1a</a>.</p>
+    <div style="display:flex;gap:26px;margin-top:6px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:3px"><span style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600)">Grammar</span><span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-200)">examples/json · root Value</span></div>
+      <div style="display:flex;flex-direction:column;gap:3px"><span style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600)">Type</span><span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-200)">IBM Plex Mono / Inter</span></div>
+      <div style="display:flex;flex-direction:column;gap:3px"><span style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600)">Spans</span><span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-200)">derived from the token stream, byte-exact</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Constellation as the default · the other renders become modes · plus a containment take</span></div>
+<div class="dv-opts">
+
+  <div class="dv-opt" id="2a">
+    <div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a><span><strong style="font-weight:500;color:var(--color-text)">Workspace, Constellation default</strong> — the Parsed structure pane now opens as the graph. <em style="font-style:normal;color:var(--color-accent-300)">Nest</em>, <em style="font-style:normal;color:var(--color-accent-300)">Outline</em>, <em style="font-style:normal;color:var(--color-accent-300)">Grain</em> and <em style="font-style:normal;color:var(--color-accent-300)">Strata</em> are modes on one switcher; selection, breadcrumb, source highlight and the occurrence footer are shared, so switching mode never loses your place. Each mode carries only its own controls.</span></div>
+    <div class="dv-card" style="width:1440px">
+      <div style="display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 20px;background:linear-gradient(180deg,#1b1e2f,#161826);box-shadow:inset 0 -1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="display:flex;align-items:center;gap:16px">
+          <div style="display:flex;align-items:center;gap:9px">
+            <span style="display:block;width:9px;height:9px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 10px var(--color-accent-600);animation:glow 3.2s ease-in-out infinite"></span>
+            <span style="font:500 15px var(--font-heading);letter-spacing:-.01em">recursa</span>
+            <span style="font:400 15px var(--font-heading);color:var(--color-neutral-500)">Explorer</span>
+          </div>
+          <span style="width:1px;height:18px;background:color-mix(in srgb,#e9e9ed 12%,transparent)"></span>
+          <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">examples/json<span style="color:var(--color-neutral-700)"> · root </span>Value</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <span style="display:inline-flex;align-items:center;gap:7px;font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)"><span style="width:5px;height:5px;border-radius:50%;background:#8fd6a8"></span>parsed · 0.41 ms · 19 tokens</span>
+          <button class="btn btn-ghost" style="font-size:11.5px;padding:5px 11px">Stop Explorer</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:352px minmax(0,1fr) 268px;height:848px">
+
+        <div style="display:flex;flex-direction:column;min-width:0;box-shadow:inset -1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;padding:16px 18px 12px">
+            <div>
+              <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Input</div>
+              <div style="font:500 16px var(--font-heading);letter-spacing:-.01em">Source</div>
+            </div>
+            <button class="btn btn-primary" style="font-size:11.5px;padding:5px 11px">Parse now</button>
+          </div>
+          <div style="flex:1;min-height:0;overflow:auto;padding:4px 0 0">
+            <sc-for list="{{ srcRows }}" as="ln" hint-placeholder-count="6">
+              <div style="display:flex;align-items:flex-start;gap:0;padding:0 14px">
+                <span style="flex:none;width:26px;text-align:right;padding-right:12px;font:400 11.5px/26px 'IBM Plex Mono',monospace;color:var(--color-neutral-500);user-select:none">{{ ln.n }}</span>
+                <span style="flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;white-space:pre;font:400 13px/26px 'IBM Plex Mono',monospace">
+                  <sc-for list="{{ ln.parts }}" as="p" hint-placeholder-count="4">
+                    <span onMouseEnter="{{ p.hover }}" style="border-radius:3px;white-space:pre;transition:background .16s ease,color .16s ease;background:{{ p.bg }};color:{{ p.fg }};box-shadow:{{ p.ul }}">{{ p.t }}</span>
+                  </sc-for>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="padding:14px 18px 16px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+            <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:7px">Diagnostics</div>
+            <div style="display:flex;align-items:center;gap:8px;font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-500)"><span style="color:#8fd6a8">✓</span>No diagnostics · strict parse complete</div>
+            <div style="margin-top:12px;font:400 11.5px/1.6 var(--font-body);color:var(--color-neutral-600)">Selection maps both ways. Hover a token to select the deepest containing occurrence.</div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;min-width:0">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;padding:16px 20px 10px;gap:16px">
+            <div>
+              <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Parsed structure</div>
+              <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 16px var(--font-heading);letter-spacing:-.01em">{{ modeName }}</span><span style="font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">{{ countText }}</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;padding:3px;border-radius:8px;background:color-mix(in srgb,#e9e9ed 5%,transparent)">
+              <sc-for list="{{ modes }}" as="m" hint-placeholder-count="5">
+                <button onClick="{{ m.pick }}" style="cursor:pointer;border:0;border-radius:6px;padding:5px 10px;font:400 11.5px 'IBM Plex Mono',monospace;transition:background .18s ease,color .18s ease;background:{{ m.bg }};color:{{ m.fg }}">{{ m.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:0;padding:0 20px 10px;min-height:24px">
+            <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="3">
+              <span style="display:inline-flex;align-items:center">
+                <sc-if value="{{ c.sep }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700);margin:0 7px;font-size:11px">›</span></sc-if>
+                <span onClick="{{ c.pick }}" style="cursor:pointer;font:400 11.5px 'IBM Plex Mono',monospace;color:{{ c.fg }};transition:color .16s ease">{{ c.t }}</span>
+              </span>
+            </sc-for>
+            <span style="flex:1"></span>
+            <sc-if value="{{ isGraph }}" hint-placeholder-val="{{ true }}">
+              <span style="display:inline-flex;align-items:center;gap:6px;margin-right:12px">
+                <span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">{{ vpPaneGraph.zoomText }}</span>
+                <button onClick="{{ vpPaneGraph.zoomOut }}" class="btn btn-ghost" style="font-size:12px;padding:1px 8px;line-height:1.4">−</button>
+                <button onClick="{{ vpPaneGraph.zoomIn }}" class="btn btn-ghost" style="font-size:12px;padding:1px 8px;line-height:1.4">+</button>
+                <button onClick="{{ vpPaneGraph.fit }}" class="btn btn-ghost" style="font-size:10.5px;padding:3px 8px;font-family:'IBM Plex Mono',monospace">Fit</button>
+              </span>
+            </sc-if>
+            <sc-if value="{{ isNest }}" hint-placeholder-val="{{ false }}">
+              <span style="display:inline-flex;align-items:center;gap:6px;margin-right:12px">
+                <span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">{{ vpPaneNest.zoomText }}</span>
+                <button onClick="{{ vpPaneNest.zoomOut }}" class="btn btn-ghost" style="font-size:12px;padding:1px 8px;line-height:1.4">−</button>
+                <button onClick="{{ vpPaneNest.zoomIn }}" class="btn btn-ghost" style="font-size:12px;padding:1px 8px;line-height:1.4">+</button>
+                <button onClick="{{ vpPaneNest.fit }}" class="btn btn-ghost" style="font-size:10.5px;padding:3px 8px;font-family:'IBM Plex Mono',monospace">Fit</button>
+              </span>
+            </sc-if>
+            <sc-if value="{{ isOutline }}" hint-placeholder-val="{{ false }}">
+              <button onClick="{{ toggleFold }}" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font:400 11px 'IBM Plex Mono',monospace;padding:4px 9px;margin-right:12px;border-radius:6px;border:1px solid {{ foldBorder }};background:{{ foldBg }};color:{{ foldFg }};transition:all .18s ease">
+                <span style="font-size:12px;line-height:1">{{ foldGlyph }}</span>Fold chains
+              </button>
+            </sc-if>
+            <span style="font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-accent-300);letter-spacing:.02em">{{ selSpanText }}</span>
+          </div>
+
+          <div style="flex:none;height:600px;overflow:hidden;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+
+            <sc-if value="{{ isGraph }}" hint-placeholder-val="{{ true }}">
+              <div onPointerDown="{{ vpPaneGraph.panStart }}" onWheel="{{ vpPaneGraph.wheel }}" style="position:relative;height:600px;overflow:hidden;cursor:grab;background:radial-gradient(120% 90% at 12% 30%,#1c1f33 0%,#141626 55%,#101220 100%)">
+                <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,#e9e9ed 7%,transparent) 1px,transparent 1px);background-size:26px 26px;opacity:.6"></div>
+                <div style="position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;transform:{{ vpPaneGraph.transform }}">
+                  <svg width="{{ gW }}" height="{{ gH }}" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none">
+                    <sc-for list="{{ gEdges }}" as="e" hint-placeholder-count="33">
+                      <path d="{{ e.d }}" fill="none" stroke="{{ e.c }}" stroke-width="{{ e.w }}" style="transition:stroke .25s ease"></path>
+                    </sc-for>
+                  </svg>
+                  <sc-for list="{{ gNodes }}" as="n" hint-placeholder-count="34">
+                    <div onClick="{{ n.pick }}" style="position:absolute;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;padding:0 11px;border-radius:11px;white-space:nowrap;cursor:pointer;font:400 12px 'IBM Plex Mono',monospace;transition:background .25s ease,box-shadow .25s ease,color .25s ease,opacity .25s ease;left:{{ n.x }}px;top:{{ n.y }}px;height:{{ n.h }}px;background:{{ n.bg }};box-shadow:{{ n.ring }};color:{{ n.fg }};opacity:{{ n.op }}">
+                      <span style="display:flex;align-items:center;gap:5px">
+                        <sc-if value="{{ n.isEl }}" hint-placeholder-val="{{ false }}"><span style="font-style:italic">{{ n.label }}</span></sc-if>
+                        <sc-if value="{{ n.isNode }}" hint-placeholder-val="{{ true }}"><span style="font-weight:500">{{ n.label }}</span></sc-if>
+                        <sc-if value="{{ n.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-accent-400);font-weight:500">{{ n.v }}</span></sc-if>
+                      </span>
+                      <sc-if value="{{ n.meta }}" hint-placeholder-val="{{ false }}"><span style="font-size:9.5px;line-height:1.1;letter-spacing:.03em;color:var(--color-neutral-400)">{{ n.meta }}</span></sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="position:absolute;left:18px;bottom:12px;font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-500)">drag to pan · scroll to zoom</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isNest }}" hint-placeholder-val="{{ false }}">
+              <div onPointerDown="{{ vpPaneNest.panStart }}" onWheel="{{ vpPaneNest.wheel }}" style="position:relative;height:600px;overflow:hidden;cursor:grab;background:radial-gradient(110% 80% at 50% 0%,#1a1d2e 0%,#131523 60%,#101220 100%)">
+                <div style="position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;transform:{{ vpPaneNest.transform }}">
+                  <div style="position:relative;width:{{ nestW }}px;height:{{ nestH }}px">
+                    <sc-for list="{{ nestBoxes }}" as="b" hint-placeholder-count="34">
+                      <div onClick="{{ b.pick }}" style="position:absolute;box-sizing:border-box;border-radius:7px;cursor:pointer;transition:background .22s ease,border-color .22s ease;left:{{ b.x }}px;top:{{ b.y }}px;width:{{ b.w }}px;height:{{ b.h }}px;background:{{ b.bg }};border:1px {{ b.bs }} {{ b.bc }}">
+                        <span style="position:absolute;left:7px;top:1px;display:flex;align-items:center;gap:5px;font:400 11px/18px 'IBM Plex Mono',monospace;white-space:nowrap;color:{{ b.fg }}">
+                          <sc-if value="{{ b.isEl }}" hint-placeholder-val="{{ false }}"><span style="font-style:italic">{{ b.label }}</span></sc-if>
+                          <sc-if value="{{ b.isNode }}" hint-placeholder-val="{{ true }}"><span style="font-weight:500">{{ b.label }}</span></sc-if>
+                          <sc-if value="{{ b.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-accent-400);font-weight:500">{{ b.v }}</span></sc-if>
+                          <sc-if value="{{ b.text }}" hint-placeholder-val="{{ false }}"><span style="color:#8bc7ae">{{ b.text }}</span></sc-if>
+                        </span>
+                        <sc-if value="{{ b.meta }}" hint-placeholder-val="{{ false }}">
+                          <span style="position:absolute;right:8px;top:2px;font:400 9.5px/16px var(--font-body);letter-spacing:.06em;color:var(--color-neutral-400)">{{ b.meta }}</span>
+                        </sc-if>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="position:absolute;left:18px;bottom:12px;font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-500)">each frame is a subtree · tint compounds with nesting</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isOutline }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;height:600px">
+                <div role="tree" aria-label="Explorer AST" style="flex:1;min-width:0;overflow:auto;padding:8px 0 24px">
+                  <sc-for list="{{ rows }}" as="row" hint-placeholder-count="12">
+                    <div role="treeitem" tabindex="-1" onClick="{{ row.pick }}" style="position:relative;display:flex;align-items:center;height:{{ rowH }}px;padding-right:18px;cursor:pointer;animation:rowIn .18s ease-out both;background:{{ row.bg }};box-shadow:{{ row.mark }}">
+                      <sc-for list="{{ row.guides }}" as="g" hint-placeholder-count="0">
+                        <span style="position:absolute;top:0;bottom:0;width:1px;left:{{ g.x }}px;background:{{ g.c }};transition:background .2s ease"></span>
+                      </sc-for>
+                      <span style="flex:none;width:{{ row.pad }}px"></span>
+                      <span onClick="{{ row.toggle }}" style="flex:none;width:20px;text-align:center;font:400 10px 'IBM Plex Mono',monospace;color:{{ row.markFg }}">{{ row.glyph }}</span>
+                      <span style="display:flex;align-items:center;min-width:0;font:400 13px 'IBM Plex Mono',monospace;white-space:nowrap">
+                        <sc-for list="{{ row.segs }}" as="s" hint-placeholder-count="2">
+                          <span style="display:inline-flex;align-items:center">
+                            <sc-if value="{{ s.sep }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700);margin:0 6px;font-size:10.5px">›</span></sc-if>
+                            <sc-if value="{{ s.isEl }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-500);font-style:italic">{{ s.t }}</span></sc-if>
+                            <sc-if value="{{ s.isNode }}" hint-placeholder-val="{{ true }}"><span style="color:var(--color-neutral-100);font-weight:500">{{ s.t }}</span></sc-if>
+                            <sc-if value="{{ s.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700)">::</span><span style="color:var(--color-accent-400);font-weight:500">{{ s.v }}</span></sc-if>
+                          </span>
+                        </sc-for>
+                      </span>
+                      <sc-if value="{{ row.text }}" hint-placeholder-val="{{ false }}">
+                        <span style="flex:none;margin-left:12px;font:400 13px 'IBM Plex Mono',monospace;color:#8bc7ae">{{ row.text }}</span>
+                      </sc-if>
+                      <span style="flex:1;min-width:16px;height:1px;margin:0 12px;background-image:radial-gradient(circle at 1px 50%,color-mix(in srgb,#e9e9ed 22%,transparent) 1px,transparent 1px);background-size:5px 1px;background-repeat:repeat-x;opacity:{{ row.leader }}"></span>
+                      <sc-if value="{{ row.role }}" hint-placeholder-val="{{ false }}">
+                        <span style="flex:none;font:400 10px var(--font-body);letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-right:10px">{{ row.role }}</span>
+                      </sc-if>
+                      <sc-if value="{{ row.card }}" hint-placeholder-val="{{ false }}">
+                        <span style="flex:none;font:500 10.5px 'IBM Plex Mono',monospace;color:var(--color-accent-2-300);padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--color-accent) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-accent) 22%,transparent)">{{ row.card }}</span>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="flex:none;width:76px;padding:10px 10px 10px 0;box-shadow:inset 1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+                  <div style="font:600 8.5px var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-500);margin-bottom:8px;padding-left:10px">Shape</div>
+                  <div style="display:flex;flex-direction:column;gap:1px;padding-left:10px">
+                    <sc-for list="{{ spine }}" as="s" hint-placeholder-count="34">
+                      <span onClick="{{ s.pick }}" style="cursor:pointer;height:5px;border-radius:1px;margin-left:{{ s.x }}px;width:{{ s.w }}px;background:{{ s.c }};transition:background .2s ease,width .2s ease"></span>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isGrain }}" hint-placeholder-val="{{ false }}">
+              <div style="height:600px;overflow:auto;padding:20px 24px">
+                <div style="display:flex;gap:16px">
+                  <div style="position:relative;flex:none;width:{{ grainW }}px;height:{{ grainH }}px">
+                    <sc-for list="{{ grainBars }}" as="b" hint-placeholder-count="34">
+                      <span onMouseEnter="{{ b.hover }}" onClick="{{ b.pick }}" style="position:absolute;width:3px;border-radius:2px;cursor:pointer;transition:background .2s ease;left:{{ b.x }}px;top:{{ b.y }}px;height:{{ b.h }}px;background:{{ b.c }}"></span>
+                    </sc-for>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <sc-for list="{{ srcRows }}" as="ln" hint-placeholder-count="6">
+                      <div style="display:flex;flex-wrap:wrap;align-items:center;white-space:pre;font:400 13px/26px 'IBM Plex Mono',monospace">
+                        <sc-for list="{{ ln.parts }}" as="p" hint-placeholder-count="4">
+                          <span style="border-radius:3px;white-space:pre;transition:background .16s ease,color .16s ease;background:{{ p.bg }};color:{{ p.fg }}">{{ p.t }}</span>
+                        </sc-for>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="margin-top:20px;padding-top:12px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+                  <div style="font:500 12.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-100)">{{ grainHoverTitle }}</div>
+                  <div style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600);margin-top:2px">{{ grainHoverMeta }}</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isStrata }}" hint-placeholder-val="{{ false }}">
+              <div style="height:600px;overflow:auto;padding:22px 24px">
+                <div style="position:relative;height:{{ strataH }}px">
+                  <sc-for list="{{ strataPane }}" as="c" hint-placeholder-count="34">
+                    <div onMouseEnter="{{ c.hover }}" onClick="{{ c.pick }}" style="position:absolute;display:flex;align-items:center;overflow:hidden;border-radius:3px;cursor:pointer;transition:background .2s ease,box-shadow .2s ease;left:{{ c.x }}px;top:{{ c.y }}px;width:{{ c.w }}px;height:16px;background:{{ c.bg }};box-shadow:{{ c.ring }}">
+                      <span style="padding:0 5px;font:400 10px 'IBM Plex Mono',monospace;white-space:nowrap;color:{{ c.fg }}">{{ c.label }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:14px;font:400 10px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">
+                  <span>byte 0</span><span>{{ grainHoverTitle }}</span><span>byte {{ srcBytes }}</span>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+
+          <div style="flex:1;min-height:0;padding:14px 20px 16px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent);background:#13152233">
+            <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:10px">
+              <span style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-600)">Occurrence</span>
+              <span style="font:500 14px 'IBM Plex Mono',monospace;color:var(--color-neutral-100)">{{ detail.title }}</span>
+              <sc-if value="{{ detail.variant }}" hint-placeholder-val="{{ false }}"><span style="font:500 12.5px 'IBM Plex Mono',monospace;color:var(--color-accent-400)">{{ detail.variant }}</span></sc-if>
+            </div>
+            <div style="display:flex;gap:36px;flex-wrap:wrap">
+              <sc-for list="{{ detail.fields }}" as="f" hint-placeholder-count="4">
+                <div style="display:flex;flex-direction:column;gap:2px">
+                  <span style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400)">{{ f.k }}</span>
+                  <span style="font:400 12.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-200)">{{ f.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;min-width:0;overflow:auto;box-shadow:inset 1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+          <div style="padding:16px 18px 12px">
+            <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Static contract</div>
+            <div style="font:500 16px var(--font-heading);letter-spacing:-.01em">Grammar</div>
+          </div>
+          <div style="padding:0 18px 18px;display:flex;flex-direction:column;gap:18px">
+            <div>
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400);margin-bottom:8px">Nodes · 6</div>
+              <div style="display:flex;flex-direction:column;gap:9px">
+                <sc-for list="{{ schemaNodes }}" as="n" hint-placeholder-count="6">
+                  <div style="display:flex;flex-direction:column;gap:2px">
+                    <span style="font:500 12px 'IBM Plex Mono',monospace;color:{{ n.fg }};transition:color .2s ease">{{ n.name }}</span>
+                    <span style="font:400 11px/1.5 'IBM Plex Mono',monospace;color:var(--color-neutral-600);word-break:break-word">{{ n.shape }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div>
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400);margin-bottom:8px">Tokens · 11</div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px">
+                <sc-for list="{{ schemaTokens }}" as="t" hint-placeholder-count="11">
+                  <span style="font:400 11px 'IBM Plex Mono',monospace;padding:2px 7px;border-radius:4px;color:var(--color-neutral-300);background:color-mix(in srgb,#e9e9ed 7%,transparent)">{{ t }}</span>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400)">Capabilities</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:7px;background:color-mix(in srgb,#e9e9ed 5%,transparent)">
+                <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-300)">Pretty</span>
+                <span style="font:400 10.5px var(--font-body);color:var(--color-neutral-600)">width 80 · indent 2</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:7px;background:color-mix(in srgb,#e9e9ed 5%,transparent)">
+                <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-300)">Sample</span>
+                <span style="font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">07111d2f43596d83</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dv-opt" id="2b">
+    <div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a><span><strong style="font-weight:500;color:var(--color-text)">Nest</strong> — the containment take on <a class="dv-oid" href="#1b">1b</a>. Every subtree is a dotted rectangle labelled with its own type, so the edges disappear: containment carries the parent relation instead of a line. The accent tint is applied per frame and compounds, so opacity rises with nesting depth and the deepest occurrences read as the densest — the frame stack alone tells you how far down you are. Drag to pan, scroll to zoom.</span></div>
+    <div class="dv-card" style="width:1000px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px">
+        <div>
+          <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">AST · containment</div>
+          <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 15px var(--font-heading);letter-spacing:-.01em">Nest</span><span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">34 subtree frames · depth 18</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">{{ vpNest.zoomText }}</span>
+          <button onClick="{{ vpNest.zoomOut }}" class="btn btn-ghost" style="font-size:13px;padding:2px 10px;line-height:1.4">−</button>
+          <button onClick="{{ vpNest.zoomIn }}" class="btn btn-ghost" style="font-size:13px;padding:2px 10px;line-height:1.4">+</button>
+          <button onClick="{{ vpNest.fit }}" class="btn btn-ghost" style="font-size:11px;padding:5px 10px;font-family:'IBM Plex Mono',monospace">Fit</button>
+        </div>
+      </div>
+      <div onPointerDown="{{ vpNest.panStart }}" onWheel="{{ vpNest.wheel }}" style="position:relative;height:640px;overflow:hidden;cursor:grab;background:radial-gradient(110% 80% at 50% 0%,#1a1d2e 0%,#131523 60%,#101220 100%);box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;transform:{{ vpNest.transform }}">
+          <div style="position:relative;width:{{ nestW }}px;height:{{ nestH }}px">
+            <sc-for list="{{ nestBoxes }}" as="b" hint-placeholder-count="34">
+              <div onClick="{{ b.pick }}" style="position:absolute;box-sizing:border-box;border-radius:7px;cursor:pointer;transition:background .22s ease,border-color .22s ease;left:{{ b.x }}px;top:{{ b.y }}px;width:{{ b.w }}px;height:{{ b.h }}px;background:{{ b.bg }};border:1px {{ b.bs }} {{ b.bc }}">
+                <span style="position:absolute;left:7px;top:1px;display:flex;align-items:center;gap:5px;font:400 11px/18px 'IBM Plex Mono',monospace;white-space:nowrap;color:{{ b.fg }}">
+                  <sc-if value="{{ b.isEl }}" hint-placeholder-val="{{ false }}"><span style="font-style:italic">{{ b.label }}</span></sc-if>
+                  <sc-if value="{{ b.isNode }}" hint-placeholder-val="{{ true }}"><span style="font-weight:500">{{ b.label }}</span></sc-if>
+                  <sc-if value="{{ b.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-accent-400);font-weight:500">{{ b.v }}</span></sc-if>
+                  <sc-if value="{{ b.text }}" hint-placeholder-val="{{ false }}"><span style="color:#8bc7ae">{{ b.text }}</span></sc-if>
+                </span>
+                <sc-if value="{{ b.meta }}" hint-placeholder-val="{{ false }}">
+                  <span style="position:absolute;right:8px;top:2px;font:400 9.5px/16px var(--font-body);letter-spacing:.06em;color:var(--color-neutral-400)">{{ b.meta }}</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="position:absolute;left:18px;bottom:14px;font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">each frame is a subtree · tint compounds with nesting</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<p class="dv-next">Try next: "make <a class="dv-oid" href="#2b">2b</a>'s frames lay their children out left-to-right when they all fit" · "give <a class="dv-oid" href="#2b">2b</a> a depth legend" · "let the mode switcher remember per-grammar"</p>
+</section>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Four AST renders — one shared occurrence model</span></div>
+<div class="dv-opts">
+
+  <div class="dv-opt" id="1a">
+    <div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a><span><strong style="font-weight:500;color:var(--color-text)">Ledger</strong> — the whole workspace, redesigned. The outline stays, but it is set like a ledger: chain-folded lines, dotted leaders out to role and cardinality, a spine of depth guides that lights up along the selected path, and a structure fingerprint on the right edge for thousands-of-nodes travel. Click any row, or any token in Source. Try <em style="font-style:normal;color:var(--color-accent-300)">Fold chains</em> off to see what it saves.</span></div>
+    <div class="dv-card" style="width:1440px">
+      <div style="display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 20px;background:linear-gradient(180deg,#1b1e2f,#161826);box-shadow:inset 0 -1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="display:flex;align-items:center;gap:16px">
+          <div style="display:flex;align-items:center;gap:9px">
+            <span style="display:block;width:9px;height:9px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 10px var(--color-accent-600);animation:glow 3.2s ease-in-out infinite"></span>
+            <span style="font:500 15px var(--font-heading);letter-spacing:-.01em">recursa</span>
+            <span style="font:400 15px var(--font-heading);color:var(--color-neutral-500)">Explorer</span>
+          </div>
+          <span style="width:1px;height:18px;background:color-mix(in srgb,#e9e9ed 12%,transparent)"></span>
+          <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">examples/json<span style="color:var(--color-neutral-700)"> · root </span>Value</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <span style="display:inline-flex;align-items:center;gap:7px;font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)"><span style="width:5px;height:5px;border-radius:50%;background:#8fd6a8"></span>parsed · 0.41 ms · 19 tokens</span>
+          <button class="btn btn-ghost" style="font-size:11.5px;padding:5px 11px">Stop Explorer</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:352px minmax(0,1fr) 268px;height:848px">
+
+        <div style="display:flex;flex-direction:column;min-width:0;box-shadow:inset -1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;padding:16px 18px 12px">
+            <div>
+              <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Input</div>
+              <div style="font:500 16px var(--font-heading);letter-spacing:-.01em">Source</div>
+            </div>
+            <button class="btn btn-primary" style="font-size:11.5px;padding:5px 11px">Parse now</button>
+          </div>
+          <div style="flex:1;min-height:0;overflow:auto;padding:4px 0 0">
+            <sc-for list="{{ srcRows }}" as="ln" hint-placeholder-count="6">
+              <div style="display:flex;align-items:flex-start;gap:0;padding:0 14px">
+                <span style="flex:none;width:26px;text-align:right;padding-right:12px;font:400 11.5px/26px 'IBM Plex Mono',monospace;color:var(--color-neutral-500);user-select:none">{{ ln.n }}</span>
+                <span style="flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;white-space:pre;font:400 13px/26px 'IBM Plex Mono',monospace">
+                  <sc-for list="{{ ln.parts }}" as="p" hint-placeholder-count="4">
+                    <span onMouseEnter="{{ p.hover }}" style="border-radius:3px;white-space:pre;transition:background .16s ease,color .16s ease;background:{{ p.bg }};color:{{ p.fg }};box-shadow:{{ p.ul }}">{{ p.t }}</span>
+                  </sc-for>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="padding:14px 18px 16px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+            <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:7px">Diagnostics</div>
+            <div style="display:flex;align-items:center;gap:8px;font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-500)"><span style="color:#8fd6a8">✓</span>No diagnostics · strict parse complete</div>
+            <div style="margin-top:12px;font:400 11.5px/1.6 var(--font-body);color:var(--color-neutral-600)">Selection maps both ways. Hover a token to select the deepest containing occurrence.</div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;min-width:0">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;padding:16px 20px 12px;gap:16px">
+            <div>
+              <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Parsed structure</div>
+              <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 16px var(--font-heading);letter-spacing:-.01em">AST</span><span style="font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">{{ countText }}</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button onClick="{{ toggleFold }}" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font:400 11.5px 'IBM Plex Mono',monospace;padding:5px 10px;border-radius:6px;border:1px solid {{ foldBorder }};background:{{ foldBg }};color:{{ foldFg }};transition:all .18s ease">
+                <span style="font-size:13px;line-height:1">{{ foldGlyph }}</span>Fold chains
+              </button>
+              <button onClick="{{ expandAll }}" class="btn btn-ghost" style="font-size:11.5px;padding:5px 10px;font-family:'IBM Plex Mono',monospace">Expand all</button>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:0;padding:0 20px 10px;min-height:22px">
+            <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="3">
+              <span style="display:inline-flex;align-items:center">
+                <sc-if value="{{ c.sep }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700);margin:0 7px;font-size:11px">›</span></sc-if>
+                <span onClick="{{ c.pick }}" style="cursor:pointer;font:400 11.5px 'IBM Plex Mono',monospace;color:{{ c.fg }};transition:color .16s ease">{{ c.t }}</span>
+              </span>
+            </sc-for>
+            <span style="flex:1"></span>
+            <span style="font:400 11.5px 'IBM Plex Mono',monospace;color:var(--color-accent-300);letter-spacing:.02em">{{ selSpanText }}</span>
+          </div>
+
+          <div style="flex:1;min-height:0;display:flex;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+            <div role="tree" aria-label="Explorer AST" style="flex:1;min-width:0;overflow:auto;padding:8px 0 24px">
+              <sc-for list="{{ rows }}" as="row" hint-placeholder-count="11">
+                <div role="treeitem" tabindex="-1" onClick="{{ row.pick }}" style="position:relative;display:flex;align-items:center;height:{{ rowH }}px;padding-right:18px;cursor:pointer;animation:rowIn .18s ease-out both;background:{{ row.bg }};box-shadow:{{ row.mark }}">
+                  <sc-for list="{{ row.guides }}" as="g" hint-placeholder-count="0">
+                    <span style="position:absolute;top:0;bottom:0;width:1px;left:{{ g.x }}px;background:{{ g.c }};transition:background .2s ease"></span>
+                  </sc-for>
+                  <span style="flex:none;width:{{ row.pad }}px"></span>
+                  <span onClick="{{ row.toggle }}" style="flex:none;width:20px;text-align:center;font:400 10px 'IBM Plex Mono',monospace;color:{{ row.markFg }};transition:transform .2s ease,color .2s ease;transform:{{ row.markRot }}">{{ row.glyph }}</span>
+                  <span style="display:flex;align-items:center;min-width:0;font:400 13px 'IBM Plex Mono',monospace;white-space:nowrap">
+                    <sc-for list="{{ row.segs }}" as="s" hint-placeholder-count="2">
+                      <span style="display:inline-flex;align-items:center">
+                        <sc-if value="{{ s.sep }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700);margin:0 6px;font-size:10.5px">›</span></sc-if>
+                        <sc-if value="{{ s.isEl }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-500);font-style:italic">{{ s.t }}</span></sc-if>
+                        <sc-if value="{{ s.isNode }}" hint-placeholder-val="{{ true }}"><span style="color:var(--color-neutral-100);font-weight:500">{{ s.t }}</span></sc-if>
+                        <sc-if value="{{ s.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-neutral-700)">::</span><span style="color:var(--color-accent-400);font-weight:500">{{ s.v }}</span></sc-if>
+                      </span>
+                    </sc-for>
+                  </span>
+                  <sc-if value="{{ row.text }}" hint-placeholder-val="{{ false }}">
+                    <span style="flex:none;margin-left:12px;font:400 13px 'IBM Plex Mono',monospace;color:#8bc7ae">{{ row.text }}</span>
+                  </sc-if>
+                  <span style="flex:1;min-width:16px;height:1px;margin:0 12px;background-image:radial-gradient(circle at 1px 50%,color-mix(in srgb,#e9e9ed 22%,transparent) 1px,transparent 1px);background-size:5px 1px;background-repeat:repeat-x;opacity:{{ row.leader }};transition:opacity .2s ease"></span>
+                  <sc-if value="{{ row.role }}" hint-placeholder-val="{{ false }}">
+                    <span style="flex:none;font:400 10px var(--font-body);letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-right:10px">{{ row.role }}</span>
+                  </sc-if>
+                  <sc-if value="{{ row.card }}" hint-placeholder-val="{{ false }}">
+                    <span style="flex:none;font:500 10.5px 'IBM Plex Mono',monospace;color:var(--color-accent-2-300);padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--color-accent) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-accent) 22%,transparent)">{{ row.card }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="flex:none;width:76px;padding:10px 10px 10px 0;box-shadow:inset 1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+              <div style="font:600 8.5px var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-500);margin-bottom:8px;padding-left:10px">Shape</div>
+              <div style="display:flex;flex-direction:column;gap:1px;padding-left:10px">
+                <sc-for list="{{ spine }}" as="s" hint-placeholder-count="31">
+                  <span onClick="{{ s.pick }}" style="cursor:pointer;height:5px;border-radius:1px;margin-left:{{ s.x }}px;width:{{ s.w }}px;background:{{ s.c }};transition:background .2s ease,width .2s ease"></span>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:none;padding:14px 20px 16px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent);background:#13152233">
+            <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:10px">
+              <span style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-600)">Occurrence</span>
+              <span style="font:500 14px 'IBM Plex Mono',monospace;color:var(--color-neutral-100)">{{ detail.title }}</span>
+              <sc-if value="{{ detail.variant }}" hint-placeholder-val="{{ false }}"><span style="font:500 12.5px 'IBM Plex Mono',monospace;color:var(--color-accent-400)">{{ detail.variant }}</span></sc-if>
+            </div>
+            <div style="display:flex;gap:36px;flex-wrap:wrap">
+              <sc-for list="{{ detail.fields }}" as="f" hint-placeholder-count="4">
+                <div style="display:flex;flex-direction:column;gap:2px">
+                  <span style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400)">{{ f.k }}</span>
+                  <span style="font:400 12.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-200)">{{ f.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;min-width:0;overflow:auto;box-shadow:inset 1px 0 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+          <div style="padding:16px 18px 12px">
+            <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">Static contract</div>
+            <div style="font:500 16px var(--font-heading);letter-spacing:-.01em">Grammar</div>
+          </div>
+          <div style="padding:0 18px 18px;display:flex;flex-direction:column;gap:18px">
+            <div>
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400);margin-bottom:8px">Nodes · 6</div>
+              <div style="display:flex;flex-direction:column;gap:9px">
+                <sc-for list="{{ schemaNodes }}" as="n" hint-placeholder-count="6">
+                  <div style="display:flex;flex-direction:column;gap:2px">
+                    <span style="font:500 12px 'IBM Plex Mono',monospace;color:{{ n.fg }};transition:color .2s ease">{{ n.name }}</span>
+                    <span style="font:400 11px/1.5 'IBM Plex Mono',monospace;color:var(--color-neutral-600);word-break:break-word">{{ n.shape }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div>
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400);margin-bottom:8px">Tokens · 11</div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px">
+                <sc-for list="{{ schemaTokens }}" as="t" hint-placeholder-count="11">
+                  <span style="font:400 11px 'IBM Plex Mono',monospace;padding:2px 7px;border-radius:4px;color:var(--color-neutral-300);background:color-mix(in srgb,#e9e9ed 7%,transparent)">{{ t }}</span>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <div style="font:600 9px var(--font-body);letter-spacing:.13em;text-transform:uppercase;color:var(--color-neutral-400)">Capabilities</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:7px;background:color-mix(in srgb,#e9e9ed 5%,transparent)">
+                <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-300)">Pretty</span>
+                <span style="font:400 10.5px var(--font-body);color:var(--color-neutral-600)">width 80 · indent 2</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:7px;background:color-mix(in srgb,#e9e9ed 5%,transparent)">
+                <span style="font:400 12px 'IBM Plex Mono',monospace;color:var(--color-neutral-300)">Sample</span>
+                <span style="font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">07111d2f43596d83</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dv-opt" id="1b">
+    <div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a><span><strong style="font-weight:500;color:var(--color-text)">Constellation</strong> — the unfolded tree as a node-and-edge graph on a pannable field. Drag to pan, scroll to zoom, Fit to reframe. Depth reads top to bottom, so the single-child chains this grammar produces show up as literal ladders — the thing chain folding in <a class="dv-oid" href="#1a">1a</a> removes. Element occurrences are the hairline pills, nodes are solid; the selected path stays lit while everything else drops back.</span></div>
+    <div class="dv-card" style="width:1000px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px">
+        <div>
+          <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">AST · graph</div>
+          <div style="font:500 15px var(--font-heading);letter-spacing:-.01em">Constellation</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">{{ vpGraph.zoomText }}</span>
+          <button onClick="{{ vpGraph.zoomOut }}" class="btn btn-ghost" style="font-size:13px;padding:2px 10px;line-height:1.4">−</button>
+          <button onClick="{{ vpGraph.zoomIn }}" class="btn btn-ghost" style="font-size:13px;padding:2px 10px;line-height:1.4">+</button>
+          <button onClick="{{ vpGraph.fit }}" class="btn btn-ghost" style="font-size:11px;padding:5px 10px;font-family:'IBM Plex Mono',monospace">Fit</button>
+        </div>
+      </div>
+      <div onPointerDown="{{ vpGraph.panStart }}" onWheel="{{ vpGraph.wheel }}" style="position:relative;height:700px;overflow:hidden;cursor:grab;background:radial-gradient(120% 90% at 12% 30%,#1c1f33 0%,#141626 55%,#101220 100%);box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,#e9e9ed 7%,transparent) 1px,transparent 1px);background-size:26px 26px;opacity:.6"></div>
+        <div style="position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;transform:{{ vpGraph.transform }}">
+          <svg width="{{ gW }}" height="{{ gH }}" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none">
+            <sc-for list="{{ gEdges }}" as="e" hint-placeholder-count="30">
+              <path d="{{ e.d }}" fill="none" stroke="{{ e.c }}" stroke-width="{{ e.w }}" style="transition:stroke .25s ease"></path>
+            </sc-for>
+          </svg>
+          <sc-for list="{{ gNodes }}" as="n" hint-placeholder-count="31">
+            <div onClick="{{ n.pick }}" style="position:absolute;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;padding:0 11px;border-radius:11px;white-space:nowrap;cursor:pointer;font:400 12px 'IBM Plex Mono',monospace;transition:background .25s ease,box-shadow .25s ease,color .25s ease,opacity .25s ease;left:{{ n.x }}px;top:{{ n.y }}px;height:{{ n.h }}px;background:{{ n.bg }};box-shadow:{{ n.ring }};color:{{ n.fg }};opacity:{{ n.op }}">
+              <span style="display:flex;align-items:center;gap:5px">
+                <sc-if value="{{ n.isEl }}" hint-placeholder-val="{{ false }}"><span style="font-style:italic">{{ n.label }}</span></sc-if>
+                <sc-if value="{{ n.isNode }}" hint-placeholder-val="{{ true }}"><span style="font-weight:500">{{ n.label }}</span></sc-if>
+                <sc-if value="{{ n.v }}" hint-placeholder-val="{{ false }}"><span style="color:var(--color-accent-400);font-weight:500">{{ n.v }}</span></sc-if>
+              </span>
+              <sc-if value="{{ n.meta }}" hint-placeholder-val="{{ false }}"><span style="font-size:9.5px;line-height:1.1;letter-spacing:.03em;color:var(--color-neutral-400)">{{ n.meta }}</span></sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:0;height:64px;background:linear-gradient(180deg,transparent,#101220);pointer-events:none"></div>
+        <div style="position:absolute;left:18px;bottom:14px;font:400 10.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">drag to pan · scroll to zoom</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dv-opt" id="1c">
+    <div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a><span><strong style="font-weight:500;color:var(--color-text)">Grain</strong> — no separate tree at all. Structure is drawn as nested brackets in the gutter beside the code, one column per depth, each bracket exactly as tall as the lines its span covers. Hover a bracket to name it. The mapping question — "which node is this byte in?" — becomes a straight read across.</span></div>
+    <div class="dv-card" style="width:560px">
+      <div style="padding:14px 18px 12px">
+        <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">AST · source-aligned</div>
+        <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 15px var(--font-heading);letter-spacing:-.01em">Grain</span><span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">{{ grainLabel }}</span></div>
+      </div>
+      <div style="position:relative;padding:12px 18px 22px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="display:flex;gap:14px">
+          <div style="position:relative;flex:none;width:{{ grainW }}px;height:{{ grainH }}px">
+            <sc-for list="{{ grainBars }}" as="b" hint-placeholder-count="31">
+              <span onMouseEnter="{{ b.hover }}" onClick="{{ b.pick }}" style="position:absolute;width:3px;border-radius:2px;cursor:pointer;transition:background .2s ease,width .2s ease;left:{{ b.x }}px;top:{{ b.y }}px;height:{{ b.h }}px;background:{{ b.c }}"></span>
+            </sc-for>
+          </div>
+          <div style="flex:1;min-width:0">
+            <sc-for list="{{ srcRows }}" as="ln" hint-placeholder-count="6">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;white-space:pre;font:400 13px/26px 'IBM Plex Mono',monospace">
+                <sc-for list="{{ ln.parts }}" as="p" hint-placeholder-count="4">
+                  <span style="border-radius:3px;white-space:pre;transition:background .16s ease,color .16s ease;background:{{ p.bg }};color:{{ p.fg }}">{{ p.t }}</span>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="margin-top:16px;min-height:34px;padding-top:12px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+          <div style="font:500 12.5px 'IBM Plex Mono',monospace;color:var(--color-neutral-100)">{{ grainHoverTitle }}</div>
+          <div style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600);margin-top:2px">{{ grainHoverMeta }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dv-opt" id="1d">
+    <div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a><span><strong style="font-weight:500;color:var(--color-text)">Strata</strong> — every occurrence at once. Horizontal axis is the byte span, vertical axis is depth, so the whole tree is one solid block whose silhouette <em style="font-style:normal;color:var(--color-accent-300)">is</em> the shape of the parse. This is the view that survives thousands of nodes: width shrinks, the silhouette stays readable, and a wrong variant shows up as a band that is the wrong width.</span></div>
+    <div class="dv-card" style="width:860px">
+      <div style="padding:14px 18px 12px">
+        <div style="font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent-400);margin-bottom:3px">AST · density</div>
+        <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 15px var(--font-heading);letter-spacing:-.01em">Strata</span><span style="font:400 11px 'IBM Plex Mono',monospace;color:var(--color-neutral-600)">span × depth · 34 occurrences</span></div>
+      </div>
+      <div style="padding:8px 18px 18px;box-shadow:inset 0 1px 0 color-mix(in srgb,#e9e9ed 8%,transparent)">
+        <div style="position:relative;height:{{ strataH }}px;margin-top:6px">
+          <sc-for list="{{ strata }}" as="c" hint-placeholder-count="31">
+            <div onMouseEnter="{{ c.hover }}" onClick="{{ c.pick }}" style="position:absolute;display:flex;align-items:center;overflow:hidden;border-radius:3px;cursor:pointer;transition:background .2s ease,box-shadow .2s ease;left:{{ c.x }}px;top:{{ c.y }}px;width:{{ c.w }}px;height:16px;background:{{ c.bg }};box-shadow:{{ c.ring }}">
+              <span style="padding:0 5px;font:400 10px 'IBM Plex Mono',monospace;white-space:nowrap;color:{{ c.fg }}">{{ c.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:10px;font:400 10px 'IBM Plex Mono',monospace;color:var(--color-neutral-400)">
+          <span>byte 0</span><span>{{ grainHoverTitle }}</span><span>byte {{ srcBytes }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<p class="dv-next">Try next: "take <a class="dv-oid" href="#1a">1a</a> but put <a class="dv-oid" href="#1d">1d</a>'s strata where the Shape strip is" · "add the parse timeline as <a class="dv-oid" href="#1b">1b</a>'s second axis" · "show <a class="dv-oid" href="#1a">1a</a> with a failed parse and diagnostics"</p>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;foldChains&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;AST render&quot;},&quot;showGuides&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;AST render&quot;},&quot;showLeaders&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;AST render&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;compact&quot;,&quot;comfortable&quot;,&quot;airy&quot;],&quot;default&quot;:&quot;compact&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;AST render&quot;}}">
+const TOK = [['{','p'],['"items"','s'],[':','p'],['[','p'],['true','k'],[',','p'],['null','k'],[',','p'],['{','p'],['"name"','s'],[':','p'],['"café"','s'],['}','p'],[']','p'],[',','p'],['"ok"','s'],[':','p'],['true','k'],['}','p']];
+const PIECES = [0,'\n  ',1,2,' ',3,4,5,' ',6,7,' ',8,9,10,' ',11,12,13,14,'\n  ',15,16,' ',17,'\n',18];
+
+const N = (name, variant, toks, kids) => ({ k:'n', name, variant: variant||null, toks: toks||[], kids: kids||[] });
+const E = (name, role, card, toks, kids) => ({ k:'e', name, role, card, toks: toks||[], kids: kids||[] });
+
+const FG = { p:'var(--color-neutral-600)', k:'var(--color-accent-400)', s:'#8bc7ae' };
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const enc = new TextEncoder();
+    let off = 0;
+    const tspan = [];
+    const lines = [[]];
+    const lineStart = [0];
+    for (const p of PIECES) {
+      if (typeof p === 'string') {
+        const parts = p.split('\n');
+        parts.forEach((part, i) => {
+          if (i > 0) { lines.push([]); }
+          if (part) lines[lines.length - 1].push({ ws: part });
+        });
+        let acc = off;
+        parts.forEach((part, i) => {
+          acc += enc.encode(part).length;
+          if (i < parts.length - 1) { acc += 1; lineStart.push(acc); }
+        });
+        off = acc;
+      } else {
+        const s = off; off += enc.encode(TOK[p][0]).length; tspan[p] = [s, off];
+        lines[lines.length - 1].push({ t: p });
+      }
+    }
+    this.tspan = tspan; this.lines = lines; this.lineStart = lineStart; this.srcBytes = off;
+
+    const root = N('Value','Object',[],[ E('object','variant','One',[],[
+      N('Object',null,[0,18],[ E('members','child','Vec⟨,⟩',[14],[
+        N('Member',null,[2],[
+          E('key','child','One',[],[ N('String',null,[1]) ]),
+          E('value','child','One',[],[ N('Value','Array',[],[ E('array','variant','One',[],[
+            N('Array',null,[3,13],[ E('values','child','Option⟨Vec1⟨,⟩⟩',[5,7],[
+              N('Value','Bool',[],[ E('bool','variant','One',[],[ N('Bool','True',[4]) ]) ]),
+              N('Value','Null',[6]),
+              N('Value','Object',[],[ E('object','variant','One',[],[
+                N('Object',null,[8,12],[ E('members','child','Vec⟨,⟩',[],[
+                  N('Member',null,[10],[
+                    E('key','child','One',[],[ N('String',null,[9]) ]),
+                    E('value','child','One',[],[ N('Value','String',[],[ E('string','variant','One',[],[ N('String',null,[11]) ]) ]) ])
+                  ])
+                ])])
+              ])])
+            ])])
+          ])])])
+        ]),
+        N('Member',null,[16],[
+          E('key','child','One',[],[ N('String',null,[15]) ]),
+          E('value','child','One',[],[ N('Value','Bool',[],[ E('bool','variant','One',[],[ N('Bool','True',[17]) ]) ]) ])
+        ])
+      ])])
+    ])]);
+
+    let id = 0;
+    const all = [];
+    const annotate = (n, depth, parent) => {
+      n.id = 'r' + (id++); n.depth = depth; n.parent = parent;
+      all.push(n);
+      n.kids.forEach(c => annotate(c, depth + 1, n));
+      let s = Infinity, e = -Infinity;
+      for (const t of n.toks) { s = Math.min(s, tspan[t][0]); e = Math.max(e, tspan[t][1]); }
+      for (const c of n.kids) if (c.span) { s = Math.min(s, c.span[0]); e = Math.max(e, c.span[1]); }
+      n.span = e >= s ? [s, e] : null;
+      n.text = (n.toks.length === 1 && !n.kids.length) ? TOK[n.toks[0]][0] : null;
+    };
+    annotate(root, 0, null);
+    this.root = root; this.all = all;
+    this.byId = new Map(all.map(n => [n.id, n]));
+
+    let leaf = 0;
+    const place = (n) => {
+      if (!n.kids.length) { n.gy = leaf++; return; }
+      n.kids.forEach(place);
+      n.gy = (n.kids[0].gy + n.kids[n.kids.length - 1].gy) / 2;
+    };
+    place(root);
+
+    // Top-down layout: gy (leaf order) drives x, depth drives y.
+    const fin = (v, f) => (Number.isFinite(v) ? v : f);
+    const COLW = 172, ROWH = 46;
+    for (const n of all) {
+      n.gmeta = n.k === 'e' ? n.role + ' · ' + n.card : '';
+      const nameW = (n.name.length + (n.variant ? n.variant.length + 2 : 0)) * 7.35;
+      n.gw = Math.round(Math.max(nameW, n.gmeta.length * 5.85) + 22);
+      n.gh = n.k === 'e' ? 37 : 26;
+      n.gxp = 20 + fin(n.gy, 0) * COLW;
+      n.gyp = 20 + fin(n.depth, 0) * ROWH;
+    }
+    this.fin = fin;
+    this.contentW = fin(Math.max(...all.map(n => n.gxp + n.gw)), 800) + 20;
+    this.contentH = fin(Math.max(...all.map(n => n.gyp + n.gh)), 600) + 20;
+    this.layoutNest();
+
+    const g = this.fitVals(1000, 700, this.contentW, this.contentH);
+    const c = this.fitVals(820, 600, this.contentW, this.contentH);
+    const t = this.fitVals(820, 600, this.nestW, this.nestH);
+    const nn = this.fitVals(1000, 640, this.nestW, this.nestH);
+    this.state = {
+      sel: root.id, hover: root.id, fold: props.foldChains !== false, collapsed: {}, mode: 'graph',
+      gz: g.z, gx: g.x, gy: g.y, cz: c.z, cx: c.x, cy: c.y,
+      tz: t.z, tx: t.x, ty: t.y, nz: nn.z, nx: nn.x, ny: nn.y
+    };
+  }
+
+  // Nested-containment layout: every subtree is a box that contains its children's boxes.
+  layoutNest() {
+    const HDR = 20, PAD = 9, GAP = 5, CH = 7.35;
+    const labelW = (n) => Math.round((n.name.length + (n.variant ? n.variant.length + 2 : 0) + (n.text ? n.text.length + 1 : 0)) * CH) + 16;
+    // Single-child chains stack downward; sibling sets lay out across.
+    const measure = (n) => {
+      if (!n.kids.length) { n.nw = labelW(n); n.nh = HDR + 3; n.row = false; return; }
+      n.kids.forEach(measure);
+      n.row = n.kids.length > 1;
+      if (n.row) {
+        n.nw = Math.max(labelW(n), n.kids.reduce((a, k) => a + k.nw, 0) + GAP * (n.kids.length - 1)) + PAD * 2;
+        n.nh = HDR + Math.max(...n.kids.map(k => k.nh)) + PAD;
+      } else {
+        n.nw = Math.max(labelW(n), n.kids[0].nw) + PAD * 2;
+        n.nh = HDR + n.kids[0].nh + PAD;
+      }
+    };
+    measure(this.root);
+    const boxes = [];
+    const place = (n, x, y) => {
+      n.nx = x; n.ny = y; boxes.push(n);
+      if (n.row) {
+        let cx = x + PAD;
+        for (const k of n.kids) { place(k, cx, y + HDR); cx += k.nw + GAP; }
+      } else if (n.kids.length) {
+        place(n.kids[0], x + PAD, y + HDR);
+      }
+    };
+    place(this.root, 0, 0);
+    this.nestBoxList = boxes;
+    this.nestW = this.root.nw; this.nestH = this.root.nh;
+  }
+
+  fitVals(fw, fh, cw, ch) {
+    const pad = 36;
+    const z = this.clampZ(Math.min((fw - pad) / cw, (fh - pad) / ch));
+    const q = (v) => (Number.isFinite(v) ? Math.round(v) : 0);
+    return { z, x: q((fw - cw * z) / 2), y: q((fh - ch * z) / 2) };
+  }
+
+  // One pan/zoom viewport per field, keyed by a state prefix.
+  viewport(p, fw, fh, cw, ch) {
+    const s = this.state;
+    const set = (o) => this.setState(o);
+    return {
+      transform: 'translate(' + this.fin(s[p + 'x'], 0) + 'px,' + this.fin(s[p + 'y'], 0) + 'px) scale(' + this.clampZ(s[p + 'z']) + ')',
+      zoomText: Math.round(this.clampZ(s[p + 'z']) * 100) + '%',
+      zoomIn: () => set({ [p + 'z']: this.clampZ(this.state[p + 'z'] * 1.2) }),
+      zoomOut: () => set({ [p + 'z']: this.clampZ(this.state[p + 'z'] / 1.2) }),
+      fit: () => { const f = this.fitVals(fw, fh, cw, ch); set({ [p + 'z']: f.z, [p + 'x']: f.x, [p + 'y']: f.y }); },
+      wheel: (ev) => { ev.preventDefault(); const f = ev.deltaY < 0 ? 1.08 : 1 / 1.08; set({ [p + 'z']: this.clampZ(this.state[p + 'z'] * f) }); },
+      panStart: (ev) => {
+        const sx = ev.clientX, sy = ev.clientY, ox = this.state[p + 'x'], oy = this.state[p + 'y'];
+        const move = (e) => set({ [p + 'x']: ox + (e.clientX - sx), [p + 'y']: oy + (e.clientY - sy) });
+        const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+      }
+    };
+  }
+
+  nestVals(sel, selIds) {
+    return this.nestBoxList.map(n => {
+      const isSel = n.id === sel, lit = selIds.has(n.id);
+      const tint = Math.min(9, 2 + n.depth * 0.45);
+      const edge = Math.min(64, 16 + n.depth * 2.8);
+      return {
+        x: n.nx, y: n.ny, w: n.nw, h: n.nh,
+        label: n.name, v: n.variant ? '::' + n.variant : '', isEl: n.k === 'e', isNode: n.k === 'n',
+        text: n.text || '',
+        meta: n.k === 'e' && n.nw > 176 ? n.role + ' · ' + n.card : '',
+        bg: isSel ? 'color-mix(in srgb,var(--color-accent) 24%,transparent)' : 'color-mix(in srgb,var(--color-accent) ' + tint + '%,transparent)',
+        bc: isSel ? 'var(--color-accent)' : lit ? 'color-mix(in srgb,var(--color-accent) 70%,transparent)' : 'color-mix(in srgb,var(--color-accent) ' + edge + '%,transparent)',
+        bs: isSel || lit ? 'solid' : 'dotted',
+        fg: isSel ? 'var(--color-accent-100)' : n.k === 'n' ? 'var(--color-neutral-200)' : 'var(--color-neutral-400)',
+        pick: (ev) => { ev.stopPropagation(); this.pick(n); }
+      };
+    });
+  }
+
+  ancestors(n) { const a = []; let c = n.parent; while (c) { a.unshift(c); c = c.parent; } return a; }
+
+  pick = (n) => { this.setState({ sel: n.id, hover: n.id }); };
+
+  chainOf(n) {
+    const segs = [n]; let cur = n;
+    if (this.state.fold) { while (cur.kids.length === 1) { cur = cur.kids[0]; segs.push(cur); } }
+    return { segs, tail: cur };
+  }
+
+  flatten() {
+    const rows = [];
+    const sel = this.byId.get(this.state.sel);
+    const selChain = new Set();
+    if (sel) { this.ancestors(sel).forEach(a => selChain.add(a.id)); selChain.add(sel.id); }
+    const walk = (n, depth, anc) => {
+      const { segs, tail } = this.chainOf(n);
+      const inChain = segs.some(s => selChain.has(s.id));
+      const isSel = segs.some(s => s.id === this.state.sel);
+      const collapsed = !!this.state.collapsed[n.id];
+      const elSeg = [...segs].reverse().find(s => s.k === 'e');
+      rows.push({ node: n, tail, segs, depth, isSel, inChain, collapsed, elSeg, anc, lit: segs.map(s => selChain.has(s.id)) });
+      if (!collapsed) tail.kids.forEach(c => walk(c, depth + 1, [...anc, segs.map(s => s.id)]));
+    };
+    walk(this.root, 0, []);
+    return rows;
+  }
+
+  lineOf(b) { let i = 0; for (let j = 0; j < this.lineStart.length; j++) if (this.lineStart[j] <= b) i = j; return i; }
+
+  toggleFold = () => this.setState(s => ({ fold: !s.fold }));
+  expandAll = () => this.setState({ collapsed: {} });
+  clampZ(z) { return Math.max(0.3, Math.min(1.4, Number.isFinite(z) ? z : 1)); }
+  setMode = (m) => () => this.setState({ mode: m });
+
+  renderVals() {
+    const { sel, hover, fold } = this.state;
+    const selNode = this.byId.get(sel);
+    const hoverNode = this.byId.get(hover) || selNode;
+    const selSpan = selNode && selNode.span;
+    const selIds = new Set();
+    if (selNode) { this.ancestors(selNode).forEach(a => selIds.add(a.id)); selIds.add(selNode.id); }
+    const density = this.props.density === 'comfortable' ? 30 : this.props.density === 'airy' ? 34 : 26;
+    const guidesOn = this.props.showGuides !== false;
+    const leadersOn = this.props.showLeaders !== false;
+
+    const flat = this.flatten();
+    const rows = flat.map(r => {
+      const pad = r.depth * 22;
+      const guides = [];
+      if (guidesOn) for (let d = 0; d < r.depth; d++) {
+        const onPath = (r.anc[d] || []).some(id => selIds.has(id));
+        guides.push({ x: d * 22 + 9, c: onPath ? 'color-mix(in srgb,var(--color-accent) 34%,transparent)' : 'color-mix(in srgb,#e9e9ed 7%,transparent)' });
+      }
+      const segs = r.segs.map((s, i) => ({
+        t: s.name, sep: i > 0, isEl: s.k === 'e', isNode: s.k === 'n', v: s.variant || ''
+      }));
+      const hasKids = r.tail.kids.length > 0;
+      return {
+        id: r.node.id, pad, guides, segs,
+        glyph: hasKids ? (r.collapsed ? '▶' : '▼') : '·',
+        markRot: 'none',
+        markFg: hasKids ? (r.isSel ? 'var(--color-accent-300)' : 'var(--color-neutral-600)') : 'var(--color-neutral-800)',
+        text: r.tail.text ? r.tail.text : '',
+        role: r.elSeg ? r.elSeg.role : '',
+        card: r.elSeg ? r.elSeg.card : '',
+        leader: leadersOn ? (r.isSel ? 0.9 : 0.45) : 0,
+        bg: r.isSel ? 'linear-gradient(90deg,color-mix(in srgb,var(--color-accent) 17%,transparent),color-mix(in srgb,var(--color-accent) 4%,transparent) 70%,transparent)' : r.inChain ? 'color-mix(in srgb,var(--color-accent) 4%,transparent)' : 'transparent',
+        mark: r.isSel ? 'inset 2px 0 0 var(--color-accent)' : 'none',
+        pick: () => this.pick(r.node),
+        toggle: (ev) => { ev.stopPropagation(); this.setState(s => ({ collapsed: { ...s.collapsed, [r.node.id]: !s.collapsed[r.node.id] } })); }
+      };
+    });
+
+    const srcRows = this.lines.map((parts, i) => ({
+      n: i + 1,
+      parts: parts.map(p => {
+        if (p.ws !== undefined) return { t: p.ws, bg: 'transparent', fg: 'inherit', ul: 'none' };
+        const [txt, cls] = TOK[p.t];
+        const sp = this.tspan[p.t];
+        const inSel = selSpan && sp[0] >= selSpan[0] && sp[1] <= selSpan[1];
+        const exact = selSpan && sp[0] === selSpan[0] && sp[1] === selSpan[1];
+        const leaf = [...this.all].reverse().find(n => n.span && n.span[0] <= sp[0] && n.span[1] >= sp[1] && !n.kids.length);
+        return {
+          t: txt,
+          bg: exact ? 'color-mix(in srgb,var(--color-accent) 34%,transparent)' : inSel ? 'color-mix(in srgb,var(--color-accent) 13%,transparent)' : 'transparent',
+          fg: inSel ? (cls === 'p' ? 'var(--color-neutral-300)' : FG[cls]) : FG[cls],
+          ul: exact ? 'inset 0 -1.5px 0 var(--color-accent)' : 'none',
+          hover: () => { if (leaf) this.pick(leaf); }
+        };
+      })
+    }));
+
+    const crumbs = selNode ? [...this.ancestors(selNode), selNode].map((n, i) => ({
+      t: n.name + (n.variant ? '::' + n.variant : ''), sep: i > 0,
+      fg: n === selNode ? 'var(--color-accent-300)' : 'var(--color-neutral-600)',
+      pick: () => this.pick(n)
+    })) : [];
+
+    const spine = this.all.map(n => ({
+      x: n.depth * 2,
+      w: Math.max(4, 40 - n.depth * 2),
+      c: n.id === sel ? 'var(--color-accent)' : selIds.has(n.id) ? 'var(--color-accent-600)' : n.k === 'n' ? 'color-mix(in srgb,#e9e9ed 20%,transparent)' : 'color-mix(in srgb,#e9e9ed 9%,transparent)',
+      pick: () => this.pick(n)
+    }));
+
+    const fields = [];
+    if (selNode) {
+      fields.push({ k: 'kind', v: selNode.k === 'n' ? 'node' : 'element' });
+      fields.push({ k: 'span', v: selNode.span ? selNode.span[0] + '..' + selNode.span[1] + '  (' + (selNode.span[1] - selNode.span[0]) + ' bytes)' : 'synthetic' });
+      fields.push({ k: 'depth', v: String(selNode.depth) });
+      if (selNode.role) fields.push({ k: 'role', v: selNode.role });
+      if (selNode.card) fields.push({ k: 'cardinality', v: selNode.card });
+      fields.push({ k: 'text', v: selNode.text ? selNode.text : '—' });
+      fields.push({ k: 'children', v: String(selNode.kids.length) });
+    }
+
+    const gNodes = this.all.map(n => ({
+      x: n.gxp, y: n.gyp, h: n.gh, meta: n.gmeta,
+      label: n.name, v: n.variant ? '::' + n.variant : '', isEl: n.k === 'e', isNode: n.k === 'n',
+      bg: n.id === sel ? 'color-mix(in srgb,var(--color-accent) 26%,transparent)' : n.k === 'n' ? '#232532' : 'transparent',
+      ring: n.id === sel ? '0 0 0 1px var(--color-accent),0 0 22px color-mix(in srgb,var(--color-accent) 45%,transparent)' : n.k === 'n' ? '0 0 0 1px var(--color-neutral-800)' : '0 0 0 1px color-mix(in srgb,#e9e9ed 12%,transparent)',
+      fg: n.id === sel ? 'var(--color-accent-100)' : n.k === 'n' ? 'var(--color-neutral-200)' : 'var(--color-neutral-500)',
+      op: selIds.has(n.id) ? 1 : 0.5,
+      pick: () => this.pick(n)
+    }));
+    const gEdges = [];
+    for (const n of this.all) for (const c of n.kids) {
+      const x1 = n.gxp + n.gw / 2, y1 = n.gyp + n.gh;
+      const x2 = c.gxp + c.gw / 2, y2 = c.gyp;
+      const my = (y1 + y2) / 2;
+      const lit = selIds.has(n.id) && selIds.has(c.id);
+      gEdges.push({ d: 'M' + x1 + ',' + y1 + ' C' + x1 + ',' + my + ' ' + x2 + ',' + my + ' ' + x2 + ',' + y2,
+        c: lit ? 'var(--color-accent)' : 'color-mix(in srgb,#e9e9ed 13%,transparent)', w: lit ? 1.6 : 1 });
+    }
+
+    const LH = 26;
+    const maxD = Math.max(...this.all.map(n => n.depth));
+    const grainBars = this.all.filter(n => n.span).map(n => {
+      const l0 = this.lineOf(n.span[0]), l1 = this.lineOf(n.span[1] - 1);
+      return {
+        x: n.depth * 8, y: l0 * LH + 3, h: (l1 - l0 + 1) * LH - 6,
+        c: n.id === sel ? 'var(--color-accent)' : selIds.has(n.id) ? 'var(--color-accent-600)' : n.k === 'n' ? 'color-mix(in srgb,#e9e9ed 24%,transparent)' : 'color-mix(in srgb,#e9e9ed 10%,transparent)',
+        hover: () => this.setState({ hover: n.id }),
+        pick: () => this.pick(n)
+      };
+    });
+
+    const strataFor = (SW) => this.all.filter(n => n.span).map(n => {
+      const w = Math.max(3, (n.span[1] - n.span[0]) / this.srcBytes * SW - 1.5);
+      const lbl = n.name + (n.variant ? '::' + n.variant : '');
+      return {
+        x: n.span[0] / this.srcBytes * SW, y: n.depth * 19, w,
+        label: w < lbl.length * 6.2 + 12 ? '' : lbl,
+        bg: n.id === sel ? 'var(--color-accent-600)' : 'color-mix(in srgb,var(--color-accent) ' + (n.k === 'n' ? Math.min(30, 5 + n.depth * 1.4) : Math.min(16, 2 + n.depth * 0.8)) + '%,transparent)',
+        ring: n.id === sel ? '0 0 0 1px var(--color-accent-300)' : selIds.has(n.id) ? '0 0 0 1px color-mix(in srgb,var(--color-accent) 45%,transparent)' : 'none',
+        fg: n.id === sel ? 'var(--color-accent-100)' : n.k === 'n' ? 'var(--color-neutral-300)' : 'var(--color-neutral-600)',
+        hover: () => this.setState({ hover: n.id }),
+        pick: () => this.pick(n)
+      };
+    });
+    const strata = strataFor(800);
+    const strataPane = strataFor(720);
+
+    const mode = this.state.mode;
+    const MODES = [['graph', 'Constellation'], ['nest', 'Nest'], ['outline', 'Outline'], ['grain', 'Grain'], ['strata', 'Strata']];
+
+    return {
+      rows, rowH: density, srcRows, crumbs, spine, gNodes, gEdges, grainBars, strata, strataPane,
+      srcBytes: this.srcBytes,
+      nestBoxes: this.nestVals(sel, selIds),
+      nestW: Math.round(this.nestW), nestH: Math.round(this.nestH),
+      modes: MODES.map(([k, label]) => ({
+        label, active: mode === k, pick: this.setMode(k),
+        bg: mode === k ? 'color-mix(in srgb,var(--color-accent) 18%,transparent)' : 'transparent',
+        fg: mode === k ? 'var(--color-accent-200)' : 'var(--color-neutral-500)'
+      })),
+      modeName: (MODES.find(m => m[0] === mode) || MODES[0])[1],
+      isGraph: mode === 'graph', isNest: mode === 'nest', isOutline: mode === 'outline',
+      isGrain: mode === 'grain', isStrata: mode === 'strata',
+      vpPaneGraph: this.viewport('c', 820, 600, this.contentW, this.contentH),
+      vpPaneNest: this.viewport('t', 820, 600, this.nestW, this.nestH),
+      vpNest: this.viewport('n', 1000, 640, this.nestW, this.nestH),
+      vpGraph: this.viewport('g', 1000, 700, this.contentW, this.contentH),
+      countText: this.all.length + ' occurrences · ' + rows.length + ' rows · depth ' + maxD,
+      selSpanText: selSpan ? 'bytes ' + selSpan[0] + '..' + selSpan[1] : 'synthetic',
+      foldGlyph: fold ? '◼' : '◻',
+      foldBg: fold ? 'color-mix(in srgb,var(--color-accent) 15%,transparent)' : 'transparent',
+      foldBorder: fold ? 'color-mix(in srgb,var(--color-accent) 45%,transparent)' : 'color-mix(in srgb,#e9e9ed 14%,transparent)',
+      foldFg: fold ? 'var(--color-accent-300)' : 'var(--color-neutral-400)',
+      toggleFold: this.toggleFold, expandAll: this.expandAll,
+      detail: { title: selNode ? selNode.name : '—', variant: selNode && selNode.variant ? '::' + selNode.variant : '', fields },
+      gW: Math.round(this.contentW), gH: Math.round(this.contentH),
+      grainW: (maxD + 1) * 8, grainH: this.lines.length * LH,
+      grainLabel: (maxD + 1) + ' depth columns · ' + this.lines.length + ' lines',
+      grainHoverTitle: hoverNode ? hoverNode.name + (hoverNode.variant ? '::' + hoverNode.variant : '') : '',
+      grainHoverMeta: hoverNode ? (hoverNode.k === 'e' ? hoverNode.role + ' · ' + hoverNode.card + ' · ' : '') + (hoverNode.span ? 'bytes ' + hoverNode.span[0] + '..' + hoverNode.span[1] : 'synthetic') : '',
+      strataH: (maxD + 1) * 19,
+      schemaNodes: [
+        { name: 'Value', shape: 'Object | Array | String | Number | Bool | Null' },
+        { name: 'Object', shape: '{ members: Vec⟨Member, COMMA⟩ }' },
+        { name: 'Member', shape: '{ key: String, value: Value }' },
+        { name: 'Array', shape: '{ values: Option⟨Vec1⟨Value, COMMA⟩⟩ }' },
+        { name: 'Bool', shape: 'True | False' },
+        { name: 'String', shape: 'lex "…"' }
+      ].map(n => ({ ...n, fg: selNode && selNode.name === n.name ? 'var(--color-accent-300)' : 'var(--color-neutral-200)' })),
+      schemaTokens: ['TRUE', 'FALSE', 'NULL', 'LBRACE', 'RBRACE', 'LBRACKET', 'RBRACKET', 'COMMA', 'COLON', 'String', 'Number']
+    };
+  }
+}
+
+</script>
+</body>
+</html>

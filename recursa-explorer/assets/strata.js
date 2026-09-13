@@ -1,6 +1,7 @@
 "use strict";
 
 import { fin } from "./panzoom.js";
+import { displayName } from "./model.js";
 
 const DEPTH_GAP = 19;
 const CELL_HEIGHT = 16;
@@ -36,8 +37,8 @@ export function createStrata(trackEl, model, totalBytes, onSelect, onHover) {
     cell.style.background = `color-mix(in srgb, var(--color-accent) ${tint}%, transparent)`;
     cell.dataset.key = entry.key;
 
-    const text = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : entry.name;
-    if (width >= text.length * 6.2 + 12) {
+    const text = entry.kind === "node" && entry.variant ? `${entry.name}::${entry.variant}` : displayName(entry);
+    if (text && width >= text.length * 6.2 + 12) {
       const label = document.createElement("span");
       label.className = "strata-label";
       label.textContent = text;
