@@ -339,13 +339,21 @@ The sealed facade contract that gives a generated grammar type its safe
 grammar-bound input entry.
 _Avoid_: Manual parser trait, parse plan
 
+**Primary AST**:
+The authored structs and enums that are the canonical grammar representation, from which parsing behavior and alternative AST representations are derived.
+_Avoid_: Non-flat AST, secondary grammar schema
+
 **Nested AST**:
 An authored semantic tree whose child relationships are represented directly by Rust values and owning containers.
 _Avoid_: Normal AST, pointer AST
 
 **Flat AST**:
-A generated semantic tree whose Nodes live in typed arenas and refer to one another through typed indices rather than owning child values.
+A mechanically derived, editable representation of the primary AST whose Nodes live in typed arenas and refer to one another through typed indices rather than owning child values. It retains semantic values without spans, comments, or occurrence provenance.
 _Avoid_: Packed AST, untyped node table, bump-allocated tree
+
+**Flat AST store**:
+The per-result owner of the typed Node collections addressed by one Flat AST's indices. The structure reachable from its root has tree semantics: each non-root Node has one parent and there are no cycles.
+_Avoid_: Shared global arena, untyped node table
 
 **Construction backend**:
 One caller-selectable, grammar-specific materialization of the representation-independent parser, with its own intermediate Node values and final output.
@@ -388,7 +396,7 @@ The explorer-adapter declaration that a configured Pretty or Arbitrary operation
 _Avoid_: Runtime trait reflection, feature flag
 
 **Explorer statistics**:
-The optional elapsed parse time, elapsed lex time, and Flat-AST arena memory usage returned alongside an Explorer parse, gated behind the `statistics` feature (which `explorer` enables transitively). Memory usage is reported only when the document is arena-backed; a Nested-AST document reports no memory figure.
+The optional elapsed parse time, elapsed lex time, and parse-arena memory usage returned alongside an Explorer parse, gated behind the `statistics` feature (which `explorer` enables transitively). Memory usage is reported only when the document is backed by a parse arena; a document without that storage reports no memory figure.
 _Avoid_: Parse statistics, timing metadata
 
 **Railroad diagram**:
