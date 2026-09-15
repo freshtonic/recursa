@@ -1,5 +1,13 @@
 # Flat AST design
 
+The source-of-truth premise below is superseded by
+[ADR 0010](adr/0010-declare-nodes-independently-of-ast-representation.md): representation-independent
+Node declarations replace authored nested Rust types as the canonical source. The
+[declaration API design](ast-node-declarations.md) is settled separately; this document retains
+the earlier flat milestone design, and its primary-AST transformation and authoring assumptions
+require reconciliation before flat implementation. Flat variant design was outside the declaration
+milestone.
+
 Status: parsing-milestone design settled. Implementation has not started. Mutation API design is
 explicitly deferred until parsing works.
 

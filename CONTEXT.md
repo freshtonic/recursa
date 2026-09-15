@@ -170,7 +170,7 @@ The grammar-root configuration that names the normal Recursa dependency path use
 _Avoid_: Dependency-name inference, hard-coded crate name
 
 **Non-empty sequence**:
-A one-or-more semantic repetition represented by `recursa::Vec1<T>`, whose public construction and mutation API makes an empty value unrepresentable. Its storage implementation is not part of the grammar meaning.
+A one-or-more semantic repetition whose value cannot be empty. Its concrete storage is a property of the AST representation, not part of the grammar meaning.
 _Avoid_: Validated `Vec<T>`, non-empty parser metadata
 
 **Grammar type application**:
@@ -178,7 +178,7 @@ A resolved use of a Node declaration with concrete semantic type arguments. Its 
 _Avoid_: Node key, Rust monomorphization artifact
 
 **Container shape**:
-The recursive composition of supported `Option`, `Box`, `Vec`, and `Vec1` constructors around one resolved Node application or generated content-token type. `Box` may occur anywhere; after ignoring `Box` layers, the accepted normal forms are `T`, `Option<T>`, `Vec<T>`, `Vec1<T>`, and `Option<Vec1<T>>`.
+The arrangement of cardinality and explicit indirection around one semantic field target. Cardinality determines optionality and repetition; boxing changes indirection without changing the grammar meaning.
 _Avoid_: Flat container flag, arbitrary Rust generic type
 
 **Token type binding**:
@@ -234,7 +234,7 @@ The fixed `Debug`, `Clone`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, and `Hash` i
 _Avoid_: Grammar defaults, inferred configured traits
 
 **Generated export plan**:
-The source-aware closed set of documented public bindings a generation introduces while preserving the visibility of their source declarations.
+The source-aware closed set of documented bindings a generation introduces with the effective visibility specified by their declarations.
 _Avoid_: Generated prelude, hidden loader surface
 
 **Parse plan**:
@@ -339,17 +339,29 @@ The sealed facade contract that gives a generated grammar type its safe
 grammar-bound input entry.
 _Avoid_: Manual parser trait, parse plan
 
+**Node declaration**:
+The representation-independent definition of a semantic Node's shape, child relationships, cardinalities, and grammar annotations. Node declarations are the canonical source from which concrete AST representations and parsing behavior are derived.
+_Avoid_: Primary AST, concrete Rust type used as the schema
+
+**AST style**:
+The choice of concrete AST representation and ownership model used to realize Node declarations. It determines how declared child relationships and cardinalities are stored.
+_Avoid_: Parser style, grammar variant
+
+**Boxed child**:
+An explicitly indirect child relationship whose cardinality is unchanged. Its concrete form is determined by the AST style.
+_Avoid_: Optional child, implicitly boxed recursion
+
 **Primary AST**:
-The authored structs and enums that are the canonical grammar representation, from which parsing behavior and alternative AST representations are derived.
-_Avoid_: Non-flat AST, secondary grammar schema
+The historical name for the authored nested AST when it served as the canonical grammar representation. In the declaration model, use Node declaration for the canonical definition and Nested AST for the owning representation.
+_Avoid_: Preferred AST representation
 
 **Nested AST**:
-An authored semantic tree whose child relationships are represented directly by Rust values and owning containers.
-_Avoid_: Normal AST, pointer AST
+A semantic tree whose child relationships are represented directly by values and owning containers.
+_Avoid_: Primary AST, normal AST, pointer AST
 
 **Flat AST**:
-A mechanically derived, editable representation of the primary AST whose Nodes live in typed arenas and refer to one another through typed indices rather than owning child values. It retains semantic values without spans, comments, or occurrence provenance.
-_Avoid_: Packed AST, untyped node table, bump-allocated tree
+A semantic AST representation whose Nodes live in typed stores and refer to one another through typed indices rather than owning child values. It retains semantic values without spans, comments, or occurrence provenance.
+_Avoid_: Secondary AST, packed AST, untyped node table, bump-allocated tree
 
 **Flat AST store**:
 The per-result owner of the typed Node collections addressed by one Flat AST's indices. The structure reachable from its root has tree semantics: each non-root Node has one parent and there are no cycles.
