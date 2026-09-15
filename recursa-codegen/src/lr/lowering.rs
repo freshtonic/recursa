@@ -394,11 +394,14 @@ enum OptionalInner {
 /// choices are inlined.
 #[derive(Clone, Debug)]
 enum SiteLowering {
-    /// A required site: one symbol.
+    /// A required site: one symbol, or, for an inlined cardinality-one attachment unit (see
+    /// [`Lowering::inline_attachment`]), the attachment's own fixed-token and operand symbols
+    /// in right-hand-side order.
     Required {
-        /// The site's symbol.
-        symbol: Symbol,
-        /// The site's fold: a fixed token's leaf, or a group around any other target.
+        /// The site's symbol, or symbols when an attachment unit inlined.
+        symbols: Vec<Symbol>,
+        /// The site's fold: a fixed token's leaf, or a group around any other target (or the
+        /// inlined attachment's symbols).
         kind: SiteKind,
     },
     /// An erased optional group or a presence: inlined as its terminals or a helper.
@@ -588,8 +591,10 @@ struct Lowering<'a> {
     admitted_keywords: KindSet,
     /// The LR grammar under construction.
     lr: LrGrammar,
-    /// The symbol each type lowers to: an inlined terminal or its nonterminal.
-    type_symbols: Vec<Symbol>,
+    /// The symbol each type lowers to: an inlined terminal or its nonterminal; `None` for a
+    /// cardinality-one attachment unit that lowers inline into its owner's rule instead (see
+    /// [`Self::inline_attachments`]).
+    type_symbols: Vec<Option<Symbol>>,
     /// Shared helper nonterminals.
     helpers: HashMap<HelperKey, NonterminalId>,
     /// Names already taken, to keep nonterminal names unique.
@@ -607,6 +612,9 @@ struct Lowering<'a> {
     operand_attachments: HashMap<TypeId, OperandAttachment>,
     /// Optional tail sites that must inline after a preceding separated list.
     separated_tail_sites: BTreeSet<SiteId>,
+    /// Cardinality-one attachment unit types that lower inline into their owner's rule instead
+    /// of a private nonterminal (see [`inlinable_attachment_units`]).
+    inline_attachments: BTreeSet<TypeId>,
 }
 
 #[derive(Clone, Copy)]
@@ -651,6 +659,87 @@ fn strip_boxes(shape: &ContainerShape) -> (u32, &ContainerShape) {
         }
         other => (0, other),
     }
+}
+
+/// Reports whether attachment sequence `unit` wraps an operand of Pratt type `pratt`: whether
+/// `unit` is an attachment unit one of whose own sites targets `pratt`. Grammar- and role-only
+/// (no `Lowering` state), so the prepass that decides which attachment units keep their private
+/// nonterminal (see [`pratt_operand_attachment_units`]) can run before `type_symbols` exists;
+/// [`Lowering::wraps_operand_of`] delegates to it once lowering is underway.
+fn attachment_wraps_pratt_operand(
+    grammar: &GrammarDescription,
+    roles: &TypeRoles,
+    unit: TypeId,
+    pratt: TypeId,
+) -> bool {
+    if !roles.attachment_units.contains_key(&unit) {
+        return false;
+    }
+    match &grammar.types[unit.index()].shape {
+        TypeShape::Sequence { sites } => sites
+            .iter()
+            .any(|site| grammar.sites[site.index()].target == pratt),
+        _ => false,
+    }
+}
+
+/// Attachment unit types a Pratt variant's own sites reference, whether or not the attachment
+/// wraps that variant's recursive operand: every such site lowers under
+/// [`Lowering::add_pratt_rule`]'s operand context (restriction and minimum-binding-power
+/// bookkeeping that assumes the attachment keeps its private nonterminal, via
+/// [`Lowering::attachment_clone`]), so lowering leaves every attachment of a Pratt variant on
+/// that path rather than inlining it, even one around a non-operand field. Run before
+/// [`Lowering::new`] builds `type_symbols`; [`Lowering::note_operands`] repeats the narrower,
+/// operand-wrapping subset of this identification once nonterminals exist, to record the
+/// precedence each operand-wrapping attachment inherits.
+fn pratt_operand_attachment_units(
+    grammar: &GrammarDescription,
+    roles: &TypeRoles,
+) -> BTreeSet<TypeId> {
+    let mut units = BTreeSet::new();
+    for description in &grammar.types {
+        let TypeShape::Pratt { variants } = &description.shape else {
+            continue;
+        };
+        for variant in variants {
+            if matches!(variant.position, PrattPosition::Atom) {
+                continue;
+            }
+            for site in &variant.sites {
+                let unit = grammar.sites[site.index()].target;
+                if roles.attachment_units.contains_key(&unit) {
+                    units.insert(unit);
+                }
+            }
+        }
+    }
+    units
+}
+
+/// Attachment unit types eligible to lower inline into their owner's rule (`docs/declared-
+/// precedence.md`, "Attachment units inline"): a cardinality-one attachment, whose one
+/// referencing site is `Direct` or boxed rather than `Optional` or a repetition element, that
+/// does not wrap a Pratt variant's own operand (`pratt_owned`, from
+/// [`pratt_operand_attachment_units`]). Inlining removes the private nonterminal entirely: the
+/// owner's reduce takes the field's value directly from its right-hand-side position instead of
+/// from a separate attachment reduce, so a `#[parse(prec = NAME)]` override authored on the
+/// owner lands on the rule an LALR(1) conflict is actually decided in. An attachment behind
+/// `Option<...>` (cardinality zero-or-one) or wrapping one occurrence of a repeated element
+/// keeps its private nonterminal, unchanged, because each such occurrence needs its own reduce.
+fn inlinable_attachment_units(
+    grammar: &GrammarDescription,
+    roles: &TypeRoles,
+    pratt_owned: &BTreeSet<TypeId>,
+) -> BTreeSet<TypeId> {
+    let mut cardinality_one = BTreeSet::new();
+    for site in &grammar.sites {
+        if roles.attachment_units.contains_key(&site.target)
+            && matches!(strip_boxes(&site.container).1, ContainerShape::Direct)
+        {
+            cardinality_one.insert(site.target);
+        }
+    }
+    cardinality_one.difference(pratt_owned).copied().collect()
 }
 
 /// Computes the FIRST kinds and nullability of every normalized type by fixpoint.
@@ -1004,9 +1093,17 @@ impl<'a> Lowering<'a> {
             .expect("kind sets of one grammar share a width");
         let mut lr = LrGrammar::new(terminal_names(grammar, &atom_kinds));
         let mut names = BTreeSet::new();
-        let mut type_symbols: Vec<Symbol> = Vec::with_capacity(grammar.types.len());
+        let pratt_owned = pratt_operand_attachment_units(grammar, roles);
+        let inline_attachments = inlinable_attachment_units(grammar, roles, &pratt_owned);
+        let mut type_symbols: Vec<Option<Symbol>> = Vec::with_capacity(grammar.types.len());
         for (index, description) in grammar.types.iter().enumerate() {
             let type_id = TypeId::new(index as u32);
+            if inline_attachments.contains(&type_id) {
+                // Inlined into its owner's rule (see `site_lowering`); it never gets its own
+                // nonterminal or rule.
+                type_symbols.push(None);
+                continue;
+            }
             let symbol = match &description.shape {
                 TypeShape::Token { atom, .. } if !roles.content_tokens.contains(&type_id) => {
                     let kinds: Vec<_> = atom_kinds[atom.index()].iter().collect();
@@ -1027,8 +1124,12 @@ impl<'a> Lowering<'a> {
                         Some(child) => {
                             let target = grammar.sites[child.index()].target;
                             match type_symbols[target.index()] {
-                                Symbol::Terminal(_) => false,
-                                Symbol::Nonterminal(id) => lr.nonterminal(id).carries_value,
+                                Some(Symbol::Terminal(_)) => false,
+                                Some(Symbol::Nonterminal(id)) => lr.nonterminal(id).carries_value,
+                                None => unreachable!(
+                                    "an attachment unit's semantic child is a real grammar \
+                                     type, never itself an inlined attachment"
+                                ),
                             }
                         }
                         None => true,
@@ -1046,7 +1147,7 @@ impl<'a> Lowering<'a> {
                     carries_value,
                 ))
             });
-            type_symbols.push(symbol);
+            type_symbols.push(Some(symbol));
         }
         Self {
             grammar,
@@ -1064,6 +1165,7 @@ impl<'a> Lowering<'a> {
             pending_clones: VecDeque::new(),
             operand_attachments: HashMap::new(),
             separated_tail_sites,
+            inline_attachments,
         }
     }
 
@@ -1078,7 +1180,7 @@ impl<'a> Lowering<'a> {
                 continue;
             };
             let type_id = TypeId::new(index as u32);
-            let Symbol::Nonterminal(owner) = self.type_symbols[index] else {
+            let Some(Symbol::Nonterminal(owner)) = self.type_symbols[index] else {
                 continue;
             };
             for variant in variants {
@@ -1120,17 +1222,19 @@ impl<'a> Lowering<'a> {
             .start_types
             .iter()
             .filter_map(|type_id| match self.type_symbols[type_id.index()] {
-                Symbol::Nonterminal(target) => Some(target),
-                Symbol::Terminal(_) => None,
+                Some(Symbol::Nonterminal(target)) => Some(target),
+                Some(Symbol::Terminal(_)) | None => None,
             })
             .collect()
     }
 
-    /// Emits the rules of every type that has a nonterminal.
+    /// Emits the rules of every type that has a nonterminal; an inlined attachment unit has
+    /// none, so its `type_symbols` entry is `None` and this loop skips it, exactly as it skips
+    /// a type inlined as a terminal.
     fn lower_types(&mut self) {
         for index in 0..self.grammar.types.len() {
             let type_id = TypeId::new(index as u32);
-            let Symbol::Nonterminal(lhs) = self.type_symbols[index] else {
+            let Some(Symbol::Nonterminal(lhs)) = self.type_symbols[index] else {
                 continue;
             };
             let shape = self.grammar.types[index].shape.clone();
@@ -1305,7 +1409,7 @@ impl<'a> Lowering<'a> {
         min_bp: u8,
     ) -> NonterminalId {
         if excluded.is_empty() && min_bp == 0 {
-            let Symbol::Nonterminal(base) = self.type_symbols[type_id.index()] else {
+            let Some(Symbol::Nonterminal(base)) = self.type_symbols[type_id.index()] else {
                 unreachable!("Pratt types carry a value, so they are never inlined");
             };
             return base;
@@ -1340,8 +1444,11 @@ impl<'a> Lowering<'a> {
     /// rule on first reference. The rule inherits the variant's precedence, owned by the
     /// exclusion-level nonterminal whose tokens it is compared with.
     fn attachment_clone(&mut self, unit: TypeId, context: OperandContext<'_>) -> NonterminalId {
-        let Symbol::Nonterminal(original) = self.type_symbols[unit.index()] else {
-            unreachable!("attachment units carry a value, so they are never inlined");
+        let Some(Symbol::Nonterminal(original)) = self.type_symbols[unit.index()] else {
+            unreachable!(
+                "attachment_clone is only ever called for a Pratt attachment unit, which \
+                 always carries a value and is never inlined"
+            );
         };
         if context.excluded.is_empty() {
             return original;
@@ -1642,7 +1749,10 @@ impl<'a> Lowering<'a> {
         };
         sites
             .iter()
-            .map(|site| self.type_symbols[self.grammar.sites[site.index()].target.index()])
+            .map(|site| {
+                self.type_symbols[self.grammar.sites[site.index()].target.index()]
+                    .expect("a fixed-only sequence's sites target fixed tokens, never an inlined attachment")
+            })
             .collect()
     }
 
@@ -1684,26 +1794,47 @@ impl<'a> Lowering<'a> {
             Some(operand) if self.wraps_operand_of(target, operand.pratt) => {
                 Symbol::Nonterminal(self.attachment_clone(target, operand))
             }
-            _ => self.type_symbols[target.index()],
+            _ => self.type_symbols[target.index()].expect(
+                "a site's target lowers to a symbol unless it is an inlined attachment unit, \
+                 which `site_lowering` handles before calling `site_target_symbol`",
+            ),
         }
     }
 
     /// Reports whether `unit` is an attachment sequence whose semantic site targets `pratt`.
     fn wraps_operand_of(&self, unit: TypeId, pratt: TypeId) -> bool {
-        if !self.roles.attachment_units.contains_key(&unit) {
-            return false;
-        }
-        match &self.grammar.types[unit.index()].shape {
-            TypeShape::Sequence { sites } => sites
-                .iter()
-                .any(|site| self.grammar.sites[site.index()].target == pratt),
-            _ => false,
+        attachment_wraps_pratt_operand(self.grammar, self.roles, unit, pratt)
+    }
+
+    /// Lowers a cardinality-one attachment unit inline: the symbols of its own fixed-token and
+    /// semantic-operand sites, in right-hand-side order, become one `Group`-kind alternative in
+    /// the owner's rule instead of a separate attachment nonterminal (`docs/declared-
+    /// precedence.md`, "Attachment units inline"). Every entry is popped with `FoldPolicy::
+    /// Inherited`, exactly as the removed attachment rule's own sites were, so a `Group` fold
+    /// over them builds the same children and span the removed rule's `Node` fold did: the
+    /// occurrence for the field is unchanged, just built by the owner's own reduce instead of a
+    /// nested one. `unit`'s own sites never carry a Pratt exclusion (inlining is only chosen
+    /// for a non-Pratt attachment, see [`inlinable_attachment_units`]), so each lowers with no
+    /// operand context.
+    fn inline_attachment(&mut self, unit: TypeId) -> SiteLowering {
+        let TypeShape::Sequence { sites } = self.grammar.types[unit.index()].shape.clone() else {
+            unreachable!("an attachment unit is always a sequence type")
+        };
+        let symbols: Vec<Symbol> = sites
+            .iter()
+            .map(|site| self.site_target_symbol(*site, None, false))
+            .collect();
+        SiteLowering::Required {
+            symbols,
+            kind: SiteKind::Group,
         }
     }
 
     /// Lowers one site to its site lowering, creating the list cores it needs. The site's
     /// target lowers under the Pratt rule it belongs to, if any (see
-    /// [`Self::site_target_symbol`]).
+    /// [`Self::site_target_symbol`]). A required site whose target is a cardinality-one,
+    /// non-Pratt attachment unit inlines (see [`Self::inline_attachment`]) instead of taking
+    /// the attachment's own nonterminal as its one symbol.
     fn site_lowering(
         &mut self,
         site_id: SiteId,
@@ -1712,12 +1843,18 @@ impl<'a> Lowering<'a> {
     ) -> SiteLowering {
         let site = self.grammar.sites[site_id.index()].clone();
         let target = site.target;
-        let symbol = self.site_target_symbol(site_id, context, last);
         let presence = self.roles.presence_sites.contains(&site_id);
         let (_, shape) = strip_boxes(&site.container);
+        if context.is_none()
+            && matches!(shape, ContainerShape::Direct)
+            && self.inline_attachments.contains(&target)
+        {
+            return self.inline_attachment(target);
+        }
+        let symbol = self.site_target_symbol(site_id, context, last);
         match shape {
             ContainerShape::Direct | ContainerShape::Boxed(_) => SiteLowering::Required {
-                symbol,
+                symbols: vec![symbol],
                 kind: self.required_site_kind(target),
             },
             ContainerShape::Optional(inner) => {
@@ -1758,8 +1895,10 @@ impl<'a> Lowering<'a> {
                             type_id: self.value_type(target),
                             boxes: element_boxes,
                         };
-                        let separator_symbol =
-                            separator.map(|separator| self.type_symbols[separator.type_id.index()]);
+                        let separator_symbol = separator.map(|separator| {
+                            self.type_symbols[separator.type_id.index()]
+                                .expect("a separator token is never an inlined attachment unit")
+                        });
                         let list1 = self.non_empty_list(symbol, separator_symbol, element);
                         SiteLowering::ValuedOptional {
                             inner: OptionalInner::List(InnerList {
@@ -1796,8 +1935,10 @@ impl<'a> Lowering<'a> {
                     type_id: self.value_type(target),
                     boxes: element_boxes,
                 };
-                let separator_symbol =
-                    separator.map(|separator| self.type_symbols[separator.type_id.index()]);
+                let separator_symbol = separator.map(|separator| {
+                    self.type_symbols[separator.type_id.index()]
+                        .expect("a separator token is never an inlined attachment unit")
+                });
                 let trailing = separator
                     .filter(|separator| separator.optional_trailing)
                     .and(separator_symbol);
@@ -1858,8 +1999,8 @@ impl<'a> Lowering<'a> {
         };
         let inherited = FoldPolicy::Inherited;
         match lowering.clone() {
-            SiteLowering::Required { symbol, kind } => {
-                vec![present(vec![symbol], false, kind, inherited)]
+            SiteLowering::Required { symbols, kind } => {
+                vec![present(symbols, false, kind, inherited)]
             }
             SiteLowering::FixedOptional {
                 tokens,
@@ -2255,7 +2396,7 @@ impl<'a> Lowering<'a> {
     /// Adds a start rule for every entry type that has a nonterminal.
     fn lower_starts(&mut self) {
         for type_id in &self.roles.start_types {
-            if let Symbol::Nonterminal(target) = self.type_symbols[type_id.index()] {
+            if let Some(Symbol::Nonterminal(target)) = self.type_symbols[type_id.index()] {
                 self.lr.add_start(*type_id, target);
             }
         }
