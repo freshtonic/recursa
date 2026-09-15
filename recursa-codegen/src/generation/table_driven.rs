@@ -1235,11 +1235,17 @@ fn render_field_value(
     } = site;
     let facade = &plan.facade;
     let is_choice = |wrapper: &FieldWrapper| !matches!(wrapper, FieldWrapper::Boxed);
-    // One element popped or named through the symbol at `symbols[0]`, boxed `boxes` times.
+    // One element popped or named through the field's value-carrying symbol, boxed `boxes`
+    // times. Usually `symbols` is that one symbol, but an inlined cardinality-one attachment
+    // unit (`docs/declared-precedence.md`, "Attachment units inline") widens the form to the
+    // attachment's own fixed-token and operand symbols, with the fixed tokens never carrying a
+    // value; the value stack holds only value-carrying entries regardless of their
+    // right-hand-side position, so `pop` finds the operand's value correctly once any symbol in
+    // the widened form is known to carry one.
     let element = |boxes: usize| -> Result<proc_macro2::TokenStream, String> {
         let carries = symbols
-            .first()
-            .is_some_and(|symbol| lr.symbol_carries_value(*symbol));
+            .iter()
+            .any(|symbol| lr.symbol_carries_value(*symbol));
         let value = if carries {
             return Ok(boxed_stack_value(plan, boxes));
         } else {

@@ -102,7 +102,7 @@ fn arith_pratt_variants_lower_to_plain_rules_with_recorded_binding_powers() {
         [
             "arith::Expr -> arith::Atom<arith::IntAtom>",
             "arith::Expr -> arith::Atom<arith::IdentAtom>",
-            "arith::Expr -> arith::Expr::__recursa_attachment",
+            "arith::Expr -> LPAREN arith::Expr RPAREN",
             "arith::Expr -> MINUS arith::Expr",
             "arith::Expr -> arith::Expr PLUS arith::Expr",
             "arith::Expr -> arith::Expr MINUS arith::Expr",
@@ -155,12 +155,19 @@ fn arith_pratt_variants_lower_to_plain_rules_with_recorded_binding_powers() {
     }
     let diagnostics = conflict_diagnostics(&grammar, &automaton);
     assert_eq!(diagnostics.len(), automaton.conflicts().len());
-    let paren = grammar
-        .nonterminal_by_name("arith::Expr::__recursa_attachment")
-        .expect("the fixed-token group around the parenthesised operand");
-    assert_eq!(
-        grammar.render_rule(grammar.rules_of(paren)[0]),
-        "arith::Expr::__recursa_attachment -> LPAREN arith::Expr RPAREN"
+    // The fixed-token group around the parenthesised Pratt atom's operand is a cardinality-one
+    // attachment behind an `Atom` position, so it inlines into `Expr`'s own rule instead of a
+    // private nonterminal: no `arith::Expr::__recursa_attachment` nonterminal exists any more.
+    assert!(
+        grammar
+            .nonterminal_by_name("arith::Expr::__recursa_attachment")
+            .is_none()
+    );
+    assert!(
+        grammar
+            .rules_of(expr)
+            .iter()
+            .any(|rule| grammar.render_rule(*rule) == "arith::Expr -> LPAREN arith::Expr RPAREN")
     );
 }
 
@@ -603,9 +610,9 @@ fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixt
     let min_integer = "grammar::Expr[min 8] -> grammar::Integer";
     let min_add = "grammar::Expr[min 8] -> grammar::Expr[min 8] PLUS grammar::Expr";
     let min_multiply = "grammar::Expr[min 8] -> grammar::Expr[min 8] STAR grammar::Expr";
-    let between_head = "grammar::Expr::__recursa_attachment#22 -> BETWEEN grammar::Expr[min 8]";
+    let between_head = "grammar::Expr::__recursa_attachment -> BETWEEN grammar::Expr[min 8]";
     let between_tail = "grammar::Expr::__recursa_attachment#23 -> AND grammar::Expr[min 8]";
-    let between = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#22 grammar::Expr::__recursa_attachment#23";
+    let between = "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment grammar::Expr::__recursa_attachment#23";
     assert_eq!(
         expr_reductions(
             &lowered,
@@ -629,7 +636,7 @@ fn binding_power_precedence_resolves_every_pratt_conflict_of_the_expression_fixt
         ]
     );
     for attachment in [
-        "grammar::Expr::__recursa_attachment#22",
+        "grammar::Expr::__recursa_attachment",
         "grammar::Expr::__recursa_attachment#23",
     ] {
         let attachment = grammar
@@ -674,8 +681,9 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
         .iter()
         .map(|rule| grammar.render_rule(*rule))
         .collect();
-    // Atoms keep the full language (the parenthesised operand stays the original attachment,
-    // as gram.y's `b_expr: '(' a_expr ')'`), prefix and infix operands carry the exclusion, the
+    // Atoms keep the full language (the parenthesised operand is the plain, unrestricted
+    // `Expr`, inlined directly into this clone's own rule since it is an `Atom` position, as
+    // gram.y's `b_expr: '(' a_expr ')'`), prefix and infix operands carry the exclusion, the
     // interleaved operands carry it through cloned attachments, and the excluded `In` rule is
     // gone.
     assert_eq!(
@@ -684,10 +692,10 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             "grammar::Expr[excl In] -> grammar::Integer",
             "grammar::Expr[excl In] -> grammar::Name",
             "grammar::Expr[excl In] -> grammar::Position",
-            "grammar::Expr[excl In] -> grammar::Expr::__recursa_attachment",
+            "grammar::Expr[excl In] -> LPAREN grammar::Expr RPAREN",
             "grammar::Expr[excl In] -> MINUS grammar::Expr[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] BANG",
-            "grammar::Expr[excl In] -> grammar::Expr[excl In] grammar::Expr::__recursa_attachment#22[excl In] grammar::Expr::__recursa_attachment#23[excl In]",
+            "grammar::Expr[excl In] -> grammar::Expr[excl In] grammar::Expr::__recursa_attachment[excl In] grammar::Expr::__recursa_attachment#23[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] FROM grammar::Expr[excl In, min 7] FOR grammar::Expr[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] grammar::Expr::__recursa_attachment#24[excl In]",
             "grammar::Expr[excl In] -> grammar::Expr[excl In] CARET grammar::Expr[excl In]",
@@ -773,7 +781,7 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
             "grammar::Expr[excl In, min 50] -> grammar::Integer",
             "grammar::Expr[excl In, min 50] -> grammar::Name",
             "grammar::Expr[excl In, min 50] -> grammar::Position",
-            "grammar::Expr[excl In, min 50] -> grammar::Expr::__recursa_attachment",
+            "grammar::Expr[excl In, min 50] -> LPAREN grammar::Expr RPAREN",
             "grammar::Expr[excl In, min 50] -> MINUS grammar::Expr[excl In]",
             "grammar::Expr[excl In, min 50] -> grammar::Expr[excl In, min 50] BANG",
             "grammar::Expr[excl In, min 50] -> grammar::Expr[excl In, min 50] grammar::Expr::__recursa_attachment#24[excl In]",
@@ -782,8 +790,8 @@ fn an_exclusion_site_clones_the_pratt_nonterminal_without_the_excluded_operators
     );
     for (attachment, rule) in [
         (
-            "grammar::Expr::__recursa_attachment#22[excl In]",
-            "grammar::Expr::__recursa_attachment#22[excl In] -> BETWEEN grammar::Expr[excl In, min 8]",
+            "grammar::Expr::__recursa_attachment[excl In]",
+            "grammar::Expr::__recursa_attachment[excl In] -> BETWEEN grammar::Expr[excl In, min 8]",
         ),
         (
             "grammar::Expr::__recursa_attachment#23[excl In]",
@@ -1014,15 +1022,15 @@ fn an_exclusion_of_atoms_clones_the_pratt_nonterminal_without_them() {
         "{index:?}"
     );
     assert!(index.contains(&"grammar::Expr[excl Subquery,And] -> grammar::Expr[excl Subquery,And] PLUS grammar::Expr[excl Subquery,And]".to_owned()), "{index:?}");
-    let subquery = attachment_with_rule(&grammar, "LPAREN SELECT grammar::Expr RPAREN");
+    // The parenthesised subquery atom's fixed-token group is cardinality-one behind an `Atom`
+    // position, so it inlines into the clone's own rule instead of a private attachment
+    // nonterminal; the excluded clone drops the whole rule, tokens included.
     assert!(
-        full.iter()
-            .any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name))
+        full.contains(&"grammar::Expr -> LPAREN SELECT grammar::Expr RPAREN".to_owned()),
+        "{full:?}"
     );
     assert!(
-        !index
-            .iter()
-            .any(|rule| rule.ends_with(&grammar.nonterminal(subquery).name)),
+        !index.iter().any(|rule| rule.contains("SELECT")),
         "{index:?}"
     );
 }
