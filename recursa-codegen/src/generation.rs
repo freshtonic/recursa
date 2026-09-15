@@ -55,10 +55,12 @@ use crate::source_analysis::{
     discover_source_tree, internal_generate_error, make_diagnostic, warning_directives,
 };
 use crate::source_model::{
-    ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
-    NodeBody as SourceNodeBody, PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition,
-    PrettySpacing, PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
+    AttachedFixedSyntax, ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
+    NodeBody as SourceNodeBody, PrecedenceKindReference, PrecedenceOwner, PrettyBreak, PrettyGroup,
+    PrettyHints, PrettySeparatorPosition, PrettySpacing, PrettyTrailingSeparator,
+    SemanticFieldProjection, SourceModel, SourcePrattPosition, TokenDefinitionKind,
 };
+use crate::{PrecedenceAssociativity, PrecedenceLevelId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Cardinality operation implemented by one generated container projection.

@@ -182,6 +182,10 @@ pub(super) struct PrettyNodeBehavior {
     pub(super) variants: Vec<Vec<PrettyElementBehavior>>,
     /// Pratt-specific grouping and parenthesization decisions.
     pub(super) pratt: Option<PrettyPrattBehavior>,
+    /// Declared-precedence grouping and parenthesization decisions for a plain enum Node with
+    /// at least one self-recursive operand; `None` for every other Node, including a plain
+    /// enum with no self-recursion at all.
+    pub(super) declared: Option<PrettyDeclaredBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -609,6 +613,141 @@ pub(super) enum PrettyPrattNext {
     Binding(u16),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Grouping and variant-specific rendering rules for a plain enum Node whose grammar declares
+/// a `precedence { ... }` block: the declared-precedence counterpart of [`PrettyPrattBehavior`]
+/// for a Node with no `#[pratt]` role at all.
+pub(super) struct PrettyDeclaredBehavior {
+    /// Authored delimiter behavior for the explicit grouping variant; the same shape a Pratt
+    /// Node's grouping atom uses, since both escape precedence with parentheses the same way.
+    pub(super) grouping: Option<PrettyPrattGrouping>,
+    /// Parenthesization and operand plans in declaration variant order.
+    pub(super) variants: Vec<PrettyDeclaredVariantBehavior>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Parenthesization and operands for one plain enum variant under declared precedence.
+pub(super) struct PrettyDeclaredVariantBehavior {
+    /// This variant's own declared level: `None` for a variant with no declared terminal and
+    /// no `#[parse(prec = NAME)]` override, which is never parenthesized as anyone's operand.
+    pub(super) level: Option<u32>,
+    /// Ordinary or self-recursive operand behavior in semantic-field order.
+    pub(super) operands: Vec<PrettyDeclaredOperandBehavior>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Rendering rule for an ordinary or self-recursive declared-precedence operand.
+pub(super) enum PrettyDeclaredOperandBehavior {
+    /// Renders through the field's normal Pretty implementation.
+    Ordinary,
+    /// Renders through the owning Node's declared-precedence entry point.
+    Recursive {
+        /// Node recursively targeted by the operand; always the owning Node itself.
+        owner: NodeId,
+        /// Concrete recursive applications accepted at this site.
+        applications: Vec<MaterializedApplicationId>,
+        /// Left-edge precedence bound passed into recursive rendering.
+        minimum: PrettyDeclaredMinimum,
+        /// Right-edge precedence bound exposed after the rendered operand.
+        next: PrettyDeclaredNext,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Left-edge precedence bound passed to a recursive declared-precedence operand.
+pub(super) enum PrettyDeclaredMinimum {
+    /// Imposes no left-edge bound: an interior operand, or the sole symbol of a level-less
+    /// rule, is never parenthesized by precedence.
+    None,
+    /// Reuses the enclosing call's own left-edge bound unchanged.
+    Inner,
+    /// Establishes a concrete left-edge bound from the enclosing variant's own level.
+    Binding(PrettyDeclaredBound),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Right-edge precedence bound exposed after a recursive declared-precedence operand.
+pub(super) enum PrettyDeclaredNext {
+    /// Imposes no right-edge bound.
+    None,
+    /// Reuses the enclosing call's own right-edge bound unchanged.
+    Inner,
+    /// Establishes a concrete right-edge bound from the enclosing variant's own level.
+    Binding(PrettyDeclaredBound),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One declared-precedence threshold: a level and whether an operand at exactly that level
+/// must still be parenthesized, bison's associativity tie-break restated for one edge.
+pub(super) struct PrettyDeclaredBound {
+    /// The threshold level: an operand whose own level is lower is always parenthesized.
+    pub(super) level: u32,
+    /// Whether an operand whose own level equals this threshold is also parenthesized.
+    pub(super) tie_parenthesizes: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Where one semantic element sits in its owning variant's authored symbol sequence, which
+/// drives whether a self-recursive operand there needs a fresh precedence bound.
+pub(super) enum DeclaredOperandPosition {
+    /// The rule's first symbol: nothing, not even a fixed token, precedes it.
+    First,
+    /// The rule's last symbol: nothing follows it.
+    Last,
+    /// Both the first and the last symbol: the rule has no other syntax at all.
+    Sole,
+    /// Neither: delimited by fixed tokens or other operands on at least one side, so never
+    /// parenthesized by precedence.
+    Interior,
+}
+
+impl DeclaredOperandPosition {
+    /// Classifies from whether the operand is a rule boundary on each side.
+    pub(super) const fn classify(is_first_symbol: bool, is_last_symbol: bool) -> Self {
+        match (is_first_symbol, is_last_symbol) {
+            (true, true) => Self::Sole,
+            (true, false) => Self::First,
+            (false, true) => Self::Last,
+            (false, false) => Self::Interior,
+        }
+    }
+}
+
+/// Derives the precedence bound passed into one recursive declared-precedence operand from its
+/// enclosing variant's own level and the operand's rule-boundary position.
+///
+/// The bison tie-break is folded in here: a first operand is parenthesized on a tie when the
+/// enclosing level is `right` or `nonassoc`, and a last operand is parenthesized on a tie when
+/// the enclosing level is `left` or `nonassoc`. A level-less enclosing variant establishes no
+/// new bound and passes its own received bound through unchanged, the same as a sole operand.
+pub(super) fn pretty_declared_operand_bound(
+    own_level: Option<DeclaredVariantLevel>,
+    position: DeclaredOperandPosition,
+) -> (PrettyDeclaredMinimum, PrettyDeclaredNext) {
+    let bound = |tie_parenthesizes_when_not: PrecedenceAssociativity| {
+        own_level.map(|level| PrettyDeclaredBound {
+            level: level.ordinal,
+            tie_parenthesizes: level.associativity != tie_parenthesizes_when_not,
+        })
+    };
+    match position {
+        DeclaredOperandPosition::Interior => {
+            (PrettyDeclaredMinimum::None, PrettyDeclaredNext::None)
+        }
+        DeclaredOperandPosition::Sole => (PrettyDeclaredMinimum::Inner, PrettyDeclaredNext::Inner),
+        DeclaredOperandPosition::First => {
+            let next = bound(PrecedenceAssociativity::Left)
+                .map_or(PrettyDeclaredNext::Inner, PrettyDeclaredNext::Binding);
+            (PrettyDeclaredMinimum::Inner, next)
+        }
+        DeclaredOperandPosition::Last => {
+            let minimum = bound(PrecedenceAssociativity::Right)
+                .map_or(PrettyDeclaredMinimum::Inner, PrettyDeclaredMinimum::Binding);
+            (minimum, PrettyDeclaredNext::Inner)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Grouping strategy for an emitted element sequence.
 pub(super) enum PrettySequenceLayout {
@@ -778,12 +917,16 @@ pub(super) enum PrettyFixedRendering {
 }
 
 /// Projects configured rendering behavior from the frozen parse and token plans.
+///
+/// Fails when a plain enum Node needs precedence-based parenthesization, because it declares a
+/// `precedence { ... }` level somewhere and has a self-recursive operand at a rule boundary,
+/// but its grammar has no atom that encloses `Self` between fixed tokens to escape it with.
 pub(super) fn emitted_pretty_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
-) -> PrettyEmissionPlan {
+) -> Result<PrettyEmissionPlan, String> {
     let grouping_syntax = emitted_pretty_grouping_syntax(nodes);
-    PrettyEmissionPlan {
+    Ok(PrettyEmissionPlan {
         tokens: tokens
             .iter()
             .map(|token| {
@@ -799,9 +942,10 @@ pub(super) fn emitted_pretty_plan(
                 node.configured_traits
                     .contains(&ConfiguredTraitRecipe::Pretty)
                     .then(|| emitted_pretty_node_behavior(node, &grouping_syntax))
+                    .transpose()
             })
-            .collect(),
-    }
+            .collect::<Result<Vec<_>, String>>()?,
+    })
 }
 
 /// Projects frozen parse plans into the compact syntax graph used for grouping proofs.
@@ -900,7 +1044,7 @@ fn emitted_pretty_grouping_element(
 pub(super) fn emitted_pretty_node_behavior(
     node: &NodeParsePlan,
     grouping_syntax: &PrettyPrattGroupingSyntax,
-) -> PrettyNodeBehavior {
+) -> Result<PrettyNodeBehavior, String> {
     let variant_pretty = match &node.body {
         NodeBodyPlan::Struct { .. } => vec![PrettyHints::default()],
         NodeBodyPlan::Enum { variants, .. } => variants
@@ -942,7 +1086,18 @@ pub(super) fn emitted_pretty_node_behavior(
         )),
         NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
     };
-    PrettyNodeBehavior {
+    let declared = match &node.body {
+        NodeBodyPlan::Enum {
+            variants: declaration_variants,
+        } => emitted_pretty_declared_behavior(
+            node,
+            declaration_variants,
+            &variants,
+            grouping_syntax,
+        )?,
+        NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
+    };
+    Ok(PrettyNodeBehavior {
         node: node.node,
         applications,
         pretty: node.pretty.clone(),
@@ -950,7 +1105,106 @@ pub(super) fn emitted_pretty_node_behavior(
         variant_layouts,
         variants,
         pratt,
+        declared,
+    })
+}
+
+/// Derives declared-precedence grouping and operand behavior for a plain enum Node, or `None`
+/// when no variant has a self-recursive operand and nothing needs parenthesizing.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps operand-position classification beside the grouping-atom requirement they
+/// share, mirroring how [`emitted_pretty_pratt_behavior`] keeps Pratt's two concerns together.
+/// Invariants: a variant's own level and every operand's rule-boundary position are derived
+/// purely from its authored element sequence, never from an ambient thread of Pratt facts.
+/// Phases: classifies each variant's operands, then proves a grouping atom exists whenever some
+/// declared level could ever require one.
+fn emitted_pretty_declared_behavior(
+    node: &NodeParsePlan,
+    declaration_variants: &[VariantParsePlan],
+    variants: &[Vec<PrettyElementBehavior>],
+    grouping_syntax: &PrettyPrattGroupingSyntax,
+) -> Result<Option<PrettyDeclaredBehavior>, String> {
+    let applications = node
+        .parse_applications
+        .iter()
+        .map(|application| application.application)
+        .collect::<Vec<_>>();
+    let mut has_recursive_operand = false;
+    let mut is_atom = Vec::with_capacity(declaration_variants.len());
+    let mut variant_behaviors = Vec::with_capacity(declaration_variants.len());
+    for variant in declaration_variants {
+        let len = variant.elements.len();
+        let mut operands = Vec::new();
+        let mut has_edge_operand = false;
+        for (index, element) in variant.elements.iter().enumerate() {
+            let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+                continue;
+            };
+            let SemanticParseProjection::Direct {
+                terminal_node,
+                attachment,
+                ..
+            } = projection.as_ref()
+            else {
+                continue;
+            };
+            if *terminal_node != Some(node.node) {
+                operands.push(PrettyDeclaredOperandBehavior::Ordinary);
+                continue;
+            }
+            has_recursive_operand = true;
+            let before_empty = attachment
+                .as_ref()
+                .is_none_or(|attachment| attachment.before.is_empty());
+            let after_empty = attachment
+                .as_ref()
+                .is_none_or(|attachment| attachment.after.is_empty());
+            let position = DeclaredOperandPosition::classify(
+                index == 0 && before_empty,
+                index + 1 == len && after_empty,
+            );
+            has_edge_operand |= !matches!(position, DeclaredOperandPosition::Interior);
+            let (minimum, next) =
+                pretty_declared_operand_bound(variant.declared_precedence, position);
+            operands.push(PrettyDeclaredOperandBehavior::Recursive {
+                owner: node.node,
+                applications: applications.clone(),
+                minimum,
+                next,
+            });
+        }
+        is_atom.push(!has_edge_operand);
+        variant_behaviors.push(PrettyDeclaredVariantBehavior {
+            level: variant.declared_precedence.map(|level| level.ordinal),
+            operands,
+        });
     }
+    if !has_recursive_operand {
+        return Ok(None);
+    }
+    let requires_grouping = is_atom.contains(&false)
+        && declaration_variants
+            .iter()
+            .any(|variant| variant.declared_precedence.is_some());
+    let grouping = pretty_pratt_grouping(
+        node.node,
+        declaration_variants,
+        variants,
+        &is_atom,
+        grouping_syntax,
+    );
+    if requires_grouping && grouping.is_none() {
+        return Err(format!(
+            "Pretty cannot repair precedence for Node `{}` because its grammar has no atom that encloses Self between fixed tokens",
+            node.ident,
+        ));
+    }
+    Ok(Some(PrettyDeclaredBehavior {
+        grouping,
+        variants: variant_behaviors,
+    }))
 }
 
 /// Derives Pratt grouping, binding-power, and recursive-operand behavior.
@@ -1003,12 +1257,16 @@ pub(super) fn emitted_pretty_pratt_behavior(
             }
         })
         .collect();
+    let is_atom = positions
+        .iter()
+        .map(|position| matches!(position, Some(PrattPosition::Atom)))
+        .collect::<Vec<_>>();
     PrettyPrattBehavior {
         grouping: pretty_pratt_grouping(
             node.node,
             &declaration_variants,
             variants,
-            &positions,
+            &is_atom,
             grouping_syntax,
         ),
         variants: variant_behaviors,
@@ -1103,19 +1361,24 @@ pub(super) fn apply_pretty_pratt_fixed_layout(
 }
 
 /// Extracts the explicit grouping variant's before/after delimiter behavior.
+///
+/// Shared by Pratt and declared-precedence plain enum bodies alike: `is_atom` selects, in
+/// declaration variant order, every variant with no self-recursive operand playing a Pratt
+/// role or a declared-precedence first/last-symbol role, since only such a variant can be the
+/// grouping atom that lets Pretty repair precedence with parentheses.
 pub(super) fn pretty_pratt_grouping(
     owner: NodeId,
     declaration_variants: &[VariantParsePlan],
     behaviors: &[Vec<PrettyElementBehavior>],
-    positions: &[Option<PrattPosition>],
+    is_atom: &[bool],
     grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Option<PrettyPrattGrouping> {
     let mut analyzer = PrettyPrattGroupingAnalyzer::new(grouping_syntax);
     let candidates = declaration_variants
         .iter()
         .zip(behaviors)
-        .zip(positions)
-        .filter(|(_, position)| matches!(position, Some(PrattPosition::Atom)))
+        .zip(is_atom)
+        .filter(|(_, is_atom)| **is_atom)
         .map(|((variant, behavior), _)| {
             variant
                 .elements
@@ -1616,6 +1879,17 @@ pub(super) fn authoritative_pretty_node_behavior(
         )?),
         SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) | SourceNodeBody::Enum(_) => None,
     };
+    let declared = match &source_node.body {
+        SourceNodeBody::Enum(declaration_variants) => authoritative_pretty_declared_behavior(
+            lowered,
+            resolved_node,
+            declaration_variants,
+            &applications,
+            &variants,
+            grouping_syntax,
+        )?,
+        SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) | SourceNodeBody::Pratt(_) => None,
+    };
     Ok(PrettyNodeBehavior {
         node: resolved_node.id,
         applications,
@@ -1624,7 +1898,126 @@ pub(super) fn authoritative_pretty_node_behavior(
         variant_layouts,
         variants,
         pratt,
+        declared,
     })
+}
+
+/// Reconstructs declared-precedence grouping and operand behavior from authored source
+/// correlations, independent of the frozen emitted parse plan, or `None` when no variant has a
+/// self-recursive operand.
+///
+/// # Long-function contract
+///
+/// Rationale: mirrors [`emitted_pretty_declared_behavior`] from raw source structure so the two
+/// can never silently drift; both call the shared [`declared_variant_level`] and
+/// [`pretty_declared_operand_bound`] decision functions.
+/// Invariants: a variant's own level and every operand's rule-boundary position are derived
+/// purely from its authored element sequence.
+/// Phases: classifies each variant's operands, then proves a grouping atom exists whenever some
+/// declared level could ever require one.
+fn authoritative_pretty_declared_behavior(
+    lowered: &crate::materialization::LoweredGrammar,
+    resolved_node: &ResolvedNode,
+    variants: &[crate::source_model::Variant],
+    applications: &[MaterializedApplicationId],
+    behaviors: &[Vec<PrettyElementBehavior>],
+    grouping_syntax: &PrettyPrattGroupingSyntax,
+) -> Result<Option<PrettyDeclaredBehavior>, String> {
+    let source = lowered.source_modeled.source_model();
+    let resolved = lowered.source_modeled.resolved();
+    let mut has_recursive_operand = false;
+    let mut is_atom = Vec::with_capacity(variants.len());
+    let mut levels = Vec::with_capacity(variants.len());
+    let mut variant_behaviors = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let level = declared_variant_level(
+            source,
+            resolved_node.id,
+            variant.resolved_variant,
+            &variant.elements,
+        );
+        let len = variant.elements.len();
+        let mut operands = Vec::new();
+        let mut has_edge_operand = false;
+        for (index, element) in variant.elements.iter().enumerate() {
+            let GrammarElement::SemanticField {
+                resolved_field,
+                attachment,
+                projection: SemanticFieldProjection::Direct,
+                ..
+            } = element
+            else {
+                // A standalone `Fixed` or `OptionalFixedTokenGroup` element, or a boolean
+                // `FixedPresence` field, is never a recursive operand; leave `operands` alone,
+                // matching how `render_declared_enum_pretty` never advances its own operand
+                // index for one either.
+                continue;
+            };
+            let field = resolved_node
+                .fields
+                .iter()
+                .find(|field| field.id == *resolved_field)
+                .ok_or_else(|| {
+                    "a declared-precedence Pretty operand lacks resolved syntax".to_owned()
+                })?;
+            let projection = authored_projection(&field.ty, resolved)?;
+            if projection.terminal_node != Some(resolved_node.id) {
+                operands.push(PrettyDeclaredOperandBehavior::Ordinary);
+                continue;
+            }
+            has_recursive_operand = true;
+            let before_empty = attachment
+                .as_ref()
+                .is_none_or(|attachment| attachment.before.is_empty());
+            let after_empty = attachment
+                .as_ref()
+                .is_none_or(|attachment| attachment.after.is_empty());
+            let position = DeclaredOperandPosition::classify(
+                index == 0 && before_empty,
+                index + 1 == len && after_empty,
+            );
+            has_edge_operand |= !matches!(position, DeclaredOperandPosition::Interior);
+            let (minimum, next) = pretty_declared_operand_bound(level, position);
+            operands.push(PrettyDeclaredOperandBehavior::Recursive {
+                owner: resolved_node.id,
+                applications: applications.to_vec(),
+                minimum,
+                next,
+            });
+        }
+        is_atom.push(!has_edge_operand);
+        levels.push(level);
+        variant_behaviors.push(PrettyDeclaredVariantBehavior {
+            level: level.map(|level| level.ordinal),
+            operands,
+        });
+    }
+    if !has_recursive_operand {
+        return Ok(None);
+    }
+    let requires_grouping = is_atom.contains(&false) && levels.iter().any(Option::is_some);
+    let variant_elements = variants
+        .iter()
+        .map(|variant| variant.elements.as_slice())
+        .collect::<Vec<_>>();
+    let grouping = authoritative_pretty_pratt_grouping(
+        resolved_node,
+        &variant_elements,
+        behaviors,
+        &is_atom,
+        resolved,
+        grouping_syntax,
+    )?;
+    if requires_grouping && grouping.is_none() {
+        return Err(format!(
+            "Pretty cannot repair precedence for Node `{}` because its grammar has no atom that encloses Self between fixed tokens",
+            resolved_node.ident,
+        ));
+    }
+    Ok(Some(PrettyDeclaredBehavior {
+        grouping,
+        variants: variant_behaviors,
+    }))
 }
 
 /// Reconstructs Pratt rendering semantics from authoritative source correlations.
@@ -1677,12 +2070,20 @@ pub(super) fn authoritative_pretty_pratt_behavior(
             operands,
         });
     }
+    let is_atom = positions
+        .iter()
+        .map(|position| matches!(position, PrattPosition::Atom))
+        .collect::<Vec<_>>();
+    let variant_elements = source_variants
+        .iter()
+        .map(|variant| variant.common.elements.as_slice())
+        .collect::<Vec<_>>();
     Ok(PrettyPrattBehavior {
         grouping: authoritative_pretty_pratt_grouping(
             resolved_node,
-            source_variants,
+            &variant_elements,
             variants,
-            &positions,
+            &is_atom,
             resolved,
             grouping_syntax,
         )?,
@@ -1728,23 +2129,25 @@ pub(super) fn apply_authoritative_pretty_pratt_fixed_layout(
 }
 
 /// Reconstructs explicit Pratt grouping delimiters from authored syntax.
+///
+/// Shared by Pratt and declared-precedence plain enum bodies: `is_atom` selects, in
+/// declaration variant order, every variant with no self-recursive operand playing a Pratt
+/// role or a declared-precedence first/last-symbol role.
 pub(super) fn authoritative_pretty_pratt_grouping(
     resolved_node: &ResolvedNode,
-    source_variants: &[crate::source_model::SourcePrattVariant],
+    variant_elements: &[&[GrammarElement]],
     behaviors: &[Vec<PrettyElementBehavior>],
-    positions: &[PrattPosition],
+    is_atom: &[bool],
     resolved: &ResolvedSourceGrammar,
     grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Result<Option<PrettyPrattGrouping>, String> {
     let mut analyzer = PrettyPrattGroupingAnalyzer::new(grouping_syntax);
     let mut candidates = Vec::new();
-    for ((variant, behavior), position) in source_variants.iter().zip(behaviors).zip(positions) {
-        if !matches!(position, PrattPosition::Atom) {
+    for ((elements, behavior), is_atom) in variant_elements.iter().zip(behaviors).zip(is_atom) {
+        if !is_atom {
             continue;
         }
-        let elements = variant
-            .common
-            .elements
+        let elements = elements
             .iter()
             .zip(behavior)
             .map(|(element, behavior)| {
@@ -2337,6 +2740,434 @@ pub(super) fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::To
     }
 }
 
+/// Renders precedence-aware `Pretty` behavior for one plain enum Node whose grammar declares a
+/// `precedence { ... }` block and that has a self-recursive operand.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps declared-precedence parenthesization beside typed Pretty behavior, mirroring
+/// [`render_pratt_node_pretty`] with a level-and-associativity bound in place of a Pratt binding
+/// power, since the two share the same self-checking, context-threading shape.
+/// Invariants: rendered precedence and associativity mirror [`PrettyDeclaredBehavior`] without
+/// consulting runtime grammar metadata.
+/// Phases: selects the active variant, renders operands and attachments, then applies grouping.
+pub(super) fn render_declared_enum_pretty(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
+    let behavior = plan.pretty.nodes[node_index]
+        .as_ref()
+        .expect("validated Pretty Node behavior");
+    let declared_behavior = behavior
+        .declared
+        .as_ref()
+        .expect("validated declared-precedence Pretty behavior");
+    let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
+    let variants = trait_variants(&node.body);
+    let variant_count = variants.len();
+    let rendered_variants = variants
+        .iter()
+        .zip(&behavior.variant_layouts)
+        .zip(&behavior.variants)
+        .zip(&behavior.variant_pretty)
+        .zip(&declared_behavior.variants)
+        .enumerate()
+        .map(
+            |(variant_index, ((((variant, layout), behavior), variant_pretty), declared_variant))| {
+            let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty_declared");
+            let mut binding_index = 0_usize;
+            let mut semantic_index = 0_usize;
+            let rendered = variant
+            .elements
+            .iter()
+            .zip(behavior)
+            .enumerate()
+            .map(|(index, (element, behavior))| match (&element.kind, behavior) {
+                (
+                    ElementParseKind::Fixed { .. },
+                    PrettyElementBehavior::Fixed {
+                        spelling,
+                        rendering,
+                        ..
+                    },
+                ) => render_pretty_fixed(plan, index, spelling, *rendering),
+                (
+                    ElementParseKind::OptionalFixedTokenGroup { .. },
+                    PrettyElementBehavior::OptionalFixedTokenGroup { tokens },
+                ) => render_pretty_optional_fixed_group(index, tokens),
+                (
+                    ElementParseKind::Semantic {
+                        projection: parse_projection,
+                        ..
+                    },
+                    PrettyElementBehavior::Semantic {
+                        projection: pretty_projection,
+                    },
+                ) => match (parse_projection.as_ref(), pretty_projection) {
+                    (
+                        SemanticParseProjection::FixedPresence { .. },
+                        PrettySemanticProjection::FixedPresence {
+                            before,
+                            sequence,
+                            after,
+                            pretty,
+                        },
+                    ) => {
+                        let binding = &bindings[binding_index];
+                        binding_index += 1;
+                        render_pretty_fixed_token_presence(
+                            index,
+                            quote!(*#binding),
+                            before,
+                            sequence,
+                            after,
+                            pretty,
+                        )
+                    }
+                    (
+                        SemanticParseProjection::Direct {
+                            wrappers, container, ..
+                        },
+                        PrettySemanticProjection::Direct {
+                            attachment,
+                            pretty,
+                            presence,
+                            provenance,
+                            ..
+                        },
+                    ) => {
+                        let binding = &bindings[binding_index];
+                        binding_index += 1;
+                        let operand = &declared_variant.operands[semantic_index];
+                        semantic_index += 1;
+                        match operand {
+                            PrettyDeclaredOperandBehavior::Ordinary => {
+                                render_non_pratt_pretty_element(
+                                    plan,
+                                    index,
+                                    element,
+                                    behavior,
+                                    Some((quote!(#binding), true)),
+                                )
+                            }
+                            PrettyDeclaredOperandBehavior::Recursive { minimum, next, .. } => {
+                                // A recursive operand is `Box<Self>`, or the attached optional
+                                // `#[tok(X, this)] Option<Box<Self>>`, whose absence renders
+                                // nothing, attachment included.
+                                let optional = matches!(
+                                    container.as_ref(),
+                                    PlannedContainer::Optional
+                                );
+                                assert!(
+                                    (optional
+                                        || matches!(
+                                            container.as_ref(),
+                                            PlannedContainer::Direct
+                                        ))
+                                        && wrappers.iter().all(|wrapper| {
+                                            matches!(wrapper, FieldWrapper::Boxed)
+                                                || (optional
+                                                    && matches!(wrapper, FieldWrapper::Optional))
+                                        }),
+                                    "validated recursive declared-precedence operands are direct or attached optionals and may only use Box storage wrappers",
+                                );
+                                let minimum = render_pretty_declared_minimum(*minimum);
+                                let next = render_pretty_declared_next(*next);
+                                let operand = if optional {
+                                    quote!(operand)
+                                } else {
+                                    quote!(#binding)
+                                };
+                                let semantic = quote!(
+                                    (#operand).__recursa_pretty_declared(context, #minimum, #next)
+                                );
+                                let rendered = if let Some(attachment) = attachment {
+                                    // An attached operator token has no fixed neighbor in the
+                                    // enclosing document group the way a Pratt-authored
+                                    // standalone `#[tok(TOKEN)]` element does, so it carries no
+                                    // automatic separating space. A token with a rule sibling on
+                                    // its attached side (an infix or the far side of a postfix
+                                    // token with more syntax following) needs one synthesized;
+                                    // a token with no sibling there (a prefix token, or the
+                                    // grouping atom's own delimiters) stays tight, matching the
+                                    // authored spacing a Pratt `#[tok(...)]` element already had.
+                                    let element_is_first = index == 0;
+                                    let element_is_last = index + 1 == variant.elements.len();
+                                    let before_has_sibling =
+                                        !attachment.before.is_empty() && !element_is_first;
+                                    let after_has_sibling =
+                                        !attachment.after.is_empty() && !element_is_last;
+                                    let unit = if attachment.layout
+                                        == PrettySequenceLayout::Delimited
+                                    {
+                                        render_pretty_attachment_unit(
+                                            attachment,
+                                            *provenance,
+                                            semantic,
+                                        )
+                                    } else {
+                                        let before_len = attachment.before.len();
+                                        let before_tokens = attachment
+                                            .before
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, syntax)| {
+                                                if element_is_first && index + 1 == before_len {
+                                                    render_pretty_attached_syntax_as_opening(
+                                                        index, syntax,
+                                                    )
+                                                } else {
+                                                    render_pretty_attached_syntax(index, syntax)
+                                                }
+                                            })
+                                            .collect::<Vec<_>>();
+                                        let semantic_index = before_tokens.len();
+                                        let child = pretty_provenance_child_method(*provenance);
+                                        let semantic_rendered = render_pretty_context_scope(
+                                            &child,
+                                            quote!(#semantic_index),
+                                            semantic,
+                                        );
+                                        let semantic_rendered = quote!(#semantic_rendered?;);
+                                        let after_tokens = attachment
+                                            .after
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, syntax)| {
+                                                render_pretty_attached_syntax(
+                                                    semantic_index + 1 + index,
+                                                    syntax,
+                                                )
+                                            })
+                                            .collect::<Vec<_>>();
+                                        let space_after_before = before_has_sibling
+                                            .then(|| quote!(context.soft_break(" ")?;));
+                                        let space_before_after = after_has_sibling
+                                            .then(|| quote!(context.soft_break(" ")?;));
+                                        quote! {
+                                            #(#before_tokens)*
+                                            #space_after_before
+                                            #semantic_rendered
+                                            #space_before_after
+                                            #(#after_tokens)*
+                                        }
+                                    };
+                                    let leading_space = before_has_sibling
+                                        .then(|| quote!(context.soft_break(" ")?;));
+                                    let inner = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(0),
+                                        quote!(#unit Ok(())),
+                                    );
+                                    let outer = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(#index),
+                                        inner,
+                                    );
+                                    quote!(#leading_space #outer?;)
+                                } else {
+                                    let child = pretty_provenance_child_method(*provenance);
+                                    let inner = render_pretty_context_scope(
+                                        &child,
+                                        quote!(0),
+                                        semantic,
+                                    );
+                                    let outer = render_pretty_context_scope(
+                                        &format_ident!("child_scope"),
+                                        quote!(#index),
+                                        inner,
+                                    );
+                                    quote!(#outer?;)
+                                };
+                                let rendered = if optional {
+                                    let view = render_optional_view_reference(
+                                        quote!(#binding),
+                                        wrappers,
+                                        true,
+                                    );
+                                    quote! {
+                                        if let Some(operand) = #view {
+                                            #rendered
+                                        }
+                                    }
+                                } else {
+                                    rendered
+                                };
+                                render_pretty_presence(
+                                    pretty,
+                                    *presence,
+                                    wrappers,
+                                    quote!(#binding),
+                                    rendered,
+                                )
+                            }
+                        }
+                    }
+                    _ => unreachable!("validated declared-precedence Pretty semantic projection"),
+                },
+                (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
+                | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. })
+                | (ElementParseKind::OptionalFixedTokenGroup { .. }, _)
+                | (_, PrettyElementBehavior::OptionalFixedTokenGroup { .. }) => {
+                    unreachable!("validated declared-precedence Pretty element behavior")
+                }
+            })
+            .collect::<Vec<_>>();
+            let rendered = render_pretty_sequence(*layout, &rendered);
+            let rendered = render_pretty_hints(variant_pretty, rendered);
+            let entry_check = declared_variant.level.map_or_else(
+                || quote!(false),
+                |level| {
+                    quote! {
+                        min.is_some_and(|(candidate, tie)| {
+                            #level < candidate || (#level == candidate && tie)
+                        })
+                    }
+                },
+            );
+            let exit_check = declared_variant.level.map_or_else(
+                || quote!(false),
+                |level| {
+                    quote! {
+                        next.is_some_and(|(candidate, tie)| {
+                            #level < candidate || (#level == candidate && tie)
+                        })
+                    }
+                },
+            );
+            let group_open = declared_behavior.grouping.as_ref().map(|grouping| {
+                grouping
+                    .before
+                    .iter()
+                    .map(|fixed| {
+                        render_pretty_synthetic_fixed(plan, &fixed.spelling, fixed.rendering)
+                    })
+                    .collect::<proc_macro2::TokenStream>()
+            });
+            let group_close = declared_behavior.grouping.as_ref().map(|grouping| {
+                grouping
+                    .after
+                    .iter()
+                    .map(|fixed| {
+                        render_pretty_synthetic_fixed(plan, &fixed.spelling, fixed.rendering)
+                    })
+                    .collect::<proc_macro2::TokenStream>()
+            });
+            let helper_body = quote! {
+                    let __recursa_parenthesize = #entry_check || #exit_check;
+                    if __recursa_parenthesize {
+                        #group_open
+                    }
+                    let __recursa_declared_inner_min = if __recursa_parenthesize { None } else { min };
+                    let __recursa_declared_inner_next = if __recursa_parenthesize { None } else { next };
+                    #rendered
+                    if __recursa_parenthesize {
+                        #group_close
+                    }
+                    Ok(())
+            };
+            let helper = format_ident!(
+                "__recursa_pretty_declared_variant_{node_index}_{variant_index}"
+            );
+            let helper_body = if variant_count == 1 {
+                quote! {
+                    let #pattern = self;
+                    #helper_body
+                }
+            } else {
+                quote! {
+                    match self {
+                        #pattern => { #helper_body }
+                        _ => unreachable!("declared-precedence Pretty dispatched to the wrong variant helper"),
+                    }
+                }
+            };
+            let variant_pattern = variant_pattern(node_ident, &variant.ident, variant.style);
+            (
+                quote! {
+                    #variant_pattern => self.#helper(context, min, next)
+                },
+                quote! {
+                    fn #helper(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                        min: ::core::option::Option<(u32, bool)>,
+                        next: ::core::option::Option<(u32, bool)>,
+                    ) -> ::core::fmt::Result {
+                        #helper_body
+                    }
+                },
+            )
+        },
+        )
+        .collect::<Vec<_>>();
+    let arms = rendered_variants.iter().map(|(arm, _)| arm);
+    let helper_methods = rendered_variants.iter().map(|(_, helper)| helper);
+    let rendered_node = render_pretty_hints(
+        &behavior.pretty,
+        quote!(self.__recursa_pretty_declared(context, ::core::option::Option::None, ::core::option::Option::None)?;),
+    );
+    quote! {
+        impl #impl_generics #node_ident #type_generics #where_clause {
+            fn __recursa_pretty_declared(
+                &self,
+                context: &mut #facade::PrettyContext,
+                min: ::core::option::Option<(u32, bool)>,
+                next: ::core::option::Option<(u32, bool)>,
+            ) -> ::core::fmt::Result {
+                match self { #(#arms),* }
+            }
+
+            #(#helper_methods)*
+        }
+
+        impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
+            fn pretty(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                context.configure_defaults(#max_width, #indent);
+                context.baseline_group(|context| { #rendered_node Ok(()) })
+            }
+        }
+    }
+}
+
+/// Renders the left-edge precedence bound expression for a recursive declared-precedence
+/// operand.
+pub(super) fn render_pretty_declared_minimum(
+    minimum: PrettyDeclaredMinimum,
+) -> proc_macro2::TokenStream {
+    match minimum {
+        PrettyDeclaredMinimum::None => quote!(::core::option::Option::None),
+        PrettyDeclaredMinimum::Inner => quote!(__recursa_declared_inner_min),
+        PrettyDeclaredMinimum::Binding(bound) => {
+            let level = bound.level;
+            let tie = bound.tie_parenthesizes;
+            quote!(::core::option::Option::Some((#level, #tie)))
+        }
+    }
+}
+
+/// Renders the right-edge precedence bound expression exposed after a recursive
+/// declared-precedence operand.
+pub(super) fn render_pretty_declared_next(next: PrettyDeclaredNext) -> proc_macro2::TokenStream {
+    match next {
+        PrettyDeclaredNext::None => quote!(::core::option::Option::None),
+        PrettyDeclaredNext::Inner => quote!(__recursa_declared_inner_next),
+        PrettyDeclaredNext::Binding(bound) => {
+            let level = bound.level;
+            let tie = bound.tie_parenthesizes;
+            quote!(::core::option::Option::Some((#level, #tie)))
+        }
+    }
+}
+
 /// Extracts the terminal Node identifier used in generated trait calls.
 pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     let Type::Path(path) = terminal else {
@@ -2507,6 +3338,9 @@ pub(super) fn render_node_pretty(
         }
         NodeBodyPlan::Pratt(pratt) => {
             return render_pratt_node_pretty(plan, node, node_index, pratt);
+        }
+        NodeBodyPlan::Enum { .. } if behavior.declared.is_some() => {
+            return render_declared_enum_pretty(plan, node, node_index);
         }
         NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
@@ -2898,6 +3732,27 @@ fn render_pretty_attached_syntax(
             render_pretty_optional_fixed_group(index, tokens)
         }
     }
+}
+
+/// Renders one required attachment entry, forcing an automatic-punctuation token to open
+/// tightly instead: the same reclassification a standalone Pratt `#[tok(TOKEN)]` prefix element
+/// already receives from [`apply_pretty_pratt_fixed_layout`], so that a synthesized grouping
+/// delimiter immediately following a declared-precedence prefix token never gets the defensive
+/// space the runtime `PrettyContext` inserts between two adjacent automatic-punctuation tokens.
+fn render_pretty_attached_syntax_as_opening(
+    index: usize,
+    syntax: &PrettyAttachedSyntaxBehavior,
+) -> proc_macro2::TokenStream {
+    let PrettyAttachedSyntaxBehavior::Required(fixed) = syntax else {
+        return render_pretty_attached_syntax(index, syntax);
+    };
+    if fixed.spacing != PrettySpacing::Auto || fixed.rendering != PrettyFixedRendering::Punctuation
+    {
+        return render_pretty_attached_fixed(index, fixed);
+    }
+    let mut opened = fixed.clone();
+    opened.rendering = PrettyFixedRendering::Opening;
+    render_pretty_attached_fixed(index, &opened)
 }
 
 /// Groups one semantic value with its attached fixed syntax.
