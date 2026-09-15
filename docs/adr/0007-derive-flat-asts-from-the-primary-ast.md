@@ -1,6 +1,9 @@
 # Derive Flat ASTs from the primary AST
 
-Status: accepted
+Status: source-of-truth decision superseded by [ADR 0010](0010-declare-nodes-independently-of-ast-representation.md)
+
+The original rationale and milestone notes follow. Node declarations now replace authored nested
+Rust types as the canonical source; the flat-specific design is outside the declaration redesign.
 
 The authored primary AST remains the canonical grammar representation from which the parser is
 derived. Generate the corresponding Flat AST structs and enums mechanically from that primary
