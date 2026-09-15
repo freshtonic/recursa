@@ -471,8 +471,10 @@ fn cargo_one_line(value: &str) -> String {
         .collect()
 }
 
-/// Constructs a validated diagnostic from structured evidence and remedy data.
-fn make_diagnostic(
+/// Constructs a validated diagnostic from structured evidence and remedy data. `pub(crate)` so
+/// other pipeline boundaries (the LR conflict report at the render stage, for one) can build a
+/// registered-code diagnostic without duplicating the registry lookup and label construction.
+pub(crate) fn make_diagnostic(
     code: &'static str,
     summary: &str,
     location: Option<DiagnosticLocation>,
