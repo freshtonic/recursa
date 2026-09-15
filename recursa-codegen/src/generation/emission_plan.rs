@@ -827,7 +827,7 @@ impl EmissionPlan {
                 "document framing requires the Recursa `explorer` generation feature".to_owned(),
             );
         }
-        let pretty = emitted_pretty_plan(&nodes, &tokens);
+        let pretty = emitted_pretty_plan(&nodes, &tokens)?;
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
         #[cfg(feature = "explorer")]
