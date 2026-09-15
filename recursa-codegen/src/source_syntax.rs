@@ -544,6 +544,18 @@ mod capture_tests {
             "unsupported Pretty setting `tab_width`"
         );
     }
+
+    #[test]
+    fn unknown_grammar_settings_are_reported_at_the_key_before_parsing_a_value() {
+        for setting in ["flat", "flat = true", "flat(option)"] {
+            let source = format!("module = crate, {setting},");
+            let error = syn::parse_str::<GrammarConfigSyntax>(&source).unwrap_err();
+            assert_eq!(error.to_string(), "unsupported grammar setting `flat`");
+            let range = super::span_range(error.span());
+            assert_eq!(&source[range.start as usize..range.end as usize], "flat");
+        }
+    }
+
     #[test]
     fn removed_predictive_parser_settings_have_targeted_migration_errors() {
         for (source, message) in [
@@ -627,49 +639,52 @@ impl Parse for GrammarConfigSyntax {
                     key.span(),
                     "named parsers have been removed; Recursa generates one LR parser",
                 ));
-            } else {
+            } else if key == "module" {
                 input.parse::<Token![=]>()?;
-                if key == "module" {
-                    reject_duplicate(&module, key.span(), "module")?;
-                    module = Some(Path::parse_mod_style(input)?);
-                } else if key == "facade" {
-                    reject_duplicate(&facade, key.span(), "facade")?;
-                    facade = Some(input.parse()?);
-                } else if key == "keyword_matching" {
-                    reject_duplicate(&text_equivalence, key.span(), "keyword_matching")?;
-                    let value: syn::Ident = input.parse()?;
-                    text_equivalence = Some(if value == "sensitive" {
-                        TextEquivalence::Sensitive
-                    } else if value == "ascii_insensitive" {
-                        TextEquivalence::AsciiInsensitive
-                    } else {
-                        invalid_keyword_matching = Some(InvalidKeywordMatchingSyntax {
-                            authored: value.to_string(),
-                            range: span_range(value.span()),
-                        });
-                        TextEquivalence::Sensitive
-                    });
-                } else if key == "max_lookahead" {
-                    let _value: LitInt = input.parse()?;
-                    return Err(syn::Error::new(
-                        key.span(),
-                        "max_lookahead has been removed; LR parsing does not use predictive lookahead depth",
-                    ));
-                } else if key == "spans" {
-                    reject_duplicate(&spans, key.span(), "spans")?;
-                    spans = Some(CaptureMode::parse(input.parse()?)?);
-                } else if key == "parser_style" {
-                    let _value: syn::Ident = input.parse()?;
-                    return Err(syn::Error::new(
-                        key.span(),
-                        "parser selection has been removed; Recursa generates one LR parser",
-                    ));
+                reject_duplicate(&module, key.span(), "module")?;
+                module = Some(Path::parse_mod_style(input)?);
+            } else if key == "facade" {
+                input.parse::<Token![=]>()?;
+                reject_duplicate(&facade, key.span(), "facade")?;
+                facade = Some(input.parse()?);
+            } else if key == "keyword_matching" {
+                input.parse::<Token![=]>()?;
+                reject_duplicate(&text_equivalence, key.span(), "keyword_matching")?;
+                let value: syn::Ident = input.parse()?;
+                text_equivalence = Some(if value == "sensitive" {
+                    TextEquivalence::Sensitive
+                } else if value == "ascii_insensitive" {
+                    TextEquivalence::AsciiInsensitive
                 } else {
-                    return Err(syn::Error::new(
-                        key.span(),
-                        format!("unsupported grammar setting `{key}`"),
-                    ));
-                }
+                    invalid_keyword_matching = Some(InvalidKeywordMatchingSyntax {
+                        authored: value.to_string(),
+                        range: span_range(value.span()),
+                    });
+                    TextEquivalence::Sensitive
+                });
+            } else if key == "max_lookahead" {
+                input.parse::<Token![=]>()?;
+                let _value: LitInt = input.parse()?;
+                return Err(syn::Error::new(
+                    key.span(),
+                    "max_lookahead has been removed; LR parsing does not use predictive lookahead depth",
+                ));
+            } else if key == "spans" {
+                input.parse::<Token![=]>()?;
+                reject_duplicate(&spans, key.span(), "spans")?;
+                spans = Some(CaptureMode::parse(input.parse()?)?);
+            } else if key == "parser_style" {
+                input.parse::<Token![=]>()?;
+                let _value: syn::Ident = input.parse()?;
+                return Err(syn::Error::new(
+                    key.span(),
+                    "parser selection has been removed; Recursa generates one LR parser",
+                ));
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unsupported grammar setting `{key}`"),
+                ));
             }
             if !input.is_empty() {
                 input.parse::<Token![,]>()?;
