@@ -28,8 +28,7 @@ fn a_fixed_match_wins_when_trivia_loses_local_fence_arbitration() {
     let package = scaffold_fixture();
     fs::write(
         package.path().join("src/grammar.rs"),
-        r#"
-recursa::grammar! {
+        r#"recursa::grammar! {
     module = crate::grammar,
 }
 
@@ -50,10 +49,12 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct OperatorDefinition<'input> {
-    #[lex(matcher)]
-    pub operator: OperatorText<'input>,
+recursa::ast_node! {
+
+    pub struct OperatorDefinition {
+        #[lex(matcher)]
+        pub operator: OperatorText,
+    }
 }
 "#,
     )

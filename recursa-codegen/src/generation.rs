@@ -18,7 +18,7 @@ use quote::{ToTokens as _, format_ident, quote};
 use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::visit::{self as syn_visit, Visit as _};
-use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, Visibility};
+use syn::{GenericArgument, GenericParam, Generics, Ident, Item, PathArguments, Type, Visibility};
 
 use crate::PrattPosition;
 use crate::TypeShape;
@@ -40,8 +40,9 @@ use crate::materialization::{
 use crate::profile::{ENVIRONMENT as PROFILE_ENVIRONMENT, Span};
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle,
-    ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType,
-    ResolvedTypeKind, ResolvedVariantId, SemanticOwner, SemanticTarget,
+    ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody, ResolvedNodeOrigin,
+    ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind, ResolvedVariantId, SemanticOwner,
+    SemanticTarget,
 };
 #[cfg(test)]
 use crate::source_analysis::analyze_source_tree;

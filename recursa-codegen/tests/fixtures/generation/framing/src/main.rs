@@ -13,8 +13,9 @@ fn main() {
         "$raw$opaque; 'still raw'$raw$\r\n",
         "put 'tail';",
     );
-    let complete = grammar::Entry::frame(complete_source)
-        .unwrap_or_else(|failure| panic!("all islands are strict and payload is terminated: {failure:?}"));
+    let complete = grammar::Entry::frame(complete_source).unwrap_or_else(|failure| {
+        panic!("all islands are strict and payload is terminated: {failure:?}")
+    });
     assert_eq!(complete.source(), complete_source);
     assert_eq!(complete.render_exact(), complete_source);
     assert_eq!(complete.typed_islands().count(), 4);
@@ -36,7 +37,10 @@ fn main() {
         .last()
         .expect("later complete framing island");
     let later_bounds = later.source_bounds().expect("later island source window");
-    assert!(later_bounds.start() > 0, "the regression must use a later island");
+    assert!(
+        later_bounds.start() > 0,
+        "the regression must use a later island"
+    );
     let later_root = recursa::HasSpan::span(&later.root()).expect("later island root span");
     let later_local = later
         .local_source_range(later_root)
@@ -68,7 +72,10 @@ fn main() {
         })
         .expect("the copy island opens one payload region");
     assert_eq!(payload.data_text(), "\r\none;two\r\n");
-    assert_eq!(&complete_source[payload.terminator_span().range()], "\\.\r\n");
+    assert_eq!(
+        &complete_source[payload.terminator_span().range()],
+        "\\.\r\n"
+    );
     assert_owned_once(complete_source, complete.spans());
 
     // A payload interior is not tokenized by the grammar, so an unbalanced quote,
@@ -116,13 +123,19 @@ fn main() {
         "copy ;",
         "the rejected extent is the first failing statement-sized candidate",
     );
-    assert!(rejection.framing().is_none(), "a syntax failure has no framing cause");
+    assert!(
+        rejection.framing().is_none(),
+        "a syntax failure has no framing cause"
+    );
     assert_eq!(rejection.diagnostics().len(), 1);
     assert_eq!(
         rejection.diagnostics()[0].kind(),
         recursa::explorer::ParseDiagnosticKind::UnexpectedToken,
     );
-    assert_eq!(rejection.diagnostics()[0].span(), recursa::Span::new(18, 19).unwrap());
+    assert_eq!(
+        rejection.diagnostics()[0].span(),
+        recursa::Span::new(18, 19).unwrap()
+    );
     assert_eq!(rejection.span(), recursa::Span::new(18, 19).unwrap());
     assert_eq!(rejection.to_string(), rejection.diagnostics()[0].message());
 
@@ -156,7 +169,10 @@ fn main() {
     for source in [";", ";;"] {
         let rejection = reject(source);
         assert_eq!(rejection.island(), recursa::Span::new(0, 1).unwrap());
-        assert_eq!(rejection.diagnostics()[0].span(), recursa::Span::new(0, 1).unwrap());
+        assert_eq!(
+            rejection.diagnostics()[0].span(),
+            recursa::Span::new(0, 1).unwrap()
+        );
         assert!(rejection.framing().is_none());
     }
 
@@ -209,7 +225,10 @@ fn main() {
         .framing()
         .expect("a missing island boundary names its framing cause");
     assert_eq!(framing.code(), "RCA5002");
-    assert_eq!(framing.kind(), grammar::FrameDiagnosticKind::MissingBoundary);
+    assert_eq!(
+        framing.kind(),
+        grammar::FrameDiagnosticKind::MissingBoundary
+    );
     assert_eq!(
         framing.span(),
         recursa::Span::new(10, 13).unwrap(),
@@ -294,7 +313,10 @@ fn main() {
     assert_eq!(trailing_trivia.render_exact(), trailing_trivia_source);
     let trailing_parts = trailing_trivia.parts().collect::<Vec<_>>();
     assert_eq!(trailing_parts.len(), 2);
-    assert!(matches!(trailing_parts[0], grammar::CompletePart::Island(_)));
+    assert!(matches!(
+        trailing_parts[0],
+        grammar::CompletePart::Island(_)
+    ));
     let grammar::CompletePart::Gap(gap) = trailing_parts[1] else {
         panic!("pure trailing trivia must be the right EOF gap")
     };

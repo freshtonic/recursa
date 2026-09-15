@@ -5,6 +5,10 @@
 
 /// Stable generated-build and loader diagnostic contracts.
 mod build_diagnostic;
+/// Representation-independent AST Node declaration parsing and lowering.
+mod declaration;
+/// Recursive concrete-layout validation for materialized Node declarations.
+mod declaration_layout;
 /// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;
 /// Deterministic hashing used by generation identity.

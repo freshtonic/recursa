@@ -4,12 +4,13 @@ pub(super) fn validated_generation_is_not_revalidated_during_rendering() {
     let package = tempfile::tempdir().expect("temporary validated rendering fixture");
     fs::write(
         package.path().join("grammar.rs"),
-        r#"
-recursa::grammar! { module = crate }
+        r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("root")]
-struct Root;
+recursa::ast_node! {
+
+    #[tok("root")]
+    struct Root;
+}
 "#,
     )
     .expect("write validated rendering fixture");
@@ -658,8 +659,7 @@ pub(super) fn explorer_output_omits_only_redundant_lifetimes() {
 
 #[cfg(feature = "explorer")]
 pub(super) fn explorer_generation_supports_semantic_targets_sharing_a_base_kind() {
-    let shared_pattern_pair = r#"
-recursa::grammar! {
+    let shared_pattern_pair = r#"recursa::grammar! {
     module = crate,
     spans = mandatory,
     framing(island = Item, boundary = SEMI),
@@ -674,16 +674,17 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Item<'input> {
-    #[lex(pattern = r"[a-z]+")]
-    pub first: FirstWord<'input>,
-    #[lex(pattern = r"[a-z]+")]
-    pub second: SecondWord<'input>,
+recursa::ast_node! {
+
+    pub struct Item {
+        #[lex(pattern = r"[a-z]+")]
+        pub first: FirstWord,
+        #[lex(pattern = r"[a-z]+")]
+        pub second: SecondWord,
+    }
 }
 "#;
-    let keyword_admission_trio = r#"
-recursa::grammar! {
+    let keyword_admission_trio = r#"recursa::grammar! {
     module = crate,
     spans = mandatory,
     framing(island = Item, boundary = SEMI),
@@ -707,14 +708,16 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Item<'input> {
-    #[lex(pattern = r"[a-z]+", admits(ColId))]
-    pub name: ColIdWord<'input>,
-    #[lex(pattern = r"[a-z]+", admits(NonReservedWord))]
-    pub label: NonReservedWordText<'input>,
-    #[lex(pattern = r"[a-z]+")]
-    pub bare: BareWord<'input>,
+recursa::ast_node! {
+
+    pub struct Item {
+        #[lex(pattern = r"[a-z]+", admits(ColId))]
+        pub name: ColIdWord,
+        #[lex(pattern = r"[a-z]+", admits(NonReservedWord))]
+        pub label: NonReservedWordText,
+        #[lex(pattern = r"[a-z]+")]
+        pub bare: BareWord,
+    }
 }
 "#;
     for (label, source) in [
@@ -757,9 +760,9 @@ fn compound_fixture_source() -> String {
 
 #[cfg(feature = "explorer")]
 pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
-    let imported = compound_fixture_source().replace(
-        "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        "mod authored { pub struct View; }\nuse authored::View;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+    let imported = format!(
+        "{}\nmod authored {{ pub struct View; }}\nuse authored::View;\n",
+        compound_fixture_source(),
     );
     let detail = compound_fixture_join_error(imported);
     assert!(
@@ -767,8 +770,9 @@ pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
         "{detail}"
     );
 
-    let token_binding =
-        compound_fixture_source().replace("pub text: CountText<'input>", "pub text: View<'input>");
+    let source = compound_fixture_source();
+    let token_binding = source.replace("pub text: CountText,", "pub text: View,");
+    assert_ne!(token_binding, source, "the token binding must be renamed");
     let detail = compound_fixture_join_error(token_binding);
     assert!(
         detail
@@ -781,13 +785,16 @@ pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
 pub(super) fn explorer_value_collisions_are_rejected_at_the_emission_plan_seam() {
     for (source, name) in [
         (
-            format!("{}\nstatic __RECURSA_EXPLORER_GRAMMAR: () = ();\n", compound_fixture_source()),
+            format!(
+                "{}\nstatic __RECURSA_EXPLORER_GRAMMAR: () = ();\n",
+                compound_fixture_source()
+            ),
             "__RECURSA_EXPLORER_GRAMMAR",
         ),
         (
-            compound_fixture_source().replace(
-                "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-                "static __RECURSA_EXPLORER_NODE_SCHEMAS: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            format!(
+                "{}\nstatic __RECURSA_EXPLORER_NODE_SCHEMAS: () = ();\n",
+                compound_fixture_source(),
             ),
             "__RECURSA_EXPLORER_NODE_SCHEMAS",
         ),
@@ -799,15 +806,18 @@ pub(super) fn explorer_value_collisions_are_rejected_at_the_emission_plan_seam()
             "__RECURSA_EXPLORER_SCHEMA_0",
         ),
         (
-            compound_fixture_source().replace(
-                "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-                "struct __RECURSA_EXPLORER_SCHEMA_0;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            format!(
+                "{}\nstruct __RECURSA_EXPLORER_SCHEMA_0;\n",
+                compound_fixture_source(),
             ),
             "__RECURSA_EXPLORER_SCHEMA_0",
         ),
     ] {
         let detail = compound_fixture_join_error(source);
-        assert!(detail.contains(&format!("generated explorer item `{name}` collides")), "{detail}");
+        assert!(
+            detail.contains(&format!("generated explorer item `{name}` collides")),
+            "{detail}"
+        );
     }
 }
 
@@ -823,9 +833,9 @@ pub(super) fn explorer_method_collisions_are_rejected_at_the_emission_plan_seam(
         "{detail}"
     );
 
-    let descendant = compound_fixture_source().replace(
-        "    pub struct Duplicate;\n}\n\npub mod public_right",
-        "    pub struct Duplicate;\n\n    impl<'input> super::Record<'input> { pub fn explorer() {} }\n}\n\npub mod public_right",
+    let descendant = format!(
+        "{}\nmod collision {{ impl<'input> super::Record<'input> {{ pub fn explorer() {{}} }} }}\n",
+        compound_fixture_source(),
     );
     let detail = compound_fixture_join_error(descendant);
     assert!(
@@ -903,42 +913,50 @@ pub(super) fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path
     fs::write(
         package.path().join("grammar.rs"),
         r#"
-                recursa::grammar! {
-                    module = crate::grammar,
-                    derives(Pretty),
-                    keyword_matching = sensitive,
-                }
-                recursa::tokens! {
-                    ignore = r"[ \t\n\r]+",
-                    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
-                }
-                pub mod foreign {
-                    #[derive(recursa::Node)]
-                    pub struct Expr<'input> {
-                        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-                        pub value: ForeignExprText<'input>,
-                    }
-                }
-                #[derive(recursa::Node)]
-                pub struct Number<'input> {
-                    #[lex(pattern = r"[0-9]+")]
-                    pub value: NumberText<'input>,
-                }
-                #[derive(recursa::Node)]
-                #[pratt]
-                pub enum Expr<'input, T> {
-                    Foreign(foreign::Expr<'input>),
-                    Generic(T),
-                    Group(#[tok(OPEN, this, CLOSE)] Box<Self>),
-                    #[parse(infix, lbp = 10, rbp = 11)]
-                    #[tok(PLUS)]
-                    Add(Box<Self>, Box<Self>),
-                }
-                #[derive(recursa::Node)]
-                pub struct Root<'input> {
-                    pub expression: Expr<'input, Number<'input>>,
-                }
-            "#,
+recursa::grammar! {
+    module = crate::grammar,
+    derives(Pretty),
+    keyword_matching = sensitive,
+}
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+}
+pub mod foreign {
+    recursa::ast_node! {
+
+        pub struct Expr {
+            #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+            pub value: ForeignExprText,
+        }
+    }
+}
+recursa::ast_node! {
+
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: NumberText,
+    }
+}
+recursa::ast_node! {
+
+    #[pratt]
+    pub enum Expr<T> {
+        Foreign(foreign::Expr),
+        Generic(T),
+        Group(#[tok(OPEN, this, CLOSE)] boxed!(Self)),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
+}
+recursa::ast_node! {
+
+    pub struct Root {
+        pub expression: Expr<Number>,
+    }
+}
+"#,
     )
     .expect("write typed Pratt Pretty fixture");
     let success = analyze_source_tree(
@@ -1058,73 +1076,90 @@ pub(super) fn generated_pretty_scopes_do_not_emit_callback_boundaries() {
 
 pub(super) fn pretty_pratt_grouping_follows_a_unique_authored_helper_path() {
     let (_package, plan) = joined_pratt_fixture_from(
-        r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { ANY => "any", QUERY => "query" }
     punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedSuffix {
-    #[tok(DOT, STAR)]
-    Star,
+recursa::ast_node! {
+
+    enum ParenthesizedSuffix {
+        #[tok(DOT, STAR)]
+        Star,
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedOpen {
-    #[tok(OPEN)]
-    Value,
+recursa::ast_node! {
+
+    enum ParenthesizedOpen {
+        #[tok(OPEN)]
+        Value,
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedClose {
-    #[tok(CLOSE)]
-    Value,
+recursa::ast_node! {
+
+    enum ParenthesizedClose {
+        #[tok(CLOSE)]
+        Value,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(QUERY)]
-struct Query<'input> {
-    value: Box<Expr<'input>>,
+recursa::ast_node! {
+
+    #[tok(QUERY)]
+    struct Query {
+        value: boxed!(Expr),
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedContent<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Query(Query<'input>),
+recursa::ast_node! {
+
+    enum ParenthesizedContent {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Query(Query),
+    }
 }
 
-#[derive(recursa::Node)]
-struct ParenthesizedExpr<'input> {
-    open: ParenthesizedOpen,
-    content: ParenthesizedContent<'input>,
-    close: ParenthesizedClose,
-    suffix: Option<ParenthesizedSuffix>,
+recursa::ast_node! {
+
+    struct ParenthesizedExpr {
+        open: ParenthesizedOpen,
+        content: ParenthesizedContent,
+        close: ParenthesizedClose,
+        suffix: Option<ParenthesizedSuffix>,
+    }
 }
 
-#[derive(recursa::Node)]
-struct QuantifiedExpr<'input> {
-    #[tok(ANY, OPEN, this, CLOSE)]
-    content: ParenthesizedContent<'input>,
+recursa::ast_node! {
+
+    struct QuantifiedExpr {
+        #[tok(ANY, OPEN, this, CLOSE)]
+        content: ParenthesizedContent,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Quantified(QuantifiedExpr<'input>),
-    Parenthesized(ParenthesizedExpr<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Quantified(QuantifiedExpr),
+        Parenthesized(ParenthesizedExpr),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
     );
@@ -1161,8 +1196,7 @@ enum Expr<'input> {
 /// model admits, so a grammar that clears RCA3101 still renders its delimiters.
 pub(super) fn pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant() {
     let (_package, plan) = joined_pratt_fixture_from(
-        r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { SELECT => "select" }
@@ -1172,51 +1206,65 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Simple<'input> {
-    #[sep(COMMA)]
-    targets: recursa::Vec1<Expr<'input>>,
+recursa::ast_node! {
+
+    #[tok(SELECT)]
+    struct Simple {
+        #[sep(COMMA)]
+        targets: one_or_many!(Expr),
+    }
 }
 
-#[derive(recursa::Node)]
-struct Paren<'input> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    query: Box<Q<'input>>,
+recursa::ast_node! {
+
+    struct Paren {
+        #[tok(LBRACKET, this, RBRACKET)]
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum Q<'input> {
-    Simple(Simple<'input>),
-    Paren(Paren<'input>),
+recursa::ast_node! {
+
+    enum Q {
+        Simple(Simple),
+        Paren(Paren),
+    }
 }
 
-#[derive(recursa::Node)]
-enum C<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Query(Box<Q<'input>>),
+recursa::ast_node! {
+
+    enum C {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Query(boxed!(Q)),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: C<'input>,
+recursa::ast_node! {
+
+    struct P {
+        #[tok(OPEN, this, CLOSE)]
+        content: C,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
     );
@@ -1257,8 +1305,7 @@ enum Expr<'input> {
 /// must not reach `C` and cost the sibling `Exprs` witness its grouping.
 pub(super) fn pretty_pratt_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context() {
     let (_package, plan) = joined_pratt_fixture_from(
-        r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { KW => "kw" }
@@ -1268,50 +1315,64 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct QParen<'input> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    query: Box<Q<'input>>,
+recursa::ast_node! {
+
+    struct QParen {
+        #[tok(LBRACKET, this, RBRACKET)]
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum Q<'input> {
-    Direct(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Paren(QParen<'input>),
+recursa::ast_node! {
+
+    enum Q {
+        Direct(#[sep(COMMA)] one_or_many!(Expr)),
+        Paren(QParen),
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(KW, this)]
-struct S<'input> {
-    query: Box<Q<'input>>,
+recursa::ast_node! {
+
+    #[tok(KW, this)]
+    struct S {
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum C<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Sub(Box<S<'input>>),
+recursa::ast_node! {
+
+    enum C {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Sub(boxed!(S)),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: C<'input>,
+recursa::ast_node! {
+
+    struct P {
+        #[tok(OPEN, this, CLOSE)]
+        content: C,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
     );
@@ -1592,19 +1653,20 @@ pub(super) fn visit_bodies_use_the_runtime_step_and_child_list_macros() {
 }
 
 pub(super) fn visit_bounds_only_cover_node_type_parameters() {
-    let source =
-        include_str!("../../tests/fixtures/generation/generic-applications/src/grammar.rs")
-            .replacen("    diagrams,\n", "", 1)
-            .replacen(
-                "PartialEq, Pretty, serde::Serialize",
-                "PartialEq, Pretty, Visit, VisitMut, serde::Serialize",
-                1,
-            )
-            .replacen(
-                "pub struct Pair<'left, 'right>",
-                "#[node(omit(Visit, VisitMut))]\npub struct Pair<'left, 'right>",
-                1,
-            );
+    let source = include_str!(
+        "../../tests/fixtures/generation/generic-applications/src/grammar.rs"
+    )
+    .replacen("    diagrams,\n", "", 1)
+    .replacen(
+        "PartialEq, Pretty, serde::Serialize",
+        "PartialEq, Pretty, Visit, VisitMut, serde::Serialize",
+        1,
+    )
+    .replacen(
+        "    #[tok(LPAREN, this, RPAREN)]\n    pub struct Pair",
+        "    #[omit(Visit, VisitMut)]\n    #[tok(LPAREN, this, RPAREN)]\n    pub struct Pair",
+        1,
+    );
     let (_package, plan) = joined_pratt_fixture_from(&source);
     let render_visit = |ident: &str| {
         let node = plan
@@ -1626,10 +1688,10 @@ pub(super) fn visit_bounds_only_cover_node_type_parameters() {
     assert!(concrete.contains("recursa :: Visit for GenericKeywordRoot"));
     assert!(generic.contains("T : recursa :: Visit"));
     assert!(generic.contains("T : recursa :: VisitMut"));
-    assert!(pair.contains("Name < 'right > : recursa :: Visit"));
-    assert!(pair.contains("Name < 'right > : recursa :: VisitMut"));
-    assert!(audit.contains("Pair < 'outer , 'outer > : recursa :: Visit"));
-    assert!(audit.contains("Pair < 'outer , 'outer > : recursa :: VisitMut"));
+    assert!(!pair.contains("Name < 'input > : recursa :: Visit"));
+    assert!(!pair.contains("Name < 'input > : recursa :: VisitMut"));
+    assert!(audit.contains("Pair < 'input > : recursa :: Visit"));
+    assert!(audit.contains("Pair < 'input > : recursa :: VisitMut"));
     assert!(
         !concrete
             .contains("Wrap < crate :: grammar :: KeywordName < 'input > > : recursa :: Visit"),
@@ -1856,36 +1918,42 @@ pub(super) fn ascii_insensitive_word_separators_share_canonical_pretty_family_au
     fs::write(
         package.path().join("grammar.rs"),
         r#"
-                recursa::grammar! {
-                    module = crate::grammar,
-                    derives(Pretty),
-                    keyword_matching = ascii_insensitive,
-                }
+recursa::grammar! {
+    module = crate::grammar,
+    derives(Pretty),
+    keyword_matching = ascii_insensitive,
+}
 
-                recursa::tokens! {
-                    ignore = r"[ \t\n\r]+",
-                    keywords { AND => "and" }
-                    punctuation { LBRACKET => "[", RBRACKET => "]" }
-                }
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords { AND => "and" }
+    punctuation { LBRACKET => "[", RBRACKET => "]" }
+}
 
-                #[derive(recursa::Node)]
-                pub struct Name<'input> {
-                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-                    pub value: NameText<'input>,
-                }
+recursa::ast_node! {
 
-                #[derive(recursa::Node)]
-                pub struct Separated<T> {
-                    #[tok(LBRACKET, this, RBRACKET)]
-                    #[sep(AND)]
-                    pub values: Vec<T>,
-                }
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub value: NameText,
+    }
+}
 
-                #[derive(recursa::Node)]
-                pub struct Root<'input> {
-                    pub value: Separated<Name<'input>>,
-                }
-            "#,
+recursa::ast_node! {
+
+    pub struct Separated<T> {
+        #[tok(LBRACKET, this, RBRACKET)]
+        #[sep(AND)]
+        pub values: zero_or_many!(T),
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Root {
+        pub value: Separated<Name>,
+    }
+}
+"#,
     )
     .expect("write word-separator authority fixture");
     let success = analyze_source_tree(
@@ -1969,44 +2037,56 @@ pub(super) fn generic_top_level_breaks_keep_typed_family_and_closed_application_
     fs::write(
         package.path().join("grammar.rs"),
         r#"
-                recursa::grammar! {
-                    module = crate::grammar,
-                    derives(Pretty),
-                    keyword_matching = sensitive,
-                }
+recursa::grammar! {
+    module = crate::grammar,
+    derives(Pretty),
+    keyword_matching = sensitive,
+}
 
-                recursa::tokens! {
-                    ignore = r"[ \t\n\r]+",
-                    punctuation { SEMICOLON => ";" }
-                }
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    punctuation { SEMICOLON => ";" }
+}
 
-                #[derive(recursa::Node)]
-                pub struct Name<'input> {
-                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-                    pub value: NameText<'input>,
-                }
+recursa::ast_node! {
 
-                #[derive(recursa::Node)]
-                pub struct Integer<'input> {
-                    #[lex(pattern = r"[0-9]+")]
-                    pub value: IntegerText<'input>,
-                }
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub value: NameText,
+    }
+}
 
-                #[derive(recursa::Node)]
-                pub enum Statement<T> { Value(T) }
+recursa::ast_node! {
 
-                #[derive(recursa::Node)]
-                pub struct Program<T> {
-                    #[sep(SEMICOLON)]
-                    pub statements: Vec<Statement<T>>,
-                }
+    pub struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntegerText,
+    }
+}
 
-                #[derive(recursa::Node)]
-                pub struct Root<'input> {
-                    pub names: Program<Name<'input>>,
-                    pub integers: Program<Integer<'input>>,
-                }
-            "#,
+recursa::ast_node! {
+
+    pub enum Statement<T> {
+        Value(T),
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Program<T> {
+        #[sep(SEMICOLON)]
+        pub statements: zero_or_many!(Statement<T>),
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Root {
+        pub names: Program<Name>,
+        pub integers: Program<Integer>,
+    }
+}
+"#,
     )
     .expect("write generic top-level fixture");
     let success = analyze_source_tree(
@@ -2290,17 +2370,20 @@ fn assert_no_transaction_staging(out_dir: &Path) {
 }
 
 /// Small conflict-free grammar used to exercise generation reuse.
-const REUSE_GRAMMAR: &str = r#"
-recursa::grammar! { module = crate }
+const REUSE_GRAMMAR: &str = r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "SELECT" } }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Select;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Root {
-    items: Vec<Select>,
+    #[tok(SELECT)]
+    struct Select;
+}
+
+recursa::ast_node! {
+
+    struct Root {
+        items: zero_or_many!(Select),
+    }
 }
 "#;
 
@@ -2408,7 +2491,15 @@ pub(super) fn semantic_edits_do_not_reuse_the_published_generation() {
     let identity = selected_generation(output.path()).unwrap();
 
     let edited = format!(
-        "{REUSE_GRAMMAR}\n#[derive(recursa::Node)]\nstruct Extra {{ first: Select, second: Select }}\n"
+        r#"{REUSE_GRAMMAR}
+recursa::ast_node! {{
+
+    struct Extra {{
+        first: Select,
+        second: Select,
+    }}
+}}
+"#
     );
     fs::write(&grammar, edited).unwrap();
     let (second, _) = generate_reuse_fixture(package.path(), output.path(), None);

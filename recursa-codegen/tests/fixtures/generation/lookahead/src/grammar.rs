@@ -40,137 +40,175 @@ recursa::tokens! {
     lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, SEMI)]
-pub struct Rule<'input> {
-    pub cond: Cond<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(this, SEMI)]
+    pub struct Rule {
+        pub cond: Cond,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Cond<'input> {
-    Not {
-        mark: NotMark,
-        inner: Box<Cond<'input>>,
-    },
-    NotBetween(NotBetween<'input>),
-    NotIn(NotIn<'input>),
-    NotLike(NotLike<'input>),
-    Between(Between<'input>),
-    AndNot(AndNot<'input>),
-    Name { name: Name<'input> },
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Cond {
+        Not { mark: NotMark, inner: boxed!(Cond) },
+        NotBetween(NotBetween),
+        NotIn(NotIn),
+        NotLike(NotLike),
+        Between(Between),
+        AndNot(AndNot),
+        Name { name: Name },
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(NOT)]
-pub struct NotMark;
-
-/// The left side of a test operator.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Subject<'input> {
-    pub name: Name<'input>,
-}
-
-/// The left operand of a conjunction with a negated condition.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Operand<'input> {
-    pub name: Name<'input>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub struct NotBetween<'input> {
-    pub subject: Subject<'input>,
-    #[tok(NOT, BETWEEN)]
-    pub low: Number<'input>,
-    #[tok(AND)]
-    pub high: Number<'input>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, RPAREN)]
-pub struct NotIn<'input> {
-    pub subject: Subject<'input>,
-    #[tok(NOT, IN, LPAREN)]
-    pub member: Number<'input>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub struct NotLike<'input> {
-    pub subject: Subject<'input>,
-    #[tok(NOT, LIKE)]
-    pub pattern: Name<'input>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Between<'input> {
-    pub subject: Subject<'input>,
-    #[tok(BETWEEN)]
-    pub low: Number<'input>,
-    #[tok(AND)]
-    pub high: Number<'input>,
-}
-
-/// `name NOT cond`: the name and the negation of the condition.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct AndNot<'input> {
-    pub operand: Operand<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
     #[tok(NOT)]
-    pub inner: Box<Cond<'input>>,
+    pub struct NotMark;
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub text: NameText<'input>,
+recursa::ast_node! {
+    /// The left side of a test operator.
+    #[derive(Debug, Clone)]
+    pub struct Subject {
+        pub name: Name,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: NumberText<'input>,
+recursa::ast_node! {
+    /// The left operand of a conjunction with a negated condition.
+    #[derive(Debug, Clone)]
+    pub struct Operand {
+        pub name: Name,
+    }
 }
 
-/// `expr ;`, the root of the expression language.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, SEMI)]
-pub struct ExprRule<'input> {
-    pub expr: Expr<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct NotBetween {
+        pub subject: Subject,
+        #[tok(NOT, BETWEEN)]
+        pub low: Number,
+        #[tok(AND)]
+        pub high: Number,
+    }
 }
 
-/// gram.y's `a_expr` shape: `NOT` binds weaker than every test, so `NOT a LIKE b` is
-/// `NOT (a LIKE b)` and `NOT a NOT LIKE b` is `NOT (a NOT LIKE b)`; the tests and `LIKE`
-/// share one level.
-#[derive(recursa::Node, Debug, Clone)]
-#[pratt]
-pub enum Expr<'input> {
-    Ident(Ident<'input>),
-    Number(Number<'input>),
-    Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
-
-    /// `NOT expr`, pg-sql's `Expr::Not`: the operand can begin with `like` or `between` as a
-    /// name, so the lowering twins the rule with `NOT_LA`.
-    #[parse(prefix, bp = 10)]
-    Not(#[tok(NOT, this)] Box<Self>),
-
-    #[parse(postfix, bp = 20)]
-    NotLike(Box<Self>, #[tok(NOT, LIKE, this)] Box<Self>),
-
-    #[parse(postfix, bp = 20)]
-    NotBetween(Box<Self>, #[tok(NOT, BETWEEN, this)] Box<Self>, #[tok(AND, this)] Box<Self>),
-
-    #[parse(postfix, bp = 20)]
-    NotIn(Box<Self>, #[tok(NOT, IN, LPAREN, this, RPAREN)] Box<Self>),
-
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(LIKE)]
-    Like(Box<Self>, Box<Self>),
-
-    #[parse(postfix, bp = 20)]
-    Between(Box<Self>, #[tok(BETWEEN, this)] Box<Self>, #[tok(AND, this)] Box<Self>),
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(this, RPAREN)]
+    pub struct NotIn {
+        pub subject: Subject,
+        #[tok(NOT, IN, LPAREN)]
+        pub member: Number,
+    }
 }
 
-/// A name of the expression language, admitting the keywords `like` and `between`.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Ident<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(LIKE, BETWEEN))]
-    pub text: IdentText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct NotLike {
+        pub subject: Subject,
+        #[tok(NOT, LIKE)]
+        pub pattern: Name,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Between {
+        pub subject: Subject,
+        #[tok(BETWEEN)]
+        pub low: Number,
+        #[tok(AND)]
+        pub high: Number,
+    }
+}
+
+recursa::ast_node! {
+    /// `name NOT cond`: the name and the negation of the condition.
+    #[derive(Debug, Clone)]
+    pub struct AndNot {
+        pub operand: Operand,
+        #[tok(NOT)]
+        pub inner: boxed!(Cond),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
+}
+
+recursa::ast_node! {
+    /// `expr ;`, the root of the expression language.
+    #[derive(Debug, Clone)]
+    #[tok(this, SEMI)]
+    pub struct ExprRule {
+        pub expr: Expr,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y's `a_expr` shape: `NOT` binds weaker than every test, so `NOT a LIKE b` is
+    /// `NOT (a LIKE b)` and `NOT a NOT LIKE b` is `NOT (a NOT LIKE b)`; the tests and `LIKE`
+    /// share one level.
+    #[derive(Debug, Clone)]
+    #[pratt]
+    pub enum Expr {
+        Ident(Ident),
+        Number(Number),
+        Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
+
+        /// `NOT expr`, pg-sql's `Expr::Not`: the operand can begin with `like` or `between` as a
+        /// name, so the lowering twins the rule with `NOT_LA`.
+        #[parse(prefix, bp = 10)]
+        Not(#[tok(NOT, this)] boxed!(Self)),
+
+        #[parse(postfix, bp = 20)]
+        NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
+
+        #[parse(postfix, bp = 20)]
+        NotBetween(
+            boxed!(Self),
+            #[tok(NOT, BETWEEN, this)] boxed!(Self),
+            #[tok(AND, this)] boxed!(Self),
+        ),
+
+        #[parse(postfix, bp = 20)]
+        NotIn(
+            boxed!(Self),
+            #[tok(NOT, IN, LPAREN, this, RPAREN)] boxed!(Self),
+        ),
+
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(LIKE)]
+        Like(boxed!(Self), boxed!(Self)),
+
+        #[parse(postfix, bp = 20)]
+        Between(
+            boxed!(Self),
+            #[tok(BETWEEN, this)] boxed!(Self),
+            #[tok(AND, this)] boxed!(Self),
+        ),
+    }
+}
+
+recursa::ast_node! {
+    /// A name of the expression language, admitting the keywords `like` and `between`.
+    #[derive(Debug, Clone)]
+    pub struct Ident {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(LIKE, BETWEEN))]
+        pub text: IdentText,
+    }
 }

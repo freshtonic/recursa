@@ -15,35 +15,45 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(DEBUG)]
-pub struct Debug;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub enum Stmt<'input> {
-    Print(PrintStmt<'input>),
-    Read(ReadStmt<'input>),
-    Set(SetStmt<'input>),
+    #[tok(DEBUG)]
+    pub struct Debug;
 }
 
-#[derive(recursa::Node)]
-pub struct PrintStmt<'input> {
-    pub debug: Option<Debug>,
-    #[tok(PRINT)]
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    pub enum Stmt {
+        Print(PrintStmt),
+        Read(ReadStmt),
+        Set(SetStmt),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct ReadStmt<'input> {
-    pub debug: Option<Debug>,
-    #[tok(READ)]
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    pub struct PrintStmt {
+        pub debug: Option<Debug>,
+        #[tok(PRINT)]
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct SetStmt<'input> {
-    pub debug: Option<Debug>,
-    #[tok(SET)]
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    pub struct ReadStmt {
+        pub debug: Option<Debug>,
+        #[tok(READ)]
+        pub rest: Rest,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct SetStmt {
+        pub debug: Option<Debug>,
+        #[tok(SET)]
+        pub rest: Rest,
+    }
 }

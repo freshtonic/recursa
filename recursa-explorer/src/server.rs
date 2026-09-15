@@ -661,12 +661,19 @@ mod tests {
     /// Deterministically "renders" its input bytes as digits, standing in for a real subprocess
     /// worker without spawning one.
     fn fake_sampler(bytes: &[u8]) -> Result<String, String> {
-        Ok(bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(","))
+        Ok(bytes
+            .iter()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(","))
     }
 
     /// Always fails, standing in for a subprocess worker that crashed or errored.
     fn failing_sampler(_bytes: &[u8]) -> Result<String, String> {
-        Err("sample generation process was terminated by signal 4 (likely a stack overflow)".to_owned())
+        Err(
+            "sample generation process was terminated by signal 4 (likely a stack overflow)"
+                .to_owned(),
+        )
     }
 
     fn spawn_server() -> (

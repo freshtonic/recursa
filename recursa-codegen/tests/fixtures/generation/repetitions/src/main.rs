@@ -179,7 +179,11 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
 
     let leading = parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta");
-    let marks = if mode == CaptureMode::Off { "MARKS" } else { "marks" };
+    let marks = if mode == CaptureMode::Off {
+        "MARKS"
+    } else {
+        "marks"
+    };
     assert_eq!(leading.render(), format!("{marks} alpha, beta,"));
     let (mapped_leading, leading_map) = leading.render_mapped();
     assert_eq!(mapped_leading, leading.render());
@@ -194,18 +198,15 @@ fn assert_capture_configuration(mode: CaptureMode) {
     assert_eq!(broken_leading, format!("{marks} alpha\n, beta,"));
     assert_mapping(&broken_leading_map, 12..13, mapped_span(11, 12));
     assert_mapping(&broken_leading_map, 18..19, recursa::Span::SYNTHETIC);
-    let reparsed_leading =
-        parse_spanned!(grammar::LeadingPretty<'_>, mapped_leading.as_str());
+    let reparsed_leading = parse_spanned!(grammar::LeadingPretty<'_>, mapped_leading.as_str());
     assert_eq!(reparsed_leading.render(), mapped_leading);
     let rerendered_leading = reparsed_leading.render();
     let reparsed_leading_again =
         parse_spanned!(grammar::LeadingPretty<'_>, rerendered_leading.as_str());
     assert_eq!(reparsed_leading_again.render(), rerendered_leading);
 
-    let captured_trailing =
-        parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta,");
-    let (captured_trailing_rendered, captured_trailing_map) =
-        captured_trailing.render_mapped();
+    let captured_trailing = parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta,");
+    let (captured_trailing_rendered, captured_trailing_map) = captured_trailing.render_mapped();
     assert_eq!(captured_trailing_rendered, format!("{marks} alpha, beta,"));
     assert_mapping(&captured_trailing_map, 11..12, mapped_span(11, 12));
     assert_mapping(&captured_trailing_map, 17..18, mapped_span(16, 17));
@@ -247,7 +248,11 @@ fn assert_capture_configuration(mode: CaptureMode) {
     assert_mapping(&synthetic_map, 17..18, recursa::Span::SYNTHETIC);
 
     let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". <:boxed alpha.?> .");
-    let boxed = if mode == CaptureMode::Off { "BOXED" } else { "boxed" };
+    let boxed = if mode == CaptureMode::Off {
+        "BOXED"
+    } else {
+        "boxed"
+    };
     assert_eq!(attachment.render(), format!(".\n<:{boxed} alpha.?>\n."));
     let attachment_around = parse_spanned!(grammar::AttachmentAround, ". @ .");
     assert_eq!(attachment_around.render(), ". @ .");
@@ -279,7 +284,11 @@ fn assert_capture_configuration(mode: CaptureMode) {
         grammar::HintAttachedMany<'_>,
         ". <:many alpha.?> <:many beta.?> ."
     );
-    let many_keyword = if mode == CaptureMode::Off { "MANY" } else { "many" };
+    let many_keyword = if mode == CaptureMode::Off {
+        "MANY"
+    } else {
+        "many"
+    };
     assert_eq!(
         attached_many.render(),
         format!(".\n<:{many_keyword} alpha.?>\n<:{many_keyword} beta.?>\n.")
@@ -307,27 +316,33 @@ fn assert_capture_configuration(mode: CaptureMode) {
         grammar::AttachedMaybeMany<'_>,
         ". <:maybe alpha.?> <:maybe beta.?> ."
     );
-    let maybe_keyword = if mode == CaptureMode::Off { "MAYBE" } else { "maybe" };
+    let maybe_keyword = if mode == CaptureMode::Off {
+        "MAYBE"
+    } else {
+        "maybe"
+    };
     assert_eq!(
         attached_maybe_many.render(),
         format!(".\n<:{maybe_keyword} alpha.?>\n<:{maybe_keyword} beta.?>\n.")
     );
 
-    let attached_leading = parse_spanned!(
-        grammar::AttachedLeadingPretty<'_>,
-        "marks [alpha],[beta]"
+    let attached_leading =
+        parse_spanned!(grammar::AttachedLeadingPretty<'_>, "marks [alpha],[beta]");
+    assert_eq!(
+        attached_leading.render(),
+        format!("{marks}[alpha], [beta],")
     );
-    assert_eq!(attached_leading.render(), format!("{marks}[alpha], [beta],"));
     assert_eq!(
         attached_leading.render_with(recursa::PrettyConfig::new(12, 2)),
         format!("{marks}[\n  alpha\n]\n, [\n  beta\n],")
     );
 
-    let attached_trailing = parse_spanned!(
-        grammar::AttachedTrailingPretty<'_>,
-        "marks [alpha],[beta],"
+    let attached_trailing =
+        parse_spanned!(grammar::AttachedTrailingPretty<'_>, "marks [alpha],[beta],");
+    assert_eq!(
+        attached_trailing.render(),
+        format!("{marks}[alpha], [beta]")
     );
-    assert_eq!(attached_trailing.render(), format!("{marks}[alpha], [beta]"));
     assert_eq!(
         attached_trailing.render_with(recursa::PrettyConfig::new(12, 2)),
         format!("{marks}[\n  alpha\n],\n[\n  beta\n]")
@@ -349,16 +364,23 @@ fn assert_capture_configuration(mode: CaptureMode) {
         node_group.render_with(recursa::PrettyConfig::new(14, 2)),
         format!(
             "{} alpha\nbeta",
-            if mode == CaptureMode::Off { "NODEHINT" } else { "nodehint" }
+            if mode == CaptureMode::Off {
+                "NODEHINT"
+            } else {
+                "nodehint"
+            }
         )
     );
-    let variant_group =
-        parse_spanned!(grammar::VariantGroupPretty<'_>, "enumhint alpha beta");
+    let variant_group = parse_spanned!(grammar::VariantGroupPretty<'_>, "enumhint alpha beta");
     assert_eq!(
         variant_group.render_with(recursa::PrettyConfig::new(14, 2)),
         format!(
             "{} alpha\nbeta",
-            if mode == CaptureMode::Off { "ENUMHINT" } else { "enumhint" }
+            if mode == CaptureMode::Off {
+                "ENUMHINT"
+            } else {
+                "enumhint"
+            }
         )
     );
     let consistent = parse_spanned!(
@@ -387,10 +409,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
         inconsistent.render_with(recursa::PrettyConfig::new(25, 2)),
         format!("{inconsistent_keyword} aaaaa bbbbb\n  ccccc")
     );
-    let generic_alias = parse_spanned!(
-        grammar::GenericAliasOutput<'_>,
-        "alpha beta gamma"
-    );
+    let generic_alias = parse_spanned!(grammar::GenericAliasOutput<'_>, "alpha beta gamma");
     assert_eq!(
         generic_alias.render_with(recursa::PrettyConfig::new(10, 2)),
         "alpha beta\ngamma"
@@ -518,10 +537,11 @@ fn assert_repetition_behavior() {
         recursa::Span::new(10, 11).ok()
     );
     let mut counter = Counter(0);
-    assert!(
-        recursa::Visit::visit(markers.root().value(), &mut counter).is_continue()
+    assert!(recursa::Visit::visit(markers.root().value(), &mut counter).is_continue());
+    assert_eq!(
+        counter.0, 3,
+        "Vec1 traversal preserves one-or-more children"
     );
-    assert_eq!(counter.0, 3, "Vec1 traversal preserves one-or-more children");
     assert_eq!(markers.into_ast().values.len(), 2);
 
     let choice = parse_spanned!(grammar::Choice<'_>, "choice x,y");
@@ -584,8 +604,7 @@ fn assert_repetition_behavior() {
     assert!(attached_many_empty.root().values().is_empty());
     assert_eq!(attached_many_empty.render(), "attachedmany");
 
-    let attached_many =
-        parse_spanned!(grammar::AttachedMany<'_>, "attachedmany [one],[two],");
+    let attached_many = parse_spanned!(grammar::AttachedMany<'_>, "attachedmany [one],[two],");
     assert_eq!(attached_many.root().values().len(), 2);
     assert_eq!(
         attached_many.root().values().get(0).unwrap().span(),

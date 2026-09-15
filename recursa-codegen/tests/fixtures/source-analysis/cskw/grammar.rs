@@ -26,31 +26,39 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub enum Stmt {
-    Select(SelectStmt),
+recursa::ast_node! {
+
+    pub enum Stmt {
+        Select(SelectStmt),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct SelectStmt {
-    #[tok(SELECT)]
-    #[sep(COMMA)]
-    pub cols: recursa::Vec1<Col>,
-    #[tok(FROM)]
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", admits(AS))]
-    pub table: TableName,
+recursa::ast_node! {
+
+    pub struct SelectStmt {
+        #[tok(SELECT)]
+        #[sep(COMMA)]
+        pub cols: one_or_many!(Col),
+        #[tok(FROM)]
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", admits(AS))]
+        pub table: TableName,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Col {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", admits(AS))]
-    pub name: ColumnName,
-    pub as_alias: Option<AsAlias>,
+recursa::ast_node! {
+
+    pub struct Col {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", admits(AS))]
+        pub name: ColumnName,
+        pub as_alias: Option<AsAlias>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AsAlias {
-    #[tok(AS)]
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub alias: Alias,
+recursa::ast_node! {
+
+    pub struct AsAlias {
+        #[tok(AS)]
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub alias: Alias,
+    }
 }

@@ -174,7 +174,6 @@ pub(super) fn render_accessors(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
     let node_ident = &node.ident;
     let (_, type_generics, _) = node.generics.split_for_impl();
     let self_type: Type = syn::parse_quote!(#node_ident #type_generics);
@@ -182,7 +181,7 @@ pub(super) fn render_accessors(
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
             let methods = elements.iter().enumerate().filter_map(|(index, element)| {
-                render_accessor(facade, self_type, element, index, None, plan.arena_ast)
+                render_accessor(plan, self_type, element, index, None)
             });
             quote!(#(#methods)*)
         }
@@ -194,12 +193,11 @@ pub(super) fn render_accessors(
                     .enumerate()
                     .filter_map(move |(index, element)| {
                         render_accessor(
-                            facade,
+                            plan,
                             self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
-                            plan.arena_ast,
                         )
                     })
             });
@@ -214,12 +212,11 @@ pub(super) fn render_accessors(
                     .enumerate()
                     .filter_map(move |(index, element)| {
                         render_accessor(
-                            facade,
+                            plan,
                             self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
-                            plan.arena_ast,
                         )
                     })
             });
@@ -230,12 +227,11 @@ pub(super) fn render_accessors(
                     .enumerate()
                     .filter_map(move |(index, element)| {
                         render_accessor(
-                            facade,
+                            plan,
                             self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
-                            plan.arena_ast,
                         )
                     })
             });
@@ -252,13 +248,13 @@ pub(super) fn render_accessors(
 /// Invariants: accessor names are prevalidated and every span cursor matches its source-order grammar element.
 /// Phases: binds the active shape, emits semantic accessors, then emits fixed-token spans.
 pub(super) fn render_accessor(
-    facade: &Ident,
+    plan: &EmissionPlan,
     self_type: &Type,
     element: &ElementParsePlan,
     element_index: usize,
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
-    arena_ast: bool,
 ) -> Option<proc_macro2::TokenStream> {
+    let facade = &plan.facade;
     match &element.kind {
         ElementParseKind::Fixed { accessor, .. }
         | ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
@@ -308,16 +304,18 @@ pub(super) fn render_accessor(
             }
             SemanticParseProjection::Direct {
                 terminal,
+                terminal_node,
                 wrappers,
                 attachment,
                 ..
             } => {
                 let terminal =
                     if terminal_path_ident(terminal).is_some_and(|ident| ident.unraw() == "Self") {
-                        self_type
+                        self_type.clone()
                     } else {
-                        terminal
+                        view_terminal_type(plan, terminal, *terminal_node)
                     };
+                let terminal = &terminal;
                 let accessor = field.accessor.as_ref()?;
                 if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
                     matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
@@ -332,7 +330,7 @@ pub(super) fn render_accessor(
                         element_index,
                         variant,
                         attachment.as_deref(),
-                        arena_ast,
+                        plan.arena_ast,
                     ));
                 }
                 let is_optional = wrappers
@@ -436,6 +434,53 @@ pub(super) fn render_accessor(
             }
         },
     }
+}
+
+/// Renders an open declaration terminal under the enclosing generated input lifetime.
+fn view_terminal_type(plan: &EmissionPlan, terminal: &Type, node: Option<NodeId>) -> Type {
+    let mut terminal = terminal.clone();
+    let generated_input: syn::Lifetime = syn::parse_quote!('input);
+    struct NormalizeLifetime<'a>(&'a syn::Lifetime);
+    impl syn::visit_mut::VisitMut for NormalizeLifetime<'_> {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            *lifetime = self.0.clone();
+        }
+    }
+    syn::visit_mut::VisitMut::visit_type_mut(
+        &mut NormalizeLifetime(&generated_input),
+        &mut terminal,
+    );
+    let Some(target) = node.and_then(|id| plan.nodes.iter().find(|candidate| candidate.node == id))
+    else {
+        return terminal;
+    };
+    if target.generics.lifetimes().next().is_none() {
+        return terminal;
+    }
+    let Type::Path(path) = &mut terminal else {
+        return terminal;
+    };
+    let Some(segment) = path.path.segments.last_mut() else {
+        return terminal;
+    };
+    match &mut segment.arguments {
+        PathArguments::None => {
+            let arguments: syn::AngleBracketedGenericArguments = syn::parse_quote!(<'input>);
+            segment.arguments = PathArguments::AngleBracketed(arguments);
+        }
+        PathArguments::AngleBracketed(arguments)
+            if !arguments
+                .args
+                .iter()
+                .any(|argument| matches!(argument, GenericArgument::Lifetime(_))) =>
+        {
+            arguments
+                .args
+                .insert(0, GenericArgument::Lifetime(generated_input));
+        }
+        PathArguments::AngleBracketed(_) | PathArguments::Parenthesized(_) => {}
+    }
+    terminal
 }
 
 #[allow(clippy::too_many_arguments)]

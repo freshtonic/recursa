@@ -4,9 +4,10 @@
 It re-exports the grammar authoring macros and the public runtime contracts used
 by generated grammars.
 
-With Recursa, semantic Rust types are the grammar's center. Fixed tokens remain
-attributes when their text has no semantic meaning, and containers such as
-`Option`, `Vec`, and `Vec1` state cardinality in the AST itself.
+With Recursa, semantic Node declarations are the grammar's center. Fixed tokens
+remain attributes when their text has no semantic meaning. `Option<T>` and the
+`zero_or_many!(T)`/`one_or_many!(T)` markers state cardinality, while the selected
+AST style determines concrete storage.
 
 ## Setup
 
@@ -27,7 +28,7 @@ fn main() -> Result<(), recursa_codegen::GenerateError> {
 }
 ```
 
-A grammar module combines `grammar!`, `tokens!`, and `#[derive(Node)]`:
+A grammar module combines `grammar!`, `tokens!`, and `ast_node!`:
 
 ```rust,ignore
 recursa::grammar! {
@@ -53,11 +54,12 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(LBRACKET, this, RBRACKET)]
-pub struct Array<'input> {
-    #[sep(COMMA)]
-    pub values: Option<recursa::Vec1<Value<'input>>>,
+recursa::ast_node! {
+    #[tok(LBRACKET, this, RBRACKET)]
+    struct Array {
+        #[sep(COMMA)]
+        values: Option<one_or_many!(Value)>,
+    }
 }
 ```
 
@@ -76,12 +78,13 @@ whether the sequence occurred. Presence composes with the field's ordinary
 attachment, including required syntax around `this`:
 
 ```rust,ignore
-#[derive(recursa::Node)]
-pub struct CreateMaterializedView<'input> {
-    #[tok(CREATE, this, MATERIALIZED, VIEW)]
-    #[presence(UNLOGGED)]
-    pub unlogged: bool,
-    pub name: Identifier<'input>,
+recursa::ast_node! {
+    struct CreateMaterializedView {
+        #[tok(CREATE, this, MATERIALIZED, VIEW)]
+        #[presence(UNLOGGED)]
+        unlogged: bool,
+        name: Identifier,
+    }
 }
 ```
 
@@ -107,14 +110,15 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Definitions<'input> {
-    #[lex(matcher)]
-    dollar: DollarString<'input>,
-    #[lex(matcher)]
-    number: Number<'input>,
-    #[lex(matcher)]
-    command: MetaCommand<'input>,
+recursa::ast_node! {
+    struct Definitions {
+        #[lex(matcher)]
+        dollar: DollarString,
+        #[lex(matcher)]
+        number: Number,
+        #[lex(matcher)]
+        command: MetaCommand,
+    }
 }
 ```
 
@@ -156,6 +160,57 @@ Each supplied token, error, or `append_trivia` record must use an exact
 grammar-local kind and a source-bounded UTF-8 span, in global source order and
 without overlap. Finalization preserves unrecorded source gaps verbatim and
 never rescans them.
+
+## Node declarations
+
+An `ast_node!` invocation contains one or more structs or enums. Named, tuple,
+and unit forms are supported; generated types keep their declared names in the
+surrounding module. Handwritten implementations and ordinary Rust type aliases
+stay outside the invocation.
+
+| Declaration form | Meaning | Ordinary nested storage | With `arena_ast` |
+| --- | --- | --- | --- |
+| `T` | One child | `T` | `T` |
+| `Option<T>` | Optional child | `Option<T>` | `Option<T>` |
+| `boxed!(T)` | Explicit indirection | `Box<T>` | `ArenaBox<'input, T>` |
+| `zero_or_many!(T)` | Zero or more children | `Vec<T>` | `ArenaVec<'input, T>` |
+| `one_or_many!(T)` | One or more children | `Vec1<T>` | `ArenaVec1<'input, T>` |
+
+The inner markers are fixed declaration syntax and require no imports. Import
+or qualify the outer macro normally. Write `boxed!(T)` where the nested layout
+requires indirection; generation does not insert boxes automatically. Concrete
+storage containers are rejected inside declarations, including through aliases.
+
+Boxing may appear at any layer. Ignoring boxes, the supported shapes are `T`,
+`Option<T>`, either repetition marker, and `Option<one_or_many!(T)>`. Optional
+zero-or-more lists and nested repetitions are not supported. Existing fixed-token
+presence fields remain direct `#[presence(...)] bool` fields.
+
+Omitted type and struct-field visibility defaults to `pub`; explicit restrictions
+such as `pub(crate)` are preserved. Put documentation, derives, and grammar
+attributes on their intended declaration, variant, or field inside the macro.
+An outer `cfg` or `cfg_attr` can gate an entire invocation.
+
+Omit lifetime parameters from declarations and semantic type references.
+Generation adds one `'input` lifetime only where fields or storage require it.
+For example, `Wrap<T> { value: T }` remains `Wrap<T>` and can be applied as
+`Wrap<Name<'input>>`; an arena-backed list of `T` needs its own storage lifetime.
+Handwritten Rust uses those generated signatures normally. Generic Node type
+arguments must be explicit; defaulted Node parameters are not supported. Bounds
+and `where` clauses remain ordinary Rust syntax and cannot name the inferred
+declaration lifetime.
+
+As with the previous authoring API, each generic Node needs at least one closed
+application in the selected grammar, such as a field of type `Wrap<Name>`.
+
+Node support is intrinsic. Other configured traits are opt-in through
+`grammar! { ..., derives(Debug, Clone, Pretty), ... }`, with local additions in
+`#[node(derive(...))]`. Use `#[omit(Clone)]` to suppress a configured
+implementation when supplying your own. Ordinary Rust `#[derive(...)]`, including
+third-party derives and their helper attributes, remains available inside the
+declaration. Omitting a configured trait and deriving it through ordinary Rust
+is valid; requesting both implementations without an omission is an error.
+The old `#[node(omit(...))]` spelling is replaced by `#[omit(...)]`.
 
 ## Document framing
 

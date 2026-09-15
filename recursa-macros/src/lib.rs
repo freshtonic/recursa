@@ -9,31 +9,122 @@ use std::sync::{Arc, Mutex, OnceLock};
 use syn::ext::IdentExt as _;
 use syn::parse::Parse as _;
 use syn::visit_mut::VisitMut as _;
-use syn::{DeriveInput, Type, parse_macro_input};
+use syn::{DeriveInput, Item, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 28;
+const PRIVATE_PROTOCOL: u32 = 29;
 
-/// Marks a source declaration as a grammar Node and loads its generated body.
+/// Reports the retired concrete-Node authoring surface.
 ///
-/// Fixed syntax belongs in one `#[tok(...)]` sequence. Inside that sequence,
-/// `optional(TOKENS...)` denotes an erased atomic group: the complete fixed-token sequence is
-/// consumed when present, while an incomplete prefix consumes nothing. A plain `bool` field may
-/// separately use `#[presence(TOKENS...)]` to store whether one non-empty fixed-token sequence
-/// occurred. Its ordinary `#[tok(...)]` attachment remains independent and may place required or
-/// erased-optional syntax around `this`.
-///
-/// The loader still recognizes the removed `#[greedy(...)]` helper so codegen can report its
-/// targeted migration diagnostic rather than leaving it to Rust's unknown-attribute error.
-///
-/// The derive deliberately interprets no fields or grammar helper attributes.
+/// Use [`ast_node`] to declare representation-independent Nodes. The generator emits their
+/// concrete declarations and parsing behavior together from that canonical source.
 #[proc_macro_derive(
     Node,
     attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy)
 )]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let ident = input.ident;
+    syn::Error::new(
+        input.ident.span(),
+        "error[RCA0017]: `#[derive(Node)]` authoring has been removed; wrap the struct or enum in `recursa::ast_node! { ... }` and remove the `Node` derive",
+    )
+    .into_compile_error()
+    .into()
+}
+
+/// Declares one or more representation-independent grammar Nodes.
+///
+/// The invocation accepts struct and enum declarations. Generated output supplies each concrete
+/// AST declaration and its matching parsing behavior for the grammar's selected AST style.
+/// Omitted declaration and struct-field visibility defaults to `pub`; explicit Rust visibility
+/// restrictions are preserved. Nodes acquire one generated `'input` lifetime only when their
+/// storage or referenced declarations require it.
+///
+/// Fields use `Option<T>` for optional values and the declaration-only `boxed!(T)`,
+/// `one_or_many!(T)`, and `zero_or_many!(T)` markers for representation-dependent storage.
+/// Ordinary derives remain ordinary Rust derives. Generated configured traits come from
+/// [`grammar`] defaults and `#[node(derive(...))]`; a declaration's bare `#[omit(...)]` suppresses
+/// inherited configured implementations.
+///
+/// A matching [`grammar`] invocation and build-script generation must select the immutable
+/// generated payload before compilation loads these declarations.
+///
+/// ```ignore
+/// recursa::ast_node! {
+///     #[omit(Clone)]
+///     struct Names {
+///         values: one_or_many!(boxed!(Name)),
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn ast_node(input: TokenStream) -> TokenStream {
+    let declarations = parse_macro_input!(input as syn::File).items;
+    let mut output = proc_macro2::TokenStream::new();
+    for item in declarations {
+        let (ident, attributes) = match item {
+            Item::Struct(item) => (item.ident, item.attrs),
+            Item::Enum(item) => (item.ident, item.attrs),
+            other => {
+                output.extend(
+                    syn::Error::new_spanned(
+                        other,
+                        "`ast_node!` accepts only struct and enum declarations",
+                    )
+                    .into_compile_error(),
+                );
+                continue;
+            }
+        };
+        let conditional = attributes.into_iter().filter_map(conditional_gate);
+        let loader = load_declared_node(&ident);
+        output.extend(quote! {
+            #(#conditional)*
+            #loader
+        });
+    }
+    output.into()
+}
+
+/// Reports whether an authored attribute can disable its enclosed declaration.
+fn conditional_gate(attribute: syn::Attribute) -> Option<syn::Attribute> {
+    if attribute.path().is_ident("cfg") {
+        return Some(attribute);
+    }
+    if !attribute.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let mut arguments = attribute
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .ok()?
+        .into_iter();
+    let predicate = arguments.next()?;
+    let gates = arguments.filter_map(project_cfg_meta).collect::<Vec<_>>();
+    (!gates.is_empty()).then(|| syn::parse_quote!(#[cfg_attr(#predicate, #(#gates),*)]))
+}
+
+/// Removes behavior attributes while preserving nested conditional gates.
+fn project_cfg_meta(meta: syn::Meta) -> Option<syn::Meta> {
+    if meta.path().is_ident("cfg") {
+        return Some(meta);
+    }
+    if !meta.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let syn::Meta::List(list) = meta else {
+        return None;
+    };
+    let mut arguments = list
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .ok()?
+        .into_iter();
+    let predicate = arguments.next()?;
+    let gates = arguments.filter_map(project_cfg_meta).collect::<Vec<_>>();
+    (!gates.is_empty()).then(|| syn::parse_quote!(cfg_attr(#predicate, #(#gates),*)))
+}
+
+/// Resolves one declaration identifier to its matching generated Node payload.
+fn load_declared_node(ident: &syn::Ident) -> proc_macro2::TokenStream {
     let span = ident.span();
     let start = span.start();
     let file = span
@@ -60,13 +151,11 @@ pub fn node(input: TokenStream) -> TokenStream {
     match selected_node(&loader_anchor_text) {
         LoaderStatus::Ready => quote! {
             __recursa_load_node!(#ident, #loader_anchor);
-        }
-        .into(),
-        LoaderStatus::RootUnavailable => TokenStream::new(),
+        },
+        LoaderStatus::RootUnavailable => proc_macro2::TokenStream::new(),
         LoaderStatus::NodeUnavailable => quote! {
             compile_error!("error[RCA9002]: selected Generation has no readable body for this Node");
-        }
-        .into(),
+        },
     }
 }
 

@@ -85,7 +85,8 @@ macro_rules! drive {
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            let parsed = grammar::Expr::parse_spanned(&mut input).expect("positive input parses with capture");
+            let parsed = grammar::Expr::parse_spanned(&mut input)
+                .expect("positive input parses with capture");
             println!("{tag} prov {source:?} => {}", parsed.debug_provenance());
             let elements: Vec<String> = parsed
                 .root()
@@ -144,5 +145,8 @@ fn main() {
 
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {
-    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+    span.map_or_else(
+        || "-".to_owned(),
+        |span| format!("{}..{}", span.start(), span.end()),
+    )
 }

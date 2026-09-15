@@ -5154,6 +5154,7 @@ impl SourceModelBuilder<'_> {
                     &self.resolved,
                     origin,
                     &definition.metas,
+                    false,
                     &mut self.diagnostics,
                 );
                 self.tokens.define_content(
@@ -5487,6 +5488,7 @@ impl SourceModelBuilder<'_> {
                 &self.resolved,
                 origin,
                 configured,
+                true,
                 &mut self.diagnostics,
             );
             self.trait_planner.validate_ordinary_derive_ownership(
@@ -7488,6 +7490,7 @@ impl TraitPlanner {
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
         metas: &[Meta],
+        declaration_surface: bool,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) -> ConfiguredTraitPlan {
         // Derive one source-ordered plan per Node while retaining the locations needed by every later diagnostic.
@@ -7529,6 +7532,15 @@ impl TraitPlanner {
                     return self.grammar_default_plan();
                 }
             };
+            if declaration_surface && !syntax.omissions.is_empty() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidTraitDelta,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message:
+                        "`#[node(omit(...))]` is retired; write `#[omit(...)]` on the declaration"
+                            .to_owned(),
+                });
+            }
             additions = self.normalize_paths(
                 resolved,
                 origin,
@@ -7540,7 +7552,11 @@ impl TraitPlanner {
                 .normalize_paths(
                     resolved,
                     origin,
-                    syntax.omissions,
+                    if declaration_surface {
+                        Vec::new()
+                    } else {
+                        syntax.omissions
+                    },
                     ConfiguredTraitOwnership::LocalOmission,
                     diagnostics,
                 )
@@ -7550,6 +7566,55 @@ impl TraitPlanner {
                     ownership: selection.ownership,
                 })
                 .collect();
+        }
+
+        let omit_metas = metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("omit"))
+            .collect::<Vec<_>>();
+        if omit_metas.len() > 1 {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidTraitDelta,
+                sites: omit_metas
+                    .iter()
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                    .collect(),
+                message: "a Node accepts at most one standalone `#[omit(...)]` list".to_owned(),
+            });
+        } else if let Some(meta) = omit_metas.first() {
+            let Meta::List(list) = meta else {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidTraitDelta,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: "`#[omit]` must use parentheses".to_owned(),
+                });
+                return self.grammar_default_plan();
+            };
+            match syn::punctuated::Punctuated::<syn::Path, Token![,]>::parse_terminated
+                .parse2(list.tokens.clone())
+            {
+                Ok(paths) => {
+                    omissions = self
+                        .normalize_paths(
+                            resolved,
+                            origin,
+                            paths.into_iter().collect(),
+                            ConfiguredTraitOwnership::LocalOmission,
+                            diagnostics,
+                        )
+                        .into_iter()
+                        .map(|selection| ConfiguredTraitOmission {
+                            recipe: selection.recipe,
+                            ownership: selection.ownership,
+                        })
+                        .collect()
+                }
+                Err(error) => diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidTraitDelta,
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
+                    message: error.to_string(),
+                }),
+            }
         }
 
         for addition in &additions {
@@ -8623,7 +8688,7 @@ impl TokenCatalog {
         let configured_traits = TraitPlanner {
             grammar_defaults: grammar_defaults.to_vec(),
         }
-        .node_plan(resolved, origin, metas, diagnostics);
+        .node_plan(resolved, origin, metas, false, diagnostics);
         self.define_content(
             semantic,
             name,
@@ -10355,17 +10420,22 @@ mod tests {
     #[test]
     fn lowers_positional_tokens_and_presence_nodes_in_source_order() {
         let report = model(
-            r##"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("(", this, ")")]
-struct Root { value: Present }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok("PRESENT")]
-struct Present;
-"##,
+    #[tok("(", this, ")")]
+    struct Root {
+        value: Present,
+    }
+}
+
+recursa::ast_node! {
+
+    #[tok("PRESENT")]
+    struct Present;
+}
+"#,
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -10414,18 +10484,21 @@ struct Present;
     #[test]
     fn preserves_field_positional_syntax_as_one_semantic_attachment() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[tok("?", this, "!")]
-    value: Option<Present>,
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("?", this, "!")]
+        value: Option<Present>,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok("PRESENT")]
-struct Present;
+recursa::ast_node! {
+
+    #[tok("PRESENT")]
+    struct Present;
+}
 "#,
         );
 
@@ -10471,27 +10544,38 @@ struct Present;
     #[test]
     fn source_modeled_grammar_retains_visibility_and_field_styles_for_emission() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-pub struct Named { value: Leaf }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub(crate) struct Tuple(Leaf);
-
-#[derive(recursa::Node)]
-struct Unit;
-
-#[derive(recursa::Node)]
-pub enum Choice {
-    Named { value: Leaf },
-    Tuple(Leaf),
-    Unit,
+    pub struct Named {
+        value: Leaf,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    pub(crate) struct Tuple(Leaf);
+}
+
+recursa::ast_node! {
+
+    struct Unit;
+}
+
+recursa::ast_node! {
+
+    pub enum Choice {
+        Named { value: Leaf },
+        Tuple(Leaf),
+        Unit,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -10521,7 +10605,7 @@ struct Leaf;
 
         assert_eq!(named.visibility, syn::parse_quote!(pub));
         assert_eq!(tuple.visibility, syn::parse_quote!(pub(crate)));
-        assert_eq!(unit.visibility, syn::Visibility::Inherited);
+        assert_eq!(unit.visibility, syn::parse_quote!(pub));
         assert_eq!(choice.visibility, syn::parse_quote!(pub));
         assert!(matches!(
             named.body,
@@ -10560,18 +10644,24 @@ struct Leaf;
     #[test]
     fn applies_grammar_trait_defaults_and_node_owned_additions_and_omissions() {
         let report = model(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     derives(Debug, Clone, Visit),
 }
 
-#[derive(recursa::Node)]
-#[node(derive(Pretty), omit(Clone))]
-struct Root { child: Leaf }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Leaf;
+    #[node(derive(Pretty))]
+    #[omit(Clone)]
+    struct Root {
+        child: Leaf,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -10614,15 +10704,15 @@ struct Leaf;
     #[test]
     fn content_declarations_model_exact_borrowed_or_owned_match_text() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Clone) }
+            r#"recursa::grammar! { module = crate, derives(Clone) }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        word: Word,
+    }
 }
-
 "#,
         );
 
@@ -10649,12 +10739,13 @@ struct Root {
     #[test]
     fn content_diagram_labels_are_authored_once_and_conflicts_are_rejected() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[0-9]+", diagram = "integer")]
-    value: Number,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[0-9]+", diagram = "integer")]
+        value: Number,
+    }
 }
 "#,
         );
@@ -10679,17 +10770,20 @@ struct Root {
         assert_eq!(duplicate.to_string(), "duplicate diagram label");
 
         let conflict = model(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct First {
-    #[lex(pattern = r"[0-9]+", diagram = "integer")]
-    value: Number,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct First {
+        #[lex(pattern = r"[0-9]+", diagram = "integer")]
+        value: Number,
+    }
 }
-#[derive(recursa::Node)]
-struct Second {
-    #[lex(pattern = r"[0-9]+", diagram = "number")]
-    value: Number,
+recursa::ast_node! {
+
+    struct Second {
+        #[lex(pattern = r"[0-9]+", diagram = "number")]
+        value: Number,
+    }
 }
 "#,
         );
@@ -10707,19 +10801,22 @@ struct Second {
     #[test]
     fn separators_are_repetition_metadata_and_model_optional_trailing_use() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(",")]
-    zero_or_more: Vec<Leaf>,
-    #[sep(",", trailing)]
-    one_or_more: recursa::Vec1<Leaf>,
+recursa::ast_node! {
+
+    struct Root {
+        #[sep(",")]
+        zero_or_more: zero_or_many!(Leaf),
+        #[sep(",", trailing)]
+        one_or_more: one_or_many!(Leaf),
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -10755,19 +10852,22 @@ struct Leaf;
     #[test]
     fn non_pratt_variants_keep_independent_positional_token_sequences() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-enum Choice {
-    #[tok("(", this, ")")]
-    Wrapped(Leaf),
-    #[tok("NULL")]
-    Null,
+recursa::ast_node! {
+
+    enum Choice {
+        #[tok("(", this, ")")]
+        Wrapped(Leaf),
+        #[tok("NULL")]
+        Null,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -10803,23 +10903,26 @@ struct Leaf;
     #[test]
     fn rejects_duplicate_this_pratt_variant_anchors_and_legacy_fixed_syntax() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(prefix, bp = 10)]
-    #[tok("!", this)]
-    Not(Box<Expr>),
+recursa::ast_node! {
 
-    #[tok("(", this, this, ")")]
-    Group(Box<Expr>),
+    #[pratt]
+    enum Expr {
+        #[parse(prefix, bp = 10)]
+        #[tok("!", this)]
+        Not(boxed!(Expr)),
+
+        #[tok("(", this, this, ")")]
+        Group(boxed!(Expr)),
+    }
 }
 
-#[derive(recursa::Node)]
-#[kwd("OLD")]
-struct Legacy;
+recursa::ast_node! {
+
+    #[kwd("OLD")]
+    struct Legacy;
+}
 "#,
         );
 
@@ -10852,17 +10955,21 @@ struct Legacy;
     #[test]
     fn rejects_unsupported_trait_recipes_delta_overlap_and_ordinary_derive_ownership() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Debug, Default) }
+            r#"recursa::grammar! { module = crate, derives(Debug, Default) }
 
-#[derive(recursa::Node, Debug)]
-#[node(derive(Clone), omit(Clone))]
-struct Root;
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[node(derive(Clone))]
+    #[omit(Clone)]
+    struct Root;
+}
 
-#[derive(recursa::Node)]
-#[node(derive(Clone))]
-#[node(derive(Eq))]
-struct InvalidDelta;
+recursa::ast_node! {
+
+    #[node(derive(Clone))]
+    #[node(derive(Eq))]
+    struct InvalidDelta;
+}
 "#,
         );
 
@@ -10901,24 +11008,27 @@ struct InvalidDelta;
     #[test]
     fn rejects_content_display_and_misplacement_before_lexical_planning() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "a", display = "A")]
-    displayed: Word,
-    #[lex(pattern = "a")]
-    first: Duplicate,
-    #[lex(pattern = "b")]
-    second: Duplicate,
-    #[lex(pattern = "a")]
-    third: Duplicate,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "a", display = "A")]
+        displayed: Word,
+        #[lex(pattern = "a")]
+        first: Duplicate,
+        #[lex(pattern = "b")]
+        second: Duplicate,
+        #[lex(pattern = "a")]
+        third: Duplicate,
+    }
 }
 
-#[derive(recursa::Node)]
-#[lex(pattern = "misplaced")]
-struct Misplaced;
+recursa::ast_node! {
+
+    #[lex(pattern = "misplaced")]
+    struct Misplaced;
+}
 "#,
         );
 
@@ -10945,20 +11055,27 @@ struct Misplaced;
     #[test]
     fn fixed_references_are_order_independent_and_exact_duplicates_unify() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok(IF, this)]
-struct Root { value: First }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok("IF")]
-struct First;
+    #[tok(IF, this)]
+    struct Root {
+        value: First,
+    }
+}
 
-#[derive(recursa::Node)]
-#[tok("IF")]
-struct Second;
+recursa::ast_node! {
+
+    #[tok("IF")]
+    struct First;
+}
+
+recursa::ast_node! {
+
+    #[tok("IF")]
+    struct Second;
+}
 "#,
         );
 
@@ -10980,12 +11097,13 @@ struct Second;
     fn configured_local_trait_deltas_are_applied_after_grammar_defaults() {
         let cfg = CargoCfgSnapshot::default().with_flag("unix");
         let report = model_with_cfg(
-            r#"
-recursa::grammar! { module = crate, derives(Debug, Visit) }
+            r#"recursa::grammar! { module = crate, derives(Debug, Visit) }
 
-#[derive(recursa::Node)]
-#[cfg_attr(unix, node(derive(Clone), omit(Debug)))]
-struct Root;
+recursa::ast_node! {
+
+    #[cfg_attr(unix, node(derive(Clone)), omit(Debug))]
+    struct Root;
+}
 "#,
             &cfg,
         );
@@ -11015,8 +11133,7 @@ struct Root;
     #[test]
     fn accepts_only_the_closed_configured_trait_recipe_catalog() {
         let report = model(
-            r#"
-my_recursa::grammar! {
+            r#"my_recursa::grammar! {
     module = crate,
     facade = my_recursa,
     derives(
@@ -11037,8 +11154,10 @@ my_recursa::grammar! {
     ),
 }
 
-#[derive(my_recursa::Node)]
-struct Root;
+my_recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 
@@ -11052,19 +11171,22 @@ struct Root;
     #[test]
     fn token_definitions_and_elements_have_stable_global_source_order() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word")]
-    first: Word,
-    later: Later,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word")]
+        first: Word,
+        later: Later,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok("LATE")]
-struct Later;
+recursa::ast_node! {
+
+    #[tok("LATE")]
+    struct Later;
+}
 "#,
         );
 
@@ -11107,18 +11229,21 @@ struct Later;
     #[test]
     fn content_admissions_resolve_through_the_fixed_token_namespace() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(IF))]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(IF))]
+        word: Word,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok("IF")]
-struct IfPresence;
+recursa::ast_node! {
+
+    #[tok("IF")]
+    struct IfPresence;
+}
 "#,
         );
 
@@ -11143,8 +11268,7 @@ struct IfPresence;
     #[test]
     fn named_admissions_compile_transitive_unions_and_subtractions_to_canonical_membership() {
         let report = model(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
@@ -11171,14 +11295,16 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(WindowRefName))]
-    window: WindowName,
-    #[lex(pattern = "word", admits(PsqlVariableName))]
-    variable: VariableName,
-    #[lex(pattern = "word", admits(BareLabels))]
-    bare: BareName,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(WindowRefName))]
+        window: WindowName,
+        #[lex(pattern = "word", admits(PsqlVariableName))]
+        variable: VariableName,
+        #[lex(pattern = "word", admits(BareLabels))]
+        bare: BareName,
+    }
 }
 "#,
         );
@@ -11214,17 +11340,18 @@ struct Root {
     #[test]
     fn duplicate_admission_union_membership_warns_without_discarding_the_model() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     categories { UNRESERVED }
     keywords { WINDOW => "window" in UNRESERVED }
     admissions { Names = UNRESERVED + { WINDOW } }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(Names))]
-    name: Name,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(Names))]
+        name: Name,
+    }
 }
 "#,
         );
@@ -11247,8 +11374,7 @@ struct Root {
     #[test]
     fn ascii_equivalent_admission_membership_uses_canonical_token_kinds() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+            r#"recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
 recursa::tokens! {
     categories { NAME }
     keywords {
@@ -11260,12 +11386,14 @@ recursa::tokens! {
         Difference = LOWER - UPPER,
     }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(Union))]
-    union: UnionName,
-    #[lex(pattern = "word", admits(Difference))]
-    difference: DifferenceName,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(Union))]
+        union: UnionName,
+        #[lex(pattern = "word", admits(Difference))]
+        difference: DifferenceName,
+    }
 }
 "#,
         );
@@ -11302,8 +11430,7 @@ struct Root {
     #[test]
     fn ascii_equivalent_keywords_reject_contradictory_categories() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+            r#"recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
 recursa::tokens! {
     categories { FIRST, SECOND }
     keywords {
@@ -11311,7 +11438,9 @@ recursa::tokens! {
         UPPER => "WORD" in SECOND,
     }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
         );
 
@@ -11326,8 +11455,7 @@ recursa::tokens! {
     #[test]
     fn exact_admission_membership_keeps_ascii_case_distinct() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, keyword_matching = exact }
+            r#"recursa::grammar! { module = crate, keyword_matching = exact }
 recursa::tokens! {
     categories { NAME }
     keywords {
@@ -11336,10 +11464,12 @@ recursa::tokens! {
     }
     admissions { Both = LOWER + UPPER }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(Both))]
-    name: Name,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(Both))]
+        name: Name,
+    }
 }
 "#,
         );
@@ -11361,38 +11491,40 @@ struct Root {
     fn invalid_admission_graphs_and_keyword_metadata_have_structured_diagnostics() {
         let cases = [
             (
-                r#"
-recursa::grammar! { module = crate }
+                r#"recursa::grammar! { module = crate }
 recursa::tokens! { admissions { Names = Missing } }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::InvalidAdmissionReference,
                 "RCA3120",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
+                r#"recursa::grammar! { module = crate }
 recursa::tokens! { admissions { First = Second, Second = First } }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::AdmissionCycle,
                 "RCA3121",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
+                r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     categories { KNOWN }
     keywords { WINDOW => "window" in MISSING }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::InvalidKeywordCategory,
                 "RCA3122",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
+                r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     categories { FIRST, SECOND }
     keywords {
@@ -11400,20 +11532,23 @@ recursa::tokens! {
         WINDOW => "window" in SECOND,
     }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
                 "RCA3123",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
+                r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     categories { FIRST, SECOND }
     keywords { WINDOW => "window" in FIRST, OTHER => "other" in SECOND }
     admissions { Names = FIRST - SECOND }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction,
                 "RCA3124",
@@ -11434,8 +11569,7 @@ recursa::tokens! {
     #[test]
     fn lookahead_filters_compile_to_fixed_definitions_in_authored_order() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords {
         NOT => "not",
@@ -11450,7 +11584,9 @@ recursa::tokens! {
         NULLS_LA = NULLS before { FIRST },
     }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
         );
         assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
@@ -11521,7 +11657,15 @@ recursa::tokens! {
             ),
         ];
         for (block, message) in cases {
-            let source = format!("{prelude}{block}\n}}\n#[derive(recursa::Node)] struct Root;\n");
+            let source = format!(
+                r#"{prelude}
+    {block}
+}}
+recursa::ast_node! {{
+    struct Root;
+}}
+"#
+            );
             let report = model(&source);
             assert!(report.source_modeled.is_none(), "{block} was non-blocking");
             assert_code(
@@ -11543,12 +11687,13 @@ recursa::tokens! {
     #[test]
     fn removed_greedy_helper_has_a_targeted_migration_diagnostic() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[greedy(all)]
-struct Root;
+recursa::ast_node! {
+
+    #[greedy(all)]
+    struct Root;
+}
 "#,
         );
 
@@ -11567,8 +11712,7 @@ struct Root;
     #[test]
     fn lookahead_filters_accept_disjoint_triggers_for_one_base_token() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { NOT => "not", BETWEEN => "between", IN => "in" }
     lookahead {
@@ -11576,9 +11720,11 @@ recursa::tokens! {
         NOT_BEFORE_IN = NOT before { IN },
     }
 }
-#[derive(recursa::Node)]
-#[tok(NOT, BETWEEN, IN)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(NOT, BETWEEN, IN)]
+    struct Root;
+}
 "#,
         );
         assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
@@ -11599,8 +11745,7 @@ struct Root;
     #[test]
     fn lookahead_filters_accept_one_unique_content_token_as_a_trigger() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { UESCAPE => "uescape" }
     punctuation { RPAREN => ")" }
@@ -11609,10 +11754,12 @@ recursa::tokens! {
         RPAREN_LA = RPAREN before { StringLit },
     }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"'[^']*'")]
-    value: StringLit,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"'[^']*'")]
+        value: StringLit,
+    }
 }
 "#,
         );
@@ -11636,21 +11783,24 @@ struct Root {
     #[test]
     fn lookahead_filters_reject_a_content_name_with_distinct_lexical_identities() {
         let report = model(
-            r##"
-recursa::grammar! { module = crate }
+            r##"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { UESCAPE => "uescape" }
     lookahead { UESCAPE_LA = UESCAPE before { StringLit } }
 }
-#[derive(recursa::Node)]
-struct SingleQuoted {
-    #[lex(pattern = r"'[^']*'")]
-    value: StringLit,
+recursa::ast_node! {
+
+    struct SingleQuoted {
+        #[lex(pattern = r"'[^']*'")]
+        value: StringLit,
+    }
 }
-#[derive(recursa::Node)]
-struct DoubleQuoted {
-    #[lex(pattern = r#""[^"]*""#)]
-    value: StringLit,
+recursa::ast_node! {
+
+    struct DoubleQuoted {
+        #[lex(pattern = r#""[^"]*""#)]
+        value: StringLit,
+    }
 }
 "##,
         );
@@ -11681,8 +11831,7 @@ struct DoubleQuoted {
     #[test]
     fn a_precedence_declaration_compiles_its_levels_and_overrides() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { LIKE => "like", ESCAPE => "escape", SELECT => "select", LOCAL => "local", NOT => "not" }
     punctuation { LPAREN => "(", RPAREN => ")", DOT => ".", PLUS => "+" }
@@ -11697,32 +11846,40 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Name {
-    #[lex(pattern = r"[a-z]+")]
-    text: NameText,
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        text: NameText,
+    }
 }
-#[derive(recursa::Node)]
-#[parse(prec = ESCAPE_ONLY)]
-struct Scope {
-    #[tok(LOCAL)]
-    name: Name,
+recursa::ast_node! {
+
+    #[parse(prec = ESCAPE_ONLY)]
+    struct Scope {
+        #[tok(LOCAL)]
+        name: Name,
+    }
 }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    Name(Name),
-    #[parse(prec = UMINUS)]
-    Sub(#[tok(LPAREN, SELECT, this, RPAREN)] Name),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Expr>, Box<Expr>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Name(Name),
+        #[parse(prec = UMINUS)]
+        Sub(#[tok(LPAREN, SELECT, this, RPAREN)] Name),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Expr), boxed!(Expr)),
+    }
 }
-#[derive(recursa::Node)]
-enum Stmt {
-    #[parse(prec = LIKE)]
-    Scoped(Scope),
-    Bare(Expr),
+recursa::ast_node! {
+
+    enum Stmt {
+        #[parse(prec = LIKE)]
+        Scoped(Scope),
+        Bare(Expr),
+    }
 }
 "#,
         );
@@ -11810,16 +11967,19 @@ enum Stmt {
     #[test]
     fn lr_conflict_declarations_compile_source_owners_actions_and_lookaheads() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { ORDER => "order" } punctuation { RPAREN => ")" } }
-#[derive(recursa::Node)]
-#[parse(lr_conflict(action = reduce, against = SelectClause::Simple, lookahead = { RPAREN }, expect = 2))]
-struct DirectSubquery;
-#[derive(recursa::Node)]
-enum SelectClause {
-    #[parse(lr_conflict(action = shift, against = DirectSubquery, lookahead = { ORDER }, expect = 2))]
-    Simple,
+recursa::ast_node! {
+
+    #[parse(lr_conflict(action = reduce, against = SelectClause::Simple, lookahead = { RPAREN }, expect = 2))]
+    struct DirectSubquery;
+}
+recursa::ast_node! {
+
+    enum SelectClause {
+        #[parse(lr_conflict(action = shift, against = DirectSubquery, lookahead = { ORDER }, expect = 2))]
+        Simple,
+    }
 }
 "#,
         );
@@ -11846,13 +12006,16 @@ enum SelectClause {
 
     #[test]
     fn malformed_lr_conflict_declarations_are_structured_errors() {
-        let source = r#"
-recursa::grammar! { module = crate }
+        let source = r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { ORDER => "order" } }
-#[derive(recursa::Node)] struct Other;
-#[derive(recursa::Node)]
-#[parse(lr_conflict(action = shift, against = Missing, lookahead = { ORDER }, expect = 1))]
-struct Root;
+recursa::ast_node! {
+    struct Other;
+}
+recursa::ast_node! {
+
+    #[parse(lr_conflict(action = shift, against = Missing, lookahead = { ORDER }, expect = 1))]
+    struct Root;
+}
 "#;
         let report = model(source);
         assert!(report.source_modeled.is_none());
@@ -11879,7 +12042,10 @@ recursa::tokens! {
         let cases = [
             (
                 "precedence { nonassoc(bp = 5) { LIKE, MISSING } }",
-                "#[derive(recursa::Node)] struct Root;",
+                r#"recursa::ast_node! {
+    struct Root;
+}
+"#,
                 "`MISSING` in the precedence declaration is not a fixed token, a content token \
                  type or a lookahead filter's merged kind; a precedence-only name must be used \
                  by a `#[parse(prec = MISSING)]`",
@@ -11888,44 +12054,74 @@ recursa::tokens! {
             // otherwise as unknown as any other, which keeps a misspelt twin an error.
             (
                 "precedence { nonassoc(bp = 5) { LIKE, LIKE_LA } }",
-                "#[derive(recursa::Node)] struct Root;",
+                r#"recursa::ast_node! {
+    struct Root;
+}
+"#,
                 "`LIKE_LA` in the precedence declaration is not a fixed token, a content token \
                  type or a lookahead filter's merged kind; a precedence-only name must be used \
                  by a `#[parse(prec = LIKE_LA)]`",
             ),
             (
                 "precedence { nonassoc(bp = 5) { LIKE } } precedence { left(bp = 6) { PLUS } }",
-                "#[derive(recursa::Node)] struct Root;",
+                r#"recursa::ast_node! {
+    struct Root;
+}
+"#,
                 "a grammar declares at most one `precedence { ... }` block",
             ),
             (
                 "precedence { nonassoc(bp = 5) { LIKE } }",
-                "#[derive(recursa::Node)] #[parse(prec = ESCAPE)] struct Root;",
+                r#"recursa::ast_node! {
+    #[parse(prec = ESCAPE)]
+    struct Root;
+}
+"#,
                 "#[parse(prec = ESCAPE)] names no level of the `precedence { ... }` declaration",
             ),
             (
                 "",
-                "#[derive(recursa::Node)] #[parse(prec = LIKE)] struct Root;",
+                r#"recursa::ast_node! {
+    #[parse(prec = LIKE)]
+    struct Root;
+}
+"#,
                 "#[parse(prec = LIKE)] needs a `precedence { ... }` declaration, and the grammar \
                  has none",
             ),
             (
                 "precedence { nonassoc(bp = 5) { LIKE } }",
-                "#[derive(recursa::Node)] #[parse(prec = LIKE)] #[parse(prec = LIKE)] struct Root;",
+                r#"recursa::ast_node! {
+    #[parse(prec = LIKE)]
+    #[parse(prec = LIKE)]
+    struct Root;
+}
+"#,
                 "a Node or variant accepts at most one #[parse(prec = NAME)]",
             ),
             (
                 "precedence { nonassoc(bp = 5) { LIKE } }",
-                "#[derive(recursa::Node)] #[parse(prec = LIKE, other)] struct Root;",
+                r#"recursa::ast_node! {
+    #[parse(prec = LIKE, other)]
+    struct Root;
+}
+"#,
                 "#[parse(prec = NAME)] names one declared precedence level: unexpected tokens \
                  after the precedence level name",
             ),
             (
                 "precedence { left(bp = 10) { PLUS } }",
-                "#[derive(recursa::Node)] #[pratt] enum Root { \
-                     Atom(#[tok(LIKE)] ()), \
-                     #[parse(infix, lbp = 10, rbp = 11)] #[parse(prec = PLUS)] #[tok(PLUS)] \
-                     Add(Box<Root>, Box<Root>) }",
+                r#"recursa::ast_node! {
+    #[pratt]
+    enum Root {
+        Atom(#[tok(LIKE)] ()),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[parse(prec = PLUS)]
+        #[tok(PLUS)]
+        Add(boxed!(Root), boxed!(Root)),
+    }
+}
+"#,
                 "#[parse(prec = NAME)] is not accepted on a prefix, infix or postfix Pratt \
                  variant, whose binding powers are its precedence",
             ),
@@ -11994,13 +12190,14 @@ recursa::tokens! {
             assert_eq!(error.to_string(), message, "{block}");
         }
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { A => "a" }
     precedence { left(bp = 1) { A, A } }
 }
-#[derive(recursa::Node)] struct Root;
+recursa::ast_node! {
+    struct Root;
+}
 "#,
         );
         assert!(report.source_modeled.is_none());
@@ -12018,15 +12215,20 @@ recursa::tokens! {
     #[test]
     fn a_token_sequence_without_this_precedes_the_semantic_body() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("BEGIN")]
-struct Root { value: Leaf }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Leaf;
+    #[tok("BEGIN")]
+    struct Root {
+        value: Leaf,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -12048,94 +12250,124 @@ struct Leaf;
     fn rejects_every_invalid_positional_attachment_before_semantic_analysis() {
         let cases = [
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[tok("A")]
-#[tok("B")]
-struct Root { value: Leaf }
-#[derive(recursa::Node)] struct Leaf;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[tok("A")]
+    #[tok("B")]
+    struct Root {
+        value: Leaf,
+    }
+}
+recursa::ast_node! {
+    struct Leaf;
+}
 "#,
                 SourceModelDiagnosticKind::MultipleTokenSequences,
                 "RCA3102",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[tok()]
-struct Root { value: Leaf }
-#[derive(recursa::Node)] struct Leaf;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[tok()]
+    struct Root {
+        value: Leaf,
+    }
+}
+recursa::ast_node! {
+    struct Leaf;
+}
 "#,
                 SourceModelDiagnosticKind::EmptyTokenSequence,
                 "RCA3103",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[tok(this)]
-struct Root;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[tok(this)]
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::EmptyThisAnchor,
                 "RCA3105",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[tok("BAD")]
-enum Root { Variant }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[tok("BAD")]
+    enum Root {
+        Variant,
+    }
+}
 "#,
                 SourceModelDiagnosticKind::InvalidTokenPlacement,
                 "RCA3114",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[tok(MISSING)]
-struct Root;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[tok(MISSING)]
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::UnresolvedFixedToken,
                 "RCA3106",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[pratt]
-enum Root { #[tok(this, this)] Group(Box<Self>) }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Root {
+        #[tok(this, this)]
+        Group(boxed!(Self)),
+    }
+}
 "#,
                 SourceModelDiagnosticKind::MultipleThisAnchors,
                 "RCA3104",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[kwd("OLD")]
-struct Root;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[kwd("OLD")]
+    struct Root;
+}
 "#,
                 SourceModelDiagnosticKind::UnsupportedFixedSyntax,
                 "RCA3113",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[pratt]
-enum Root { #[parse(prefix)] Prefix(Box<Self>) }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Root {
+        #[parse(prefix)]
+        Prefix(boxed!(Self)),
+    }
+}
 "#,
                 SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
                 "RCA3115",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)]
-struct Root { #[sep] values: Vec<Leaf> }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[sep]
+        values: zero_or_many!(Leaf),
+    }
+}
 "#,
                 SourceModelDiagnosticKind::InvalidSeparator,
                 "RCA3112",
@@ -12170,11 +12402,12 @@ struct Root { #[sep] values: Vec<Leaf> }
         let root = package.path().join("grammar.rs");
         fs::write(
             &root,
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 #[cfg_attr(feature = "strict", cfg(unknown_source_cfg))]
-#[derive(recursa::Node)]
-struct Root;
+recursa::tokens! { punctuation { SEMI => ";" } }
+recursa::ast_node! {
+    struct Root;
+}
 "#,
         )
         .unwrap();
@@ -12209,15 +12442,16 @@ struct Root;
     #[test]
     fn pratt_operand_fields_may_anchor_interleaved_fixed_syntax() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(prefix, bp = 10)]
-    #[tok("!")]
-    Not(#[tok("(", this, ")")] Box<Expr>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[parse(prefix, bp = 10)]
+        #[tok("!")]
+        Not(#[tok("(", this, ")")] boxed!(Expr)),
+    }
 }
 "#,
         );
@@ -12244,20 +12478,27 @@ enum Expr {
     #[test]
     fn unresolved_repetition_is_retained_for_post_resolution_materialization() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Vec<T> { value: T }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(",")]
-    values: Vec<Leaf>,
+    struct Vec<T> {
+        value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    struct Root {
+        #[sep(",")]
+        values: zero_or_many!(Leaf),
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -12276,13 +12517,14 @@ struct Leaf;
     #[test]
     fn content_declarations_require_a_resolved_token_type_target() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root<Word> {
-    #[lex(pattern = "word")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root<Word> {
+        #[lex(pattern = "word")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -12296,23 +12538,24 @@ struct Root<Word> {
     #[test]
     fn pratt_roles_are_retained_and_place_anchorless_tokens() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(prefix, bp = 30)]
-    #[tok("!")]
-    Prefix(Box<Expr>),
+recursa::ast_node! {
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok("+")]
-    Infix(Box<Expr>, Box<Expr>),
+    #[pratt]
+    enum Expr {
+        #[parse(prefix, bp = 30)]
+        #[tok("!")]
+        Prefix(boxed!(Expr)),
 
-    #[parse(postfix, bp = 40)]
-    #[tok("?")]
-    Postfix(Box<Expr>),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok("+")]
+        Infix(boxed!(Expr), boxed!(Expr)),
+
+        #[parse(postfix, bp = 40)]
+        #[tok("?")]
+        Postfix(boxed!(Expr)),
+    }
 }
 "#,
         );
@@ -12365,24 +12608,29 @@ enum Expr {
     #[test]
     fn compatible_content_admissions_use_a_semantic_set() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "word", admits(IF, ELSE))]
-    first: Word,
-    #[lex(pattern = "word", admits(ELSE, IF))]
-    second: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(IF, ELSE))]
+        first: Word,
+        #[lex(pattern = "word", admits(ELSE, IF))]
+        second: Word,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok("IF")]
-struct IfToken;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok("ELSE")]
-struct ElseToken;
+    #[tok("IF")]
+    struct IfToken;
+}
+
+recursa::ast_node! {
+
+    #[tok("ELSE")]
+    struct ElseToken;
+}
 "#,
         );
 
@@ -12427,14 +12675,15 @@ struct ElseToken;
     #[test]
     fn unannotated_pratt_variants_are_atoms_without_an_operator_role() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("ATOM")]
-    Atom,
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+    }
 }
 "#,
         );
@@ -12450,20 +12699,21 @@ enum Expr {
     #[test]
     fn pratt_positions_retain_exact_u8_binding_powers() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("ATOM")]
-    Atom,
-    #[parse(prefix, bp = 0)]
-    Prefix(Box<Self>),
-    #[parse(infix, lbp = 254, rbp = 255)]
-    Infix(Box<Self>, Box<Self>),
-    #[parse(postfix, bp = 37)]
-    Postfix(Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[parse(prefix, bp = 0)]
+        Prefix(boxed!(Self)),
+        #[parse(infix, lbp = 254, rbp = 255)]
+        Infix(boxed!(Self), boxed!(Self)),
+        #[parse(postfix, bp = 37)]
+        Postfix(boxed!(Self)),
+    }
 }
 "#,
         );
@@ -12490,15 +12740,16 @@ enum Expr {
     #[test]
     fn infix_tokens_precede_the_entire_second_field_attachment() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok("+")]
-    Infix(Box<Expr>, #[tok("AND")] Box<Expr>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok("+")]
+        Infix(boxed!(Expr), #[tok("AND")] boxed!(Expr)),
+    }
 }
 "#,
         );
@@ -12526,18 +12777,19 @@ enum Expr {
     #[test]
     fn multiple_or_malformed_pratt_roles_remain_diagnostics() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(prefix)]
-    #[parse(postfix)]
-    Multiple(Box<Expr>),
+recursa::ast_node! {
 
-    #[parse(sideways)]
-    Malformed(Box<Expr>),
+    #[pratt]
+    enum Expr {
+        #[parse(prefix)]
+        #[parse(postfix)]
+        Multiple(boxed!(Expr)),
+
+        #[parse(sideways)]
+        Malformed(boxed!(Expr)),
+    }
 }
 "#,
         );
@@ -12568,13 +12820,14 @@ enum Expr {
         ];
         for role in invalid_roles {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate }}
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {{
-    #[parse({role})]
-    Invalid(Box<Self>),
+                r#"recursa::grammar! {{ module = crate }}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        #[parse({role})]
+        Invalid(boxed!(Self)),
+    }}
 }}
 "#,
             );
@@ -12586,25 +12839,30 @@ enum Expr {{
         }
 
         for source in [
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[pratt]
-struct NotAnEnum;
-"#,
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-enum NotPratt {
-    #[parse(prefix, bp = 1)]
-    Variant,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[pratt]
+    struct NotAnEnum;
 }
 "#,
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[pratt(unexpected)]
-enum InvalidMarker { Atom }
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    enum NotPratt {
+        #[parse(prefix, bp = 1)]
+        Variant,
+    }
+}
+"#,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[pratt(unexpected)]
+    enum InvalidMarker {
+        Atom,
+    }
+}
 "#,
         ] {
             let report = model(source);
@@ -12618,23 +12876,28 @@ enum InvalidMarker { Atom }
     #[test]
     fn rejects_pratt_markers_and_roles_on_variants_and_fields_only() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[parse(skip)]
-struct FutureNodeParseForm {
-    #[parse(prefix, bp = 1)]
-    misplaced_role: Leaf,
-    #[pratt]
-    misplaced_marker: Leaf,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[parse(skip)]
+    struct FutureNodeParseForm {
+        #[parse(prefix, bp = 1)]
+        misplaced_role: Leaf,
+        #[pratt]
+        misplaced_marker: Leaf,
+    }
 }
-#[derive(recursa::Node)]
-enum Choice {
-    #[pratt]
-    MisplacedMarker,
+recursa::ast_node! {
+
+    enum Choice {
+        #[pratt]
+        MisplacedMarker,
+    }
 }
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -12703,8 +12966,7 @@ struct Leaf;
     #[test]
     fn pretty_spacing_rejects_a_tight_boundary_that_changes_longest_match() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation {
         COLON => ":", spacing = tight,
@@ -12712,9 +12974,11 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(COLON, COLON)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(COLON, COLON)]
+    struct Root;
+}
 "#,
         );
 
@@ -12728,38 +12992,51 @@ struct Root;
     #[test]
     fn pretty_spacing_rejects_runtime_tight_auto_boundaries() {
         for source in [
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
-#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Root;
-"#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { punctuation { COLON => ":" } }
-#[derive(recursa::Node)] #[tok(COLON)] struct Tail;
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[A-Za-z:]+")]
-    left: RootText<'input>,
-    right: Tail,
+recursa::ast_node! {
+    #[tok(LPAREN, RPAREN)]
+    struct Root;
 }
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":" } }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[tok(this, COLON)]
-    #[lex(pattern = r"[A-Za-z:]+")]
-    value: RootText<'input>,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Tail;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z:]+")]
+        left: RootText,
+        right: Tail,
+    }
 }
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":" } }
+recursa::ast_node! {
+
+    struct Root {
+        #[tok(this, COLON)]
+        #[lex(pattern = r"[A-Za-z:]+")]
+        value: RootText,
+    }
+}
+"#,
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
-#[derive(recursa::Node)] struct Child;
-#[derive(recursa::Node)] #[tok(RPAREN)] struct Tail;
-#[derive(recursa::Node)] struct Root(#[tok(this, LPAREN)] Child, Tail);
+recursa::ast_node! {
+    struct Child;
+}
+recursa::ast_node! {
+    #[tok(RPAREN)]
+    struct Tail;
+}
+recursa::ast_node! {
+    struct Root(#[tok(this, LPAREN)] Child, Tail);
+}
 "#,
         ] {
             let report = model(source);
@@ -13245,13 +13522,15 @@ recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
     #[test]
     fn pretty_boundary_catalog_preserves_first_source_order_diagnostic() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { PLUS => "+", spacing = tight, MINUS => "-" }
     lexer_tokens { FIRST => r"\+-", SECOND => r"\+(?:-)" }
 }
-#[derive(recursa::Node)] #[tok(PLUS, MINUS)] struct Root;
+recursa::ast_node! {
+    #[tok(PLUS, MINUS)]
+    struct Root;
+}
 "#,
         );
 
@@ -13269,15 +13548,19 @@ recursa::tokens! {
     #[test]
     fn pretty_spacing_checks_explicit_tight_fixed_edges_against_regex_rules() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { PLUS => "+", spacing = tight, MINUS => "-" } }
-#[derive(recursa::Node)]
-struct Lexeme<'input> {
-    #[lex(pattern = r"\+-")]
-    value: LexemeText<'input>,
+recursa::ast_node! {
+
+    struct Lexeme {
+        #[lex(pattern = r"\+-")]
+        value: LexemeText,
+    }
 }
-#[derive(recursa::Node)] #[tok(PLUS, MINUS)] struct Root;
+recursa::ast_node! {
+    #[tok(PLUS, MINUS)]
+    struct Root;
+}
 "#,
         );
 
@@ -13291,16 +13574,28 @@ struct Lexeme<'input> {
     #[test]
     fn pretty_spacing_checks_crossing_prefixes_from_central_lexical_rules() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { SUFFIX => "+c" }
     lexer_tokens { MERGED => r"a\+" }
 }
-#[derive(recursa::Node)]
-struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
-#[derive(recursa::Node)] #[tok(SUFFIX)] struct Suffix;
-#[derive(recursa::Node)] struct Root<'input> { left: Prefix<'input>, right: Suffix }
+recursa::ast_node! {
+
+    struct Prefix {
+        #[lex(pattern = "a")]
+        value: PrefixText,
+    }
+}
+recursa::ast_node! {
+    #[tok(SUFFIX)]
+    struct Suffix;
+}
+recursa::ast_node! {
+    struct Root {
+        left: Prefix,
+        right: Suffix,
+    }
+}
 "#,
         );
 
@@ -13314,15 +13609,27 @@ struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
     #[test]
     fn pretty_dynamic_boundary_retains_fixed_languages_in_the_full_catalog() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", MERGED => "a:" }
 }
-#[derive(recursa::Node)]
-struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
-#[derive(recursa::Node)] #[tok(COLON)] struct Suffix;
-#[derive(recursa::Node)] struct Root<'input> { left: Prefix<'input>, right: Suffix }
+recursa::ast_node! {
+
+    struct Prefix {
+        #[lex(pattern = "a")]
+        value: PrefixText,
+    }
+}
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Suffix;
+}
+recursa::ast_node! {
+    struct Root {
+        left: Prefix,
+        right: Suffix,
+    }
+}
 "#,
         );
 
@@ -13336,8 +13643,7 @@ struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
     #[test]
     fn ascii_insensitive_pretty_boundaries_check_canonical_fixed_spelling() {
         for source in [
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     derives(Pretty),
     keyword_matching = ascii_insensitive,
@@ -13347,10 +13653,12 @@ recursa::tokens! {
     punctuation { COLON => ":" }
     lexer_tokens { UPPER_MERGED => r"WORD:" }
 }
-#[derive(recursa::Node)] #[tok(WORD, COLON)] struct Root;
+recursa::ast_node! {
+    #[tok(WORD, COLON)]
+    struct Root;
+}
 "#,
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     derives(Pretty),
     keyword_matching = ascii_insensitive,
@@ -13361,9 +13669,13 @@ recursa::tokens! {
     punctuation { COLON => ":" }
     lexer_tokens { MIXED_MERGED => r"WoRd:" }
 }
-#[derive(recursa::Node)] struct Empty;
-#[derive(recursa::Node)]
-struct Root(#[tok(WORD, COLON, this)] Empty);
+recursa::ast_node! {
+    struct Empty;
+}
+recursa::ast_node! {
+
+    struct Root(#[tok(WORD, COLON, this)] Empty);
+}
 "#,
         ] {
             let report = model(source);
@@ -13383,12 +13695,15 @@ struct Root(#[tok(WORD, COLON, this)] Empty);
     #[test]
     fn pretty_spacing_requires_ignored_trivia_for_automatic_spaces() {
         let unsafe_report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[0-9]+")] left: LeftText<'input>,
-    #[lex(pattern = r"[A-Za-z]+")] right: RightText<'input>,
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[0-9]+")]
+        left: LeftText,
+        #[lex(pattern = r"[A-Za-z]+")]
+        right: RightText,
+    }
 }
 "#,
         );
@@ -13402,13 +13717,16 @@ struct Root<'input> {
         }));
 
         let narrow_report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ ]+" }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[0-9]+")] left: LeftText<'input>,
-    #[lex(pattern = r"[A-Za-z]+")] right: RightText<'input>,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[0-9]+")]
+        left: LeftText,
+        #[lex(pattern = r"[A-Za-z]+")]
+        right: RightText,
+    }
 }
 "#,
         );
@@ -13419,13 +13737,16 @@ struct Root<'input> {
         }));
 
         let safe_report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ \t\r\n]+" }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[0-9]+")] left: LeftText<'input>,
-    #[lex(pattern = r"[A-Za-z]+")] right: RightText<'input>,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[0-9]+")]
+        left: LeftText,
+        #[lex(pattern = r"[A-Za-z]+")]
+        right: RightText,
+    }
 }
 "#,
         );
@@ -13440,24 +13761,34 @@ struct Root<'input> {
     #[test]
     fn pretty_identifier_boundaries_check_only_the_relevant_regex_edge() {
         for source in [
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { SUFFIX => "x-" } }
-#[derive(recursa::Node)] #[tok(SUFFIX)] struct Suffix;
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[A-Za-z]+-")] left: RootText<'input>,
-    right: Suffix,
+recursa::ast_node! {
+    #[tok(SUFFIX)]
+    struct Suffix;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z]+-")]
+        left: RootText,
+        right: Suffix,
+    }
 }
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { PREFIX => "-x", spacing = tight } }
-#[derive(recursa::Node)] #[tok(PREFIX)] struct Prefix;
-#[derive(recursa::Node)]
-struct Root<'input> {
-    left: Prefix,
-    #[lex(pattern = r"-[A-Za-z]+")] right: RootText<'input>,
+recursa::ast_node! {
+    #[tok(PREFIX)]
+    struct Prefix;
+}
+recursa::ast_node! {
+
+    struct Root {
+        left: Prefix,
+        #[lex(pattern = r"-[A-Za-z]+")]
+        right: RootText,
+    }
 }
 "#,
         ] {
@@ -13474,8 +13805,7 @@ struct Root<'input> {
     #[test]
     fn pretty_spacing_rejects_a_tight_unicode_identifier_boundary() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation {
         BASE => "a",
@@ -13483,9 +13813,11 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(BASE, COMBINING_ACUTE)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(BASE, COMBINING_ACUTE)]
+    struct Root;
+}
 "#,
         );
 
@@ -13499,8 +13831,7 @@ struct Root;
     #[test]
     fn pretty_spacing_accepts_safe_requested_boundaries() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     punctuation {
@@ -13509,9 +13840,11 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(COLON, COLON)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(COLON, COLON)]
+    struct Root;
+}
 "#,
         );
 
@@ -13522,8 +13855,7 @@ struct Root;
     #[test]
     fn pretty_spacing_rejects_a_longest_match_across_a_semantic_child_boundary() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation {
         COLON => ":", spacing = tight,
@@ -13531,13 +13863,17 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(COLON)]
-struct Child;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok(this, COLON)]
-struct Root(Child);
+    #[tok(COLON)]
+    struct Child;
+}
+
+recursa::ast_node! {
+
+    #[tok(this, COLON)]
+    struct Root(Child);
+}
 "#,
         );
 
@@ -13553,14 +13889,19 @@ struct Root(Child);
         const DEPTH: usize = 14;
 
         let mut source = String::from(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", RPAREN => ")" }
     ignore = r"\s+"
 }
-#[derive(recursa::Node)] #[tok(COLON)] struct Leaf;
-#[derive(recursa::Node)] #[tok(RPAREN)] struct Tail;
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Leaf;
+}
+recursa::ast_node! {
+    #[tok(RPAREN)]
+    struct Tail;
+}
 "#,
         );
         for depth in 0..DEPTH {
@@ -13571,13 +13912,22 @@ recursa::tokens! {
             };
             writeln!(
                 source,
-                "#[derive(recursa::Node)] enum Layer{depth} {{ Left({child}), Right({child}) }}"
+                r#"recursa::ast_node! {{
+    enum Layer{depth} {{
+        Left({child}),
+        Right({child}),
+    }}
+}}
+"#
             )
             .unwrap();
         }
         writeln!(
             source,
-            "#[derive(recursa::Node)] struct Root(Layer{}, Tail);",
+            r#"recursa::ast_node! {{
+    struct Root(Layer{}, Tail);
+}}
+"#,
             DEPTH - 1
         )
         .unwrap();
@@ -13599,14 +13949,18 @@ recursa::tokens! {
         const DEPTH: usize = 14;
 
         let mut source = String::from(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { LPAREN => "(", RPAREN => ")" }
     ignore = r"\s+"
 }
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Breakable;
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+    #[tok(LPAREN, RPAREN)]
+    struct Breakable;
+}
 "#,
         );
         for depth in 0..DEPTH {
@@ -13617,13 +13971,23 @@ recursa::tokens! {
             };
             writeln!(
                 source,
-                "#[derive(recursa::Node)] enum Layer{depth} {{ Left({child}), Right({child}) }}"
+                r#"recursa::ast_node! {{
+    enum Layer{depth} {{
+        Left({child}),
+        Right({child}),
+    }}
+}}
+"#
             )
             .unwrap();
         }
         writeln!(
             source,
-            "#[derive(recursa::Node)] #[pretty(group = consistent)] struct Root(Layer{}, Breakable);",
+            r#"recursa::ast_node! {{
+    #[pretty(group = consistent)]
+    struct Root(Layer{}, Breakable);
+}}
+"#,
             DEPTH - 1
         )
         .unwrap();
@@ -13639,16 +14003,28 @@ recursa::tokens! {
     #[test]
     fn pretty_soft_opportunity_cycle_fallback_is_not_cached_as_false() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { LPAREN => "(", RPAREN => ")" }
     ignore = r"\s+"
 }
-#[derive(recursa::Node)] struct Cycle { next: Option<Box<Cycle>> }
-#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Breakable;
-#[derive(recursa::Node)] #[pretty(group = consistent)] struct First(Cycle, Breakable);
-#[derive(recursa::Node)] #[pretty(group = consistent)] struct Second(Cycle, Breakable);
+recursa::ast_node! {
+    struct Cycle {
+        next: Option<boxed!(Cycle)>,
+    }
+}
+recursa::ast_node! {
+    #[tok(LPAREN, RPAREN)]
+    struct Breakable;
+}
+recursa::ast_node! {
+    #[pretty(group = consistent)]
+    struct First(Cycle, Breakable);
+}
+recursa::ast_node! {
+    #[pretty(group = consistent)]
+    struct Second(Cycle, Breakable);
+}
 "#,
         );
 
@@ -13662,22 +14038,35 @@ recursa::tokens! {
     #[test]
     fn pretty_spacing_validates_internal_and_external_attachment_boundaries() {
         for source in [
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
 }
-#[derive(recursa::Node)] #[tok(COLON)] struct Child;
-#[derive(recursa::Node)] struct Root { #[tok(COLON, this)] child: Child }
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Child;
+}
+recursa::ast_node! {
+    struct Root {
+        #[tok(COLON, this)]
+        child: Child,
+    }
+}
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
 }
-#[derive(recursa::Node)] struct Child;
-#[derive(recursa::Node)] #[tok(COLON)] struct Tail;
-#[derive(recursa::Node)] struct Root(#[tok(this, COLON)] Child, Tail);
+recursa::ast_node! {
+    struct Child;
+}
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Tail;
+}
+recursa::ast_node! {
+    struct Root(#[tok(this, COLON)] Child, Tail);
+}
 "#,
         ] {
             let report = model(source);
@@ -13692,14 +14081,15 @@ recursa::tokens! {
     #[test]
     fn pretty_spacing_rejects_explicit_tight_inside_an_attachment() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[tok(this, COLON)]
-    #[lex(pattern = r"[A-Za-z:]+")]
-    text: RootText<'input>,
+recursa::ast_node! {
+
+    struct Root {
+        #[tok(this, COLON)]
+        #[lex(pattern = r"[A-Za-z:]+")]
+        text: RootText,
+    }
 }
 "#,
         );
@@ -13714,17 +14104,18 @@ struct Root<'input> {
     #[test]
     fn pretty_spacing_rejects_an_unproved_regex_boundary() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = tight }
 }
 
-#[derive(recursa::Node)]
-#[tok(this, COLON)]
-struct Root<'input> {
-    #[lex(pattern = r"[A-Za-z:]+")]
-    text: RootText<'input>,
+recursa::ast_node! {
+
+    #[tok(this, COLON)]
+    struct Root {
+        #[lex(pattern = r"[A-Za-z:]+")]
+        text: RootText,
+    }
 }
 "#,
         );
@@ -13738,22 +14129,25 @@ struct Root<'input> {
 
     #[test]
     fn pretty_boundary_cache_preserves_each_dynamic_use_site() {
-        let source = r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        let source = r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
 
-#[derive(recursa::Node)]
-struct Dynamic<'input> {
-    #[lex(pattern = r"[A-Za-z:]+")]
-    value: DynamicText<'input>,
+recursa::ast_node! {
+
+    struct Dynamic {
+        #[lex(pattern = r"[A-Za-z:]+")]
+        value: DynamicText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[tok(this, COLON)]
-    first: Dynamic<'input>,
-    #[tok(this, COLON)]
-    second: Dynamic<'input>,
+recursa::ast_node! {
+
+    struct Root {
+        #[tok(this, COLON)]
+        first: Dynamic,
+        #[tok(this, COLON)]
+        second: Dynamic,
+    }
 }
 "#;
         let report = model(source);
@@ -13775,25 +14169,38 @@ struct Root<'input> {
 
     #[test]
     fn pretty_boundary_dedup_preserves_distinct_sites_in_source_order() {
-        let source = r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        let source = r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
 }
-#[derive(recursa::Node)]
-#[tok(COLON)]
-struct Left;
-#[derive(recursa::Node)]
-#[tok(COLON)]
-struct Right;
-#[derive(recursa::Node)]
-enum Choice { First(Left), Second(Right) }
-#[derive(recursa::Node)]
-struct Root(#[tok(this, COLON)] Choice);
+recursa::ast_node! {
+
+    #[tok(COLON)]
+    struct Left;
+}
+recursa::ast_node! {
+
+    #[tok(COLON)]
+    struct Right;
+}
+recursa::ast_node! {
+
+    enum Choice {
+        First(Left),
+        Second(Right),
+    }
+}
+recursa::ast_node! {
+
+    struct Root(#[tok(this, COLON)] Choice);
+}
 "#;
         let report = model(source);
-        let left_site = source.find("#[tok(COLON)]\nstruct Left").unwrap() as u32 + 6;
-        let right_site = source.find("#[tok(COLON)]\nstruct Right").unwrap() as u32 + 6;
+        let definition_sites = source
+            .match_indices("#[tok(COLON)]")
+            .map(|(offset, _)| offset as u32 + 6)
+            .collect::<Vec<_>>();
+        assert_eq!(definition_sites.len(), 2);
         let primary_sites = report
             .diagnostics
             .iter()
@@ -13801,22 +14208,31 @@ struct Root(#[tok(this, COLON)] Choice);
             .map(|diagnostic| diagnostic.sites[0].range.start)
             .collect::<Vec<_>>();
 
-        assert_eq!(primary_sites, [left_site, right_site]);
+        assert_eq!(primary_sites, definition_sites);
     }
 
     #[test]
     fn pretty_boundary_cycles_keep_the_unknown_fallback_uncached() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
 }
-#[derive(recursa::Node)] #[tok(COLON)] struct Leaf;
-#[derive(recursa::Node)]
-enum Recursive { Recur(Box<Recursive>), End(Leaf) }
-#[derive(recursa::Node)]
-struct Root(#[tok(this, COLON)] Recursive);
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    enum Recursive {
+        Recur(boxed!(Recursive)),
+        End(Leaf),
+    }
+}
+recursa::ast_node! {
+
+    struct Root(#[tok(this, COLON)] Recursive);
+}
 "#,
         );
         let longest_match = report
@@ -13840,33 +14256,40 @@ struct Root(#[tok(this, COLON)] Recursive);
     #[test]
     fn pretty_breaks_prove_neighboring_regex_boundaries_are_separated() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { MINUS => "-" }
     lexer_tokens { MERGED => r"(?:a-|-a)" }
     ignore = r"\s+"
 }
 
-#[derive(recursa::Node)]
-struct Word<'input> {
-    #[lex(pattern = "a")]
-    text: WordText<'input>,
+recursa::ast_node! {
+
+    struct Word {
+        #[lex(pattern = "a")]
+        text: WordText,
+    }
 }
-#[derive(recursa::Node)]
-#[tok(MINUS)]
-struct Minus;
-#[derive(recursa::Node)]
-struct BreakBefore<'input> {
-    left: Word<'input>,
-    #[pretty(break_before = soft)]
-    right: Minus,
+recursa::ast_node! {
+
+    #[tok(MINUS)]
+    struct Minus;
 }
-#[derive(recursa::Node)]
-struct BreakAfter<'input> {
-    #[pretty(break_after = soft)]
-    left: Word<'input>,
-    right: Minus,
+recursa::ast_node! {
+
+    struct BreakBefore {
+        left: Word,
+        #[pretty(break_before = soft)]
+        right: Minus,
+    }
+}
+recursa::ast_node! {
+
+    struct BreakAfter {
+        #[pretty(break_after = soft)]
+        left: Word,
+        right: Minus,
+    }
 }
 "#,
         );
@@ -13878,17 +14301,18 @@ struct BreakAfter<'input> {
     #[test]
     fn pretty_spacing_rejects_a_unicode_boundary_from_dynamic_content() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COMBINING_ACUTE => "\u{301}", spacing = after }
 }
 
-#[derive(recursa::Node)]
-#[tok(this, COMBINING_ACUTE)]
-struct Root<'input> {
-    #[lex(pattern = r"\p{XID_Start}\p{XID_Continue}*")]
-    text: RootText<'input>,
+recursa::ast_node! {
+
+    #[tok(this, COMBINING_ACUTE)]
+    struct Root {
+        #[lex(pattern = r"\p{XID_Start}\p{XID_Continue}*")]
+        text: RootText,
+    }
 }
 "#,
         );
@@ -13903,15 +14327,16 @@ struct Root<'input> {
     #[test]
     fn invalid_pretty_spacing_is_reported_during_source_analysis() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":", spacing = sideways }
 }
 
-#[derive(recursa::Node)]
-#[tok(COLON)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(COLON)]
+    struct Root;
+}
 "#,
         );
 
@@ -13927,23 +14352,26 @@ struct Root;
     #[test]
     fn pretty_pratt_requires_authored_grouping_syntax() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { PLUS => "+" } }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -13958,28 +14386,31 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_accepts_grammar_owned_grouping_syntax() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { BEGIN => "begin", END => "end" }
     punctuation { PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Group(#[tok(BEGIN, this, END)] Box<Self>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Group(#[tok(BEGIN, this, END)] boxed!(Self)),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -13991,29 +14422,51 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_accepts_exact_fixed_only_grouping_markers() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-enum Open { #[tok(OPEN)] Value }
-#[derive(recursa::Node)]
-enum Close { #[tok(CLOSE)] Value }
-#[derive(recursa::Node)]
-struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
-#[derive(recursa::Node)]
-struct Group<'input> { open: Open, value: Box<Expr<'input>>, close: Close }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Group(Group<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    enum Open {
+        #[tok(OPEN)]
+        Value,
+    }
+}
+recursa::ast_node! {
+
+    enum Close {
+        #[tok(CLOSE)]
+        Value,
+    }
+}
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
+}
+recursa::ast_node! {
+
+    struct Group {
+        open: Open,
+        value: boxed!(Expr),
+        close: Close,
+    }
+}
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Group(Group),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14025,44 +14478,121 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_rejects_inexact_semantic_grouping_markers() {
         for source in [
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
-#[derive(recursa::Node)]
-struct Open<'input> { #[lex(pattern = r"[a-z]+\[")] text: OpenText<'input> }
-#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
-#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
-#[derive(recursa::Node)] struct Group<'input> { open: Open<'input>, value: Box<Expr<'input>>, close: Close }
-#[derive(recursa::Node)] #[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>), Group(Group<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    struct Open {
+        #[lex(pattern = r"[a-z]+\[")]
+        text: OpenText,
+    }
+}
+recursa::ast_node! {
+    enum Close {
+        #[tok(CLOSE)]
+        Value,
+    }
+}
+recursa::ast_node! {
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
+}
+recursa::ast_node! {
+    struct Group {
+        open: Open,
+        value: boxed!(Expr),
+        close: Close,
+    }
+}
+recursa::ast_node! {
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Group(Group),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { OPEN => "(", ALT => "[", CLOSE => ")", PLUS => "+" } }
-#[derive(recursa::Node)] enum Open { #[tok(OPEN)] Round, #[tok(ALT)] Square }
-#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
-#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
-#[derive(recursa::Node)] struct Group<'input> { open: Open, value: Box<Expr<'input>>, close: Close }
-#[derive(recursa::Node)] #[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>), Group(Group<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+    enum Open {
+        #[tok(OPEN)]
+        Round,
+        #[tok(ALT)]
+        Square,
+    }
+}
+recursa::ast_node! {
+    enum Close {
+        #[tok(CLOSE)]
+        Value,
+    }
+}
+recursa::ast_node! {
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
+}
+recursa::ast_node! {
+    struct Group {
+        open: Open,
+        value: boxed!(Expr),
+        close: Close,
+    }
+}
+recursa::ast_node! {
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Group(Group),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
-#[derive(recursa::Node)] enum Open { #[tok(OPEN)] Value }
-#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
-#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
-#[derive(recursa::Node)] struct Group<'input> { open: recursa::Vec1<Open>, value: Box<Expr<'input>>, close: Close }
-#[derive(recursa::Node)] #[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>), Group(Group<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+    enum Open {
+        #[tok(OPEN)]
+        Value,
+    }
+}
+recursa::ast_node! {
+    enum Close {
+        #[tok(CLOSE)]
+        Value,
+    }
+}
+recursa::ast_node! {
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
+}
+recursa::ast_node! {
+    struct Group {
+        open: one_or_many!(Open),
+        value: boxed!(Expr),
+        close: Close,
+    }
+}
+recursa::ast_node! {
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Group(Group),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         ] {
@@ -14082,60 +14612,73 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_accepts_unique_grouping_through_authored_helpers() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { ANY => "any", QUERY => "query" }
     punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedSuffix {
-    #[tok(DOT, STAR)]
-    Star,
+recursa::ast_node! {
+
+    enum ParenthesizedSuffix {
+        #[tok(DOT, STAR)]
+        Star,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(QUERY)]
-struct Query<'input> {
-    value: Box<Expr<'input>>,
+recursa::ast_node! {
+
+    #[tok(QUERY)]
+    struct Query {
+        value: boxed!(Expr),
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedContent<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Query(Query<'input>),
+recursa::ast_node! {
+
+    enum ParenthesizedContent {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Query(Query),
+    }
 }
 
-#[derive(recursa::Node)]
-struct ParenthesizedExpr<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: ParenthesizedContent<'input>,
-    suffix: Option<ParenthesizedSuffix>,
+recursa::ast_node! {
+
+    struct ParenthesizedExpr {
+        #[tok(OPEN, this, CLOSE)]
+        content: ParenthesizedContent,
+        suffix: Option<ParenthesizedSuffix>,
+    }
 }
 
-#[derive(recursa::Node)]
-struct QuantifiedExpr<'input> {
-    #[tok(ANY, OPEN, this, CLOSE)]
-    content: ParenthesizedContent<'input>,
+recursa::ast_node! {
+
+    struct QuantifiedExpr {
+        #[tok(ANY, OPEN, this, CLOSE)]
+        content: ParenthesizedContent,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Quantified(QuantifiedExpr<'input>),
-    Parenthesized(ParenthesizedExpr<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Quantified(QuantifiedExpr),
+        Parenthesized(ParenthesizedExpr),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14151,8 +14694,7 @@ enum Expr<'input> {
         // grouping witness, so the self-recursive `R` it reaches must not
         // poison the proof carried by the sibling `Exprs` witness.
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { KW => "kw" }
@@ -14162,45 +14704,57 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-enum R<'input> {
-    Nested(#[tok(LBRACKET, this, RBRACKET)] Box<R<'input>>),
-    Leaf(Integer<'input>),
+recursa::ast_node! {
+
+    enum R {
+        Nested(#[tok(LBRACKET, this, RBRACKET)] boxed!(R)),
+        Leaf(Integer),
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(KW, this)]
-struct S<'input> {
-    #[sep(COMMA)]
-    items: recursa::Vec1<R<'input>>,
+recursa::ast_node! {
+
+    #[tok(KW, this)]
+    struct S {
+        #[sep(COMMA)]
+        items: one_or_many!(R),
+    }
 }
 
-#[derive(recursa::Node)]
-enum C<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Sub(Box<S<'input>>),
+recursa::ast_node! {
+
+    enum C {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Sub(boxed!(S)),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: C<'input>,
+recursa::ast_node! {
+
+    struct P {
+        #[tok(OPEN, this, CLOSE)]
+        content: C,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14217,8 +14771,7 @@ enum Expr<'input> {
         // The sibling `C::Exprs` still supplies the one grouping witness, and
         // the cycle cannot hide a second one, so RCA3101 must stay silent.
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { SELECT => "select" }
@@ -14228,51 +14781,65 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Simple<'input> {
-    #[sep(COMMA)]
-    targets: recursa::Vec1<Expr<'input>>,
+recursa::ast_node! {
+
+    #[tok(SELECT)]
+    struct Simple {
+        #[sep(COMMA)]
+        targets: one_or_many!(Expr),
+    }
 }
 
-#[derive(recursa::Node)]
-struct Paren<'input> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    query: Box<Q<'input>>,
+recursa::ast_node! {
+
+    struct Paren {
+        #[tok(LBRACKET, this, RBRACKET)]
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum Q<'input> {
-    Simple(Simple<'input>),
-    Paren(Paren<'input>),
+recursa::ast_node! {
+
+    enum Q {
+        Simple(Simple),
+        Paren(Paren),
+    }
 }
 
-#[derive(recursa::Node)]
-enum C<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Query(Box<Q<'input>>),
+recursa::ast_node! {
+
+    enum C {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Query(boxed!(Q)),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: C<'input>,
+recursa::ast_node! {
+
+    struct P {
+        #[tok(OPEN, this, CLOSE)]
+        content: C,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14287,56 +14854,69 @@ enum Expr<'input> {
         // the `Q`/`Paren` cycle. Discharging a witnessless cycle must not
         // invent a grouping path, so RCA3101 still fires.
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { SELECT => "select", STAR => "star" }
     punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT, STAR)]
-struct Simple;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Paren<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    query: Box<Q<'input>>,
+    #[tok(SELECT, STAR)]
+    struct Simple;
 }
 
-#[derive(recursa::Node)]
-enum Q<'input> {
-    Simple(Simple),
-    Paren(Paren<'input>),
+recursa::ast_node! {
+
+    struct Paren {
+        #[tok(OPEN, this, CLOSE)]
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum C<'input> {
-    Query(Box<Q<'input>>),
-    Nested(Box<Paren<'input>>),
+recursa::ast_node! {
+
+    enum Q {
+        Simple(Simple),
+        Paren(Paren),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: C<'input>,
+recursa::ast_node! {
+
+    enum C {
+        Query(boxed!(Q)),
+        Nested(boxed!(Paren)),
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    struct P {
+        #[tok(OPEN, this, CLOSE)]
+        content: C,
+    }
+}
+
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14355,8 +14935,7 @@ enum Expr<'input> {
         // (`[ ( expr ) ]` beside `[ expr ]`). The cycle is therefore not
         // witnessless and must keep the proof inconclusive.
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     punctuation {
@@ -14365,38 +14944,48 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Paren<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    query: Box<Q<'input>>,
+recursa::ast_node! {
+
+    struct Paren {
+        #[tok(OPEN, this, CLOSE)]
+        query: boxed!(Q),
+    }
 }
 
-#[derive(recursa::Node)]
-enum Q<'input> {
-    Direct(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Paren(Paren<'input>),
+recursa::ast_node! {
+
+    enum Q {
+        Direct(#[sep(COMMA)] one_or_many!(Expr)),
+        Paren(Paren),
+    }
 }
 
-#[derive(recursa::Node)]
-struct P<'input> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    content: Q<'input>,
+recursa::ast_node! {
+
+    struct P {
+        #[tok(LBRACKET, this, RBRACKET)]
+        content: Q,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(P<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(P),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14411,39 +15000,46 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_rejects_ambiguous_grouping_through_authored_helpers() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-enum ParenthesizedContent<'input> {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
-    Single(Box<Expr<'input>>),
+recursa::ast_node! {
+
+    enum ParenthesizedContent {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Single(boxed!(Expr)),
+    }
 }
 
-#[derive(recursa::Node)]
-struct ParenthesizedExpr<'input> {
-    #[tok(OPEN, this, CLOSE)]
-    content: ParenthesizedContent<'input>,
+recursa::ast_node! {
+
+    struct ParenthesizedExpr {
+        #[tok(OPEN, this, CLOSE)]
+        content: ParenthesizedContent,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    Parenthesized(ParenthesizedExpr<'input>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        Parenthesized(ParenthesizedExpr),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14458,26 +15054,29 @@ enum Expr<'input> {
     #[test]
     fn pretty_pratt_rejects_optional_grouping_like_atoms() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { OPEN => "[", CLOSE => "]", PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    value: IntegerText<'input>,
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    Integer(Integer<'input>),
-    NotAGroup(#[tok(OPEN, this, CLOSE)] Option<Box<Self>>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        Integer(Integer),
+        NotAGroup(#[tok(OPEN, this, CLOSE)] Option<boxed!(Self)>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         );
@@ -14492,21 +15091,30 @@ enum Expr<'input> {
     #[test]
     fn pretty_hints_accept_the_closed_local_catalog() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"\s+" }
 recursa::tokens! { punctuation { COMMA => ",", TAIL => "." } }
-#[derive(recursa::Node)]
-struct Item<'input> { #[lex(pattern = r"[a-z]+") ] text: ItemText<'input> }
-#[derive(recursa::Node)] #[tok(TAIL)] struct Tail;
-#[derive(recursa::Node)]
-#[pretty(group = inconsistent, indent, break_before = soft, break_after = hard)]
-struct Root<'input> {
-    head: Tail,
-    #[sep(COMMA, trailing)]
-    #[pretty(group = consistent, indent, break_before = soft, break_after = hard, separator = leading, trailing_separator = always)]
-    values: Vec<Item<'input>>,
-    tail: Tail,
+recursa::ast_node! {
+
+    struct Item {
+        #[lex(pattern = r"[a-z]+")]
+        text: ItemText,
+    }
+}
+recursa::ast_node! {
+    #[tok(TAIL)]
+    struct Tail;
+}
+recursa::ast_node! {
+
+    #[pretty(group = inconsistent, indent, break_before = soft, break_after = hard)]
+    struct Root {
+        head: Tail,
+        #[sep(COMMA, trailing)]
+        #[pretty(group = consistent, indent, break_before = soft, break_after = hard, separator = leading, trailing_separator = always)]
+        values: zero_or_many!(Item),
+        tail: Tail,
+    }
 }
 "#,
         );
@@ -14517,11 +15125,12 @@ struct Root<'input> {
     #[test]
     fn pretty_hints_reject_unknown_duplicate_and_inapplicable_settings() {
         let unknown = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-#[pretty(text = normalized)]
-struct Root;
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    #[pretty(text = normalized)]
+    struct Root;
+}
 "#,
         );
         assert!(unknown.source_modeled.is_none());
@@ -14535,12 +15144,17 @@ struct Root;
             && diagnostic.message.contains("unknown Pretty hint")));
 
         let qualified = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-#[other::pretty(group = consistent)]
-struct Root { value: Leaf }
-#[derive(recursa::Node)] struct Leaf;
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    #[other::pretty(group = consistent)]
+    struct Root {
+        value: Leaf,
+    }
+}
+recursa::ast_node! {
+    struct Leaf;
+}
 "#,
         );
         assert!(qualified.source_modeled.is_none());
@@ -14550,12 +15164,18 @@ struct Root { value: Leaf }
         }));
 
         let inapplicable = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-struct Item;
-#[derive(recursa::Node)]
-struct Root { #[pretty(separator = leading, trailing_separator = never)] value: Item }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    struct Item;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[pretty(separator = leading, trailing_separator = never)]
+        value: Item,
+    }
+}
 "#,
         );
         assert!(inapplicable.source_modeled.is_none());
@@ -14575,13 +15195,19 @@ struct Root { #[pretty(separator = leading, trailing_separator = never)] value: 
         );
 
         let duplicate = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-#[pretty(group = consistent)]
-#[pretty(group = inconsistent)]
-struct Root { first: Leaf, second: Leaf }
-#[derive(recursa::Node)] struct Leaf;
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    #[pretty(group = consistent)]
+    #[pretty(group = inconsistent)]
+    struct Root {
+        first: Leaf,
+        second: Leaf,
+    }
+}
+recursa::ast_node! {
+    struct Leaf;
+}
 "#,
         );
         assert!(duplicate.source_modeled.is_none());
@@ -14591,13 +15217,14 @@ struct Root { first: Leaf, second: Leaf }
         }));
 
         let cfg_selected = model_with_cfg(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ \t\r\n]+", keywords { A => "a", B => "b" } }
-#[derive(recursa::Node)]
-#[cfg_attr(feature = "pretty-layout", pretty(group = inconsistent))]
-#[tok(A, B)]
-struct Root;
+recursa::ast_node! {
+
+    #[cfg_attr(feature = "pretty-layout", pretty(group = inconsistent))]
+    #[tok(A, B)]
+    struct Root;
+}
 "#,
             &CargoCfgSnapshot::default().with_value("feature", "pretty-layout"),
         );
@@ -14609,17 +15236,23 @@ struct Root;
         assert!(cfg_selected.source_modeled.is_some());
 
         let empty_scopes = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { keywords { ONLY => "only" } }
-#[derive(recursa::Node)]
-#[pretty(group = consistent)]
-enum Single { #[tok(ONLY)] Only }
-#[derive(recursa::Node)]
-#[pratt]
-#[pretty(indent)]
-enum Atom<'input> {
-    Value(#[lex(pattern = r"[a-z]+") ] Word<'input>),
+recursa::ast_node! {
+
+    #[pretty(group = consistent)]
+    enum Single {
+        #[tok(ONLY)]
+        Only,
+    }
+}
+recursa::ast_node! {
+
+    #[pratt]
+    #[pretty(indent)]
+    enum Atom {
+        Value(#[lex(pattern = r"[a-z]+")] Word),
+    }
 }
 "#,
         );
@@ -14637,16 +15270,19 @@ enum Atom<'input> {
     #[test]
     fn pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks() {
         let report = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
-#[derive(recursa::Node)]
-struct Empty;
-#[derive(recursa::Node)]
-#[tok(COLON, this)]
-struct Root {
-    #[pretty(break_before = hard)]
-    value: Empty,
+recursa::ast_node! {
+
+    struct Empty;
+}
+recursa::ast_node! {
+
+    #[tok(COLON, this)]
+    struct Root {
+        #[pretty(break_before = hard)]
+        value: Empty,
+    }
 }
 "#,
         );
@@ -14662,14 +15298,17 @@ struct Root {
         }));
 
         let disabled = model(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)]
-#[pretty(group = consistent)]
-enum Empty {
-    #[pretty(group = inconsistent)]
-    Value(#[pretty(group = consistent)] Leaf),
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    #[pretty(group = consistent)]
+    enum Empty {
+        #[pretty(group = inconsistent)]
+        Value(#[pretty(group = consistent)] Leaf),
+    }
 }
 "#,
         );
@@ -14692,15 +15331,18 @@ enum Empty {
         }));
 
         let document_edges = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"\s+" }
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)]
-#[pretty(break_before = soft)]
-struct Root {
-    #[pretty(break_before = soft, break_after = hard)]
-    value: Leaf,
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    #[pretty(break_before = soft)]
+    struct Root {
+        #[pretty(break_before = soft, break_after = hard)]
+        value: Leaf,
+    }
 }
 "#,
         );
@@ -14715,23 +15357,31 @@ struct Root {
         }));
 
         let no_ignored_trivia = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { DOT => "." } }
-#[derive(recursa::Node)] #[tok(DOT)] struct Marker;
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)]
-#[pretty(break_before = soft)]
-struct Root {
-    before: Marker,
-    #[pretty(break_before = soft, break_after = hard)]
-    value: Leaf,
-    after: Marker,
+recursa::ast_node! {
+    #[tok(DOT)]
+    struct Marker;
 }
-#[derive(recursa::Node)]
-enum Choice {
-    #[pretty(break_after = hard)]
-    Value(Leaf),
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    #[pretty(break_before = soft)]
+    struct Root {
+        before: Marker,
+        #[pretty(break_before = soft, break_after = hard)]
+        value: Leaf,
+        after: Marker,
+    }
+}
+recursa::ast_node! {
+
+    enum Choice {
+        #[pretty(break_after = hard)]
+        Value(Leaf),
+    }
 }
 "#,
         );
@@ -14753,19 +15403,22 @@ enum Choice {
     #[test]
     fn pretty_grouping_requires_real_soft_breaks_and_break_safety_follows_nested_sides() {
         let no_soft = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"\s+"
     punctuation { LEFT => "<", spacing = tight, RIGHT => ">", spacing = tight }
 }
-#[derive(recursa::Node)]
-#[pretty(group = consistent)]
-#[tok(LEFT, RIGHT)]
-struct AllTight;
-#[derive(recursa::Node)]
-#[pretty(group = inconsistent, break_before = hard)]
-struct HardOnly;
+recursa::ast_node! {
+
+    #[pretty(group = consistent)]
+    #[tok(LEFT, RIGHT)]
+    struct AllTight;
+}
+recursa::ast_node! {
+
+    #[pretty(group = inconsistent, break_before = hard)]
+    struct HardOnly;
+}
 "#,
         );
         assert!(no_soft.source_modeled.is_none());
@@ -14781,8 +15434,7 @@ struct HardOnly;
         );
 
         let nested = model(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \n]+"
     punctuation {
@@ -14790,18 +15442,32 @@ recursa::tokens! {
         AFTER => "%", spacing = after,
     }
 }
-#[derive(recursa::Node)] #[tok(BEFORE)] struct EndsBefore;
-#[derive(recursa::Node)] #[tok(AFTER)] struct StartsAfter;
-#[derive(recursa::Node)] struct Empty;
-#[derive(recursa::Node)]
-struct BreakBefore {
-    left: EndsBefore,
-    #[pretty(break_before = hard)] right: Empty,
+recursa::ast_node! {
+    #[tok(BEFORE)]
+    struct EndsBefore;
 }
-#[derive(recursa::Node)]
-struct BreakAfter {
-    #[pretty(break_after = hard)] left: Empty,
-    right: StartsAfter,
+recursa::ast_node! {
+    #[tok(AFTER)]
+    struct StartsAfter;
+}
+recursa::ast_node! {
+    struct Empty;
+}
+recursa::ast_node! {
+
+    struct BreakBefore {
+        left: EndsBefore,
+        #[pretty(break_before = hard)]
+        right: Empty,
+    }
+}
+recursa::ast_node! {
+
+    struct BreakAfter {
+        #[pretty(break_after = hard)]
+        left: Empty,
+        right: StartsAfter,
+    }
 }
 "#,
         );

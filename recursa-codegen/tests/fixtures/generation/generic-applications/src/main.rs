@@ -5,13 +5,17 @@ fn main() {
     fn assert_traits<T: std::fmt::Debug + Clone + PartialEq + recursa::Pretty>() {}
     assert_traits::<grammar::Atom<grammar::Integer<'static>>>();
     assert_traits::<grammar::Atom<grammar::Name<'static>>>();
+    assert_traits::<grammar::Pair<'static>>();
 
     let lexed = grammar::lex("-12 - name");
     let mut input = lexed.input();
     let parsed = grammar::Expr::parse_spanned(&mut input).expect("generic applications parse");
     assert!(input.is_eof());
     assert_eq!(parsed.render(), "-12 - name");
-    assert_eq!(parsed.root().sub_minus_span(), Some(recursa::Span::new(4, 5).unwrap()));
+    assert_eq!(
+        parsed.root().sub_minus_span(),
+        Some(recursa::Span::new(4, 5).unwrap())
+    );
 
     let negated = grammar::lex("-12");
     let mut negated_input = negated.input();
@@ -126,9 +130,8 @@ fn main() {
 
     let attached_generic = grammar::lex("{Is MiXeD}");
     let mut attached_generic_input = attached_generic.input();
-    let attached_generic =
-        grammar::GenericAttachedRoot::parse_spanned(&mut attached_generic_input)
-            .expect("attached generic-dependent child with a keyword parses");
+    let attached_generic = grammar::GenericAttachedRoot::parse_spanned(&mut attached_generic_input)
+        .expect("attached generic-dependent child with a keyword parses");
     assert!(attached_generic_input.is_eof());
     let (attached_generic_rendered, attached_generic_map) = attached_generic.render_mapped();
     assert_eq!(attached_generic_rendered, "{Is MiXeD}");

@@ -32,101 +32,108 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub value: IntegerText<'input>,
+recursa::ast_node! {
+
+    pub struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub value: NameText<'input>,
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub value: NameText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct EscapeClause<'input> {
-    #[tok(ESCAPE, this)]
-    pub value: Name<'input>,
+recursa::ast_node! {
+
+    pub struct EscapeClause {
+        #[tok(ESCAPE, this)]
+        pub value: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum LikeSuffix<'input> {
-    #[parse(lr_conflict(
+recursa::ast_node! {
+
+    pub enum LikeSuffix {
+        #[parse(lr_conflict(
         action = shift,
         against = grammar::EscapeClause,
         lookahead = { ESCAPE },
         expect = 2
     ))]
-    Plain,
-    Escaped(EscapeClause<'input>),
+        Plain,
+        Escaped(EscapeClause),
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-#[pretty(group = inconsistent)]
-pub enum Expr<'input> {
-    Integer(Integer<'input>),
-    Name(Name<'input>),
-    MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] Box<Self>),
-    Paren(#[tok(GROUP_OPEN, this, GROUP_CLOSE)] Box<Self>),
+recursa::ast_node! {
 
-    #[parse(prefix, bp = 35)]
-    #[tok(MINUS)]
-    Neg(Box<Self>),
-
-    #[parse(postfix, bp = 40)]
-    #[tok(BANG)]
-    Factorial(Box<Self>),
-
-    #[parse(infix, lbp = 30, rbp = 30)]
-    #[tok(CARET)]
-    Power(Box<Self>, Box<Self>),
-
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Multiply(Box<Self>, Box<Self>),
-
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
-
-    #[parse(infix, lbp = 15, rbp = 16)]
-    Custom(
-        Box<Self>,
-        #[lex(pattern = r"[~@]+")]
-        OperatorText<'input>,
-        Box<Self>,
-    ),
-
-    #[parse(prefix, bp = 35)]
-    #[tok(NEVER, EXISTS)]
-    NotExists(Box<Self>),
-
-    #[parse(infix, lbp = 5, rbp = 6)]
-    #[tok(IS, KW_NOT)]
+    #[pratt]
     #[pretty(group = inconsistent)]
-    IsNot(Box<Self>, #[pretty(break_before = soft)] Box<Self>),
+    pub enum Expr {
+        Integer(Integer),
+        Name(Name),
+        MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] boxed!(Self)),
+        Paren(#[tok(GROUP_OPEN, this, GROUP_CLOSE)] boxed!(Self)),
 
-    #[parse(postfix, bp = 5)]
-    Like(
-        Box<Self>,
-        #[tok(LIKE, this)] Box<Self>,
-        LikeSuffix<'input>,
-    ),
+        #[parse(prefix, bp = 35)]
+        #[tok(MINUS)]
+        Neg(boxed!(Self)),
 
-    #[parse(infix, lbp = 25, rbp = 26)]
-    #[tok(DOUBLE_COLON)]
-    Cast(Box<Self>, Box<Self>),
+        #[parse(postfix, bp = 40)]
+        #[tok(BANG)]
+        Factorial(boxed!(Self)),
 
-    #[parse(postfix, bp = 40)]
-    #[tok(HAS, NULL)]
-    IsNull(Box<Self>),
+        #[parse(infix, lbp = 30, rbp = 30)]
+        #[tok(CARET)]
+        Power(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Multiply(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 15, rbp = 16)]
+        Custom(
+            boxed!(Self),
+            #[lex(pattern = r"[~@]+")] OperatorText,
+            boxed!(Self),
+        ),
+
+        #[parse(prefix, bp = 35)]
+        #[tok(NEVER, EXISTS)]
+        NotExists(boxed!(Self)),
+
+        #[parse(infix, lbp = 5, rbp = 6)]
+        #[tok(IS, KW_NOT)]
+        #[pretty(group = inconsistent)]
+        IsNot(boxed!(Self), #[pretty(break_before = soft)] boxed!(Self)),
+
+        #[parse(postfix, bp = 5)]
+        Like(boxed!(Self), #[tok(LIKE, this)] boxed!(Self), LikeSuffix),
+
+        #[parse(infix, lbp = 25, rbp = 26)]
+        #[tok(DOUBLE_COLON)]
+        Cast(boxed!(Self), boxed!(Self)),
+
+        #[parse(postfix, bp = 40)]
+        #[tok(HAS, NULL)]
+        IsNull(boxed!(Self)),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct FollowedHas<'input> {
-    #[tok(this, HAS)]
-    pub expression: Expr<'input>,
-    pub tail: Integer<'input>,
+recursa::ast_node! {
+
+    pub struct FollowedHas {
+        #[tok(this, HAS)]
+        pub expression: Expr,
+        pub tail: Integer,
+    }
 }

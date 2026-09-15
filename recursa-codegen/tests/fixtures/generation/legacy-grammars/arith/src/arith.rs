@@ -17,47 +17,55 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct IntAtom<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub value: IntLit<'input>,
+recursa::ast_node! {
+
+    pub struct IntAtom {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntLit,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct IdentAtom<'input> {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub value: Ident<'input>,
+recursa::ast_node! {
+
+    pub struct IdentAtom {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub value: Ident,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Atom<T> {
-    pub value: T,
+recursa::ast_node! {
+
+    pub struct Atom<T> {
+        pub value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {
-    IntLit(Atom<IntAtom<'input>>),
-    Ident(Atom<IdentAtom<'input>>),
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Expr<'input>>),
+recursa::ast_node! {
 
-    #[parse(prefix, bp = 30)]
-    #[tok(MINUS)]
-    Neg(Box<Self>),
+    #[pratt]
+    pub enum Expr {
+        IntLit(Atom<IntAtom>),
+        Ident(Atom<IdentAtom>),
+        Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+        #[parse(prefix, bp = 30)]
+        #[tok(MINUS)]
+        Neg(boxed!(Self)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(MINUS)]
-    Sub(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Mul(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(MINUS)]
+        Sub(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(SLASH)]
-    Div(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Mul(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(SLASH)]
+        Div(boxed!(Self), boxed!(Self)),
+    }
 }

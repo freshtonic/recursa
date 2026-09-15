@@ -1,18 +1,19 @@
 # Recursa
 
-Recursa is an AST-first parser generator for Rust: ordinary Rust types describe
-the data a parser produces, while attributes describe the syntax around that
-data.
+Recursa is an AST-first parser generator for Rust: `ast_node!` declarations
+describe the data a parser produces, while attributes describe the syntax
+around that data. Generation supplies concrete Rust types for the selected AST
+storage style.
 
 Keeping the grammar beside the semantic model shortens the distance between
 syntax and the code that consumes it. Delimiters, separators, and keywords stay
-out of the AST when they carry no meaning, and Rust types such as `Option<T>`,
-`Vec<T>`, and `Vec1<T>` make representable states explicit.
+out of the AST when they carry no meaning. `Option<T>`, `zero_or_many!(T)`, and
+`one_or_many!(T)` make cardinality explicit without fixing collection storage.
 
 Recursa is a different trade-off from parser combinators and lex/yacc-style
 tools. Combinators build parsers directly in Rust; lex/yacc systems usually keep
 a separate grammar and semantic actions. Recursa instead generates lexing and
-parsing from annotated Rust AST declarations. Which model is clearest depends
+parsing from annotated AST Node declarations. Which model is clearest depends
 on the language and the surrounding application.
 
 ## Quickstart
@@ -63,29 +64,38 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(LBRACKET, this, RBRACKET)]
-pub struct Array<'input> {
-    #[sep(COMMA)]
-    pub values: Option<recursa::Vec1<Value<'input>>>,
+recursa::ast_node! {
+    #[tok(LBRACKET, this, RBRACKET)]
+    struct Array {
+        #[sep(COMMA)]
+        values: Option<one_or_many!(Value)>,
+    }
 }
 ```
 
 The brackets and commas shape the syntax without becoming dead fields.
-`Option<Vec1<Value>>` says that an array is either empty or contains at least
+`Option<one_or_many!(Value)>` says that an array is either empty or contains at least
 one value.
+
+Declarations omit input lifetimes and public visibility boilerplate. The generated
+Rust types still carry required lifetimes, and explicit visibility restrictions
+remain available. Use `boxed!(T)` wherever a child needs indirection; `arena_ast`
+on the grammar selects arena-backed nested containers for both boxes and lists.
+See the [declaration guide](recursa/README.md#node-declarations) for syntax and
+trait configuration.
 
 Fixed-token options do not require marker nodes. Use `optional(TOKENS...)`
 inside the sole `#[tok(...)]` sequence for erased syntax, or store its presence
 in a plain `bool` with a separate `#[presence(TOKENS...)]` attribute:
 
 ```rust,ignore
-#[derive(recursa::Node)]
-pub struct CreateIndex<'input> {
-    #[tok(CREATE, optional(OR, REPLACE), INDEX, this)]
-    #[presence(CONCURRENTLY)]
-    pub concurrently: bool,
-    pub name: Identifier<'input>,
+recursa::ast_node! {
+    struct CreateIndex {
+        #[tok(CREATE, optional(OR, REPLACE), INDEX, this)]
+        #[presence(CONCURRENTLY)]
+        concurrently: bool,
+        name: Identifier,
+    }
 }
 ```
 

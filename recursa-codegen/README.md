@@ -17,7 +17,9 @@ fn main() -> Result<(), recursa_codegen::GenerateError> {
 The path is relative to the package manifest. The generator owns Cargo
 invalidation for the selected Rust module tree. Consumers should not inspect
 `OUT_DIR` or include generated files themselves; `recursa::grammar!` and
-`#[derive(recursa::Node)]` load the matching generation.
+`recursa::ast_node!` load the matching generation. Node declarations describe
+relationships and cardinalities; the generator resolves their concrete nested
+containers and required lifetimes under the grammar's storage policy.
 
 See the complete build scripts for the compiled
 [JSON](https://github.com/freshtonic/recursa/blob/main/examples/json/build.rs)

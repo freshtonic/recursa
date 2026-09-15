@@ -31,52 +31,64 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub enum Entry<'input> {
-    #[tok(PUT, this)]
-    Put(Name<'input>),
-    #[tok(COPY, this)]
-    CopyFromStdin(Name<'input>),
-    #[tok(PUT, LPAREN, this, RPAREN)]
-    Nested(Pair<'input>),
-    Tagged(TagTriple<'input>),
+recursa::ast_node! {
+
+    pub enum Entry {
+        #[tok(PUT, this)]
+        Put(Name),
+        #[tok(COPY, this)]
+        CopyFromStdin(Name),
+        #[tok(PUT, LPAREN, this, RPAREN)]
+        Nested(Pair),
+        Tagged(TagTriple),
+    }
 }
 
 // Three declared semantic targets share one content base kind.
-#[derive(recursa::Node)]
-pub struct TagTriple<'input> {
-    #[lex(pattern = r"[A-Z]+")]
-    pub tag: TagName<'input>,
-    #[lex(pattern = r"[A-Z]+")]
-    pub value: TagValue<'input>,
-    #[lex(pattern = r"[A-Z]+")]
-    pub unit: TagUnit<'input>,
+recursa::ast_node! {
+
+    pub struct TagTriple {
+        #[lex(pattern = r"[A-Z]+")]
+        pub tag: TagName,
+        #[lex(pattern = r"[A-Z]+")]
+        pub value: TagValue,
+        #[lex(pattern = r"[A-Z]+")]
+        pub unit: TagUnit,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Name<'input> {
-    #[lex(matcher)]
-    pub text: Quoted<'input>,
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(matcher)]
+        pub text: Quoted,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct StructEntry<'input> {
-    #[tok(PUT, this)]
-    pub name: Name<'input>,
+recursa::ast_node! {
+
+    pub struct StructEntry {
+        #[tok(PUT, this)]
+        pub name: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Pair<'input> {
-    #[tok(this, SEMI)]
-    pub first: Name<'input>,
-    pub second: Name<'input>,
+recursa::ast_node! {
+
+    pub struct Pair {
+        #[tok(this, SEMI)]
+        pub first: Name,
+        pub second: Name,
+    }
 }
 
 // Materialize the framing-only atomic kinds without admitting them to Entry.
-#[derive(recursa::Node)]
-pub struct AtomicRegions<'input> {
-    #[lex(matcher)]
-    pub line: MetaLine<'input>,
-    #[lex(matcher)]
-    pub raw: RawBlock<'input>,
+recursa::ast_node! {
+
+    pub struct AtomicRegions {
+        #[lex(matcher)]
+        pub line: MetaLine,
+        #[lex(matcher)]
+        pub raw: RawBlock,
+    }
 }

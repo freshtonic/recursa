@@ -16,6 +16,8 @@ pub(super) struct NodeParsePlan {
     pub(super) module: ModuleId,
     /// Authored Rust identifier retained for emitted declarations.
     pub(super) ident: Ident,
+    /// Concrete AST declaration emitted at the authored macro site.
+    pub(super) concrete_item: Option<Item>,
     /// Whether loader compatibility requires a public materialization.
     pub(super) publicly_materialized: bool,
     /// Stable loader symbol used to discover this node.
@@ -585,6 +587,10 @@ pub(super) fn plan_lr_node(
             semantic_key: node.key.segments.join("::"),
             module: node.module,
             ident: emitted_ident(&node.ident)?,
+            concrete_item: match &node.origin {
+                ResolvedNodeOrigin::Declaration(origin) => Some(origin.concrete_item.clone()),
+                ResolvedNodeOrigin::DirectRust => None,
+            },
             publicly_materialized: publicly_reachable(
                 &lowered.source_modeled.resolved().tree,
                 node.module,
@@ -1444,18 +1450,21 @@ pub(super) fn authored_projection_with(
                 for parameter in &alias.generics.params {
                     match parameter {
                         GenericParam::Lifetime(parameter) => {
-                            let Some(ResolvedGenericArgument::Lifetime(argument)) = supplied.next()
-                            else {
-                                return Err(format!(
-                                    "type alias `{}` leaves lifetime `{}` open",
-                                    alias.ident, parameter.lifetime
-                                ));
+                            let argument = match supplied.peek() {
+                                Some(ResolvedGenericArgument::Lifetime(_)) => {
+                                    let Some(ResolvedGenericArgument::Lifetime(argument)) =
+                                        supplied.next()
+                                    else {
+                                        unreachable!("peeked a lifetime argument")
+                                    };
+                                    bindings
+                                        .lifetimes
+                                        .get(&argument.ident.to_string())
+                                        .cloned()
+                                        .unwrap_or_else(|| argument.clone())
+                                }
+                                Some(_) | None => syn::parse_quote!('input),
                             };
-                            let argument = bindings
-                                .lifetimes
-                                .get(&argument.ident.to_string())
-                                .cloned()
-                                .unwrap_or_else(|| argument.clone());
                             alias_bindings
                                 .lifetimes
                                 .insert(parameter.lifetime.ident.to_string(), argument);
@@ -1533,7 +1542,7 @@ pub(super) fn authored_projection_with(
                 wrappers: Vec::new(),
             }),
             SemanticTarget::ContentToken(_) => Ok(AuthoredProjection {
-                terminal: ty.syntax.clone(),
+                terminal: type_with_generated_input_lifetime(&ty.syntax)?,
                 terminal_node: None,
                 wrappers: Vec::new(),
             }),
@@ -1589,7 +1598,7 @@ pub(super) fn authored_node_type(
                     .lifetimes
                     .get(&lifetime.ident.to_string())
                     .cloned()
-                    .unwrap_or_else(|| lifetime.clone());
+                    .unwrap_or_else(|| syn::parse_quote!('input));
                 rendered.push(GenericArgument::Lifetime(lifetime));
             }
             ResolvedGenericArgument::Type(ty) => {
@@ -1608,6 +1617,13 @@ pub(super) fn authored_node_type(
             }
         }
     }
+    if node.generics.lifetimes().next().is_some()
+        && !rendered
+            .iter()
+            .any(|argument| matches!(argument, GenericArgument::Lifetime(_)))
+    {
+        rendered.insert(0, GenericArgument::Lifetime(syn::parse_quote!('input)));
+    }
     if !rendered.is_empty() {
         let segment = path
             .segments
@@ -1621,6 +1637,24 @@ pub(super) fn authored_node_type(
         });
     }
     Ok(Type::Path(syn::TypePath { qself: None, path }))
+}
+
+/// Supplies the declaration convention's inferred input lifetime to a generated token type.
+fn type_with_generated_input_lifetime(ty: &Type) -> Result<Type, String> {
+    let Type::Path(type_path) = ty else {
+        return Err("a generated content-token reference is not a type path".to_owned());
+    };
+    let mut type_path = type_path.clone();
+    let segment = type_path
+        .path
+        .segments
+        .last_mut()
+        .ok_or_else(|| "a generated content-token path is empty".to_owned())?;
+    if matches!(segment.arguments, PathArguments::None) {
+        let arguments: syn::AngleBracketedGenericArguments = syn::parse_quote!(<'input>);
+        segment.arguments = PathArguments::AngleBracketed(arguments);
+    }
+    Ok(Type::Path(type_path))
 }
 
 /// Visits declaration elements in authored order with their construction indices.

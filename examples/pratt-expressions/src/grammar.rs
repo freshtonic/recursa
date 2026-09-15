@@ -29,42 +29,48 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: IntegerText<'input>,
+recursa::ast_node! {
+
+    pub struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub text: NameText<'input>,
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {
-    Integer(Integer<'input>),
-    Name(Name<'input>),
-    Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+recursa::ast_node! {
 
-    #[parse(prefix, bp = 35)]
-    #[tok(MINUS)]
-    Negate(Box<Self>),
+    #[pratt]
+    pub enum Expr {
+        Integer(Integer),
+        Name(Name),
+        Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
 
-    #[parse(postfix, bp = 40)]
-    #[tok(BANG)]
-    Factorial(Box<Self>),
+        #[parse(prefix, bp = 35)]
+        #[tok(MINUS)]
+        Negate(boxed!(Self)),
 
-    #[parse(infix, lbp = 30, rbp = 30)]
-    #[tok(CARET)]
-    Power(Box<Self>, Box<Self>),
+        #[parse(postfix, bp = 40)]
+        #[tok(BANG)]
+        Factorial(boxed!(Self)),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Multiply(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 30, rbp = 30)]
+        #[tok(CARET)]
+        Power(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Multiply(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
 }

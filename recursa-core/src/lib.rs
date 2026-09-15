@@ -53,14 +53,16 @@ pub use visitor::{
 /// Recursa runtime.
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "arbitrary")]
+    pub use crate::arbitrary_depth::{
+        DepthGuard as ArbitraryDepthGuard, MAX_DEPTH as ARBITRARY_MAX_DEPTH,
+    };
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
-    pub use crate::explorer::sample_root as explorer_sample_root;
+    pub use crate::explorer::ArenaArbitraryRootFamily;
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::sample_arena_root as explorer_sample_arena_root;
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
-    pub use crate::explorer::ArenaArbitraryRootFamily;
-    #[cfg(feature = "arbitrary")]
-    pub use crate::parsed::ArenaSynthetic;
+    pub use crate::explorer::sample_root as explorer_sample_root;
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
         ArenaExplorerRootFamily, ElementSchemaData as ExplorerElementSchemaData,
@@ -101,6 +103,8 @@ pub mod __private {
     };
     pub use crate::lr::{LrTables, Reduction as LrReduction, run as lr_run};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
+    #[cfg(feature = "arbitrary")]
+    pub use crate::parsed::ArenaSynthetic;
     pub use crate::parsed::{
         ArenaGeneratedParse, CapturePolicy, ContentText, ElementMetadata, GeneratedInput,
         GeneratedParse as Parse, NodeElements, NodeViewFactory, Occurrence, Occurrences,
@@ -113,10 +117,6 @@ pub mod __private {
     pub use arbitrary;
     #[cfg(feature = "arbitrary")]
     pub use bumpalo;
-    #[cfg(feature = "arbitrary")]
-    pub use crate::arbitrary_depth::{
-        DepthGuard as ArbitraryDepthGuard, MAX_DEPTH as ARBITRARY_MAX_DEPTH,
-    };
     pub use logos;
     /// Perfect-hash runtime backing generated word-keyword classification.
     ///
@@ -175,7 +175,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        28,
+        29,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -268,7 +268,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            28,
+            29,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

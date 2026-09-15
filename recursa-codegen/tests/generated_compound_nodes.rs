@@ -394,9 +394,11 @@ fn explorer_capability_requires_a_source_visible_visit_root() {
 
 recursa::tokens! { keywords { ONLY => "only" } }
 
-#[derive(recursa::Node)]
-#[tok(ONLY)]
-pub struct Only;
+recursa::ast_node! {
+
+    #[tok(ONLY)]
+    pub struct Only;
+}
 "#,
     )
     .expect("create a grammar without Visit");
@@ -831,7 +833,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_28", "protocol_999"))
+    fs::write(&root, source.replace("protocol_29", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
@@ -932,18 +934,17 @@ recursa::tokens! {
     keywords { ONLY => "only" }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit, VisitMut))]
-#[tok(ONLY)]
-pub struct Only;
+recursa::ast_node! {
+
+    #[omit(Visit, VisitMut)]
+    #[tok(ONLY)]
+    pub struct Only;
+}
 
 impl recursa::Visit for Only {
     type Events = __RecursaVisitEvents<'static>;
 
-    fn visit<V>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    fn visit<V>(&self, visitor: &mut V) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
     where
         V: recursa::TotalVisitor<Self::Events>,
     {
@@ -966,9 +967,7 @@ impl recursa::VisitMut for Only {
     where
         V: recursa::TotalVisitorMut<Self::EventsMut>,
     {
-        match visitor.total_enter_mut(
-            __RecursaVisitEventMut::__RecursaTarget_4_Only(self),
-        ) {
+        match visitor.total_enter_mut(__RecursaVisitEventMut::__RecursaTarget_4_Only(self)) {
             std::ops::ControlFlow::Continue(())
             | std::ops::ControlFlow::Break(recursa::VisitBreak::SkipChildren) => {}
             other => return other,
@@ -1012,18 +1011,17 @@ fn explorer_root_eligibility_keeps_source_owned_visit_after_local_omit() {
 
 recursa::tokens! { keywords { ONLY => "only" } }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-#[tok(ONLY)]
-pub struct Only;
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    #[tok(ONLY)]
+    pub struct Only;
+}
 
 impl recursa::Visit for Only {
     type Events = __RecursaVisitEvents<'static>;
 
-    fn visit<V>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    fn visit<V>(&self, visitor: &mut V) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
     where
         V: recursa::TotalVisitor<Self::Events>,
     {
@@ -1071,18 +1069,17 @@ fn source_owned_visit_root_reserves_its_explorer_entry_method() {
 
 recursa::tokens! { keywords { ONLY => "only" } }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-#[tok(ONLY)]
-pub struct Only;
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    #[tok(ONLY)]
+    pub struct Only;
+}
 
 impl recursa::Visit for Only {
     type Events = __RecursaVisitEvents<'static>;
 
-    fn visit<V>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    fn visit<V>(&self, visitor: &mut V) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
     where
         V: recursa::TotalVisitor<Self::Events>,
     {
@@ -1095,7 +1092,9 @@ impl recursa::Visit for Only {
     }
 }
 
-impl Only { pub fn explorer() {} }
+impl Only {
+    pub fn explorer() {}
+}
 "#,
     )
     .expect("write source-owned Visit explorer collision");
@@ -1123,10 +1122,12 @@ fn explorer_projection_does_not_require_an_authored_visit_impl() {
 
 recursa::tokens! { keywords { ONLY => "only" } }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-#[tok(ONLY)]
-pub struct Only;
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    #[tok(ONLY)]
+    pub struct Only;
+}
 "#,
     )
     .expect("write missing source-owned Visit grammar");
@@ -1189,14 +1190,8 @@ fn a_generic_view_name_collision_is_a_deterministic_generation_error() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    fs::write(
-        &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "pub struct View;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        ),
-    )
-    .expect("insert an authored view-name collision");
+    fs::write(&grammar, format!("{source}\npub struct View;\n"))
+        .expect("insert an authored view-name collision");
 
     let output = run_fixture(&package);
     assert!(
@@ -1221,10 +1216,7 @@ fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
     fs::write(
         &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "static __RECURSA_EXPLORER_SCHEMA_0: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        ),
+        format!("{source}\nstatic __RECURSA_EXPLORER_SCHEMA_0: () = ();\n"),
     )
     .expect("insert explorer static collision");
 

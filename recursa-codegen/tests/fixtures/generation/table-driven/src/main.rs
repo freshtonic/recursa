@@ -4,8 +4,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use recursa_generated_table_driven::grammar;
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
+use recursa_generated_table_driven::grammar;
 
 /// Counts live heap allocations so a failed parse can prove it dropped every boxed partial
 /// value.
@@ -213,8 +213,10 @@ fn main() {
     println!("table-driven-ok");
 }
 
-
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {
-    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+    span.map_or_else(
+        || "-".to_owned(),
+        |span| format!("{}..{}", span.start(), span.end()),
+    )
 }

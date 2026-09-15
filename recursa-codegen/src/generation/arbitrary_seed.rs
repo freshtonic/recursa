@@ -51,7 +51,11 @@ pub(super) fn render_arbitrary_seed_module(plan: &EmissionPlan) -> proc_macro2::
                 .contains(&ConfiguredTraitRecipe::Arbitrary)
                 && node.publicly_materialized
         })
-        .flat_map(|node| node.parse_applications.iter().map(move |application| (node, application)))
+        .flat_map(|node| {
+            node.parse_applications
+                .iter()
+                .map(move |application| (node, application))
+        })
         .map(|(node, application)| render_seed_entry(plan, node, application, facade));
     quote! {
         __recursa_if_arbitrary! {
@@ -129,15 +133,14 @@ fn strip_generic_args(ty: &Type) -> Type {
     ty
 }
 
-/// Rewrites one Direct projection's terminal type for seed use: a Node-typed terminal becomes a
-/// reference to that Node application's own seed type; anything else (a content-token terminal)
-/// keeps its own type, with any lifetime argument replaced by `'static` — sound because
-/// content-token storage (`ContentText`) is Owned-or-Borrowed, and an Owned instance carries no
-/// real borrow, so it is constructible (and usable) at any lifetime the caller names.
+/// Resolves a closed application to the stable seed-type index shared with explorer generation.
 fn application_parse_index_of(plan: &EmissionPlan, target: MaterializedApplicationId) -> usize {
-    explorer_application_parse_plan(&plan.nodes, target).1.parse_index
+    explorer_application_parse_plan(&plan.nodes, target)
+        .1
+        .parse_index
 }
 
+/// Finds the canonical token plan used to qualify a seed field outside its authored module.
 fn content_token_index_of(plan: &EmissionPlan, target: ContentTokenId) -> usize {
     plan.tokens
         .iter()
@@ -182,21 +185,16 @@ fn rewrite_projection_for_seed(
     } = &mut rewritten
     {
         let static_lifetime: syn::Lifetime = syn::parse_quote!('static);
-        let replaced = match (terminal_application.clone(), &explorer_terminal) {
+        let replaced = match (*terminal_application, &explorer_terminal) {
             (Some(target), _) => seed_type_path(plan, application_parse_index_of(plan, target)),
             (None, ExplorerTerminalPlan::Content(token)) => {
-                content_token_path(
-                    plan,
-                    content_token_index_of(plan, token.clone()),
-                    &static_lifetime,
-                )
+                content_token_path(plan, content_token_index_of(plan, *token), &static_lifetime)
             }
             (None, ExplorerTerminalPlan::Node(_)) => {
                 unreachable!("a Node explorer_terminal always carries terminal_application")
             }
         };
-        let _ = terminal;
-        *terminal = Box::new(replaced);
+        **terminal = replaced;
     }
     rewritten
 }
@@ -207,16 +205,13 @@ fn rewrite_element_for_seed(plan: &EmissionPlan, element: &ElementParsePlan) -> 
     let mut rewritten = element.clone();
     if let ElementParseKind::Semantic { projection, .. } = &mut rewritten.kind {
         let replaced = rewrite_projection_for_seed(plan, projection);
-        *projection = Box::new(replaced);
+        **projection = replaced;
     }
     rewritten
 }
 
 /// Rewrites one variant's elements for seed use.
-fn rewrite_variant_for_seed(
-    plan: &EmissionPlan,
-    variant: &VariantParsePlan,
-) -> VariantParsePlan {
+fn rewrite_variant_for_seed(plan: &EmissionPlan, variant: &VariantParsePlan) -> VariantParsePlan {
     let mut rewritten = variant.clone();
     rewritten.elements = variant
         .elements
@@ -233,7 +228,7 @@ fn rewrite_variant_for_seed(
 fn rewrite_body_for_seed(plan: &EmissionPlan, body: &NodeBodyPlan) -> NodeBodyPlan {
     match body {
         NodeBodyPlan::Struct { style, elements } => NodeBodyPlan::Struct {
-            style: style.clone(),
+            style: *style,
             elements: elements
                 .iter()
                 .map(|element| rewrite_element_for_seed(plan, element))
@@ -290,14 +285,25 @@ fn seed_field_types(facade: &Ident, elements: &[ElementParsePlan]) -> Vec<(Field
 }
 
 /// Renders one seed Node's own struct or enum type declaration.
-fn render_seed_type_definition(seed_node: &NodeParsePlan, facade: &Ident) -> proc_macro2::TokenStream {
+fn render_seed_type_definition(
+    seed_node: &NodeParsePlan,
+    facade: &Ident,
+) -> proc_macro2::TokenStream {
     let ident = &seed_node.ident;
     match &seed_node.body {
         NodeBodyPlan::Struct { style, elements } => {
             let fields = seed_field_types(facade, elements);
-            let body = render_seed_fields(style, &fields, |field, ty| quote!(pub #field: #ty), |ty| quote!(pub #ty));
-            let terminator = matches!(style, ResolvedFieldStyle::Unnamed | ResolvedFieldStyle::Unit)
-                .then(|| quote!(;));
+            let body = render_seed_fields(
+                style,
+                &fields,
+                |field, ty| quote!(pub #field: #ty),
+                |ty| quote!(pub #ty),
+            );
+            let terminator = matches!(
+                style,
+                ResolvedFieldStyle::Unnamed | ResolvedFieldStyle::Unit
+            )
+            .then(|| quote!(;));
             quote! {
                 #[allow(dead_code)]
                 pub struct #ident #body #terminator
@@ -307,7 +313,12 @@ fn render_seed_type_definition(seed_node: &NodeParsePlan, facade: &Ident) -> pro
             let rendered_variants = variants.iter().map(|variant| {
                 let variant_ident = &variant.ident;
                 let fields = seed_field_types(facade, &variant.elements);
-                let body = render_seed_fields(&variant.style, &fields, |field, ty| quote!(#field: #ty), |ty| quote!(#ty));
+                let body = render_seed_fields(
+                    &variant.style,
+                    &fields,
+                    |field, ty| quote!(#field: #ty),
+                    |ty| quote!(#ty),
+                );
                 quote!(#variant_ident #body)
             });
             quote! {
@@ -348,12 +359,17 @@ fn render_seed_fields(
 /// One semantic field's cardinality and terminal identity, read from the *primary* (unmodified)
 /// element list — the shape `into_arena` needs to know which wrapper conversions to apply.
 struct MaterializeField {
+    /// Authored field identity and position used to reconstruct its owning value.
     field: FieldPlan,
+    /// Ordered container layers that must be rebuilt in the destination arena.
     wrappers: Vec<FieldWrapper>,
+    /// Closed child application to materialize, absent for intrinsic token values.
     terminal_application: Option<MaterializedApplicationId>,
+    /// Whether this field is a boolean presence value requiring no storage conversion.
     is_fixed_presence: bool,
 }
 
+/// Collects semantic fields in authored field order for seed-to-arena reconstruction.
 fn materialize_fields(elements: &[ElementParsePlan]) -> Vec<MaterializeField> {
     let mut fields = elements
         .iter()
@@ -366,7 +382,7 @@ fn materialize_fields(elements: &[ElementParsePlan]) -> Vec<MaterializeField> {
                     wrappers,
                     terminal_application,
                     ..
-                } => (wrappers.clone(), terminal_application.clone(), false),
+                } => (wrappers.clone(), *terminal_application, false),
                 SemanticParseProjection::FixedPresence { .. } => (Vec::new(), None, true),
             };
             Some(MaterializeField {
@@ -469,6 +485,7 @@ fn materialize_expr(
     }
 }
 
+/// Converts one seed field into arena storage while retaining presence booleans directly.
 fn materialize_field_expr(
     facade: &Ident,
     field: &MaterializeField,
@@ -481,7 +498,7 @@ fn materialize_field_expr(
         materialize_expr(
             facade,
             &field.wrappers,
-            field.terminal_application.clone(),
+            field.terminal_application,
             source,
             bump,
         )
@@ -503,7 +520,11 @@ fn render_seed_materialize_construction(
     match style {
         ResolvedFieldStyle::Named => {
             let entries = fields.iter().map(|entry| {
-                let ident = entry.field.ident.as_ref().expect("named field has an identifier");
+                let ident = entry
+                    .field
+                    .ident
+                    .as_ref()
+                    .expect("named field has an identifier");
                 let source = field_value(&entry.field);
                 let expr = materialize_field_expr(facade, entry, source, bump);
                 quote!(#ident: #expr)
@@ -532,7 +553,11 @@ fn render_variant_pattern(
     match style {
         ResolvedFieldStyle::Named => {
             let bindings = fields.iter().map(|entry| {
-                let ident = entry.field.ident.as_ref().expect("named field has an identifier");
+                let ident = entry
+                    .field
+                    .ident
+                    .as_ref()
+                    .expect("named field has an identifier");
                 quote!(#ident)
             });
             quote!(#seed_ident::#variant_ident { #(#bindings),* })
@@ -547,6 +572,7 @@ fn render_variant_pattern(
     }
 }
 
+/// Matches one seed variant and rebuilds its corresponding concrete arena variant.
 fn render_seed_materialize_variant_arm(
     facade: &Ident,
     seed_ident: &Ident,

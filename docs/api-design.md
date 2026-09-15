@@ -1,9 +1,15 @@
 # Recursa API design
 
-Recursa is an AST-first Rust parser generator. Author Rust types express the
-semantic tree and grammar attributes express fixed syntax. Generation produces
-grammar-local lexing and parsing entry points; a successful strict parse yields
-the authored semantic type.
+Recursa is an AST-first Rust parser generator. `ast_node!` declarations express
+the semantic tree and grammar attributes express fixed syntax. Generation supplies
+concrete Node types, their required lifetimes, and grammar-local lexing and parsing
+entry points; a successful strict parse yields the generated semantic type.
+
+Node declarations are independent of concrete storage. Explicit `boxed!`,
+`one_or_many!`, and `zero_or_many!` markers select indirection and cardinality,
+while `arena_ast` selects the nested containers. `Option` remains concrete.
+The [Node declaration contract](ast-node-declarations.md) defines the supported
+syntax, generated API, trait selection, and bulk migration requirements.
 
 The parser is one implicit LALR(1) machine per grammar. Its state and semantic
 value stacks, action/goto tables, and start states are implementation details.

@@ -36,62 +36,76 @@ recursa::tokens! {
     }
 }
 
-/// Declares the integer token type used by the expression atom.
-#[derive(recursa::Node)]
-pub struct IntAtom {
-    #[lex(pattern = r"[0-9]+")]
-    pub value: IntLit,
+recursa::ast_node! {
+    /// Declares the integer token type used by the expression atom.
+
+    pub struct IntAtom {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntLit,
+    }
 }
 
-/// gram.y's `simple_select`: a target list whose entries are expressions.
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-pub struct Select {
-    #[sep(COMMA)]
-    pub targets: recursa::Vec1<Expr>,
+recursa::ast_node! {
+    /// gram.y's `simple_select`: a target list whose entries are expressions.
+
+    #[tok(SELECT)]
+    pub struct Select {
+        #[sep(COMMA)]
+        pub targets: one_or_many!(Expr),
+    }
 }
 
-/// gram.y's `select_with_parens: '(' select_with_parens ')'`, the self-cycle.
-#[derive(recursa::Node)]
-pub struct QueryParens {
-    #[tok(LBRACKET, this, RBRACKET)]
-    pub query: Box<Query>,
+recursa::ast_node! {
+    /// gram.y's `select_with_parens: '(' select_with_parens ')'`, the self-cycle.
+
+    pub struct QueryParens {
+        #[tok(LBRACKET, this, RBRACKET)]
+        pub query: boxed!(Query),
+    }
 }
 
-/// gram.y's `select_with_parens`/`select_no_parens` pair as one nonterminal.
-#[derive(recursa::Node)]
-pub enum Query {
-    Select(Select),
-    Parens(QueryParens),
+recursa::ast_node! {
+    /// gram.y's `select_with_parens`/`select_no_parens` pair as one nonterminal.
+
+    pub enum Query {
+        Select(Select),
+        Parens(QueryParens),
+    }
 }
 
-/// The unified content of one pair of parentheses: gram.y's `c_expr: '(' a_expr
-/// ')'` and `c_expr: select_with_parens` merged so descent commits at `(`.
-#[derive(recursa::Node)]
-pub enum ParenContent {
-    Exprs(#[sep(COMMA)] recursa::Vec1<Expr>),
-    Query(Box<Query>),
+recursa::ast_node! {
+    /// The unified content of one pair of parentheses: gram.y's `c_expr: '(' a_expr
+    /// ')'` and `c_expr: select_with_parens` merged so descent commits at `(`.
+
+    pub enum ParenContent {
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+        Query(boxed!(Query)),
+    }
 }
 
-/// The Pratt grouping atom: the only enclosure Pretty can repair precedence with.
-#[derive(recursa::Node)]
-pub struct ParenExpr {
-    #[tok(LPAREN, this, RPAREN)]
-    pub content: ParenContent,
+recursa::ast_node! {
+    /// The Pratt grouping atom: the only enclosure Pretty can repair precedence with.
+
+    pub struct ParenExpr {
+        #[tok(LPAREN, this, RPAREN)]
+        pub content: ParenContent,
+    }
 }
 
-/// Expressions with the grouping atom reached through the cyclic content enum.
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr {
-    IntLit(IntAtom),
-    Paren(ParenExpr),
+recursa::ast_node! {
+    /// Expressions with the grouping atom reached through the cyclic content enum.
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+    #[pratt]
+    pub enum Expr {
+        IntLit(IntAtom),
+        Paren(ParenExpr),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Mul(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Mul(boxed!(Self), boxed!(Self)),
+    }
 }

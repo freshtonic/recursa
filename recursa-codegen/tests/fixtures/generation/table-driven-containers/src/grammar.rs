@@ -64,273 +64,355 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Statement<'input> {
-    Let(Let<'input>),
-    Print(Print<'input>),
-    Call(Call<'input>),
-    Define(Define<'input>),
-    With(With<'input>),
-    Block(Block<'input>),
-    Modifiers(Modifiers<'input>),
-    Erased(Erased<'input>),
-    Options(Options),
-    Trail(Trail<'input>),
-    Boxes(Boxes<'input>),
-    Marks(Marks),
-    Filter(Filter<'input>),
-    FunctionTail(FunctionTail<'input>),
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Statement {
+        Let(Let),
+        Print(Print),
+        Call(Call),
+        Define(Define),
+        With(With),
+        Block(Block),
+        Modifiers(Modifiers),
+        Erased(Erased),
+        Options(Options),
+        Trail(Trail),
+        Boxes(Boxes),
+        Marks(Marks),
+        Filter(Filter),
+        FunctionTail(FunctionTail),
+    }
 }
 
-/// An erased optional group, a presence with an envelope, `Box<T>` and an inlined
-/// `Option<Box<T>>`.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LET, optional(ONE), this, SEMI)]
-pub struct Let<'input> {
-    #[tok(IF, this, EXISTS)]
-    #[presence(NOT)]
-    pub unless: bool,
-    pub name: Name<'input>,
-    #[tok(EQ)]
-    pub value: Box<Value<'input>>,
-    pub alias: Option<Box<Alias<'input>>>,
+recursa::ast_node! {
+    /// An erased optional group, a presence with an envelope, `Box<T>` and an inlined
+    /// `Option<Box<T>>`.
+    #[derive(Debug, Clone)]
+    #[tok(LET, optional(ONE), this, SEMI)]
+    pub struct Let {
+        #[tok(IF, this, EXISTS)]
+        #[presence(NOT)]
+        pub unless: bool,
+        pub name: Name,
+        #[tok(EQ)]
+        pub value: boxed!(Value),
+        pub alias: Option<boxed!(Alias)>,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(AS, this)]
-pub struct Alias<'input> {
-    pub name: Name<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(AS, this)]
+    pub struct Alias {
+        pub name: Name,
+    }
 }
 
-/// A bare presence and an `Option<T>` that lowers to a helper.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(PRINT, this, SEMI)]
-pub struct Print<'input> {
-    #[presence(NOT)]
-    pub negated: bool,
-    pub value: Value<'input>,
-    pub guard: Option<Guard<'input>>,
+recursa::ast_node! {
+    /// A bare presence and an `Option<T>` that lowers to a helper.
+    #[derive(Debug, Clone)]
+    #[tok(PRINT, this, SEMI)]
+    pub struct Print {
+        #[presence(NOT)]
+        pub negated: bool,
+        pub value: Value,
+        pub guard: Option<Guard>,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(IF, this)]
-pub struct Guard<'input> {
-    pub condition: Value<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(IF, this)]
+    pub struct Guard {
+        pub condition: Value,
+    }
 }
 
-/// An admitted keyword as content and an inlined `Vec<T>` with a trailing separator.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, SEMI)]
-pub struct Call<'input> {
-    pub callee: Callee<'input>,
-    pub args: Args<'input>,
+recursa::ast_node! {
+    /// An admitted keyword as content and an inlined `Vec<T>` with a trailing separator.
+    #[derive(Debug, Clone)]
+    #[tok(this, SEMI)]
+    pub struct Call {
+        pub callee: Callee,
+        pub args: Args,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LPAREN, this, RPAREN)]
-pub struct Args<'input> {
-    #[sep(COMMA, trailing)]
-    pub values: Vec<Value<'input>>,
-}
-
-/// A list whose following optional tail owns the same comma. `VARIADIC` cannot begin `Value`,
-/// so the LR parser can leave that comma for the tail without backtracking.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(VTAIL, this, SEMI)]
-pub struct FunctionTail<'input> {
-    #[sep(COMMA)]
-    pub values: recursa::Vec1<Value<'input>>,
-    pub trailing_variadic: Option<TrailingVariadic<'input>>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(COMMA, VARIADIC, this)]
-pub struct TrailingVariadic<'input> {
-    pub value: Value<'input>,
-}
-
-/// A `Vec1<T>` with a separator, the gram.y `arg_class` shape and an `Option<Box<T>>` behind
-/// an attachment that lowers to a helper.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(FN, this, SEMI)]
-pub struct Define<'input> {
-    pub name: Name<'input>,
-    pub params: Params<'input>,
-    #[tok(RETURNS, this)]
-    pub returns: Option<Box<Value<'input>>>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LPAREN, this, RPAREN)]
-pub struct Params<'input> {
-    #[sep(COMMA)]
-    pub params: recursa::Vec1<Param<'input>>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Param<'input> {
-    pub mode: Option<Mode>,
-    pub name: Name<'input>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Mode {
-    #[tok(IN)]
-    In,
-    #[tok(OUT)]
-    Out,
-}
-
-/// An inlined presence and an inlined `Vec1<T>` with a trailing separator.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(WITH, this, SEMI)]
-pub struct With<'input> {
-    #[presence(RECURSIVE)]
-    pub recursive: bool,
-    #[sep(PIPE, trailing)]
-    pub names: recursa::Vec1<Name<'input>>,
-}
-
-/// An inlined `Vec<T>` without a separator, recursive through `Statement`.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LBRACE, this, RBRACE)]
-pub struct Block<'input> {
-    pub statements: Vec<Statement<'input>>,
-}
-
-/// Six fixed-only choices: the two rightmost presences fall back to helpers.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(MODS, optional(ONE), optional(TWO), optional(THREE), this, SEMI)]
-pub struct Modifiers<'input> {
-    #[presence(FOUR)]
-    pub four: bool,
-    #[presence(FIVE)]
-    pub five: bool,
-    #[presence(SIX)]
-    pub six: bool,
-    pub name: Name<'input>,
-}
-
-/// Five erased groups: the rightmost falls back to a helper.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(ERASED, optional(ONE), optional(TWO), optional(THREE), optional(FOUR), optional(FIVE), this, SEMI)]
-pub struct Erased<'input> {
-    pub name: Name<'input>,
-}
-
-/// Five valued optionals of unit fixed-token nodes: the rightmost falls back to a helper.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(OPTIONS, this, SEMI)]
-pub struct Options {
-    pub a: Option<KwAs>,
-    pub b: Option<KwIn>,
-    pub c: Option<KwOut>,
-    pub d: Option<KwOnly>,
-    pub e: Option<KwTemp>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(AS)]
-pub struct KwAs;
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(IN)]
-pub struct KwIn;
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(OUT)]
-pub struct KwOut;
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(ONLY)]
-pub struct KwOnly;
-
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(TEMP)]
-pub struct KwTemp;
-
-/// Four erased groups and a trailing separator: the trailing choice falls back to a helper.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(TRAIL, optional(ONE), optional(TWO), optional(THREE), optional(FOUR), this, SEMI)]
-pub struct Trail<'input> {
-    #[sep(COMMA, trailing)]
-    pub names: recursa::Vec1<Name<'input>>,
-}
-
-/// An inlined `Vec<Box<T>>` with a separator.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(BOXES, this, SEMI)]
-pub struct Boxes<'input> {
-    #[sep(COMMA)]
-    pub values: Vec<Box<Value<'input>>>,
-}
-
-/// A `Vec<T>` and an `Option<Vec1<T>>` of unit fixed-token nodes, both helpers.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(MARKS, this, SEMI)]
-pub struct Marks {
-    pub marks: Vec<Bang>,
-    #[tok(COLON)]
-    pub tail: Option<recursa::Vec1<Bang>>,
-}
-
-/// A `Vec1<T>` without a separator and a repeated attachment with an erased group inside.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(FILTER, this, SEMI)]
-pub struct Filter<'input> {
-    pub bangs: recursa::Vec1<Bang>,
-    #[tok(COLON, optional(NOT), this)]
-    pub filters: Vec<Value<'input>>,
-}
-
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Value<'input> {
-    Name { name: Name<'input> },
-    Number(Number<'input>),
-    Negated {
-        mark: Bang,
-        inner: Box<Value<'input>>,
-    },
-    List(List<'input>),
-    Tuple(Tuple<'input>),
-}
-
-/// An inlined `Option<Vec1<T>>` with a separator.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LBRACKET, this, RBRACKET)]
-pub struct List<'input> {
-    #[sep(COMMA)]
-    pub items: Option<recursa::Vec1<Value<'input>>>,
-}
-
-/// A repeated attachment around every element of a `Vec1<T>`.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Tuple<'input> {
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
     #[tok(LPAREN, this, RPAREN)]
-    #[sep(PIPE)]
-    pub cells: recursa::Vec1<Value<'input>>,
+    pub struct Args {
+        #[sep(COMMA, trailing)]
+        pub values: zero_or_many!(Value),
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(BANG)]
-pub struct Bang;
-
-/// A content token whose admission set reclaims three keywords as names.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(AS, ONLY, TEMP))]
-    pub text: NameText<'input>,
+recursa::ast_node! {
+    /// A list whose following optional tail owns the same comma. `VARIADIC` cannot begin `Value`,
+    /// so the LR parser can leave that comma for the tail without backtracking.
+    #[derive(Debug, Clone)]
+    #[tok(VTAIL, this, SEMI)]
+    pub struct FunctionTail {
+        #[sep(COMMA)]
+        pub values: one_or_many!(Value),
+        pub trailing_variadic: Option<TrailingVariadic>,
+    }
 }
 
-/// A content token whose admission set reclaims the two parameter modes as callees.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Callee<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(IN, OUT))]
-    pub text: CalleeText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(COMMA, VARIADIC, this)]
+    pub struct TrailingVariadic {
+        pub value: Value,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: NumberText<'input>,
+recursa::ast_node! {
+    /// A `Vec1<T>` with a separator, the gram.y `arg_class` shape and an `Option<Box<T>>` behind
+    /// an attachment that lowers to a helper.
+    #[derive(Debug, Clone)]
+    #[tok(FN, this, SEMI)]
+    pub struct Define {
+        pub name: Name,
+        pub params: Params,
+        #[tok(RETURNS, this)]
+        pub returns: Option<boxed!(Value)>,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(LPAREN, this, RPAREN)]
+    pub struct Params {
+        #[sep(COMMA)]
+        pub params: one_or_many!(Param),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Param {
+        pub mode: Option<Mode>,
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Mode {
+        #[tok(IN)]
+        In,
+        #[tok(OUT)]
+        Out,
+    }
+}
+
+recursa::ast_node! {
+    /// An inlined presence and an inlined `Vec1<T>` with a trailing separator.
+    #[derive(Debug, Clone)]
+    #[tok(WITH, this, SEMI)]
+    pub struct With {
+        #[presence(RECURSIVE)]
+        pub recursive: bool,
+        #[sep(PIPE, trailing)]
+        pub names: one_or_many!(Name),
+    }
+}
+
+recursa::ast_node! {
+    /// An inlined `Vec<T>` without a separator, recursive through `Statement`.
+    #[derive(Debug, Clone)]
+    #[tok(LBRACE, this, RBRACE)]
+    pub struct Block {
+        pub statements: zero_or_many!(Statement),
+    }
+}
+
+recursa::ast_node! {
+    /// Six fixed-only choices: the two rightmost presences fall back to helpers.
+    #[derive(Debug, Clone)]
+    #[tok(MODS, optional(ONE), optional(TWO), optional(THREE), this, SEMI)]
+    pub struct Modifiers {
+        #[presence(FOUR)]
+        pub four: bool,
+        #[presence(FIVE)]
+        pub five: bool,
+        #[presence(SIX)]
+        pub six: bool,
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+    /// Five erased groups: the rightmost falls back to a helper.
+    #[derive(Debug, Clone)]
+    #[tok(
+        ERASED,
+        optional(ONE),
+        optional(TWO),
+        optional(THREE),
+        optional(FOUR),
+        optional(FIVE),
+        this,
+        SEMI
+    )]
+    pub struct Erased {
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+    /// Five valued optionals of unit fixed-token nodes: the rightmost falls back to a helper.
+    #[derive(Debug, Clone)]
+    #[tok(OPTIONS, this, SEMI)]
+    pub struct Options {
+        pub a: Option<KwAs>,
+        pub b: Option<KwIn>,
+        pub c: Option<KwOut>,
+        pub d: Option<KwOnly>,
+        pub e: Option<KwTemp>,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(AS)]
+    pub struct KwAs;
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(IN)]
+    pub struct KwIn;
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(OUT)]
+    pub struct KwOut;
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(ONLY)]
+    pub struct KwOnly;
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(TEMP)]
+    pub struct KwTemp;
+}
+
+recursa::ast_node! {
+    /// Four erased groups and a trailing separator: the trailing choice falls back to a helper.
+    #[derive(Debug, Clone)]
+    #[tok(
+        TRAIL,
+        optional(ONE),
+        optional(TWO),
+        optional(THREE),
+        optional(FOUR),
+        this,
+        SEMI
+    )]
+    pub struct Trail {
+        #[sep(COMMA, trailing)]
+        pub names: one_or_many!(Name),
+    }
+}
+
+recursa::ast_node! {
+    /// An inlined `Vec<Box<T>>` with a separator.
+    #[derive(Debug, Clone)]
+    #[tok(BOXES, this, SEMI)]
+    pub struct Boxes {
+        #[sep(COMMA)]
+        pub values: zero_or_many!(boxed!(Value)),
+    }
+}
+
+recursa::ast_node! {
+    /// A `Vec<T>` and an `Option<Vec1<T>>` of unit fixed-token nodes, both helpers.
+    #[derive(Debug, Clone)]
+    #[tok(MARKS, this, SEMI)]
+    pub struct Marks {
+        pub marks: zero_or_many!(Bang),
+        #[tok(COLON)]
+        pub tail: Option<one_or_many!(Bang)>,
+    }
+}
+
+recursa::ast_node! {
+    /// A `Vec1<T>` without a separator and a repeated attachment with an erased group inside.
+    #[derive(Debug, Clone)]
+    #[tok(FILTER, this, SEMI)]
+    pub struct Filter {
+        pub bangs: one_or_many!(Bang),
+        #[tok(COLON, optional(NOT), this)]
+        pub filters: zero_or_many!(Value),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Value {
+        Name { name: Name },
+        Number(Number),
+        Negated { mark: Bang, inner: boxed!(Value) },
+        List(List),
+        Tuple(Tuple),
+    }
+}
+
+recursa::ast_node! {
+    /// An inlined `Option<Vec1<T>>` with a separator.
+    #[derive(Debug, Clone)]
+    #[tok(LBRACKET, this, RBRACKET)]
+    pub struct List {
+        #[sep(COMMA)]
+        pub items: Option<one_or_many!(Value)>,
+    }
+}
+
+recursa::ast_node! {
+    /// A repeated attachment around every element of a `Vec1<T>`.
+    #[derive(Debug, Clone)]
+    pub struct Tuple {
+        #[tok(LPAREN, this, RPAREN)]
+        #[sep(PIPE)]
+        pub cells: one_or_many!(Value),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(BANG)]
+    pub struct Bang;
+}
+
+recursa::ast_node! {
+    /// A content token whose admission set reclaims three keywords as names.
+    #[derive(Debug, Clone)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(AS, ONLY, TEMP))]
+        pub text: NameText,
+    }
+}
+
+recursa::ast_node! {
+    /// A content token whose admission set reclaims the two parameter modes as callees.
+    #[derive(Debug, Clone)]
+    pub struct Callee {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(IN, OUT))]
+        pub text: CalleeText,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
 }

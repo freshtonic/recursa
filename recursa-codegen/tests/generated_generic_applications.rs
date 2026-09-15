@@ -21,14 +21,19 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
     let permuted = scaffold_fixture();
     let grammar = permuted.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read generic application permutation");
-    let source = source.replace(
-        "    Integer(Atom<Integer<'input>>),\n    Name(Atom<Name<'input>>),",
-        "    Name(Atom<Name<'input>>),\n    Integer(Atom<Integer<'input>>),",
-    );
-    let source = source.replace(
-        "    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),\n    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),",
-        "    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),\n    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),",
-    );
+    let mut lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    for (first, second) in [
+        ("Integer(Atom<Integer>),", "Name(Atom<Name>),"),
+        (
+            "Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name>),",
+            "Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<zero_or_many!(Name)>),",
+        ),
+    ] {
+        let first = lines.iter().position(|line| line.trim() == first).unwrap();
+        let second = lines.iter().position(|line| line.trim() == second).unwrap();
+        lines.swap(first, second);
+    }
+    let source = lines.concat();
     assert_ne!(
         source,
         fs::read_to_string(&grammar).expect("reread unpermuted grammar")
@@ -71,10 +76,7 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
                 "PartialEq, Pretty, serde::Serialize",
                 "PartialEq, Pretty, Visit, serde::Serialize",
             )
-            .replace(
-                "pub struct Pair<'left, 'right>",
-                "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
-            ),
+            .replace("pub struct Pair", "#[omit(Visit)]\npub struct Pair"),
     )
     .expect("configure Visit for the generic explorer root family");
 
@@ -156,10 +158,7 @@ fn a_generic_explorer_entry_method_collision_is_diagnosed_before_emission() {
                     "PartialEq, Pretty, serde::Serialize",
                     "PartialEq, Pretty, Visit, serde::Serialize",
                 )
-                .replace(
-                    "pub struct Pair<'left, 'right>",
-                    "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
-                ),
+                .replace("pub struct Pair", "#[omit(Visit)]\npub struct Pair",),
         ),
     )
     .expect("insert generic explorer method collision");
@@ -202,13 +201,10 @@ fn a_secondary_generic_application_schema_collision_is_diagnosed_before_emission
                 "PartialEq, Pretty, serde::Serialize",
                 "PartialEq, Pretty, Visit, serde::Serialize",
             )
+            .replace("pub struct Pair", "#[omit(Visit)]\npub struct Pair")
             .replace(
-                "pub struct Pair<'left, 'right>",
-                "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
-            )
-            .replace(
-                "#[derive(recursa::Node)]\npub struct Integer<'input>",
-                "static __RECURSA_EXPLORER_SCHEMA_3: () = ();\n\n#[derive(recursa::Node)]\npub struct Integer<'input>",
+                "recursa::grammar! {",
+                "static __RECURSA_EXPLORER_SCHEMA_3: () = ();\n\nrecursa::grammar! {",
             ),
     )
     .expect("insert secondary generic application schema collision");

@@ -24,6 +24,7 @@ use syn::{
 };
 
 use crate::SourceId;
+use crate::declaration::{DeclarationOrigin, expand_declarations_with_aliases};
 use crate::discovery::{DiscoveredModuleTree, ModuleInclusion};
 use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
@@ -169,6 +170,8 @@ pub(crate) struct ResolvedNode {
     pub(crate) source: SourceId,
     /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
+    /// Distinguishes canonical declaration authoring and retains emitted-item evidence.
+    pub(crate) origin: ResolvedNodeOrigin,
     /// Preserves authored visibility for accessibility checks.
     pub(crate) visibility: Visibility,
     /// Supplies the key needed either to resolve the reference or diagnose its failure.
@@ -185,6 +188,15 @@ pub(crate) struct ResolvedNode {
     pub(crate) body: ResolvedNodeBody,
     /// Supplies the fields needed either to resolve the reference or diagnose its failure.
     pub(crate) fields: Vec<ResolvedNodeField>,
+}
+
+/// Identifies the authoring surface from which a resolved Node originated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedNodeOrigin {
+    /// Canonical declaration and its loader replacement evidence.
+    Declaration(Box<DeclarationOrigin>),
+    /// Retired direct Rust authoring retained for a dedicated migration diagnostic.
+    DirectRust,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -846,6 +858,10 @@ struct Resolver<'cfg> {
     tree: DiscoveredModuleTree,
     /// Supplies the items needed either to resolve the reference or diagnose its failure.
     items: BTreeMap<ModuleId, Vec<Item>>,
+    /// Declaration metadata keyed by exact logical module and local type name.
+    declaration_origins: BTreeMap<(ModuleId, String), DeclarationOrigin>,
+    /// Outer declaration macro names resolved for each selected module.
+    ast_node_aliases: BTreeMap<ModuleId, BTreeSet<String>>,
     /// Supplies the bindings needed either to resolve the reference or diagnose its failure.
     bindings: Vec<Binding>,
     /// Supplies the binding by name needed either to resolve the reference or diagnose its failure.
@@ -895,13 +911,13 @@ struct PendingResolvedFraming {
 /// Resolves local semantics.
 pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionReport {
     let discovery_inputs = input.discovery_inputs.clone();
-    let items = input
+    let source_items = input
         .tree
         .inclusions
         .iter()
         .map(|module| (module.id, module.items.clone()))
         .collect();
-    let (config, mut diagnostics) = find_grammar_config(&input.tree, &items, input.cfg);
+    let (config, mut diagnostics) = find_grammar_config(&input.tree, &source_items, input.cfg);
     let Some((anchor, facade, configuration)) = config else {
         return ResolutionReport {
             discovery_inputs,
@@ -920,12 +936,45 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         arena_ast: configuration.syntax.arena_ast,
         pretty: configuration.syntax.pretty,
     };
+    let mut declaration_origins = BTreeMap::new();
+    let mut items = BTreeMap::new();
+    let macro_aliases =
+        selected_tree_ast_node_aliases(&input.tree, &source_items, &facade.ident, input.cfg);
+    for inclusion in &input.tree.inclusions {
+        let expansion = expand_declarations_with_aliases(
+            source_items.get(&inclusion.id).map_or(&[], Vec::as_slice),
+            &facade.ident,
+            configuration.syntax.arena_ast,
+            input.cfg,
+            macro_aliases.get(&inclusion.id).unwrap_or(&BTreeSet::new()),
+        );
+        for error in expansion.errors {
+            diagnostics.push(ResolutionDiagnostic {
+                kind: ResolutionDiagnosticKind::UnsupportedDeclaration,
+                module: Some(inclusion.id),
+                logical_module: Some(inclusion.logical_path.clone()),
+                path: input.tree.files[inclusion.source.index()].path.clone(),
+                range: Some(span_range(error.span())),
+                message: error.to_string(),
+            });
+        }
+        for (name, origin) in expansion.origins {
+            declaration_origins.insert((inclusion.id, name), origin);
+        }
+        items.insert(inclusion.id, expansion.items);
+    }
+    let mut tree = input.tree;
+    for inclusion in &mut tree.inclusions {
+        inclusion.items = items.get(&inclusion.id).cloned().unwrap_or_default();
+    }
     let mut resolver = Resolver {
         cfg: input.cfg,
         build_inputs,
         configuration,
-        tree: input.tree,
+        tree,
         items,
+        declaration_origins,
+        ast_node_aliases: macro_aliases,
         bindings: Vec::new(),
         binding_by_name: BTreeMap::new(),
         glob_candidates: BTreeMap::new(),
@@ -954,9 +1003,107 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
     resolver.finish()
 }
 
+/// Resolves selected-tree imports and re-exports of the facade's outer declaration macro.
+fn selected_tree_ast_node_aliases(
+    tree: &DiscoveredModuleTree,
+    items: &BTreeMap<ModuleId, Vec<Item>>,
+    facade: &str,
+    cfg: &CargoCfgSnapshot,
+) -> BTreeMap<ModuleId, BTreeSet<String>> {
+    let module_by_path = tree
+        .inclusions
+        .iter()
+        .map(|module| (module.logical_path.clone(), module.id))
+        .collect::<BTreeMap<_, _>>();
+    let mut aliases = tree
+        .inclusions
+        .iter()
+        .map(|module| (module.id, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let before = aliases.values().map(BTreeSet::len).sum::<usize>();
+        for module in &tree.inclusions {
+            for item in items.get(&module.id).into_iter().flatten() {
+                let Item::Use(item_use) = item else { continue };
+                if !matches!(configured_metas(&item_use.attrs, cfg), Ok(Some(_))) {
+                    continue;
+                }
+                let mut leaves = Vec::new();
+                flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut leaves);
+                for leaf in leaves {
+                    let local = leaf
+                        .local_name
+                        .clone()
+                        .or_else(|| leaf.names.last().cloned());
+                    if leaf.names.as_slice() == [facade, "ast_node"] {
+                        if let Some(local) = local {
+                            aliases.get_mut(&module.id).unwrap().insert(local);
+                        }
+                        continue;
+                    }
+                    let mut target_names = leaf.names.clone();
+                    if leaf.glob {
+                        target_names.push("__ast_node_glob".to_owned());
+                    }
+                    let Some((target_module, terminal)) =
+                        selected_tree_import_target(module, &target_names, &module_by_path)
+                    else {
+                        continue;
+                    };
+                    if leaf.glob {
+                        let imported = aliases.get(&target_module).cloned().unwrap_or_default();
+                        aliases.get_mut(&module.id).unwrap().extend(imported);
+                    } else if aliases
+                        .get(&target_module)
+                        .is_some_and(|names| names.contains(terminal))
+                        && let Some(local) = local
+                    {
+                        aliases.get_mut(&module.id).unwrap().insert(local);
+                    }
+                }
+            }
+        }
+        if aliases.values().map(BTreeSet::len).sum::<usize>() == before {
+            break;
+        }
+    }
+    aliases
+}
+
+/// Resolves one macro-import path to a selected logical module and terminal name.
+fn selected_tree_import_target<'name>(
+    current: &ModuleInclusion,
+    names: &'name [String],
+    modules: &BTreeMap<Vec<String>, ModuleId>,
+) -> Option<(ModuleId, &'name str)> {
+    let (terminal, prefix) = names.split_last()?;
+    let mut path = current.logical_path.clone();
+    let mut index = 0;
+    match prefix.first().map(String::as_str) {
+        Some("crate") => {
+            path.clear();
+            index = 1;
+        }
+        Some("self") => index = 1,
+        Some("super") => {
+            while prefix.get(index).is_some_and(|name| name == "super") {
+                path.pop()?;
+                index += 1;
+            }
+        }
+        _ => path.clear(),
+    }
+    path.extend(prefix[index..].iter().cloned());
+    modules
+        .get(&path)
+        .copied()
+        .map(|module| (module, terminal.as_str()))
+}
+
 impl Resolver<'_> {
     /// Publishes a resolved grammar only when no blocking resolution diagnostics remain.
-    fn finish(self) -> ResolutionReport {
+    fn finish(mut self) -> ResolutionReport {
+        self.infer_declaration_lifetimes();
         let resolved = self.diagnostics.is_empty().then(|| ResolvedSourceGrammar {
             build_inputs: self.build_inputs.clone(),
             configuration: self.configuration,
@@ -980,6 +1127,96 @@ impl Resolver<'_> {
             build_inputs: Some(self.build_inputs),
             diagnostics: self.diagnostics,
             resolved,
+        }
+    }
+
+    /// Infers one generated input lifetime from exact resolved declaration identities.
+    fn infer_declaration_lifetimes(&mut self) {
+        let mut required = BTreeSet::new();
+        let mut concrete_storage_sites = Vec::new();
+        let mut static_alias_sites = Vec::new();
+        for pending in &self.nodes {
+            let ResolvedNodeOrigin::Declaration(origin) = &pending.resolved.origin else {
+                continue;
+            };
+            for (field_index, field) in pending.resolved.fields.iter().enumerate() {
+                if resolved_type_has_unauthorized_storage(
+                    &field.ty,
+                    &origin.field_marker_ranges[field_index],
+                    &self.type_aliases,
+                    &mut BTreeSet::new(),
+                ) {
+                    concrete_storage_sites.push((
+                        pending.resolved.module,
+                        pending.resolved.source,
+                        field.range.clone(),
+                    ));
+                }
+                if resolved_type_reaches_static_alias(
+                    &field.ty,
+                    &self.type_aliases,
+                    &mut BTreeSet::new(),
+                ) {
+                    static_alias_sites.push((
+                        pending.resolved.module,
+                        pending.resolved.source,
+                        field.range.clone(),
+                    ));
+                }
+            }
+        }
+        for (module, source, range) in concrete_storage_sites {
+            self.push_site_diagnostic(
+                ResolutionDiagnosticKind::UnsupportedDeclaration,
+                module,
+                source,
+                Some(range.clone()),
+                "concrete AST storage containers are not allowed in `ast_node!`; use `boxed!`, `one_or_many!`, or `zero_or_many!` (including when a type alias hides the container)".to_owned(),
+            );
+        }
+        for (module, source, range) in static_alias_sites {
+            self.push_site_diagnostic(
+                ResolutionDiagnosticKind::UnsupportedDeclaration,
+                module,
+                source,
+                Some(range),
+                "a type alias used by `ast_node!` fixes source-borrowed content to `'static`; declaration aliases must receive the inferred `'input` lifetime".to_owned(),
+            );
+        }
+        loop {
+            let before = required.len();
+            for pending in &self.nodes {
+                if !matches!(pending.resolved.origin, ResolvedNodeOrigin::Declaration(_)) {
+                    continue;
+                }
+                if pending.resolved.fields.iter().any(|field| {
+                    resolved_type_needs_input(&field.ty, &required, &self.type_aliases)
+                }) {
+                    required.insert(pending.resolved.id);
+                }
+            }
+            if required.len() == before {
+                break;
+            }
+        }
+        for pending in &mut self.nodes {
+            if !required.contains(&pending.resolved.id) {
+                continue;
+            }
+            pending
+                .resolved
+                .generics
+                .params
+                .insert(0, syn::parse_quote!('input));
+            let field_types = pending
+                .resolved
+                .fields
+                .iter()
+                .map(|field| concrete_input_type(&field.ty, &required, &self.type_aliases))
+                .collect::<Vec<_>>();
+            if let ResolvedNodeOrigin::Declaration(origin) = &mut pending.resolved.origin {
+                insert_item_input_lifetime(&mut origin.concrete_item, &field_types);
+            }
         }
     }
 
@@ -1030,6 +1267,22 @@ impl Resolver<'_> {
                     let mut flattened = Vec::new();
                     flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut flattened);
                     for flattened in flattened {
+                        let local_name = flattened
+                            .local_name
+                            .as_ref()
+                            .or_else(|| flattened.names.last());
+                        let imports_ast_node = if flattened.glob {
+                            flattened.names.as_slice() == [self.build_inputs.facade.ident.as_str()]
+                        } else {
+                            local_name.is_some_and(|name| {
+                                self.ast_node_aliases
+                                    .get(&inclusion.id)
+                                    .is_some_and(|aliases| aliases.contains(name))
+                            })
+                        };
+                        if imports_ast_node {
+                            continue;
+                        }
                         self.import_directives.push(ImportDirective {
                             id: ImportId::next(0),
                             module: inclusion.id,
@@ -1071,6 +1324,19 @@ impl Resolver<'_> {
                 let name = ident.unraw().to_string();
                 let is_node =
                     may_be_node && has_node_derive(&configured, &self.build_inputs.facade.ident);
+                if is_node
+                    && !self
+                        .declaration_origins
+                        .contains_key(&(inclusion.id, name.clone()))
+                {
+                    self.push_site_diagnostic(
+                        ResolutionDiagnosticKind::UnsupportedDeclaration,
+                        inclusion.id,
+                        inclusion.source,
+                        Some(span_range(ident.span())),
+                        "direct `#[derive(...::Node)]` authoring is retired; declare this struct or enum inside `ast_node! { ... }`".to_owned(),
+                    );
+                }
                 let is_type_alias = matches!(item, Item::Type(_));
                 let binding_id = BindingId::next(self.bindings.len());
                 let opaque_target =
@@ -1163,6 +1429,12 @@ impl Resolver<'_> {
                             module: inclusion.id,
                             source: inclusion.source,
                             ident: name.clone(),
+                            origin: self
+                                .declaration_origins
+                                .remove(&(inclusion.id, name.clone()))
+                                .map_or(ResolvedNodeOrigin::DirectRust, |origin| {
+                                    ResolvedNodeOrigin::Declaration(Box::new(origin))
+                                }),
                             visibility: visibility.clone(),
                             key: NodeKey { segments: key },
                             range: span_range(ident.span()),
@@ -2947,6 +3219,115 @@ impl Resolver<'_> {
     }
 }
 
+/// Finds concrete storage constructors not correlated with an authored marker range.
+fn resolved_type_has_unauthorized_storage(
+    ty: &ResolvedType,
+    allowed_marker_ranges: &[Range<u32>],
+    aliases: &[PendingTypeAlias],
+    active_aliases: &mut BTreeSet<TypeAliasId>,
+) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic {
+            target, arguments, ..
+        } => {
+            let unauthorized_target = match target {
+                SemanticTarget::Catalog(
+                    CatalogType::Box | CatalogType::Vec | CatalogType::Vec1,
+                ) => !allowed_marker_ranges
+                    .iter()
+                    .any(|marker| marker.start == ty.range.start),
+                SemanticTarget::TypeAlias(alias) if active_aliases.insert(*alias) => aliases
+                    [alias.index()]
+                .resolved
+                .target
+                .as_ref()
+                .is_some_and(|target| {
+                    resolved_type_has_unauthorized_storage(target, &[], aliases, active_aliases)
+                }),
+                _ => false,
+            };
+            unauthorized_target || arguments.iter().any(|argument| matches!(argument, ResolvedGenericArgument::Type(argument) if resolved_type_has_unauthorized_storage(argument, allowed_marker_ranges, aliases, active_aliases)))
+        }
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => resolved_type_has_unauthorized_storage(
+            inner,
+            allowed_marker_ranges,
+            aliases,
+            active_aliases,
+        ),
+        ResolvedTypeKind::Tuple(items) => items.iter().any(|item| {
+            resolved_type_has_unauthorized_storage(
+                item,
+                allowed_marker_ranges,
+                aliases,
+                active_aliases,
+            )
+        }),
+        ResolvedTypeKind::FixedTokenPresence | ResolvedTypeKind::Unsupported => false,
+    }
+}
+
+/// Finds a `'static` lifetime hidden behind an ordinary alias application.
+fn resolved_type_reaches_static_alias(
+    ty: &ResolvedType,
+    aliases: &[PendingTypeAlias],
+    active: &mut BTreeSet<TypeAliasId>,
+) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic {
+            target: SemanticTarget::TypeAlias(alias),
+            arguments,
+            ..
+        } => {
+            if !active.insert(*alias) {
+                return false;
+            }
+            arguments.iter().any(resolved_argument_is_static)
+                || aliases[alias.index()]
+                    .resolved
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| {
+                        resolved_type_contains_static(target)
+                            || resolved_type_reaches_static_alias(target, aliases, active)
+                    })
+        }
+        ResolvedTypeKind::Semantic { arguments, .. } => {
+            arguments.iter().any(|argument| match argument {
+                ResolvedGenericArgument::Type(ty) => {
+                    resolved_type_reaches_static_alias(ty, aliases, active)
+                }
+                _ => false,
+            })
+        }
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => {
+            resolved_type_reaches_static_alias(inner, aliases, active)
+        }
+        ResolvedTypeKind::Tuple(items) => items
+            .iter()
+            .any(|item| resolved_type_reaches_static_alias(item, aliases, active)),
+        ResolvedTypeKind::FixedTokenPresence | ResolvedTypeKind::Unsupported => false,
+    }
+}
+
+/// Reports whether one resolved generic argument is the forbidden static lifetime.
+fn resolved_argument_is_static(argument: &ResolvedGenericArgument) -> bool {
+    matches!(argument, ResolvedGenericArgument::Lifetime(lifetime) if lifetime.ident == "static")
+}
+
+/// Finds a static lifetime at any depth of an expanded alias target.
+fn resolved_type_contains_static(ty: &ResolvedType) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic { arguments, .. } => arguments.iter().any(|argument| resolved_argument_is_static(argument) || matches!(argument, ResolvedGenericArgument::Type(ty) if resolved_type_contains_static(ty))),
+        ResolvedTypeKind::Group(inner) | ResolvedTypeKind::Parenthesized(inner) | ResolvedTypeKind::Reference(inner) => resolved_type_contains_static(inner),
+        ResolvedTypeKind::Tuple(items) => items.iter().any(resolved_type_contains_static),
+        ResolvedTypeKind::FixedTokenPresence | ResolvedTypeKind::Unsupported => false,
+    }
+}
+
 /// Reports whether a field uses the unqualified built-in `bool` spelling.
 fn plain_bool_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.leading_colon.is_none() && path.path.is_ident("bool"))
@@ -3464,6 +3845,188 @@ fn semantic_binding_walk_error(error: BindingWalkError<'_>) -> (ResolutionDiagno
     }
 }
 
+/// Reports whether a resolved declaration field owns or reaches input-borrowing storage.
+fn resolved_type_needs_input(
+    ty: &ResolvedType,
+    required_nodes: &BTreeSet<NodeId>,
+    aliases: &[PendingTypeAlias],
+) -> bool {
+    resolved_type_needs_input_inner(ty, required_nodes, aliases, &mut BTreeSet::new())
+}
+
+/// Recurses through aliases while cutting alias cycles at their exact identities.
+fn resolved_type_needs_input_inner(
+    ty: &ResolvedType,
+    required_nodes: &BTreeSet<NodeId>,
+    aliases: &[PendingTypeAlias],
+    active_aliases: &mut BTreeSet<TypeAliasId>,
+) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::FixedTokenPresence | ResolvedTypeKind::Unsupported => false,
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => {
+            resolved_type_needs_input_inner(inner, required_nodes, aliases, active_aliases)
+        }
+        ResolvedTypeKind::Tuple(items) => items.iter().any(|item| {
+            resolved_type_needs_input_inner(item, required_nodes, aliases, active_aliases)
+        }),
+        ResolvedTypeKind::Semantic {
+            target, arguments, ..
+        } => {
+            let target_needs = match target {
+                SemanticTarget::ContentToken(_) => true,
+                SemanticTarget::Node(node) => required_nodes.contains(node),
+                SemanticTarget::TypeAlias(alias) => {
+                    let declaration = &aliases[alias.index()].resolved;
+                    declaration
+                        .generics
+                        .params
+                        .iter()
+                        .any(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_)))
+                        || (active_aliases.insert(*alias)
+                            && declaration.target.as_ref().is_some_and(|target| {
+                                resolved_type_needs_input_inner(
+                                    target,
+                                    required_nodes,
+                                    aliases,
+                                    active_aliases,
+                                )
+                            }))
+                }
+                SemanticTarget::Catalog(_) | SemanticTarget::GenericParameter(_) => false,
+            };
+            target_needs
+                || arguments.iter().any(|argument| match argument {
+                    ResolvedGenericArgument::Lifetime(_) => true,
+                    ResolvedGenericArgument::Type(argument) => resolved_type_needs_input_inner(
+                        argument,
+                        required_nodes,
+                        aliases,
+                        active_aliases,
+                    ),
+                    ResolvedGenericArgument::Unsupported(_) => false,
+                })
+        }
+    }
+}
+
+/// Renders a resolved semantic type with inferred input arguments at exact target paths.
+fn concrete_input_type(
+    ty: &ResolvedType,
+    required_nodes: &BTreeSet<NodeId>,
+    aliases: &[PendingTypeAlias],
+) -> Type {
+    let mut syntax = ty.syntax.clone();
+    match (&mut syntax, &ty.kind) {
+        (Type::Group(syntax), ResolvedTypeKind::Group(inner)) => {
+            *syntax.elem = concrete_input_type(inner, required_nodes, aliases);
+            return Type::Group(syntax.clone());
+        }
+        (Type::Paren(syntax), ResolvedTypeKind::Parenthesized(inner)) => {
+            *syntax.elem = concrete_input_type(inner, required_nodes, aliases);
+            return Type::Paren(syntax.clone());
+        }
+        (Type::Reference(syntax), ResolvedTypeKind::Reference(inner)) => {
+            *syntax.elem = concrete_input_type(inner, required_nodes, aliases);
+            return Type::Reference(syntax.clone());
+        }
+        (Type::Tuple(syntax), ResolvedTypeKind::Tuple(items)) => {
+            for (element, resolved) in syntax.elems.iter_mut().zip(items) {
+                *element = concrete_input_type(resolved, required_nodes, aliases);
+            }
+            return Type::Tuple(syntax.clone());
+        }
+        _ => {}
+    }
+    let ResolvedTypeKind::Semantic {
+        target, arguments, ..
+    } = &ty.kind
+    else {
+        return syntax;
+    };
+    let Type::Path(type_path) = &mut syntax else {
+        return syntax;
+    };
+    let Some(segment) = type_path.path.segments.last_mut() else {
+        return syntax;
+    };
+    if let PathArguments::AngleBracketed(arguments_syntax) = &mut segment.arguments {
+        let mut resolved_types = arguments.iter().filter_map(|argument| match argument {
+            ResolvedGenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        });
+        for argument in &mut arguments_syntax.args {
+            if let GenericArgument::Type(argument_syntax) = argument
+                && let Some(resolved) = resolved_types.next()
+            {
+                *argument_syntax = concrete_input_type(resolved, required_nodes, aliases);
+            }
+        }
+    }
+    let target_lifetimes = match target {
+        SemanticTarget::ContentToken(_) => 1,
+        SemanticTarget::Node(node) => usize::from(required_nodes.contains(node)),
+        SemanticTarget::TypeAlias(alias) => aliases[alias.index()]
+            .resolved
+            .generics
+            .params
+            .iter()
+            .filter(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_)))
+            .count(),
+        _ => 0,
+    };
+    if target_lifetimes > 0 && !segment.ident.eq("Self") {
+        let arguments = match &mut segment.arguments {
+            PathArguments::None => {
+                let lifetimes =
+                    std::iter::repeat_with(|| GenericArgument::Lifetime(syn::parse_quote!('input)))
+                        .take(target_lifetimes);
+                let parsed = syn::AngleBracketedGenericArguments {
+                    colon2_token: None,
+                    lt_token: Default::default(),
+                    args: lifetimes.collect(),
+                    gt_token: Default::default(),
+                };
+                segment.arguments = PathArguments::AngleBracketed(parsed);
+                return syntax;
+            }
+            PathArguments::AngleBracketed(arguments) => arguments,
+            PathArguments::Parenthesized(_) => return syntax,
+        };
+        let existing = arguments
+            .args
+            .iter()
+            .take_while(|argument| matches!(argument, GenericArgument::Lifetime(_)))
+            .count();
+        for index in existing..target_lifetimes {
+            arguments
+                .args
+                .insert(index, GenericArgument::Lifetime(syn::parse_quote!('input)));
+        }
+    }
+    syntax
+}
+
+/// Adds the generated lifetime and resolved field types to an emitted declaration item.
+fn insert_item_input_lifetime(item: &mut Item, field_types: &[Type]) {
+    let (generics, fields): (&mut syn::Generics, Vec<&mut Field>) = match item {
+        Item::Struct(item) => (&mut item.generics, item.fields.iter_mut().collect()),
+        Item::Enum(item) => (
+            &mut item.generics,
+            item.variants
+                .iter_mut()
+                .flat_map(|variant| variant.fields.iter_mut())
+                .collect(),
+        ),
+        _ => return,
+    };
+    generics.params.insert(0, syn::parse_quote!('input));
+    for (field, ty) in fields.into_iter().zip(field_types) {
+        field.ty = ty.clone();
+    }
+}
+
 /// Derives the import text while resolving typed grammar-semantic references.
 fn import_text(directive: &ImportDirective) -> String {
     let mut authored = directive.names.join("::");
@@ -3546,6 +4109,274 @@ mod tests {
     use crate::lowering::RustEdition;
     use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
     use crate::source_syntax::CargoCfgSnapshot;
+
+    #[test]
+    fn canonical_ast_node_declaration_is_the_resolved_node_origin() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Root {
+        value: boxed!(Self),
+    }
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let node = &report.resolved.unwrap().nodes[0];
+        assert!(matches!(
+            node.origin,
+            super::ResolvedNodeOrigin::Declaration(_)
+        ));
+        assert!(matches!(node.visibility, syn::Visibility::Public(_)));
+        assert!(matches!(node.body, super::ResolvedNodeBody::Struct { .. }));
+    }
+
+    #[test]
+    fn declaration_lifetime_inference_is_transitive_but_generic_storage_is_neutral() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate, arena_ast }
+recursa::ast_node! {
+    struct Leaf;
+    struct List<T> {
+        values: zero_or_many!(T),
+    }
+    struct Wrap<T> {
+        value: T,
+    }
+    struct Root {
+        values: List<Leaf>,
+    }
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let resolved = report.resolved.unwrap();
+        let node = |name: &str| {
+            resolved
+                .nodes
+                .iter()
+                .find(|node| node.ident == name)
+                .unwrap()
+        };
+        assert!(node("Leaf").generics.params.is_empty());
+        assert!(
+            node("Wrap")
+                .generics
+                .params
+                .iter()
+                .all(|parameter| !matches!(parameter, syn::GenericParam::Lifetime(_)))
+        );
+        assert!(matches!(
+            node("List").generics.params.first(),
+            Some(syn::GenericParam::Lifetime(_))
+        ));
+        assert!(matches!(
+            node("Root").generics.params.first(),
+            Some(syn::GenericParam::Lifetime(_))
+        ));
+        let super::ResolvedNodeOrigin::Declaration(origin) = &node("Root").origin else {
+            panic!()
+        };
+        let rendered = quote::ToTokens::to_token_stream(&origin.concrete_item).to_string();
+        assert!(rendered.contains("struct Root < 'input >"));
+        assert!(rendered.contains("List < 'input , Leaf >"));
+    }
+
+    #[test]
+    fn declaration_alias_applications_receive_the_single_inferred_input_lifetime() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate, arena_ast }
+recursa::ast_node! {
+    struct Leaf;
+    struct List<T> {
+        values: zero_or_many!(T),
+    }
+}
+type Marked<'a, T> = List<'a, T>;
+recursa::ast_node! {
+    struct Root {
+        value: Marked<Leaf>,
+    }
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let resolved = report.resolved.unwrap();
+        let root = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Root")
+            .unwrap();
+        let super::ResolvedNodeOrigin::Declaration(origin) = &root.origin else {
+            panic!()
+        };
+        let rendered = quote::ToTokens::to_token_stream(&origin.concrete_item).to_string();
+        assert!(rendered.contains("Marked < 'input , Leaf >"), "{rendered}");
+    }
+
+    #[test]
+    fn declaration_rejects_an_alias_that_fixes_generated_input_to_static() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate, arena_ast }
+recursa::ast_node! {
+    struct Leaf;
+    struct List<T> {
+        values: zero_or_many!(T),
+    }
+}
+type StaticList<T> = List<'static, T>;
+recursa::ast_node! {
+    struct Root {
+        value: StaticList<Leaf>,
+    }
+}
+"#,
+        );
+        assert!(report.resolved.is_none());
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("fixes source-borrowed content to `'static`")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn direct_node_derive_is_rejected_at_the_authored_identifier_with_migration_guidance() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate }
+#[derive(recursa::Node)] struct Old;
+"#,
+        );
+        assert!(report.resolved.is_none());
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("authoring is retired"))
+            .unwrap();
+        assert!(diagnostic.message.contains("ast_node!"));
+        assert_eq!(diagnostic.range, Some(69..72));
+    }
+
+    #[test]
+    fn selected_tree_macro_reexports_resolve_through_explicit_paths_and_globs() {
+        for root_import in [
+            "use crate::bridge::declare as node; node! { struct Root; }",
+            "use crate::bridge::*; declare! { struct Root; }",
+        ] {
+            let package = TempDir::new().unwrap();
+            let source = format!(
+                "recursa::grammar! {{ module = crate }}\nmod helpers {{ pub use recursa::ast_node as declare; }}\nmod bridge {{ pub use crate::helpers::declare; }}\n{root_import}"
+            );
+            let report = resolve(&package, &source);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let resolved = report.resolved.unwrap();
+            assert!(matches!(
+                resolved.nodes[0].origin,
+                super::ResolvedNodeOrigin::Declaration(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn declaration_supplies_input_to_every_alias_lifetime_parameter() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Name {
+        #[lex(pattern = r".+")]
+        value: NameText,
+    }
+    struct Wrap<A, B> {
+        left: A,
+        right: B,
+    }
+}
+type Both<'a, 'b> = Wrap<Name<'a>, Name<'b>>;
+recursa::ast_node! {
+    struct Root {
+        value: Both,
+    }
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let resolved = report.resolved.unwrap();
+        let root = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Root")
+            .unwrap();
+        let super::ResolvedNodeOrigin::Declaration(origin) = &root.origin else {
+            panic!()
+        };
+        let rendered = quote::ToTokens::to_token_stream(&origin.concrete_item).to_string();
+        assert!(rendered.contains("Both < 'input , 'input >"), "{rendered}");
+    }
+
+    #[test]
+    fn declaration_storage_validation_does_not_let_argument_markers_mask_alias_boxes() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate }
+type Hidden<T> = Box<Wrap<T>>;
+recursa::ast_node! {
+    struct Leaf;
+    struct Wrap<T> {
+        value: T,
+    }
+    struct Root {
+        value: Hidden<boxed!(Leaf)>,
+    }
+}
+"#,
+        );
+        assert!(report.resolved.is_none());
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("concrete AST storage containers")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn arena_declaration_accepts_an_optional_alias_to_a_borrowing_node() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"recursa::grammar! { module = crate, arena_ast }
+recursa::ast_node! {
+    struct Leaf {
+        #[lex(pattern = r".+")]
+        value: LeafText,
+    }
+}
+type MaybeLeaf<'input> = Option<Leaf<'input>>;
+recursa::ast_node! {
+    struct AliasHolder {
+        alias: MaybeLeaf,
+    }
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    }
 
     fn write(package: &Path, relative: &str, source: &str) {
         let path = package.join(relative);
@@ -3666,13 +4497,22 @@ mod tests {
     fn rca2004_reports_a_duplicate_explicit_import() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::source::Leaf;
     use super::source::Leaf;
-    #[derive(recursa::Node)] struct Root { value: Leaf }
+    recursa::ast_node! {
+        struct Root {
+            value: Leaf,
+        }
+    }
 }
 "#,
             &["RCA2004"],
@@ -3683,12 +4523,21 @@ mod consumer {
     fn rca2005_reports_an_import_collision() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::source::Leaf as Root;
-    #[derive(recursa::Node)] struct Root { this: Self }
+    recursa::ast_node! {
+        struct Root {
+            this: Self,
+        }
+    }
 }
 "#,
             &["RCA2005"],
@@ -3699,14 +4548,29 @@ mod consumer {
     fn rca2006_reports_an_ambiguous_import_used_by_a_node() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod one { #[derive(recursa::Node)] pub struct Shared { this: Self } }
-mod two { #[derive(recursa::Node)] pub struct Shared { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod one {
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
+}
+mod two {
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::one::*;
     use super::two::*;
-    #[derive(recursa::Node)] struct Root { value: Shared }
+    recursa::ast_node! {
+        struct Root {
+            value: Shared,
+        }
+    }
 }
 "#,
             &["RCA2006"],
@@ -3717,14 +4581,21 @@ mod consumer {
     fn framing_island_reports_normal_ambiguous_import_diagnostics() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate::sql,
     framing(island = Shared, boundary = SEMI),
 }
 recursa::tokens! { punctuation { SEMI => ";" } }
-mod one { #[derive(recursa::Node)] pub struct Shared; }
-mod two { #[derive(recursa::Node)] pub struct Shared; }
+mod one {
+    recursa::ast_node! {
+        pub struct Shared;
+    }
+}
+mod two {
+    recursa::ast_node! {
+        pub struct Shared;
+    }
+}
 use one::*;
 use two::*;
 "#,
@@ -3736,8 +4607,7 @@ use two::*;
     fn framing_payload_owner_reports_normal_ambiguous_import_diagnostics() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate::sql,
     framing(
         island = one::Shared,
@@ -3746,8 +4616,20 @@ recursa::grammar! {
     ),
 }
 recursa::tokens! { punctuation { SEMI => ";" } }
-mod one { #[derive(recursa::Node)] pub enum Shared { Payload } }
-mod two { #[derive(recursa::Node)] pub enum Shared { Payload } }
+mod one {
+    recursa::ast_node! {
+        pub enum Shared {
+            Payload,
+        }
+    }
+}
+mod two {
+    recursa::ast_node! {
+        pub enum Shared {
+            Payload,
+        }
+    }
+}
 use one::*;
 use two::*;
 "#,
@@ -3759,11 +4641,16 @@ use two::*;
     fn rca2007_reports_an_inaccessible_reexport() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod parent {
-    #[derive(recursa::Node)] struct Private { this: Self }
-    pub mod exports { pub use super::Private; }
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
+    pub mod exports {
+        pub use super::Private;
+    }
 }
 "#,
             &["RCA2007"],
@@ -3774,11 +4661,17 @@ mod parent {
     fn rca2008_reports_a_content_token_binding_collision() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Ident { this: Self }
-#[derive(recursa::Node)] struct Definition {
-    #[lex(pattern = r".+")] value: Ident,
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Ident {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Definition {
+        #[lex(pattern = r".+")]
+        value: Ident,
+    }
 }
 "#,
             &["RCA2008"],
@@ -3789,14 +4682,22 @@ recursa::grammar! { module = crate::sql }
     fn rca2009_reports_an_inaccessible_content_token_binding() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod tokens {
-    #[derive(recursa::Node)]
-    struct Definition { #[lex(pattern = r".+")] value: Ident }
+    recursa::ast_node! {
+
+        pub(self) struct Definition {
+            #[lex(pattern = r".+")]
+            pub(self) value: Ident,
+        }
+    }
 }
 mod consumer {
-    #[derive(recursa::Node)] struct Root { value: super::tokens::Ident }
+    recursa::ast_node! {
+        struct Root {
+            value: super::tokens::Ident,
+        }
+    }
 }
 "#,
             &["RCA2009"],
@@ -3807,10 +4708,13 @@ mod consumer {
     fn rca2010_reports_a_visibility_outside_the_selected_tree() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)]
-pub(in crate::outside) struct Root { this: Self }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+
+    pub(in crate::outside) struct Root {
+        this: Self,
+    }
+}
 "#,
             &["RCA2010"],
         );
@@ -3820,10 +4724,13 @@ pub(in crate::outside) struct Root { this: Self }
     fn rca2011_reports_an_unsupported_local_declaration() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 struct Vec;
-#[derive(recursa::Node)] struct Root { value: Vec }
+recursa::ast_node! {
+    struct Root {
+        value: Vec,
+    }
+}
 "#,
             &["RCA2011"],
         );
@@ -3833,9 +4740,12 @@ struct Vec;
     fn rca2012_reports_an_unresolved_grammar_semantic_reference() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Root { value: Missing }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Root {
+        value: Missing,
+    }
+}
 "#,
             &["RCA2012"],
         );
@@ -3845,11 +4755,20 @@ recursa::grammar! { module = crate::sql }
     fn rca2013_reports_an_inaccessible_local_declaration() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod left { #[derive(recursa::Node)] struct Private { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod left {
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
+}
 mod right {
-    #[derive(recursa::Node)] struct Root { value: super::left::Private }
+    recursa::ast_node! {
+        struct Root {
+            value: super::left::Private,
+        }
+    }
 }
 "#,
             &["RCA2013"],
@@ -3860,9 +4779,12 @@ mod right {
     fn rca2014_reports_a_reference_above_the_selected_root_anchor() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Root { value: super::Root }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Root {
+        value: super::Root,
+    }
+}
 "#,
             &["RCA2014"],
         );
@@ -3872,9 +4794,12 @@ recursa::grammar! { module = crate::sql }
     fn rca2015_reports_a_crate_path_outside_the_selected_root_anchor() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Root { value: crate::outside::Thing }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Root {
+        value: crate::outside::Thing,
+    }
+}
 "#,
             &["RCA2015"],
         );
@@ -3884,9 +4809,12 @@ recursa::grammar! { module = crate::sql }
     fn rca2016_reports_an_external_path() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Root { value: dependency::Thing }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Root {
+        value: dependency::Thing,
+    }
+}
 "#,
             &["RCA2016"],
         );
@@ -3896,9 +4824,12 @@ recursa::grammar! { module = crate::sql }
     fn rca2017_reports_a_leading_external_path() {
         assert_source_analysis_codes(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Root { value: ::std::vec::Vec }
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Root {
+        value: ::std::vec::Vec,
+    }
+}
 "#,
             &["RCA2017"],
         );
@@ -3909,29 +4840,32 @@ recursa::grammar! { module = crate::sql }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-my_recursa::grammar! {
+            r#"my_recursa::grammar! {
     module = crate::sql,
     facade = my_recursa,
 }
 
-#[derive(my_recursa::Node)]
-pub(super) struct Root {
-    local: Root,
-    relative: branch::Branch,
-    explicit_self: self::branch::Branch,
-    anchored: crate::sql::branch::Branch,
-    optional: Option<branch::Branch>,
-    boxed: std::boxed::Box<branch::Branch>,
-    repeated: alloc::vec::Vec<branch::Branch>,
-    nonempty: my_recursa::Vec1<branch::Branch>,
+my_recursa::ast_node! {
+
+    pub(super) struct Root {
+        local: Root,
+        relative: branch::Branch,
+        explicit_self: self::branch::Branch,
+        anchored: crate::sql::branch::Branch,
+        optional: Option<branch::Branch>,
+        boxed: boxed!(branch::Branch),
+        repeated: zero_or_many!(branch::Branch),
+        nonempty: one_or_many!(branch::Branch),
+    }
 }
 
 mod branch {
-    #[derive(my_recursa::Node)]
-    pub struct Branch {
-        this: Self,
-        root: super::Root,
+    my_recursa::ast_node! {
+
+        pub struct Branch {
+            this: Self,
+            root: super::Root,
+        }
     }
 }
 "#,
@@ -3970,29 +4904,40 @@ mod branch {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::grammar }
+            r#"recursa::grammar! { module = crate::grammar }
 
-#[derive(recursa::Node)]
-pub struct Named { value: Leaf }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub(crate) struct Tuple(Leaf);
-
-#[derive(recursa::Node)]
-struct Unit;
-
-#[derive(recursa::Node)]
-pub enum Choice {
-    Named { value: Leaf },
-    Tuple(Leaf),
-    EmptyNamed {},
-    EmptyTuple(),
-    Unit,
+    pub struct Named {
+        value: Leaf,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
+
+    pub(crate) struct Tuple(Leaf);
+}
+
+recursa::ast_node! {
+
+    struct Unit;
+}
+
+recursa::ast_node! {
+
+    pub enum Choice {
+        Named { value: Leaf },
+        Tuple(Leaf),
+        EmptyNamed {},
+        EmptyTuple(),
+        Unit,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
 "#,
         );
 
@@ -4021,7 +4966,7 @@ struct Leaf;
 
         assert_eq!(named.visibility, syn::parse_quote!(pub));
         assert_eq!(tuple.visibility, syn::parse_quote!(pub(crate)));
-        assert_eq!(unit.visibility, syn::Visibility::Inherited);
+        assert_eq!(unit.visibility, syn::parse_quote!(pub));
         assert_eq!(choice.visibility, syn::parse_quote!(pub));
         assert!(matches!(
             named.body,
@@ -4066,21 +5011,34 @@ struct Leaf;
         write(
             package.path(),
             "grammar/shared.rs",
-            r#"
-#[derive(recursa::Node)]
-pub struct Shared { helper: Helper }
-#[derive(recursa::Node)]
-struct Helper { again: Self }
+            r#"recursa::ast_node! {
+
+    pub struct Shared {
+        helper: Helper,
+    }
+}
+recursa::ast_node! {
+
+    struct Helper {
+        again: Self,
+    }
+}
 "#,
         );
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-#[path = "shared.rs"] mod left;
-#[path = "shared.rs"] mod right;
-#[derive(recursa::Node)]
-struct Root { left: left::Shared, right: right::Shared }
+            r#"recursa::grammar! { module = crate::sql }
+#[path = "shared.rs"]
+mod left;
+#[path = "shared.rs"]
+mod right;
+recursa::ast_node! {
+
+    struct Root {
+        left: left::Shared,
+        right: right::Shared,
+    }
+}
 "#,
         );
 
@@ -4106,35 +5064,56 @@ struct Root { left: left::Shared, right: right::Shared }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 
-#[derive(recursa::Node)]
-struct Root { keyword: r#type::r#match }
+recursa::ast_node! {
+
+    struct Root {
+        keyword: r#type::r#match,
+    }
+}
 
 mod r#type {
-    #[derive(recursa::Node)]
-    pub struct r#match { root: super::Root }
+    recursa::ast_node! {
+
+        pub struct r#match {
+            root: super::Root,
+        }
+    }
 }
 
 mod left {
-    #[derive(recursa::Node)]
-    pub(super) struct Shared { root: super::Root }
+    recursa::ast_node! {
 
-    pub mod nested {
-        #[derive(recursa::Node)]
-        pub(in crate::sql::left) struct Restricted {
-            root: super::super::Root,
+        pub(super) struct Shared {
+            root: super::Root,
         }
     }
 
-    #[derive(recursa::Node)]
-    struct Left { restricted: self::nested::Restricted }
+    pub mod nested {
+        recursa::ast_node! {
+
+            pub(in crate::sql::left) struct Restricted {
+                root: super::super::Root,
+            }
+        }
+    }
+
+    recursa::ast_node! {
+
+        struct Left {
+            restricted: self::nested::Restricted,
+        }
+    }
 }
 
 mod right {
-    #[derive(recursa::Node)]
-    struct Right { shared: super::left::Shared }
+    recursa::ast_node! {
+
+        struct Right {
+            shared: super::left::Shared,
+        }
+    }
 }
 "#,
         );
@@ -4156,24 +5135,27 @@ mod right {
         let cfg = CargoCfgSnapshot::default().with_flag("unix");
         let report = resolve_with_cfg(
             &package,
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 #[cfg(windows)]
 struct Option;
 
-#[cfg_attr(unix, derive(recursa::Node))]
-enum Root {
-    Present(Option<Leaf>),
-    #[cfg(windows)]
-    Inactive(dep::Missing),
+recursa::ast_node! {
+    #[cfg_attr(unix, derive(Clone))]
+    enum Root {
+        Present(Option<Leaf>),
+        #[cfg(windows)]
+        Inactive(dep::Missing),
+    }
 }
 
-#[derive(recursa::Node)]
-struct Leaf {
-    #[cfg(unix)]
-    this: Self,
-    #[cfg(windows)]
-    missing: dep::Missing,
+recursa::ast_node! {
+
+    struct Leaf {
+        #[cfg(unix)]
+        this: Self,
+        #[cfg(windows)]
+        missing: dep::Missing,
+    }
 }
 "#,
             &cfg,
@@ -4199,21 +5181,30 @@ struct Leaf {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod left {
-    #[derive(recursa::Node)]
-    struct Private { this: Self }
+    recursa::ast_node! {
+
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
     pub mod nested {
-        #[derive(recursa::Node)]
-        pub(in crate::sql::left) struct Restricted { this: Self }
+        recursa::ast_node! {
+
+            pub(in crate::sql::left) struct Restricted {
+                this: Self,
+            }
+        }
     }
 }
 mod right {
-    #[derive(recursa::Node)]
-    struct Right {
-        private: super::left::Private,
-        restricted: super::left::nested::Restricted,
+    recursa::ast_node! {
+
+        struct Right {
+            private: super::left::Private,
+            restricted: super::left::nested::Restricted,
+        }
     }
 }
 "#,
@@ -4238,21 +5229,26 @@ mod right {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 struct Vec;
 mod left {
-    #[derive(recursa::Node)]
-    struct Private { this: Self }
+    recursa::ast_node! {
+
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
 }
-#[derive(recursa::Node)]
-struct Root {
-    shadowed: Vec,
-    inaccessible: left::Private,
-    above: super::Root,
-    outside: crate::outside::Thing,
-    external: dep::Thing,
-    absolute: ::std::vec::Vec,
+recursa::ast_node! {
+
+    struct Root {
+        shadowed: Vec,
+        inaccessible: left::Private,
+        above: super::Root,
+        outside: crate::outside::Thing,
+        external: dep::Thing,
+        absolute: ::std::vec::Vec,
+    }
 }
 "#,
         );
@@ -4289,13 +5285,22 @@ struct Root {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+}
 use self::source::Leaf as Vec;
 type Identity<T> = T;
-#[derive(recursa::Node)]
-struct Root<Vec> { value: Vec }
+recursa::ast_node! {
+
+    struct Root<Vec> {
+        value: Vec,
+    }
+}
 "#,
         );
 
@@ -4332,23 +5337,32 @@ struct Root<Vec> { value: Vec }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 
 mod model {
-    #[derive(recursa::Node)]
-    pub struct Leaf { this: Self }
-    #[derive(recursa::Node)]
-    pub struct Branch { leaf: Leaf }
+    recursa::ast_node! {
+
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+    recursa::ast_node! {
+
+        pub struct Branch {
+            leaf: Leaf,
+        }
+    }
 }
 
 mod consumer {
     use super::model::{self as types, Leaf as ImportedLeaf};
 
-    #[derive(recursa::Node)]
-    struct Root {
-        direct: ImportedLeaf,
-        qualified: types::Branch,
+    recursa::ast_node! {
+
+        struct Root {
+            direct: ImportedLeaf,
+            qualified: types::Branch,
+        }
     }
 }
 "#,
@@ -4379,12 +5393,21 @@ mod consumer {
         let cfg = CargoCfgSnapshot::default().with_flag("unix");
         let report = resolve_with_cfg(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-#[cfg(unix)] use std::option::Option as Wrapper;
-#[cfg(windows)] use std::vec::Vec as Wrapper;
-#[derive(recursa::Node)] struct Leaf { this: Self }
-#[derive(recursa::Node)] struct Root { value: Wrapper<Leaf> }
+            r#"recursa::grammar! { module = crate::sql }
+#[cfg(unix)]
+use std::option::Option as Wrapper;
+#[cfg(windows)]
+use std::vec::Vec as Wrapper;
+recursa::ast_node! {
+    struct Leaf {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Wrapper<Leaf>,
+    }
+}
 "#,
             &cfg,
         );
@@ -4404,13 +5427,16 @@ recursa::grammar! { module = crate::sql }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 
 mod consumer {
     use super::second::Leaf;
-    #[derive(recursa::Node)]
-    struct Root { value: Leaf }
+    recursa::ast_node! {
+
+        struct Root {
+            value: Leaf,
+        }
+    }
 }
 
 mod second {
@@ -4422,8 +5448,12 @@ mod first {
 }
 
 mod origin {
-    #[derive(recursa::Node)]
-    pub struct Leaf { this: Self }
+    recursa::ast_node! {
+
+        pub struct Leaf {
+            this: Self,
+        }
+    }
 }
 "#,
         );
@@ -4451,19 +5481,36 @@ mod origin {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-mod a { #[derive(recursa::Node)] pub struct X { this: Self } }
-mod b { #[derive(recursa::Node)] pub struct X { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod a {
+    recursa::ast_node! {
+        pub struct X {
+            this: Self,
+        }
+    }
+}
+mod b {
+    recursa::ast_node! {
+        pub struct X {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::exports::X;
-    #[derive(recursa::Node)] struct Root { value: X }
+    recursa::ast_node! {
+        struct Root {
+            value: X,
+        }
+    }
 }
 mod exports {
     pub use super::a::*;
     pub use super::late::*;
 }
-mod late { pub use super::b::*; }
+mod late {
+    pub use super::b::*;
+}
 "#,
         );
 
@@ -4480,20 +5527,35 @@ mod late { pub use super::b::*; }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod one {
-    #[derive(recursa::Node)] pub struct Shared { this: Self }
-    #[derive(recursa::Node)] struct Private { this: Self }
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
 }
 mod two {
-    #[derive(recursa::Node)] pub struct Shared { this: Self }
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
 }
 mod unused_ambiguity {
+    use super::one::Shared;
     use super::one::*;
     use super::two::*;
-    use super::one::Shared;
-    #[derive(recursa::Node)] struct Root { chosen: Shared }
+    recursa::ast_node! {
+        struct Root {
+            chosen: Shared,
+        }
+    }
 }
 "#,
         );
@@ -4501,14 +5563,29 @@ mod unused_ambiguity {
 
         let ambiguous = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod one { #[derive(recursa::Node)] pub struct Shared { this: Self } }
-mod two { #[derive(recursa::Node)] pub struct Shared { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod one {
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
+}
+mod two {
+    recursa::ast_node! {
+        pub struct Shared {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::one::*;
     use super::two::*;
-    #[derive(recursa::Node)] struct Root { value: Shared }
+    recursa::ast_node! {
+        struct Root {
+            value: Shared,
+        }
+    }
 }
 "#,
         );
@@ -4523,12 +5600,21 @@ mod consumer {
 
         let filtered = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] struct Private { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::source::*;
-    #[derive(recursa::Node)] struct Root { value: Private }
+    recursa::ast_node! {
+        struct Root {
+            value: Private,
+        }
+    }
 }
 "#,
         );
@@ -4542,11 +5628,16 @@ mod consumer {
     fn reexports_cannot_widen_private_bindings_and_public_globs_filter_them() {
         let explicit = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod parent {
-    #[derive(recursa::Node)] struct Private { this: Self }
-    pub mod exports { pub use super::Private; }
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
+    pub mod exports {
+        pub use super::Private;
+    }
 }
 "#,
         );
@@ -4557,17 +5648,28 @@ mod parent {
 
         let glob = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod parent {
-    #[derive(recursa::Node)] struct Private { this: Self }
-    #[derive(recursa::Node)] pub struct Public { this: Self }
-    pub mod exports { pub use super::*; }
+    recursa::ast_node! {
+        pub(self) struct Private {
+            this: Self,
+        }
+    }
+    recursa::ast_node! {
+        pub struct Public {
+            this: Self,
+        }
+    }
+    pub mod exports {
+        pub use super::*;
+    }
 }
-#[derive(recursa::Node)]
-struct Root {
-    visible: parent::exports::Public,
-    filtered: parent::exports::Private,
+recursa::ast_node! {
+
+    struct Root {
+        visible: parent::exports::Public,
+        filtered: parent::exports::Private,
+    }
 }
 "#,
         );
@@ -4582,17 +5684,28 @@ struct Root {
     fn same_target_globs_prefer_the_publicly_reexportable_route() {
         let report = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod origin { #[derive(recursa::Node)] pub struct X { this: Self } }
-mod public_route { pub use super::origin::*; }
+            r#"recursa::grammar! { module = crate::sql }
+mod origin {
+    recursa::ast_node! {
+        pub struct X {
+            this: Self,
+        }
+    }
+}
+mod public_route {
+    pub use super::origin::*;
+}
 mod exports {
     use super::origin::*;
     pub use super::public_route::*;
 }
 mod consumer {
     use super::exports::X;
-    #[derive(recursa::Node)] struct Root { value: X }
+    recursa::ast_node! {
+        struct Root {
+            value: X,
+        }
+    }
 }
 "#,
         );
@@ -4612,13 +5725,22 @@ mod consumer {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::source::Leaf;
     use super::source::Leaf;
-    #[derive(recursa::Node)] struct Root { value: Leaf }
+    recursa::ast_node! {
+        struct Root {
+            value: Leaf,
+        }
+    }
 }
 "#,
         );
@@ -4637,12 +5759,21 @@ mod consumer {
     fn locates_import_collisions_inaccessible_reexports_and_external_globs() {
         let collision = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Leaf {
+            this: Self,
+        }
+    }
+}
 mod consumer {
     use super::source::Leaf as Root;
-    #[derive(recursa::Node)] struct Root { this: Self }
+    recursa::ast_node! {
+        struct Root {
+            this: Self,
+        }
+    }
 }
 "#,
         );
@@ -4653,10 +5784,17 @@ mod consumer {
 
         let inaccessible = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] struct Hidden { this: Self } }
-mod exports { pub use super::source::Hidden; }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub(self) struct Hidden {
+            this: Self,
+        }
+    }
+}
+mod exports {
+    pub use super::source::Hidden;
+}
 "#,
         );
         assert_eq!(
@@ -4666,10 +5804,13 @@ mod exports { pub use super::source::Hidden; }
 
         let external_glob = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 use dependency::*;
-#[derive(recursa::Node)] struct Root { this: Self }
+recursa::ast_node! {
+    struct Root {
+        this: Self,
+    }
+}
 "#,
         );
         assert_eq!(
@@ -4679,13 +5820,16 @@ use dependency::*;
 
         let external_reexport = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod exports {
-    use dependency::Thing;
     pub use self::Thing as PublicThing;
+    use dependency::Thing;
 }
-#[derive(recursa::Node)] struct Root { this: Self }
+recursa::ast_node! {
+    struct Root {
+        this: Self,
+    }
+}
 "#,
         );
         assert!(external_reexport.diagnostics.iter().any(|diagnostic| {
@@ -4704,33 +5848,40 @@ mod exports {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod first {
-    #[derive(recursa::Node)]
-    pub struct Definition {
-        #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
-        pub value: Ident,
+    recursa::ast_node! {
+
+        pub struct Definition {
+            #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
+            pub value: Ident,
+        }
     }
-    #[derive(recursa::Node)]
-    struct AlsoDefinition {
-        #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
-        value: Ident,
+    recursa::ast_node! {
+
+        struct AlsoDefinition {
+            #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
+            value: Ident,
+        }
     }
 }
 mod second {
-    #[derive(recursa::Node)]
-    pub struct Definition {
-        #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
-        pub value: Ident,
+    recursa::ast_node! {
+
+        pub struct Definition {
+            #[lex(pattern = r"[A-Za-z_]+", admits(KEYWORD))]
+            pub value: Ident,
+        }
     }
 }
 mod consumer {
     use super::first::Ident as Name;
-    #[derive(recursa::Node)]
-    struct Root {
-        #[tok(Ident)]
-        value: Name,
+    recursa::ast_node! {
+
+        struct Root {
+            #[tok(Ident)]
+            value: Name,
+        }
     }
 }
 "#,
@@ -4776,12 +5927,17 @@ mod consumer {
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct SELECT { this: Self }
-#[derive(recursa::Node)] struct Root {
-    #[tok(SELECT)]
-    value: SELECT,
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct SELECT {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        #[tok(SELECT)]
+        value: SELECT,
+    }
 }
 "#,
         );
@@ -4803,14 +5959,22 @@ recursa::grammar! { module = crate::sql }
     fn locates_inaccessible_and_colliding_content_token_bindings() {
         let inaccessible = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod tokens {
-    #[derive(recursa::Node)]
-    struct Definition { #[lex(pattern = r".+")] value: Ident }
+    recursa::ast_node! {
+
+        pub(self) struct Definition {
+            #[lex(pattern = r".+")]
+            pub(self) value: Ident,
+        }
+    }
 }
 mod consumer {
-    #[derive(recursa::Node)] struct Root { value: super::tokens::Ident }
+    recursa::ast_node! {
+        struct Root {
+            value: super::tokens::Ident,
+        }
+    }
 }
 "#,
         );
@@ -4821,11 +5985,17 @@ mod consumer {
 
         let collision = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-#[derive(recursa::Node)] struct Ident { this: Self }
-#[derive(recursa::Node)] struct Definition {
-    #[lex(pattern = r".+")] value: Ident,
+            r#"recursa::grammar! { module = crate::sql }
+recursa::ast_node! {
+    struct Ident {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Definition {
+        #[lex(pattern = r".+")]
+        value: Ident,
+    }
 }
 "#,
         );
@@ -4836,13 +6006,21 @@ recursa::grammar! { module = crate::sql }
 
         let import_collision = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod source { #[derive(recursa::Node)] pub struct Other { this: Self } }
+            r#"recursa::grammar! { module = crate::sql }
+mod source {
+    recursa::ast_node! {
+        pub struct Other {
+            this: Self,
+        }
+    }
+}
 mod tokens {
     use super::source::Other as Ident;
-    #[derive(recursa::Node)] struct Definition {
-        #[lex(pattern = r".+")] value: Ident,
+    recursa::ast_node! {
+        struct Definition {
+            #[lex(pattern = r".+")]
+            value: Ident,
+        }
     }
 }
 "#,
@@ -4857,14 +6035,27 @@ mod tokens {
     fn import_resolution_and_traces_ignore_harmless_import_order_permutations() {
         fn source(imports: &str) -> String {
             format!(
-                r#"
-recursa::grammar! {{ module = crate::sql }}
-mod origin {{ #[derive(recursa::Node)] pub struct Leaf {{ this: Self }} }}
-mod middle {{ pub use super::origin::Leaf; }}
-mod exports {{ pub use super::middle::*; }}
+                r#"recursa::grammar! {{ module = crate::sql }}
+mod origin {{
+    recursa::ast_node! {{
+        pub struct Leaf {{
+            this: Self,
+        }}
+    }}
+}}
+mod middle {{
+    pub use super::origin::Leaf;
+}}
+mod exports {{
+    pub use super::middle::*;
+}}
 mod consumer {{
-{imports}
-    #[derive(recursa::Node)] struct Root {{ value: Heap<Leaf> }}
+    {imports}
+    recursa::ast_node! {{
+        struct Root {{
+            value: boxed!(Leaf),
+        }}
+    }}
 }}
 "#,
             )
@@ -5047,28 +6238,66 @@ mod consumer {{
 
         let first = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
-mod a { #[derive(recursa::Node)] pub struct X { this: Self } }
-mod b { #[derive(recursa::Node)] pub struct Y { this: Self } }
-mod exports { pub use super::a::X; pub use super::b::Y; }
+            r#"recursa::grammar! { module = crate::sql }
+mod a {
+    recursa::ast_node! {
+        pub struct X {
+            this: Self,
+        }
+    }
+}
+mod b {
+    recursa::ast_node! {
+        pub struct Y {
+            this: Self,
+        }
+    }
+}
+mod exports {
+    pub use super::a::X;
+    pub use super::b::Y;
+}
 mod consumer {
     use super::exports::{X, Y};
-    #[derive(recursa::Node)] struct Root { x: X, y: Y }
+    recursa::ast_node! {
+        struct Root {
+            x: X,
+            y: Y,
+        }
+    }
 }
 "#,
         );
         let second = resolve(
             &TempDir::new().unwrap(),
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod consumer {
     use super::exports::{X, Y};
-    #[derive(recursa::Node)] struct Root { x: X, y: Y }
+    recursa::ast_node! {
+        struct Root {
+            x: X,
+            y: Y,
+        }
+    }
 }
-mod exports { pub use super::b::Y; pub use super::a::X; }
-mod b { #[derive(recursa::Node)] pub struct Y { this: Self } }
-mod a { #[derive(recursa::Node)] pub struct X { this: Self } }
+mod exports {
+    pub use super::a::X;
+    pub use super::b::Y;
+}
+mod b {
+    recursa::ast_node! {
+        pub struct Y {
+            this: Self,
+        }
+    }
+}
+mod a {
+    recursa::ast_node! {
+        pub struct X {
+            this: Self,
+        }
+    }
+}
 "#,
         );
         assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
@@ -5084,14 +6313,17 @@ mod a { #[derive(recursa::Node)] pub struct X { this: Self } }
         let package = TempDir::new().unwrap();
         let report = resolve(
             &package,
-            r#"
-recursa::grammar! { module = crate::sql }
+            r#"recursa::grammar! { module = crate::sql }
 mod child {
     recursa::grammar! { module = crate::not_the_root }
     foo::grammar! { arbitrary tokens }
 }
-#[derive(recursa::Node)]
-struct Root { nested: Unknown<AlsoMissing> }
+recursa::ast_node! {
+
+    struct Root {
+        nested: Unknown<AlsoMissing>,
+    }
+}
 "#,
         );
 

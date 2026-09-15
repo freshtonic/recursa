@@ -30,57 +30,73 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Statement<'input> {
-    Let { assignment: Box<Assignment<'input>> },
-    Print { print: Print<'input> },
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Statement {
+        Let { assignment: boxed!(Assignment) },
+        Print { print: Print },
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(LET, this, SEMI)]
-pub struct Assignment<'input> {
-    pub name: Name<'input>,
-    #[tok(EQ)]
-    pub value: Value<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(LET, this, SEMI)]
+    pub struct Assignment {
+        pub name: Name,
+        #[tok(EQ)]
+        pub value: Value,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(PRINT, LPAREN, this, RPAREN, SEMI)]
-pub struct Print<'input> {
-    pub value: Value<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(PRINT, LPAREN, this, RPAREN, SEMI)]
+    pub struct Print {
+        pub value: Value,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Value<'input> {
-    Name { name: Name<'input> },
-    Number(Number<'input>),
-    #[tok(TRUE)]
-    True,
-    #[tok(FALSE)]
-    False,
-    Negated {
-        mark: Bang,
-        inner: Box<Value<'input>>,
-    },
-    Sum {
-        left: Number<'input>,
-        #[tok(PLUS)]
-        right: Box<Value<'input>>,
-    },
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Value {
+        Name {
+            name: Name,
+        },
+        Number(Number),
+        #[tok(TRUE)]
+        True,
+        #[tok(FALSE)]
+        False,
+        Negated {
+            mark: Bang,
+            inner: boxed!(Value),
+        },
+        Sum {
+            left: Number,
+            #[tok(PLUS)]
+            right: boxed!(Value),
+        },
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(BANG)]
-pub struct Bang;
-
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub text: NameText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(BANG)]
+    pub struct Bang;
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: NumberText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
 }

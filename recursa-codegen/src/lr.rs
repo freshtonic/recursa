@@ -789,41 +789,47 @@ mod tests {
         std::fs::write(
             package.path().join("grammar.rs"),
             r#"
-    recursa::grammar! {
-        module = crate::grammar,
-        keyword_matching = sensitive,
-    }
+recursa::grammar! {
+    module = crate::grammar,
+    keyword_matching = sensitive,
+}
 
-    recursa::tokens! {
-        ignore = r"[ \t\n\r]+",
-        keywords {
-            LET => "let",
-        }
-        punctuation {
-            SEMI => ";",
-        }
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords {
+        LET => "let",
     }
+    punctuation {
+        SEMI => ";",
+    }
+}
 
-    #[derive(recursa::Node)]
-    pub enum Statement<'input> {
+recursa::ast_node! {
+
+    pub enum Statement {
         #[spanned(optional)]
-        Let(Let<'input>),
+        Let(Let),
     }
+}
 
-    #[derive(recursa::Node)]
+recursa::ast_node! {
+
     #[spanned(off)]
     #[tok(LET, this, SEMI)]
-    pub struct Let<'input> {
+    pub struct Let {
         #[spanned(mandatory)]
-        pub name: Name<'input>,
+        pub name: Name,
     }
+}
 
-    #[derive(recursa::Node)]
-    pub struct Name<'input> {
+recursa::ast_node! {
+
+    pub struct Name {
         #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-        pub text: NameText<'input>,
+        pub text: NameText,
     }
-    "#,
+}
+"#,
         )
         .unwrap();
         let lowered = crate::source_analysis::analyze_source_tree(

@@ -2357,12 +2357,13 @@ mod tests {
     #[test]
     fn plans_sensitive_keywords_with_unicode_xid_classification() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("select", "éclair", "e\u{301}clair", "->")]
-struct Root;
+recursa::ast_node! {
+
+    #[tok("select", "éclair", "e\u{301}clair", "->")]
+    struct Root;
+}
 "#,
         );
 
@@ -2389,15 +2390,16 @@ struct Root;
     #[test]
     fn ascii_insensitive_keywords_have_canonical_spelling_and_duplicate_metadata() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("select", "SeLeCt", "é", "É", "e\u{301}")]
-struct Root;
+recursa::ast_node! {
+
+    #[tok("select", "SeLeCt", "é", "É", "e\u{301}")]
+    struct Root;
+}
 "#,
         );
 
@@ -2426,8 +2428,7 @@ struct Root;
     #[test]
     fn ascii_insensitive_spelling_does_not_fold_symbolic_fixed_names() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
@@ -2439,9 +2440,11 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(lower, LOWER)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(lower, LOWER)]
+    struct Root;
+}
 "#,
         );
 
@@ -2464,17 +2467,18 @@ struct Root;
     #[test]
     fn merged_lookahead_kinds_follow_every_lexed_kind_and_have_no_lexical_rule() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     keywords { NOT => "not", BETWEEN => "between", IN => "in" }
     lookahead { NOT_LA = NOT before { BETWEEN, IN } }
     punctuation { PLUS => "+" }
 }
 
-#[derive(recursa::Node)]
-#[tok(NOT, BETWEEN, PLUS)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(NOT, BETWEEN, PLUS)]
+    struct Root;
+}
 "#,
         );
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -2522,20 +2526,25 @@ struct Root;
     #[test]
     fn projects_reclaimable_keywords_to_concrete_kinds_and_parser_target_sets() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root { name: Word }
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Definition {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(IF))]
-    name: Word,
+    #[tok("IF", this)]
+    struct Root {
+        name: Word,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Definition {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(IF))]
+        name: Word,
+    }
 }
 "#,
         );
@@ -2578,30 +2587,32 @@ struct Definition {
     #[test]
     fn derives_explicit_lexer_priorities_independently_of_declaration_order() {
         let first = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[a-z]+")]
-    word: Word,
-    #[lex(pattern = r"[0-9]+")]
-    number: Number,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[a-z]+")]
+        word: Word,
+        #[lex(pattern = r"[0-9]+")]
+        number: Number,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[0-9]+")]
-    number: Number,
-    #[lex(pattern = r"[a-z]+")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[0-9]+")]
+        number: Number,
+        #[lex(pattern = r"[a-z]+")]
+        word: Word,
+    }
 }
 "#,
         )
@@ -2633,17 +2644,20 @@ struct Root {
     #[test]
     fn keeps_longest_match_separate_from_equal_span_priority() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("!", "!=")]
-struct Fixed;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"!+")]
-    operator: Operator,
+    #[tok("!", "!=")]
+    struct Fixed;
+}
+
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"!+")]
+        operator: Operator,
+    }
 }
 "#,
         );
@@ -2677,21 +2691,22 @@ struct Root {
     #[test]
     fn eliminates_a_keyword_only_after_whole_record_combined_carrier_proof() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("A", "IF")]
-struct Root {
-    #[lex(pattern = "A")]
-    upper: Upper,
-    #[lex(pattern = "a")]
-    lower: Lower,
-    #[lex(pattern = "I")]
-    prefix_only: Prefix,
+recursa::ast_node! {
+
+    #[tok("A", "IF")]
+    struct Root {
+        #[lex(pattern = "A")]
+        upper: Upper,
+        #[lex(pattern = "a")]
+        lower: Lower,
+        #[lex(pattern = "I")]
+        prefix_only: Prefix,
+    }
 }
 "#,
         );
@@ -2738,8 +2753,7 @@ struct Root {
     #[test]
     fn central_ignore_matching_a_keyword_forces_silent_standalone_fallback() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
@@ -2748,11 +2762,13 @@ recursa::tokens! {
     ignore = r"if",
 }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"IF")]
-    word: Word,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"IF")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -2781,17 +2797,18 @@ struct Root {
     #[test]
     fn equal_priority_ignore_and_content_overlap_emits_typed_rca3005() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     ignore = r"[A-Za-z]+",
 }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-F]+")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-F]+")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -2859,15 +2876,16 @@ struct Root {
     #[test]
     fn retained_fixed_rule_shields_a_fully_covered_pattern_overlap() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { ignore = r"IF" }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"IF")]
-    word: Word,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"IF")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -2885,15 +2903,16 @@ struct Root {
     #[test]
     fn fixed_rule_shields_only_its_exact_witness_of_a_broader_overlap() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { ignore = r"I[FJ]" }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"I[FJ]")]
-    word: Word,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"I[FJ]")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -2910,16 +2929,17 @@ struct Root {
     #[test]
     fn fixed_shield_remains_when_distinct_content_kinds_tie_on_the_keyword() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"IF|A")]
-    first: First,
-    #[lex(pattern = r"IF|B")]
-    second: Second,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"IF|A")]
+        first: First,
+        #[lex(pattern = r"IF|B")]
+        second: Second,
+    }
 }
 "#,
         );
@@ -2941,16 +2961,17 @@ struct Root {
     #[test]
     fn ambiguity_search_continues_past_a_fixed_witness_in_the_same_dfa_state() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("A", this)]
-struct Root {
-    #[lex(pattern = r"[A-Z]+")]
-    broad: Broad,
-    #[lex(pattern = r"[A-F]+")]
-    narrow: Narrow,
+recursa::ast_node! {
+
+    #[tok("A", this)]
+    struct Root {
+        #[lex(pattern = r"[A-Z]+")]
+        broad: Broad,
+        #[lex(pattern = r"[A-F]+")]
+        narrow: Narrow,
+    }
 }
 "#,
         );
@@ -2966,16 +2987,17 @@ struct Root {
     #[test]
     fn fixed_prefix_does_not_shield_a_longer_pattern_overlap() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"IF[A-Z]*")]
-    broad: Broad,
-    #[lex(pattern = r"IF[A-Y]*")]
-    narrow: Narrow,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"IF[A-Z]*")]
+        broad: Broad,
+        #[lex(pattern = r"IF[A-Y]*")]
+        narrow: Narrow,
+    }
 }
 "#,
         );
@@ -2991,36 +3013,38 @@ struct Root {
     #[test]
     fn ascii_insensitive_fixed_coverage_folds_only_ascii_in_word_shaped_tokens() {
         let punctuation = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("a-b", this)]
-struct Root {
-    #[lex(pattern = r"A-B|X")]
-    first: First,
-    #[lex(pattern = r"A-B|Y")]
-    second: Second,
+recursa::ast_node! {
+
+    #[tok("a-b", this)]
+    struct Root {
+        #[lex(pattern = r"A-B|X")]
+        first: First,
+        #[lex(pattern = r"A-B|Y")]
+        second: Second,
+    }
 }
 "#,
         );
         let unicode = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("ÉA", this)]
-struct Root {
-    #[lex(pattern = r"Éa|éA|X")]
-    first: First,
-    #[lex(pattern = r"Éa|éA|Y")]
-    second: Second,
+recursa::ast_node! {
+
+    #[tok("ÉA", this)]
+    struct Root {
+        #[lex(pattern = r"Éa|éA|X")]
+        first: First,
+        #[lex(pattern = r"Éa|éA|Y")]
+        second: Second,
+    }
 }
 "#,
         );
@@ -3040,30 +3064,32 @@ struct Root {
     #[test]
     fn fixed_precedence_applies_to_authored_priority_ties_without_hiding_other_witnesses() {
         let fully_covered = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"IF|A", priority = 7)]
-    first: First,
-    #[lex(pattern = r"IF|B", priority = 7)]
-    second: Second,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"IF|A", priority = 7)]
+        first: First,
+        #[lex(pattern = r"IF|B", priority = 7)]
+        second: Second,
+    }
 }
 "#,
         );
         let partially_covered = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"I[FJ]|A", priority = 7)]
-    first: First,
-    #[lex(pattern = r"I[FJ]|B", priority = 7)]
-    second: Second,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"I[FJ]|A", priority = 7)]
+        first: First,
+        #[lex(pattern = r"I[FJ]|B", priority = 7)]
+        second: Second,
+    }
 }
 "#,
         );
@@ -3097,14 +3123,15 @@ struct Root {
     #[test]
     fn ignore_overlap_is_deterministic_under_internal_record_permutation() {
         let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! { ignore = r"[A-Z]+" }
 recursa::tokens! { ignore = r"[A-F]+" }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
         let expected = plan_lexical(&source);
@@ -3145,16 +3172,17 @@ struct Root;
     #[test]
     fn equivalent_ignore_records_are_one_semantic_overlap_contender() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! { ignore = r"[A-Z]+" }
 recursa::tokens! { ignore = r"[A-Z]+" }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-F]+")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-F]+")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -3176,14 +3204,15 @@ struct Root {
     #[test]
     fn equivalent_ignore_records_do_not_overlap_each_other() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! { ignore = r"[A-Z]+" }
 recursa::tokens! { ignore = r"[A-Z]+" }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 
@@ -3194,22 +3223,24 @@ struct Root;
     #[test]
     fn equivalent_ignore_declarations_project_as_one_semantic_rule() {
         let one = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { ignore = r"[ ]+" }
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         )
         .plan
         .unwrap();
         let two = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { ignore = r"[ ]+" }
 recursa::tokens! { ignore = r"[ ]+" }
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         )
         .plan
@@ -3226,16 +3257,17 @@ struct Root;
     #[test]
     fn repeated_invalid_ignore_is_one_rca3004_with_module_aware_sites() {
         let source = source_model_with_files(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 #[path = "shared.rs"]
 mod first;
 #[path = "shared.rs"]
 mod second;
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
             &[("shared.rs", r#"recursa::tokens! { ignore = r"" }"#)],
         );
@@ -3260,8 +3292,7 @@ struct Root;
     #[test]
     fn central_only_overlap_offers_only_an_authored_actionable_remedy() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
@@ -3270,8 +3301,10 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 
@@ -3289,8 +3322,7 @@ struct Root;
     #[test]
     fn lower_priority_non_emitting_record_does_not_block_a_proven_emitting_carrier() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
@@ -3299,11 +3331,13 @@ recursa::tokens! {
     ignore = r"if",
 }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", priority = 1)]
-    word: Word,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"[A-Za-z]+", priority = 1)]
+        word: Word,
+    }
 }
 "#,
         );
@@ -3318,15 +3352,16 @@ struct Root {
     #[test]
     fn invalid_central_non_emitting_record_is_not_silently_discarded() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     ignore = r"",
 }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 
@@ -3347,17 +3382,18 @@ struct Root;
     #[test]
     fn carrier_cache_compiles_once_and_proves_each_canonical_keyword_once() {
         let source = source_model(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("if", "IF", "else", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+")]
-    word: Word,
+recursa::ast_node! {
+
+    #[tok("if", "IF", "else", this)]
+    struct Root {
+        #[lex(pattern = r"[A-Za-z]+")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -3378,14 +3414,15 @@ struct Root {
         assert_eq!(cache.proofs.len(), 2);
 
         let invalid = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", "ELSE", this)]
-struct Root {
-    #[lex(pattern = r"(")]
-    invalid: Invalid,
+recursa::ast_node! {
+
+    #[tok("IF", "ELSE", this)]
+    struct Root {
+        #[lex(pattern = r"(")]
+        invalid: Invalid,
+    }
 }
 "#,
         );
@@ -3407,21 +3444,22 @@ struct Root {
     #[test]
     fn reports_unsupported_overlap_and_tie_diagnostics_with_sites_and_remedies() {
         let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "(")]
-    invalid: Invalid,
-    #[lex(pattern = r"[A-Z]+")]
-    broad: Broad,
-    #[lex(pattern = r"[A-F]+")]
-    narrow: Narrow,
-    #[lex(pattern = r"[0-9]+", priority = 7)]
-    first_digit: FirstDigit,
-    #[lex(pattern = r"[0-9][0-9]*", priority = 7)]
-    second_digit: SecondDigit,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "(")]
+        invalid: Invalid,
+        #[lex(pattern = r"[A-Z]+")]
+        broad: Broad,
+        #[lex(pattern = r"[A-F]+")]
+        narrow: Narrow,
+        #[lex(pattern = r"[0-9]+", priority = 7)]
+        first_digit: FirstDigit,
+        #[lex(pattern = r"[0-9][0-9]*", priority = 7)]
+        second_digit: SecondDigit,
+    }
 }
 "#,
         );
@@ -3462,13 +3500,14 @@ struct Root {
     #[test]
     fn rejects_unicode_word_boundaries_before_emission() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"\bword\b")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"\bword\b")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -3487,24 +3526,26 @@ struct Root {
     #[test]
     fn rejects_anchors_and_ascii_word_boundaries_as_non_logos_patterns() {
         let anchors = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"^word$")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"^word$")]
+        word: Word,
+    }
 }
 "#,
         );
         let ascii_boundary = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"(?-u:\b)word")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"(?-u:\b)word")]
+        word: Word,
+    }
 }
 "#,
         );
@@ -3528,17 +3569,18 @@ struct Root {
     #[test]
     fn tied_priority_reports_only_the_highest_effective_contenders() {
         let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Z]+")]
-    broad: Broad,
-    #[lex(pattern = r"[A-F]+", priority = 2)]
-    medium: Medium,
-    #[lex(pattern = r"[A-C]+", priority = 2)]
-    narrow: Narrow,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Z]+")]
+        broad: Broad,
+        #[lex(pattern = r"[A-F]+", priority = 2)]
+        medium: Medium,
+        #[lex(pattern = r"[A-C]+", priority = 2)]
+        narrow: Narrow,
+    }
 }
 "#,
         );
@@ -3593,16 +3635,17 @@ struct Root {
     #[test]
     fn lexical_reports_ignore_internal_vector_order_but_keep_selected_source_sites() {
         let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Z]+")]
-    broad: Broad,
-    #[lex(pattern = r"[A-F]+")]
-    narrow: Narrow,
+recursa::ast_node! {
+
+    #[tok("IF", this)]
+    struct Root {
+        #[lex(pattern = r"[A-Z]+")]
+        broad: Broad,
+        #[lex(pattern = r"[A-F]+")]
+        narrow: Narrow,
+    }
 }
 "#,
         );
@@ -3639,21 +3682,23 @@ mod a;
             &[
                 (
                     "z.rs",
-                    r#"
-#[derive(recursa::Node)]
-pub struct Z {
-    #[lex(pattern = r"[A-Z]+")]
-    value: Broad,
+                    r#"recursa::ast_node! {
+
+    pub struct Z {
+        #[lex(pattern = r"[A-Z]+")]
+        value: Broad,
+    }
 }
 "#,
                 ),
                 (
                     "a.rs",
-                    r#"
-#[derive(recursa::Node)]
-pub struct A {
-    #[lex(pattern = r"[A-F]+")]
-    value: Narrow,
+                    r#"recursa::ast_node! {
+
+    pub struct A {
+        #[lex(pattern = r"[A-F]+")]
+        value: Narrow,
+    }
 }
 "#,
                 ),
@@ -3686,10 +3731,11 @@ mod second;
 "#,
             &[(
                 "shared.rs",
-                r#"
-#[derive(recursa::Node)]
-#[tok("IF")]
-pub struct Shared;
+                r#"recursa::ast_node! {
+
+    #[tok("IF")]
+    pub struct Shared;
+}
 "#,
             )],
         );
@@ -3705,53 +3751,59 @@ pub struct Shared;
     #[test]
     fn contextual_keyword_projection_is_stable_under_source_permutations() {
         let first = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("SELECT", "FROM", "AS", ",")]
-struct Fixed;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Definition {
-    #[lex(pattern = r"[A-Za-z_]+")]
-    word: Word,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    column: ColumnName,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    table: TableName,
-    #[lex(pattern = r"[A-Za-z_]+")]
-    alias: Alias,
+    #[tok("SELECT", "FROM", "AS", ",")]
+    struct Fixed;
+}
+
+recursa::ast_node! {
+
+    struct Definition {
+        #[lex(pattern = r"[A-Za-z_]+")]
+        word: Word,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        column: ColumnName,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        table: TableName,
+        #[lex(pattern = r"[A-Za-z_]+")]
+        alias: Alias,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-struct Definition {
-    #[lex(pattern = r"[A-Za-z_]+")]
-    alias: Alias,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    table: TableName,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    column: ColumnName,
-    #[lex(pattern = r"[A-Za-z_]+")]
-    word: Word,
+recursa::ast_node! {
+
+    struct Definition {
+        #[lex(pattern = r"[A-Za-z_]+")]
+        alias: Alias,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        table: TableName,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        column: ColumnName,
+        #[lex(pattern = r"[A-Za-z_]+")]
+        word: Word,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(",", "AS", "FROM", "SELECT")]
-struct Fixed;
+recursa::ast_node! {
+
+    #[tok(",", "AS", "FROM", "SELECT")]
+    struct Fixed;
+}
 "#,
         )
         .plan
@@ -3796,8 +3848,7 @@ struct Fixed;
     #[test]
     fn named_admission_membership_and_emission_are_stable_under_declaration_permutations() {
         let first = plan(
-            r#"
-recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+            r#"recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
 recursa::tokens! {
     categories { UNRESERVED, RESERVED }
     keywords {
@@ -3811,18 +3862,19 @@ recursa::tokens! {
         WindowRefName = ColId - { ROWS },
     }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
-    name: WindowName,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
+        name: WindowName,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+            r#"recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
 recursa::tokens! {
     admissions {
         WindowRefName = ColId - { ROWS },
@@ -3836,10 +3888,12 @@ recursa::tokens! {
     }
     categories { RESERVED, UNRESERVED }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
-    name: WindowName,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
+        name: WindowName,
+    }
 }
 "#,
         )
@@ -3861,30 +3915,32 @@ struct Root {
     #[test]
     fn lexical_rule_projection_ignores_source_ordered_kind_ids() {
         let first = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"x", priority = 1)]
-    first: First,
-    #[lex(pattern = r"x", priority = 2)]
-    second: Second,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"x", priority = 1)]
+        first: First,
+        #[lex(pattern = r"x", priority = 2)]
+        second: Second,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"x", priority = 2)]
-    second: Second,
-    #[lex(pattern = r"x", priority = 1)]
-    first: First,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"x", priority = 2)]
+        second: Second,
+        #[lex(pattern = r"x", priority = 1)]
+        first: First,
+    }
 }
 "#,
         )
@@ -3900,8 +3956,7 @@ struct Root {
     #[test]
     fn content_base_projection_ignores_source_ordered_kind_ids() {
         let first = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
@@ -3910,18 +3965,19 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"w", priority = 1)]
-    winner: Winner,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"w", priority = 1)]
+        winner: Winner,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
@@ -3930,10 +3986,12 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"w", priority = 1)]
-    winner: Winner,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"w", priority = 1)]
+        winner: Winner,
+    }
 }
 "#,
         )
@@ -3949,26 +4007,28 @@ struct Root {
     #[test]
     fn content_base_identity_does_not_depend_on_parser_target_names() {
         let first = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+")]
-    value: LongParserTargetName,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_]+")]
+        value: LongParserTargetName,
+    }
 }
 "#,
         )
         .plan
         .unwrap();
         let second = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+")]
-    value: X,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_]+")]
+        value: X,
+    }
 }
 "#,
         )
@@ -3987,13 +4047,14 @@ struct Root {
     #[test]
     fn lexical_rules_preserve_authored_priority_identity() {
         let plan = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+", priority = 17)]
-    value: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z_]+", priority = 17)]
+        value: Word,
+    }
 }
 "#,
         )
@@ -4014,14 +4075,15 @@ struct Root {
     #[test]
     fn invalid_root_keyword_policy_emits_typed_rca3001() {
         let report = plan(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = unicode_insensitive,
 }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 
@@ -4049,8 +4111,7 @@ struct Root;
     #[test]
     fn central_fixed_section_mismatch_emits_typed_rca3002() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     punctuation {
@@ -4058,9 +4119,11 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(SELECT)]
+    struct Root;
+}
 "#,
         );
 
@@ -4091,17 +4154,18 @@ struct Root;
     #[test]
     fn conflicting_content_metadata_emits_typed_rca3003_at_all_sites() {
         let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "a")]
-    first: Word,
-    #[lex(pattern = "b", priority = 3)]
-    second: Word,
-    #[lex(pattern = "a")]
-    third: Word,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "a")]
+        first: Word,
+        #[lex(pattern = "b", priority = 3)]
+        second: Word,
+        #[lex(pattern = "a")]
+        third: Word,
+    }
 }
 "#,
         );
@@ -4137,8 +4201,7 @@ struct Root {
     #[test]
     fn conflicting_canonical_fixed_identity_emits_rca3003_at_all_sites() {
         let report = plan(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     keywords {
@@ -4147,8 +4210,10 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
         );
 

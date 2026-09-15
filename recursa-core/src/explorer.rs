@@ -2,15 +2,15 @@
 
 use crate::input::TokenRecord;
 #[cfg(feature = "arbitrary")]
-use bumpalo::Bump;
+use crate::parsed::ArenaSynthetic;
 use crate::parsed::ViewCursor;
 use crate::parsed::{ArenaAstFamily, ArenaGeneratedParse, GeneratedParse};
-#[cfg(feature = "arbitrary")]
-use crate::parsed::ArenaSynthetic;
 use crate::{
     ArenaParsed, ElementRole, GrammarInfo, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap,
     Span,
 };
+#[cfg(feature = "arbitrary")]
+use bumpalo::Bump;
 use std::fmt;
 
 /// Grammar-local lexer producing the runtime records strict parsing consumes.
@@ -110,7 +110,11 @@ impl Adapter {
             .iter()
             .find(|node| node.semantic_key == qualified_name)?;
         let production = strip_diagram_links(node.production.clone());
-        Some(recursa_diagrams::render_svg(&production, qualified_name, ""))
+        Some(recursa_diagrams::render_svg(
+            &production,
+            qualified_name,
+            "",
+        ))
     }
 }
 
@@ -132,7 +136,9 @@ fn strip_diagram_links(node: recursa_diagrams::DiagramNode) -> recursa_diagrams:
             link: None,
             body: Box::new(strip_diagram_links(*body)),
         },
-        DiagramNode::LinkedComment { label, .. } => DiagramNode::LinkedComment { label, link: None },
+        DiagramNode::LinkedComment { label, .. } => {
+            DiagramNode::LinkedComment { label, link: None }
+        }
         DiagramNode::Annotated { note, body } => DiagramNode::Annotated {
             note,
             body: Box::new(strip_diagram_links(*body)),
@@ -143,7 +149,9 @@ fn strip_diagram_links(node: recursa_diagrams::DiagramNode) -> recursa_diagrams:
         DiagramNode::Choice(items) => {
             DiagramNode::Choice(items.into_iter().map(strip_diagram_links).collect())
         }
-        DiagramNode::Optional(inner) => DiagramNode::Optional(Box::new(strip_diagram_links(*inner))),
+        DiagramNode::Optional(inner) => {
+            DiagramNode::Optional(Box::new(strip_diagram_links(*inner)))
+        }
         DiagramNode::Repeat { item, separator } => DiagramNode::Repeat {
             item: Box::new(strip_diagram_links(*item)),
             separator: Box::new(strip_diagram_links(*separator)),
@@ -2159,7 +2167,9 @@ mod tests {
         }
 
         let adapter = unsafe {
-            construct_adapter(&TABLES, &ROOT, false, false, lex, raw_lex, parse, None, None)
+            construct_adapter(
+                &TABLES, &ROOT, false, false, lex, raw_lex, parse, None, None,
+            )
         };
         assert!(!adapter.capabilities().arbitrary());
         assert!(adapter.sample(&[]).is_none());

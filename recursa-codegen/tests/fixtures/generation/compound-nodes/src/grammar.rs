@@ -37,301 +37,376 @@ fn View() {}
 #[cfg(any())]
 struct View;
 
-/// RECURSA_AUTHORED_RECORD_DOC: source-authored documentation remains authoritative.
-#[derive(recursa::Node)]
-#[tok(RECORD, this)]
-pub struct Record<'input> {
-    #[tok(COLON)]
-    pub label: Box<Box<Label<'input>>>,
-    pub count: MaybeCount<'input>,
+recursa::ast_node! {
+    /// RECURSA_AUTHORED_RECORD_DOC: source-authored documentation remains authoritative.
+
+    #[tok(RECORD, this)]
+    pub struct Record {
+        #[tok(COLON)]
+        pub label: boxed!(boxed!(Label)),
+        pub count: boxed!(MaybeCount<boxed!(Count)>),
+    }
 }
 
-/// Required fixed syntax composes with an optional semantic presence value.
-#[derive(recursa::Node)]
-pub struct RequiredThenPresence<'input> {
-    #[tok(INDEX)]
-    #[presence(CONCURRENTLY)]
-    pub concurrently: bool,
-    pub label: Label<'input>,
+recursa::ast_node! {
+    /// Required fixed syntax composes with an optional semantic presence value.
+
+    pub struct RequiredThenPresence {
+        #[tok(INDEX)]
+        #[presence(CONCURRENTLY)]
+        pub concurrently: bool,
+        pub label: Label,
+    }
 }
 
-/// Required syntax may wrap the optional presence at the same field boundary.
-#[derive(recursa::Node)]
-pub struct WrappedPresence<'input> {
-    #[tok(CREATE, this, MATERIALIZED, VIEW)]
-    #[presence(UNLOGGED)]
-    pub unlogged: bool,
-    pub label: Label<'input>,
+recursa::ast_node! {
+    /// Required syntax may wrap the optional presence at the same field boundary.
+
+    pub struct WrappedPresence {
+        #[tok(CREATE, this, MATERIALIZED, VIEW)]
+        #[presence(UNLOGGED)]
+        pub unlogged: bool,
+        pub label: Label,
+    }
 }
 
-/// A required suffix may follow an optional presence without making it conditional.
-#[derive(recursa::Node)]
-#[tok(IS, this)]
-pub struct SuffixedPresence<'input> {
-    #[tok(this, JSON)]
-    #[presence(NOT)]
-    pub not: bool,
-    pub label: Label<'input>,
-}
+recursa::ast_node! {
+    /// A required suffix may follow an optional presence without making it conditional.
 
-/// A multi-token presence is selected atomically and may share its first token with the tail.
-#[derive(recursa::Node)]
-pub struct AtomicPresence<'input> {
-    #[presence(OR, REPLACE)]
-    pub replace: bool,
-    pub tail: PresenceTail<'input>,
-}
-
-#[derive(recursa::Node)]
-pub enum PresenceTail<'input> {
-    Or {
-        #[tok(OR)]
-        label: Label<'input>,
-    },
-    Label {
-        label: Label<'input>,
-    },
-}
-
-/// Punctuation participates in presence matching and canonical Pretty output.
-#[derive(recursa::Node)]
-pub struct PunctuationPresence<'input> {
-    #[presence(BANG)]
-    pub bang: bool,
-    pub label: Label<'input>,
-}
-
-/// Presence fields keep their authored bool shape inside enum variants.
-#[derive(recursa::Node)]
-pub enum EnumPresence<'input> {
-    Value {
+    #[tok(IS, this)]
+    pub struct SuffixedPresence {
+        #[tok(this, JSON)]
         #[presence(NOT)]
-        not: bool,
-        label: Label<'input>,
-    },
+        pub not: bool,
+        pub label: Label,
+    }
 }
 
-/// Erased fixed-token groups may occur independently before and after `this`.
-#[derive(recursa::Node)]
-#[tok(optional(RECORD), this, optional(PAIR))]
-pub struct OptionalFillers<'input> {
-    pub label: Label<'input>,
+recursa::ast_node! {
+    /// A multi-token presence is selected atomically and may share its first token with the tail.
+
+    pub struct AtomicPresence {
+        #[presence(OR, REPLACE)]
+        pub replace: bool,
+        pub tail: PresenceTail,
+    }
 }
 
-/// Optional groups preserve their exact position among required field attachments.
-#[derive(recursa::Node)]
-pub struct AttachedOptionalFillers<'input> {
-    #[tok(CREATE, optional(UNLOGGED), this, optional(VIEW), MATERIALIZED)]
-    pub label: Label<'input>,
+recursa::ast_node! {
+
+    pub enum PresenceTail {
+        Or {
+            #[tok(OR)]
+            label: Label,
+        },
+        Label {
+            label: Label,
+        },
+    }
 }
 
-/// An incomplete optional group leaves a shared-prefix semantic tail untouched.
-#[derive(recursa::Node)]
-pub struct AtomicOptionalAttachment<'input> {
-    #[tok(optional(OR, REPLACE), this)]
-    pub tail: PresenceTail<'input>,
+recursa::ast_node! {
+    /// Punctuation participates in presence matching and canonical Pretty output.
+
+    pub struct PunctuationPresence {
+        #[presence(BANG)]
+        pub bang: bool,
+        pub label: Label,
+    }
 }
 
-/// An optional suffix stays outside the following nested optional container.
-#[derive(recursa::Node)]
-pub struct NestedWith<'input> {
-    #[tok(this, optional(WITH))]
-    pub name: Label<'input>,
-    pub options: Box<Option<Box<Pair<'input>>>>,
+recursa::ast_node! {
+    /// Presence fields keep their authored bool shape inside enum variants.
+
+    pub enum EnumPresence {
+        Value {
+            #[presence(NOT)]
+            not: bool,
+            label: Label,
+        },
+    }
 }
 
-/// Erased optional groups compose with a boolean presence attachment.
-#[derive(recursa::Node)]
-pub struct PresenceWithFillers<'input> {
-    #[tok(CREATE, optional(OR), this, optional(VIEW), MATERIALIZED)]
-    #[presence(UNLOGGED)]
-    pub unlogged: bool,
-    pub label: Label<'input>,
+recursa::ast_node! {
+    /// Erased fixed-token groups may occur independently before and after `this`.
+
+    #[tok(optional(RECORD), this, optional(PAIR))]
+    pub struct OptionalFillers {
+        pub label: Label,
+    }
 }
 
-/// Prediction distinguishes a complete optional prefix from a shorter fixed alternative.
-#[derive(recursa::Node)]
-pub enum OptionalPrefixPrediction<'input> {
-    WithReplace {
+recursa::ast_node! {
+    /// Optional groups preserve their exact position among required field attachments.
+
+    pub struct AttachedOptionalFillers {
+        #[tok(CREATE, optional(UNLOGGED), this, optional(VIEW), MATERIALIZED)]
+        pub label: Label,
+    }
+}
+
+recursa::ast_node! {
+    /// An incomplete optional group leaves a shared-prefix semantic tail untouched.
+
+    pub struct AtomicOptionalAttachment {
         #[tok(optional(OR, REPLACE), this)]
-        label: Label<'input>,
-    },
-    Or {
-        #[tok(OR)]
-        label: Label<'input>,
-    },
+        pub tail: PresenceTail,
+    }
 }
 
-pub type MaybeCount<'input> = Box<Option<Box<Count<'input>>>>;
+recursa::ast_node! {
+    /// An optional suffix stays outside the following nested optional container.
 
-#[derive(recursa::Node)]
-#[tok(PAIR, this)]
-pub struct Pair<'input>(pub Box<Label<'input>>, pub Option<Box<Count<'input>>>);
-
-/// A nested child must leave its owner's fixed suffix unconsumed.
-#[derive(recursa::Node)]
-#[tok(CREATE, this, VIEW)]
-pub struct NestedRecovery<'input> {
-    pub pair: Box<Pair<'input>>,
+    pub struct NestedWith {
+        #[tok(this, optional(WITH))]
+        pub name: Label,
+        pub options: boxed!(Option<boxed!(Pair)>),
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(LEFT, this)]
-pub struct ManyLabels<'input> {
-    #[sep(COLON, trailing)]
-    pub values: Vec<Box<Label<'input>>>,
+recursa::ast_node! {
+    /// Erased optional groups compose with a boolean presence attachment.
+
+    pub struct PresenceWithFillers {
+        #[tok(CREATE, optional(OR), this, optional(VIEW), MATERIALIZED)]
+        #[presence(UNLOGGED)]
+        pub unlogged: bool,
+        pub label: Label,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(RIGHT, this)]
-pub struct SomeCounts<'input> {
-    #[sep(COLON)]
-    pub values: Option<Box<recursa::Vec1<Box<Count<'input>>>>>,
+recursa::ast_node! {
+    /// Prediction distinguishes a complete optional prefix from a shorter fixed alternative.
+
+    pub enum OptionalPrefixPrediction {
+        WithReplace {
+            #[tok(optional(OR, REPLACE), this)]
+            label: Label,
+        },
+        Or {
+            #[tok(OR)]
+            label: Label,
+        },
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, this)]
-pub struct RequiredCounts<'input> {
-    #[sep(COLON)]
-    pub values: recursa::Vec1<Box<Count<'input>>>,
+pub type MaybeCount<T> = Option<T>;
+
+recursa::ast_node! {
+
+    #[tok(PAIR, this)]
+    pub struct Pair(pub boxed!(Label), pub Option<boxed!(Count)>);
 }
 
-/// A zero-occurrence `Vec` remains absent before a later fixed suffix.
-#[derive(recursa::Node)]
-#[tok(LEFT, this, MATERIALIZED)]
-pub struct ZeroLabelsThenSuffix<'input> {
-    #[sep(COLON)]
-    pub values: Vec<Box<Label<'input>>>,
+recursa::ast_node! {
+    /// A nested child must leave its owner's fixed suffix unconsumed.
+
+    #[tok(CREATE, this, VIEW)]
+    pub struct NestedRecovery {
+        pub pair: boxed!(Pair),
+    }
 }
 
-/// An absent `Option<Vec1<_>>` remains valid before a later fixed suffix.
-#[derive(recursa::Node)]
-#[tok(RIGHT, this, VIEW, MATERIALIZED)]
-pub struct OptionalCountsThenSuffix<'input> {
-    #[sep(COLON)]
-    pub values: Option<Box<recursa::Vec1<Box<Count<'input>>>>>,
+recursa::ast_node! {
+
+    #[tok(LEFT, this)]
+    pub struct ManyLabels {
+        #[sep(COLON, trailing)]
+        pub values: zero_or_many!(boxed!(Label)),
+    }
 }
 
-/// Each required attachment token is parsed by its own fixed transition.
-#[derive(recursa::Node)]
-pub struct MultipleRequiredAttachment<'input> {
-    #[tok(CREATE, LEFT, this, RIGHT, VIEW)]
-    pub label: Label<'input>,
+recursa::ast_node! {
+
+    #[tok(RIGHT, this)]
+    pub struct SomeCounts {
+        #[sep(COLON)]
+        pub values: Option<boxed!(one_or_many!(boxed!(Count)))>,
+    }
 }
 
-/// Repeated identical required sites prove exact diagnostic deduplication is non-vacuous.
-#[derive(recursa::Node)]
-pub struct DuplicateRequiredAttachment<'input> {
-    #[tok(CREATE, CREATE, CREATE, this)]
-    pub label: Label<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, this)]
+    pub struct RequiredCounts {
+        #[sep(COLON)]
+        pub values: one_or_many!(boxed!(Count)),
+    }
 }
 
-/// A two-token optional group is consumed atomically before its semantic value.
-#[derive(recursa::Node)]
-#[tok(optional(OR, REPLACE), this)]
-pub struct StandaloneAtomicOptional<'input> {
-    pub label: Label<'input>,
+recursa::ast_node! {
+    /// A zero-occurrence `Vec` remains absent before a later fixed suffix.
+
+    #[tok(LEFT, this, MATERIALIZED)]
+    pub struct ZeroLabelsThenSuffix {
+        #[sep(COLON)]
+        pub values: zero_or_many!(boxed!(Label)),
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Entry<'input> {
-    Record {
-        value: Box<Box<Record<'input>>>,
-    },
-    Pair {
-        value: Box<Pair<'input>>,
-    },
-    #[tok(EMPTY)]
-    Empty,
+recursa::ast_node! {
+    /// An absent `Option<Vec1<_>>` remains valid before a later fixed suffix.
+
+    #[tok(RIGHT, this, VIEW, MATERIALIZED)]
+    pub struct OptionalCountsThenSuffix {
+        #[sep(COLON)]
+        pub values: Option<boxed!(one_or_many!(boxed!(Count)))>,
+    }
 }
 
-/// Distinct fixed prefixes select a branch before its field parses.
-#[derive(recursa::Node)]
-pub enum RecoveryChoice<'input> {
-    Right {
-        #[tok(RIGHT)]
-        count: Count<'input>,
-    },
-    Left {
+recursa::ast_node! {
+    /// Each required attachment token is parsed by its own fixed transition.
+
+    pub struct MultipleRequiredAttachment {
+        #[tok(CREATE, LEFT, this, RIGHT, VIEW)]
+        pub label: Label,
+    }
+}
+
+recursa::ast_node! {
+    /// Repeated identical required sites prove exact diagnostic deduplication is non-vacuous.
+
+    pub struct DuplicateRequiredAttachment {
+        #[tok(CREATE, CREATE, CREATE, this)]
+        pub label: Label,
+    }
+}
+
+recursa::ast_node! {
+    /// A two-token optional group is consumed atomically before its semantic value.
+
+    #[tok(optional(OR, REPLACE), this)]
+    pub struct StandaloneAtomicOptional {
+        pub label: Label,
+    }
+}
+
+recursa::ast_node! {
+
+    pub enum Entry {
+        Record {
+            value: boxed!(boxed!(Record)),
+        },
+        Pair {
+            value: boxed!(Pair),
+        },
+        #[tok(EMPTY)]
+        Empty,
+    }
+}
+
+recursa::ast_node! {
+    /// Distinct fixed prefixes select a branch before its field parses.
+
+    pub enum RecoveryChoice {
+        Right {
+            #[tok(RIGHT)]
+            count: Count,
+        },
+        Left {
+            #[tok(LEFT)]
+            label: Label,
+        },
+    }
+}
+
+recursa::ast_node! {
+    /// A nested enum restart may overlap its owner's fixed FOLLOW token.
+
+    pub enum RestartStopChoice {
         #[tok(LEFT)]
-        label: Label<'input>,
-    },
+        Left,
+        #[tok(RIGHT)]
+        Right,
+    }
 }
 
-/// A nested enum restart may overlap its owner's fixed FOLLOW token.
-#[derive(recursa::Node)]
-pub enum RestartStopChoice {
-    #[tok(LEFT)]
-    Left,
-    #[tok(RIGHT)]
-    Right,
+recursa::ast_node! {
+
+    #[tok(PAIR, this, LEFT)]
+    pub struct RestartStopOwner {
+        pub choice: RestartStopChoice,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(PAIR, this, LEFT)]
-pub struct RestartStopOwner {
-    pub choice: RestartStopChoice,
+recursa::ast_node! {
+
+    pub struct Label {
+        #[lex(pattern = r"[A-Za-zé]+")]
+        pub text: LabelText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Label<'input> {
-    #[lex(pattern = r"[A-Za-zé]+")]
-    pub text: LabelText<'input>,
-}
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[node(omit(Clone))]
-pub struct Count<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: CountText<'input>,
+    #[omit(Clone)]
+    pub struct Count {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: CountText,
+    }
 }
 
 pub mod public_left {
-    #[derive(recursa::Node)]
-    #[tok(LEFT)]
-    pub struct Duplicate;
+    recursa::ast_node! {
+
+        #[tok(LEFT)]
+        pub struct Duplicate;
+    }
 }
 
 pub mod public_right {
-    #[derive(recursa::Node)]
-    #[tok(RIGHT)]
-    pub struct Duplicate;
+    recursa::ast_node! {
+
+        #[tok(RIGHT)]
+        pub struct Duplicate;
+    }
 }
 
 pub mod node_named_like_token {
-    #[derive(recursa::Node)]
-    #[tok(LEFT)]
-    pub struct SharedText;
+    recursa::ast_node! {
 
-    #[derive(recursa::Node)]
-    #[tok(RIGHT, this)]
-    pub struct UsesNode {
-        pub value: SharedText,
+        #[tok(LEFT)]
+        pub struct SharedText;
+    }
+
+    recursa::ast_node! {
+
+        #[tok(RIGHT, this)]
+        pub struct UsesNode {
+            pub value: SharedText,
+        }
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(EMPTY)]
-pub struct Opaque;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok(LEFT, this)]
-pub struct PrivateRoot<'input> {
-    child: private_nodes::Hidden<'input>,
+    #[tok(EMPTY)]
+    pub struct Opaque;
+}
+
+recursa::ast_node! {
+
+    #[tok(LEFT, this)]
+    pub struct PrivateRoot {
+        child: private_nodes::Hidden,
+    }
 }
 
 mod private_nodes {
-    #[derive(recursa::Node)]
-    pub(super) struct Hidden<'input> {
-        #[lex(pattern = r"~[a-z]+")]
-        pub(super) text: PrivateText<'input>,
+    recursa::ast_node! {
+
+        pub(super) struct Hidden {
+            #[lex(pattern = r"~[a-z]+")]
+            pub(super) text: PrivateText,
+        }
     }
 }
 
-#[allow(non_camel_case_types)]
-#[derive(recursa::Node)]
-#[tok(PAIR)]
-pub struct __RecursaTarget_11_public_left_9_Duplicate;
+recursa::ast_node! {
+    #[allow(non_camel_case_types)]
+    #[tok(PAIR)]
+    pub struct __RecursaTarget_11_public_left_9_Duplicate;
+}
 
 impl<'input> Clone for Count<'input> {
     fn clone(&self) -> Self {
@@ -350,18 +425,22 @@ pub fn assert_private_sibling_spans() {
 }
 
 mod nested {
-    #[derive(recursa::Node)]
-    struct Local<'input> {
-        #[lex(pattern = r"@[a-z]+")]
-        text: LocalText<'input>,
+    recursa::ast_node! {
+
+        struct Local {
+            #[lex(pattern = r"@[a-z]+")]
+            text: LocalText,
+        }
     }
 
-    type MaybeLocalText<'input> = Box<Option<Box<LocalText<'input>>>>;
+    type MaybeLocalText<T> = Option<T>;
 
-    #[derive(recursa::Node)]
-    #[tok(LEFT, this)]
-    struct OptionalLocal<'input> {
-        text: MaybeLocalText<'input>,
+    recursa::ast_node! {
+
+        #[tok(LEFT, this)]
+        struct OptionalLocal {
+            text: boxed!(MaybeLocalText<boxed!(LocalText)>),
+        }
     }
 
     pub(super) fn assert_local_token_binding() {
@@ -397,10 +476,12 @@ mod nested {
 }
 
 mod shared_left {
-    #[derive(recursa::Node)]
-    struct Value<'input> {
-        #[lex(pattern = r"#[a-z]+")]
-        pub(super) text: SharedText<'input>,
+    recursa::ast_node! {
+
+        struct Value {
+            #[lex(pattern = r"#[a-z]+")]
+            pub(super) text: SharedText,
+        }
     }
 
     #[allow(dead_code)]
@@ -410,10 +491,12 @@ mod shared_left {
 }
 
 mod shared_right {
-    #[derive(recursa::Node)]
-    struct Value<'input> {
-        #[lex(pattern = r"#[a-z]+")]
-        pub(super) text: SharedText<'input>,
+    recursa::ast_node! {
+
+        struct Value {
+            #[lex(pattern = r"#[a-z]+")]
+            pub(super) text: SharedText,
+        }
     }
 
     pub(super) fn parse() -> SharedText<'static> {
@@ -424,10 +507,12 @@ mod shared_right {
 mod left {
     use recursa::HasSpan as _;
 
-    #[derive(recursa::Node)]
-    #[node(derive(Copy))]
-    #[tok(LEFT)]
-    struct Hidden;
+    recursa::ast_node! {
+
+        #[node(derive(Copy))]
+        #[tok(LEFT)]
+        struct Hidden;
+    }
 
     pub(super) fn assert_hidden_span() {
         let lexed = super::lex("left");
@@ -483,9 +568,11 @@ mod left {
 mod right {
     use recursa::HasSpan as _;
 
-    #[derive(recursa::Node)]
-    #[tok(RIGHT)]
-    struct Hidden;
+    recursa::ast_node! {
+
+        #[tok(RIGHT)]
+        struct Hidden;
+    }
 
     pub(super) fn assert_hidden_span() {
         let lexed = super::lex("right");

@@ -5,7 +5,9 @@ use recursa::{NodeView as _, Pretty as _};
 use recursa_generated_follow_pollution::grammar;
 
 /// The `Statement` inputs: the shared-helper shape.
-pub const STATEMENTS: &[&str] = &["a 1 c", "a 1 d", "a c", "b 1 d", "b 1 c", "b d", "a 1", "b 1 x"];
+pub const STATEMENTS: &[&str] = &[
+    "a 1 c", "a 1 d", "a c", "b 1 d", "b 1 c", "b d", "a 1", "b 1 x",
+];
 
 /// The `Expr` inputs: a root that continues past the wrapper or ends in `ColId`.
 pub const EXPRS: &[&str] = &["foo", "foo()", "foo(", "foo bar"];

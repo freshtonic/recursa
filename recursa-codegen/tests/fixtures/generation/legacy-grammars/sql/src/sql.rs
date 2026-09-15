@@ -19,91 +19,117 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub enum Statement<'input> {
-    CreateTable(CreateTable<'input>),
-    CreateView(CreateView<'input>),
-    CreateIndex(CreateIndex<'input>),
-    CreateSchema(CreateSchema<'input>),
-    CreateFunction(CreateFunction<'input>),
-    CreateProcedure(CreateProcedure<'input>),
-    DropTable(DropTable<'input>),
-    DropView(DropView<'input>),
-    DropIndex(DropIndex<'input>),
-    DropSchema(DropSchema<'input>),
-    DropFunction(DropFunction<'input>),
-    DropProcedure(DropProcedure<'input>),
+recursa::ast_node! {
+
+    pub enum Statement {
+        CreateTable(CreateTable),
+        CreateView(CreateView),
+        CreateIndex(CreateIndex),
+        CreateSchema(CreateSchema),
+        CreateFunction(CreateFunction),
+        CreateProcedure(CreateProcedure),
+        DropTable(DropTable),
+        DropView(DropView),
+        DropIndex(DropIndex),
+        DropSchema(DropSchema),
+        DropFunction(DropFunction),
+        DropProcedure(DropProcedure),
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, TABLE, this)]
-pub struct CreateTable<'input> {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, TABLE, this)]
+    pub struct CreateTable {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, VIEW, this)]
-pub struct CreateView<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, VIEW, this)]
+    pub struct CreateView {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, INDEX, this)]
-pub struct CreateIndex<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, INDEX, this)]
+    pub struct CreateIndex {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, SCHEMA, this)]
-pub struct CreateSchema<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, SCHEMA, this)]
+    pub struct CreateSchema {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, FUNCTION, this)]
-pub struct CreateFunction<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, FUNCTION, this)]
+    pub struct CreateFunction {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(CREATE, PROCEDURE, this)]
-pub struct CreateProcedure<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(CREATE, PROCEDURE, this)]
+    pub struct CreateProcedure {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, TABLE, this)]
-pub struct DropTable<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, TABLE, this)]
+    pub struct DropTable {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, VIEW, this)]
-pub struct DropView<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, VIEW, this)]
+    pub struct DropView {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, INDEX, this)]
-pub struct DropIndex<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, INDEX, this)]
+    pub struct DropIndex {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, SCHEMA, this)]
-pub struct DropSchema<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, SCHEMA, this)]
+    pub struct DropSchema {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, FUNCTION, this)]
-pub struct DropFunction<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, FUNCTION, this)]
+    pub struct DropFunction {
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(DROP, PROCEDURE, this)]
-pub struct DropProcedure<'input> {
-    pub rest: Rest<'input>,
+recursa::ast_node! {
+
+    #[tok(DROP, PROCEDURE, this)]
+    pub struct DropProcedure {
+        pub rest: Rest,
+    }
 }
