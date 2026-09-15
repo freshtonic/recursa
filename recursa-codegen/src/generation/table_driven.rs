@@ -822,6 +822,7 @@ fn render_parse_impl(
     plan: &EmissionPlan,
     ty: &Type,
     family_ident: &Ident,
+    publicly_materialized: bool,
     capture: proc_macro2::TokenStream,
     start: &StartTables,
     parser: &RenderedParser,
@@ -833,12 +834,13 @@ fn render_parse_impl(
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
     if plan.arena_ast {
+        let family_visibility = publicly_materialized.then(|| quote!(pub));
         let arena_lifetime = semantic_lifetime(plan);
         let mut marker_ty = ty.clone();
         replace_lifetime(&mut marker_ty, &arena_lifetime, &input_lifetime);
         return quote! {
             #[doc(hidden)]
-            pub struct #family_ident;
+            #family_visibility struct #family_ident;
 
             unsafe impl #facade::ArenaAstFamily for #family_ident {
                 type Ast<#arena_lifetime> = #ty;
@@ -942,6 +944,7 @@ pub(super) fn render_node_application(
         plan,
         ty,
         &family_ident,
+        node.publicly_materialized,
         node.capture.render(facade),
         start,
         parser,
@@ -1357,6 +1360,7 @@ pub(super) fn render_token_items(
         plan,
         &ty,
         &family_ident,
+        true,
         token.capture.render(facade),
         lr.token(token.semantic),
         parser,
@@ -1406,13 +1410,14 @@ mod tests {
         let package = tempfile::tempdir().expect("temporary private Node fixture");
         fs::write(
             package.path().join("grammar.rs"),
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
 mod nested {
-    #[derive(recursa::Node)]
-    #[tok("root")]
-    struct Private;
+    recursa::ast_node! {
+
+        #[tok("root")]
+        struct Private;
+    }
 }
 "#,
         )
@@ -1454,18 +1459,21 @@ mod nested {
         let package = tempfile::tempdir().expect("temporary arena AST fixture");
         fs::write(
             package.path().join("grammar.rs"),
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     arena_ast,
 }
 
-#[derive(recursa::Node)]
-#[tok("leaf")]
-struct Leaf;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Root<'input>(recursa::ArenaBox<'input, Leaf>);
+    #[tok("leaf")]
+    struct Leaf;
+}
+
+recursa::ast_node! {
+
+    struct Root(boxed!(Leaf));
+}
 "#,
         )
         .expect("write arena AST fixture");

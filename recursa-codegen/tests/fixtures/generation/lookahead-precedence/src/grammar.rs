@@ -43,53 +43,63 @@ recursa::tokens! {
     }
 }
 
-/// `rows extent ;`, gram.y's `window_clause` cut down to its frame.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(ROWS, this, SEMI)]
-pub struct Frame<'input> {
-    pub extent: Extent<'input>,
+recursa::ast_node! {
+    /// `rows extent ;`, gram.y's `window_clause` cut down to its frame.
+    #[derive(Debug, Clone)]
+    #[tok(ROWS, this, SEMI)]
+    pub struct Frame {
+        pub extent: Extent,
+    }
 }
 
-/// gram.y's `frame_extent`: `BETWEEN bound AND bound` or one bound.
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Extent<'input> {
-    Between {
-        #[tok(BETWEEN)]
-        low: Bound<'input>,
-        #[tok(AND)]
-        high: Bound<'input>,
-    },
-    Single(Bound<'input>),
+recursa::ast_node! {
+    /// gram.y's `frame_extent`: `BETWEEN bound AND bound` or one bound.
+    #[derive(Debug, Clone)]
+    pub enum Extent {
+        Between {
+            #[tok(BETWEEN)]
+            low: Bound,
+            #[tok(AND)]
+            high: Bound,
+        },
+        Single(Bound),
+    }
 }
 
-/// gram.y's `frame_bound`: an offset expression and `PRECEDING`.
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, PRECEDING)]
-pub struct Bound<'input> {
-    pub offset: Expr<'input>,
+recursa::ast_node! {
+    /// gram.y's `frame_bound`: an offset expression and `PRECEDING`.
+    #[derive(Debug, Clone)]
+    #[tok(this, PRECEDING)]
+    pub struct Bound {
+        pub offset: Expr,
+    }
 }
 
-/// gram.y's `a_expr`, cut down to prefix `NOT`, infix `LIKE` and the `NOT LIKE` test whose
-/// `NOT` the filter merges. The prefix's operand can begin with a trigger read as a name, so
-/// its rule is twinned with `NOT_LA`.
-#[derive(recursa::Node, Debug, Clone)]
-#[pratt]
-pub enum Expr<'input> {
-    Column(Ident<'input>),
-    /// The enclosing atom Pretty needs to repair a precedence it cannot express.
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Self>),
-    #[parse(prefix, bp = 10)]
-    Not(#[tok(NOT, this)] Box<Self>),
-    #[parse(postfix, bp = 20)]
-    NotLike(Box<Self>, #[tok(NOT, LIKE, this)] Box<Self>),
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(LIKE)]
-    Like(Box<Self>, Box<Self>),
+recursa::ast_node! {
+    /// gram.y's `a_expr`, cut down to prefix `NOT`, infix `LIKE` and the `NOT LIKE` test whose
+    /// `NOT` the filter merges. The prefix's operand can begin with a trigger read as a name, so
+    /// its rule is twinned with `NOT_LA`.
+    #[derive(Debug, Clone)]
+    #[pratt]
+    pub enum Expr {
+        Column(Ident),
+        /// The enclosing atom Pretty needs to repair a precedence it cannot express.
+        Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
+        #[parse(prefix, bp = 10)]
+        Not(#[tok(NOT, this)] boxed!(Self)),
+        #[parse(postfix, bp = 20)]
+        NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(LIKE)]
+        Like(boxed!(Self), boxed!(Self)),
+    }
 }
 
-/// gram.y's `ColId`: a name that the keywords `between` and `like` also spell.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Ident<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(BETWEEN, LIKE))]
-    pub text: IdentText<'input>,
+recursa::ast_node! {
+    /// gram.y's `ColId`: a name that the keywords `between` and `like` also spell.
+    #[derive(Debug, Clone)]
+    pub struct Ident {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(BETWEEN, LIKE))]
+        pub text: IdentText,
+    }
 }

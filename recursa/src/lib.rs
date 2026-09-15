@@ -16,7 +16,7 @@ pub use recursa_core::{
     Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
     Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
-pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
+pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, ast_node, grammar, tokens};
 
 /// Doc-time railroad diagram attachment reserved for Recursa-generated code.
 ///
@@ -40,7 +40,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            28,
+            29,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

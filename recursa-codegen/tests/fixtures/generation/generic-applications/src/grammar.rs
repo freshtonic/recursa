@@ -26,151 +26,191 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Integer<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub value: IntegerText<'input>,
+recursa::ast_node! {
+
+    pub struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntegerText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub value: NameText<'input>,
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub value: NameText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Atom<T> {
-    pub value: T,
+recursa::ast_node! {
+
+    pub struct Atom<T> {
+        pub value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Wrap<T> {
-    pub value: T,
+recursa::ast_node! {
+
+    pub struct Wrap<T> {
+        pub value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(IS, this)]
-pub struct KeywordName<'input> {
-    pub value: Name<'input>,
+recursa::ast_node! {
+
+    #[tok(IS, this)]
+    pub struct KeywordName {
+        pub value: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct GenericKeywordRoot<'input> {
-    pub value: Wrap<KeywordName<'input>>,
+recursa::ast_node! {
+
+    pub struct GenericKeywordRoot {
+        pub value: Wrap<KeywordName>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AttachedWrap<T> {
+recursa::ast_node! {
+
+    pub struct AttachedWrap<T> {
+        #[tok(LBRACE, this, RBRACE)]
+        pub value: T,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct GenericAttachedRoot {
+        pub value: AttachedWrap<KeywordName>,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Separated<T> {
+        #[tok(LBRACKET, this, RBRACKET)]
+        #[sep(AND)]
+        pub values: zero_or_many!(T),
+    }
+}
+
+recursa::ast_node! {
+
+    pub enum Mixed {
+        Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name>),
+        Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<zero_or_many!(Name)>),
+    }
+}
+
+pub type Maybe<T> = Option<T>;
+
+recursa::ast_node! {
+
+    pub struct OptionalOnly<T> {
+        #[tok(LPAREN, this, RPAREN)]
+        pub value: Option<boxed!(T)>,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Aliased<T> {
+        #[tok(LBRACKET, this, RBRACKET)]
+        pub value: Maybe<boxed!(T)>,
+    }
+}
+
+recursa::ast_node! {
+
     #[tok(LBRACE, this, RBRACE)]
-    pub value: T,
+    pub struct Chain<T> {
+        pub value: T,
+        pub tail: Option<boxed!(Self)>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct GenericAttachedRoot<'input> {
-    pub value: AttachedWrap<KeywordName<'input>>,
-}
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub struct Separated<T> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    #[sep(AND)]
-    pub values: Vec<T>,
-}
-
-#[derive(recursa::Node)]
-pub enum Mixed<'input> {
-    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),
-    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),
-}
-
-pub type Maybe<T> = Option<Box<T>>;
-
-#[derive(recursa::Node)]
-pub struct OptionalOnly<T> {
     #[tok(LPAREN, this, RPAREN)]
-    pub value: Option<Box<T>>,
+    pub struct Pair {
+        pub left: Integer,
+        #[tok(COMMA, this)]
+        pub right: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Aliased<T> {
-    #[tok(LBRACKET, this, RBRACKET)]
-    pub value: Maybe<T>,
-}
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok(LBRACE, this, RBRACE)]
-pub struct Chain<T> {
-    pub value: T,
-    pub tail: Option<Box<Self>>,
-}
-
-#[derive(recursa::Node)]
-#[tok(LPAREN, this, RPAREN)]
-pub struct Pair<'left, 'right> {
-    pub left: Integer<'left>,
-    #[tok(COMMA, this)]
-    pub right: Name<'right>,
-}
-
-#[derive(recursa::Node)]
-#[tok(LBRACE, this, RBRACE)]
-pub struct LifetimeNode<'input, T> {
-    pub value: T,
-    #[tok(COMMA, this)]
-    pub marker: Name<'input>,
+    #[tok(LBRACE, this, RBRACE)]
+    pub struct LifetimeNode<T> {
+        pub value: T,
+        #[tok(COMMA, this)]
+        pub marker: Name,
+    }
 }
 
 mod aliases {
     use super::LifetimeNode as DefinitionLocalNode;
 
-    pub type Maybe<'alias, T> = Option<Box<DefinitionLocalNode<'alias, T>>>;
+    pub type Marked<'alias, T> = DefinitionLocalNode<'alias, T>;
 }
 
-#[derive(recursa::Node)]
-pub struct AliasLifetimeRoot<'input, T> {
-    #[tok(LPAREN, this, RPAREN)]
-    pub value: aliases::Maybe<'input, T>,
+recursa::ast_node! {
+
+    pub struct AliasLifetimeRoot<T> {
+        #[tok(LPAREN, this, RPAREN)]
+        pub value: Option<boxed!(aliases::Marked<T>)>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AliasLifetimeConcrete<'input> {
-    pub value: AliasLifetimeRoot<'input, Integer<'input>>,
+recursa::ast_node! {
+
+    pub struct AliasLifetimeConcrete {
+        pub value: AliasLifetimeRoot<Integer>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AuditRoot<'outer> {
-    pub optional: OptionalOnly<Name<'outer>>,
-    pub aliased: Aliased<Integer<'outer>>,
-    pub integer_chain: Chain<Integer<'outer>>,
-    pub name_chain: Chain<Name<'outer>>,
-    pub pair: Pair<'outer, 'outer>,
+recursa::ast_node! {
+
+    pub struct AuditRoot {
+        pub optional: OptionalOnly<Name>,
+        pub aliased: Aliased<Integer>,
+        pub integer_chain: Chain<Integer>,
+        pub name_chain: Chain<Name>,
+        pub pair: Pair,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct SeparatorAudit<'input> {
-    pub separated: Separated<Name<'input>>,
+recursa::ast_node! {
+
+    pub struct SeparatorAudit {
+        pub separated: Separated<Name>,
+    }
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {
-    Integer(Atom<Integer<'input>>),
-    Name(Atom<Name<'input>>),
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+recursa::ast_node! {
 
-    #[parse(prefix, bp = 20)]
-    #[tok(MINUS)]
-    Neg(Box<Self>),
+    #[pratt]
+    pub enum Expr {
+        Integer(Atom<Integer>),
+        Name(Atom<Name>),
+        Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(MINUS)]
-    Sub(Box<Self>, Box<Self>),
+        #[parse(prefix, bp = 20)]
+        #[tok(MINUS)]
+        Neg(boxed!(Self)),
 
-    #[parse(prefix, bp = 20)]
-    #[tok(NOT, EXISTS)]
-    NotExists(Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(MINUS)]
+        Sub(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(IS, NOT)]
-    IsNot(Box<Self>, Box<Self>),
+        #[parse(prefix, bp = 20)]
+        #[tok(NOT, EXISTS)]
+        NotExists(boxed!(Self)),
+
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(IS, NOT)]
+        IsNot(boxed!(Self), boxed!(Self)),
+    }
 }

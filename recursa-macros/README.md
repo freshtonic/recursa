@@ -1,8 +1,9 @@
 # recursa-macros
 
 `recursa-macros` contains Recursa's matching-version structural loaders. The
-`recursa` facade re-exports them as `grammar!`, `tokens!`, and
-`#[derive(recursa::Node)]`, together with the total-visitor derives.
+`recursa` facade re-exports them as `grammar!`, `tokens!`, and `ast_node!`,
+together with the total-visitor derives. Direct `#[derive(recursa::Node)]`
+authoring has been replaced by declarations inside `ast_node!`.
 
 Users should depend on [`recursa`](https://docs.rs/recursa/latest/recursa/), not
 on this package directly. `recursa-codegen` interprets grammar declarations at

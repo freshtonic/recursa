@@ -44,94 +44,102 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
-    pub text: NameText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
 }
 
-/// gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: `default` starts an
-/// expression too, so the operand of `Named` excludes that atom, else both alternatives start
-/// with `default` and the dispatch has no decision.
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Namespace<'input> {
-    Named {
-        #[parse(pratt(exclude(Default)))]
-        uri: Box<Expr<'input>>,
-        #[tok(AS)]
-        label: Name<'input>,
-    },
-    Default {
+recursa::ast_node! {
+    /// gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: `default` starts an
+    /// expression too, so the operand of `Named` excludes that atom, else both alternatives start
+    /// with `default` and the dispatch has no decision.
+    #[derive(Debug, Clone)]
+    pub enum Namespace {
+        Named {
+            #[parse(pratt(exclude(Default)))]
+            uri: boxed!(Expr),
+            #[tok(AS)]
+            label: Name,
+        },
+        Default {
+            #[tok(DEFAULT)]
+            uri: boxed!(Expr),
+        },
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y's `index_elem`: a `c_expr` position that must not start with a parenthesised query
+    /// (nor, here, extend on `and`), while a parenthesised expression keeps the full language
+    /// inside its parentheses.
+    #[derive(Debug, Clone)]
+    pub struct IndexElem {
+        #[parse(pratt(exclude(Subquery, And)))]
+        pub elem: boxed!(Expr),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[pratt]
+    pub enum Expr {
+        Name(Name),
         #[tok(DEFAULT)]
-        uri: Box<Expr<'input>>,
-    },
-}
+        Default,
+        Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
+        /// A parenthesised query, told from a parenthesised expression by its second token.
+        Subquery(#[tok(LPAREN, SELECT, this, RPAREN)] boxed!(Self)),
+        Xmlnamespaces(#[tok(XMLNAMESPACES, LPAREN, this, RPAREN)] Namespace),
+        Index(#[tok(INDEX, LPAREN, this, RPAREN)] IndexElem),
 
-/// gram.y's `index_elem`: a `c_expr` position that must not start with a parenthesised query
-/// (nor, here, extend on `and`), while a parenthesised expression keeps the full language
-/// inside its parentheses.
-#[derive(recursa::Node, Debug, Clone)]
-pub struct IndexElem<'input> {
-    #[parse(pratt(exclude(Subquery, And)))]
-    pub elem: Box<Expr<'input>>,
-}
+        /// `a like b [escape c]`: the escape operand is optional and attached behind `escape`, so
+        /// it takes the operand minimum `rbp`; `escape` shifts against the variant's own reduce
+        /// (the variant's level plus one), as gram.y's
+        /// `%nonassoc ESCAPE` above `%nonassoc LIKE` decides it.
+        #[parse(infix, lbp = 6, rbp = 7)]
+        Like(
+            boxed!(Self),
+            #[tok(LIKE, this)] boxed!(Self),
+            /// LR precedence shifts `escape` into the attached operand.
+            #[tok(ESCAPE, this)]
+            Option<boxed!(Self)>,
+        ),
 
-#[derive(recursa::Node, Debug, Clone)]
-#[pratt]
-pub enum Expr<'input> {
-    Name(Name<'input>),
-    #[tok(DEFAULT)]
-    Default,
-    Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
-    /// A parenthesised query, told from a parenthesised expression by its second token.
-    Subquery(#[tok(LPAREN, SELECT, this, RPAREN)] Box<Self>),
-    Xmlnamespaces(#[tok(XMLNAMESPACES, LPAREN, this, RPAREN)] Namespace<'input>),
-    Index(#[tok(INDEX, LPAREN, this, RPAREN)] IndexElem<'input>),
+        /// The same operand on the postfix spelling pg-sql uses: every tail operand takes `bp` as
+        /// its minimum, the attached optional one included.
+        #[parse(postfix, bp = 6)]
+        NotLike(
+            boxed!(Self),
+            #[tok(NOT, LIKE, this)] boxed!(Self),
+            /// LR precedence shifts `escape` into the attached operand.
+            #[tok(ESCAPE, this)]
+            Option<boxed!(Self)>,
+        ),
 
-    /// `a like b [escape c]`: the escape operand is optional and attached behind `escape`, so
-    /// it takes the operand minimum `rbp`; `escape` shifts against the variant's own reduce
-    /// (the variant's level plus one), as gram.y's
-    /// `%nonassoc ESCAPE` above `%nonassoc LIKE` decides it.
-    #[parse(infix, lbp = 6, rbp = 7)]
-    Like(
-        Box<Self>,
-        #[tok(LIKE, this)] Box<Self>,
-        /// LR precedence shifts `escape` into the attached operand.
-        #[tok(ESCAPE, this)]
-        Option<Box<Self>>,
-    ),
+        /// `@ a`: the operator is a content token, so the nud dispatch keys on its kind and the
+        /// rule takes `bp` as its precedence, as gram.y's `qual_Op a_expr %prec Op`: the operand
+        /// binds `+` and `*` (above 8) and stops before `like` and `and` (below 8).
+        #[parse(prefix, bp = 8)]
+        CustomPrefix(#[lex(pattern = r"[~@#]+")] OperatorText, boxed!(Self)),
 
-    /// The same operand on the postfix spelling pg-sql uses: every tail operand takes `bp` as
-    /// its minimum, the attached optional one included.
-    #[parse(postfix, bp = 6)]
-    NotLike(
-        Box<Self>,
-        #[tok(NOT, LIKE, this)] Box<Self>,
-        /// LR precedence shifts `escape` into the attached operand.
-        #[tok(ESCAPE, this)]
-        Option<Box<Self>>,
-    ),
+        /// `a ~@ b`: the same operator class as an infix operator, gram.y's
+        /// `a_expr qual_Op a_expr %prec Op`.
+        #[parse(infix, lbp = 8, rbp = 9)]
+        CustomInfix(boxed!(Self), OperatorText, boxed!(Self)),
 
-    /// `@ a`: the operator is a content token, so the nud dispatch keys on its kind and the
-    /// rule takes `bp` as its precedence, as gram.y's `qual_Op a_expr %prec Op`: the operand
-    /// binds `+` and `*` (above 8) and stops before `like` and `and` (below 8).
-    #[parse(prefix, bp = 8)]
-    CustomPrefix(#[lex(pattern = r"[~@#]+")] OperatorText<'input>, Box<Self>),
+        #[parse(infix, lbp = 3, rbp = 4)]
+        #[tok(AND)]
+        And(boxed!(Self), boxed!(Self)),
 
-    /// `a ~@ b`: the same operator class as an infix operator, gram.y's
-    /// `a_expr qual_Op a_expr %prec Op`.
-    #[parse(infix, lbp = 8, rbp = 9)]
-    CustomInfix(Box<Self>, OperatorText<'input>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 3, rbp = 4)]
-    #[tok(AND)]
-    And(Box<Self>, Box<Self>),
-
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
-
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Multiply(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Multiply(boxed!(Self), boxed!(Self)),
+    }
 }

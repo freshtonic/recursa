@@ -35,87 +35,115 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Statement<'input> {
-    A(Box<A<'input>>),
-    A2(Box<A2<'input>>),
-    B(Box<B<'input>>),
-    B2(Box<B2<'input>>),
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Statement {
+        A(boxed!(A)),
+        A2(boxed!(A2)),
+        B(boxed!(B)),
+        B2(boxed!(B2)),
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(A_KW, this, C_KW)]
-pub struct A<'input> {
-    pub x: Option<X<'input>>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(A_KW, this, C_KW)]
+    pub struct A {
+        pub x: Option<X>,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(A_KW, this, D_KW)]
-pub struct A2<'input> {
-    pub y: Y<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(A_KW, this, D_KW)]
+    pub struct A2 {
+        pub y: Y,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(B_KW, this, D_KW)]
-pub struct B<'input> {
-    pub x: Option<X<'input>>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(B_KW, this, D_KW)]
+    pub struct B {
+        pub x: Option<X>,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(B_KW, this, C_KW)]
-pub struct B2<'input> {
-    pub y: Y<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(B_KW, this, C_KW)]
+    pub struct B2 {
+        pub y: Y,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Y<'input> {
-    pub x: X<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct Y {
+        pub x: X,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct X<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: NumberText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct X {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Expr<'input> {
-    Column(ColumnRef<'input>),
-    Call(FuncCall<'input>),
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum Expr {
+        Column(ColumnRef),
+        Call(FuncCall),
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct ColumnRef<'input> {
-    pub name: ColId<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct ColumnRef {
+        pub name: ColId,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, LPAREN, RPAREN)]
-pub struct FuncCall<'input> {
-    pub name: TypeFunctionName<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(this, LPAREN, RPAREN)]
+    pub struct FuncCall {
+        pub name: TypeFunctionName,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum FuncName<'input> {
-    Qualified(QualifiedName<'input>),
-    Plain(TypeFunctionName<'input>),
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum FuncName {
+        Qualified(QualifiedName),
+        Plain(TypeFunctionName),
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct QualifiedName<'input> {
-    pub first: ColId<'input>,
-    #[tok(DOT)]
-    pub second: ColId<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct QualifiedName {
+        pub first: ColId,
+        #[tok(DOT)]
+        pub second: ColId,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct ColId<'input> {
-    #[lex(pattern = r"[a-z_][a-z0-9_]*")]
-    pub text: ColIdText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct ColId {
+        #[lex(pattern = r"[a-z_][a-z0-9_]*")]
+        pub text: ColIdText,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct TypeFunctionName<'input> {
-    #[lex(pattern = r"[a-z_][a-z0-9_]*")]
-    pub text: TypeFunctionNameText<'input>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub struct TypeFunctionName {
+        #[lex(pattern = r"[a-z_][a-z0-9_]*")]
+        pub text: TypeFunctionNameText,
+    }
 }

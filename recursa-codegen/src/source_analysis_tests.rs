@@ -88,13 +88,14 @@ pub(crate) mod tests {
     #[test]
     fn diagnostic_phases_collect_independent_failures_and_suppress_downstream_phases() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    left: MissingLeft,
-    right: MissingRight,
+recursa::ast_node! {
+
+    struct Root {
+        left: MissingLeft,
+        right: MissingRight,
+    }
 }
 "#,
         );
@@ -120,15 +121,16 @@ struct Root {
         );
 
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = "a", display = "A")]
-    left: Left,
-    #[lex(pattern = "b", display = "B")]
-    right: Right,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "a", display = "A")]
+        left: Left,
+        #[lex(pattern = "b", display = "B")]
+        right: Right,
+    }
 }
 "#,
         );
@@ -152,17 +154,20 @@ struct Root {
         );
 
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Leaf;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"\bword")]
-    word: Word,
-    nested: Vec<Vec<Leaf>>,
+    struct Leaf;
+}
+
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"\bword")]
+        word: Word,
+        nested: zero_or_many!(zero_or_many!(Leaf)),
+    }
 }
 "#,
         );
@@ -191,11 +196,14 @@ struct Root {
     #[test]
     fn generation_failure_renders_once_and_retains_invalidation_inputs() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root { missing: Missing }
+recursa::ast_node! {
+
+    struct Root {
+        missing: Missing,
+    }
+}
 "#,
         );
         let mut cargo = Vec::new();
@@ -216,13 +224,14 @@ struct Root { missing: Missing }
     #[test]
     fn successful_lr_source_analysis_emits_invalidation_without_predictive_warnings() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "SELECT" } }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(SELECT)]
+    struct Root;
+}
 "#,
         );
         let directives = tempfile::NamedTempFile::new().expect("Cargo output capture");
@@ -255,17 +264,18 @@ struct Root;
     #[test]
     fn duplicate_admission_warning_crosses_the_full_analysis_boundary() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     categories { UNRESERVED }
     keywords { WINDOW => "window" in UNRESERVED }
     admissions { Names = UNRESERVED + { WINDOW } }
 }
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", admits(Names))]
-    name: Name,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"[A-Za-z]+", admits(Names))]
+        name: Name,
+    }
 }
 "#,
         );
@@ -292,13 +302,14 @@ struct Root {
     #[test]
     fn source_analysis_output_builds_one_conflict_free_lr_automaton() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "select" } }
 
-#[derive(recursa::Node)]
-#[tok(SELECT)]
-struct Root;
+recursa::ast_node! {
+
+    #[tok(SELECT)]
+    struct Root;
+}
 "#,
         );
         let success = crate::source_analysis::analyze_source_tree(
@@ -322,10 +333,14 @@ struct Root;
             ("{{", "grammar.rs"),
             ("recursa::grammar! { module = }", "grammar.rs"),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { #[lex(pattern = r"\bword")] word: Word }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"\bword")]
+        word: Word,
+    }
+}
 "#,
                 "grammar.rs",
             ),
@@ -353,120 +368,151 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
     fn invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics() {
         let cases = [
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { value: bool }
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        value: bool,
+    }
+}
 "#,
                 "RCA2012",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { #[presence(this)] value: bool }
-"#,
-                "RCA3129",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { #[presence()] value: bool }
-"#,
-                "RCA3129",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { #[presence] value: bool }
-"#,
-                "RCA3129",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or" } }
-#[derive(recursa::Node)]
-struct Root {
-    #[presence(OR)]
-    #[presence(OR)]
-    value: bool,
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(this)]
+        value: bool,
+    }
 }
 "#,
                 "RCA3129",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or" } }
-#[derive(recursa::Node)]
-struct Root { #[presence(optional(OR))] value: bool }
-"#,
-                "RCA3129",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or" } }
-#[derive(recursa::Node)]
-#[tok(OR)]
-struct Flag;
-#[derive(recursa::Node)]
-struct Root { #[presence(OR)] value: Flag }
-"#,
-                "RCA3129",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
-#[derive(recursa::Node)]
-#[tok(optional())]
-struct Root;
-"#,
-                "RCA3103",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
-#[derive(recursa::Node)]
-#[tok(optional(OR, optional(REPLACE)))]
-struct Root;
-"#,
-                "RCA3103",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or" } }
-#[derive(recursa::Node)]
-#[tok(optional(OR, this))]
-struct Root;
-"#,
-                "RCA3103",
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { keywords { OR => "or" } }
-#[derive(recursa::Node)]
-struct Root {
-    #[presence(OR)]
-    #[lex(pattern = "or")]
-    value: bool,
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence()]
+        value: bool,
+    }
 }
 "#,
                 "RCA3129",
             ),
             (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-#[kwd("OLD")]
-struct Root;
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence]
+        value: bool,
+    }
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(OR)]
+        #[presence(OR)]
+        value: bool,
+    }
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(optional(OR))]
+        value: bool,
+    }
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+recursa::ast_node! {
+
+    #[tok(OR)]
+    struct Flag;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(OR)]
+        value: Flag,
+    }
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
+recursa::ast_node! {
+
+    #[tok(optional())]
+    struct Root;
+}
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
+recursa::ast_node! {
+
+    #[tok(optional(OR, optional(REPLACE)))]
+    struct Root;
+}
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+recursa::ast_node! {
+
+    #[tok(optional(OR, this))]
+    struct Root;
+}
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(OR)]
+        #[lex(pattern = "or")]
+        value: bool,
+    }
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    #[kwd("OLD")]
+    struct Root;
+}
 "#,
                 "RCA3113",
             ),
@@ -493,10 +539,14 @@ struct Root;
         }
 
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root { #[presence(this)] value: bool }
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[presence(this)]
+        value: bool,
+    }
+}
 "#,
         );
         let error = crate::source_analysis::analyze_source_tree(
@@ -515,15 +565,18 @@ struct Root { #[presence(this)] value: bool }
     #[test]
     fn removed_greedy_attribute_reports_a_targeted_source_diagnostic() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Root {
-    #[greedy(all)]
-    value: Option<Value>,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Root {
+        #[greedy(all)]
+        value: Option<Value>,
+    }
 }
-#[derive(recursa::Node)]
-struct Value;
+recursa::ast_node! {
+
+    struct Value;
+}
 "#,
         );
         let error = crate::source_analysis::analyze_source_tree(
@@ -553,39 +606,44 @@ struct Value;
         // excludes the atom, and one token decides them.
         let grammar = |exclusion: &str| {
             format!(
-                r#"
-recursa::grammar! {{ module = crate }}
+                r#"recursa::grammar! {{ module = crate }}
 recursa::tokens! {{
     keywords {{ DEFAULT => "default", AS => "as" }}
     punctuation {{ PLUS => "+" }}
 }}
-#[derive(recursa::Node)]
-pub struct Name<'input> {{
-    #[lex(pattern = r"[a-z]+")]
-    pub text: NameText<'input>,
+recursa::ast_node! {{
+
+    pub struct Name {{
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }}
 }}
-#[derive(recursa::Node)]
-pub enum Namespace<'input> {{
-    Named {{
-        {exclusion}
-        uri: Box<Expr<'input>>,
-        #[tok(AS)]
-        label: Name<'input>,
-    }},
-    Default {{
+recursa::ast_node! {{
+
+    pub enum Namespace {{
+        Named {{
+            {exclusion}
+            uri: boxed!(Expr),
+            #[tok(AS)]
+            label: Name,
+        }},
+        Default {{
+            #[tok(DEFAULT)]
+            uri: boxed!(Expr),
+        }},
+    }}
+}}
+recursa::ast_node! {{
+
+    #[pratt]
+    pub enum Expr {{
+        Name(Name),
         #[tok(DEFAULT)]
-        uri: Box<Expr<'input>>,
-    }},
-}}
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {{
-    Name(Name<'input>),
-    #[tok(DEFAULT)]
-    Default,
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+        Default,
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }}
 }}
 "#
             )
@@ -644,14 +702,17 @@ pub enum Expr<'input> {{
     #[test]
     fn invalid_pratt_extension_filter_reports_source_analysis_diagnostic() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
-struct Value;
-#[derive(recursa::Node)]
-struct Root {
-    #[parse(pratt(exclude()))]
-    value: Value,
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+
+    struct Value;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[parse(pratt(exclude()))]
+        value: Value,
+    }
 }
 "#,
         );
@@ -673,14 +734,17 @@ struct Root {
     #[test]
     fn ambiguous_source_grammar_reports_an_lr_conflict() {
         let package = fixture(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { SELECT => "select" } }
 
-#[derive(recursa::Node)]
-enum Root {
-    #[tok(SELECT)] Left,
-    #[tok(SELECT)] Right,
+recursa::ast_node! {
+
+    enum Root {
+        #[tok(SELECT)]
+        Left,
+        #[tok(SELECT)]
+        Right,
+    }
 }
 "#,
         );

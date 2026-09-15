@@ -32,49 +32,57 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-pub enum Value<'input> {
-    Object(Object<'input>),
-    Array(Array<'input>),
-    String(
-        #[lex(pattern = r#""([^"\\\x00-\x1F]|\\(["\\/bfnrt]|u[0-9a-fA-F]{4}))*""#)] String<'input>,
-    ),
-    Number(#[lex(pattern = r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?")] Number<'input>),
-    Bool(Bool),
-    #[tok(NULL)]
-    Null,
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    pub enum Value {
+        Object(Object),
+        Array(Array),
+        String(#[lex(pattern = r#""([^"\\\x00-\x1F]|\\(["\\/bfnrt]|u[0-9a-fA-F]{4}))*""#)] String),
+        Number(#[lex(pattern = r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?")] Number),
+        Bool(Bool),
+        #[tok(NULL)]
+        Null,
+    }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-pub enum Bool {
-    #[tok(TRUE)]
-    True,
-    #[tok(FALSE)]
-    False,
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    pub enum Bool {
+        #[tok(TRUE)]
+        True,
+        #[tok(FALSE)]
+        False,
+    }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-#[tok(LBRACE, this, RBRACE)]
-pub struct Object<'input> {
-    #[sep(COMMA)]
-    pub members: Vec<Member<'input>>,
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    #[tok(LBRACE, this, RBRACE)]
+    pub struct Object {
+        #[sep(COMMA)]
+        pub members: zero_or_many!(Member),
+    }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-pub struct Member<'input> {
-    pub key: String<'input>,
-    #[tok(COLON)]
-    pub value: Value<'input>,
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    pub struct Member {
+        pub key: String,
+        #[tok(COLON)]
+        pub value: Value,
+    }
 }
 
-#[derive(recursa::Node)]
-#[node(omit(Visit))]
-#[tok(LBRACKET, this, RBRACKET)]
-pub struct Array<'input> {
-    #[sep(COMMA)]
-    pub values: Option<recursa::Vec1<Value<'input>>>,
+recursa::ast_node! {
+
+    #[omit(Visit)]
+    #[tok(LBRACKET, this, RBRACKET)]
+    pub struct Array {
+        #[sep(COMMA)]
+        pub values: Option<one_or_many!(Value)>,
+    }
 }

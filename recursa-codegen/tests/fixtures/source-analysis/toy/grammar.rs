@@ -19,14 +19,18 @@ recursa::tokens! {
     }
 }
 
-/// Presence of a semicolon statement; fixed syntax carries no AST text.
-#[derive(recursa::Node)]
-#[tok(SEMI)]
-pub struct SemicolonStmt;
+recursa::ast_node! {
+    /// Presence of a semicolon statement; fixed syntax carries no AST text.
 
-/// Gives the regex-backed `Ident` token a semantic use in this small fixture.
-#[derive(recursa::Node)]
-pub struct IdentHolder {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub ident: Ident,
+    #[tok(SEMI)]
+    pub struct SemicolonStmt;
+}
+
+recursa::ast_node! {
+    /// Gives the regex-backed `Ident` token a semantic use in this small fixture.
+
+    pub struct IdentHolder {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub ident: Ident,
+    }
 }

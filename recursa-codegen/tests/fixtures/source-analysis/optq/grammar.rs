@@ -19,36 +19,46 @@ recursa::tokens! {
     }
 }
 
-/// Presence records whether the optional qualifier occurred.
-#[derive(recursa::Node)]
-#[tok(DEBUG)]
-pub struct Debug;
+recursa::ast_node! {
+    /// Presence records whether the optional qualifier occurred.
 
-#[derive(recursa::Node)]
-pub enum Stmt {
-    Print(PrintStmt),
-    Read(ReadStmt),
-    Set(SetStmt),
+    #[tok(DEBUG)]
+    pub struct Debug;
 }
 
-#[derive(recursa::Node)]
-pub struct PrintStmt {
-    pub debug: Option<Debug>,
-    #[tok(PRINT)]
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub rest: Rest,
+recursa::ast_node! {
+
+    pub enum Stmt {
+        Print(PrintStmt),
+        Read(ReadStmt),
+        Set(SetStmt),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct ReadStmt {
-    pub debug: Option<Debug>,
-    #[tok(READ)]
-    pub rest: Rest,
+recursa::ast_node! {
+
+    pub struct PrintStmt {
+        pub debug: Option<Debug>,
+        #[tok(PRINT)]
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub rest: Rest,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct SetStmt {
-    pub debug: Option<Debug>,
-    #[tok(SET)]
-    pub rest: Rest,
+recursa::ast_node! {
+
+    pub struct ReadStmt {
+        pub debug: Option<Debug>,
+        #[tok(READ)]
+        pub rest: Rest,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct SetStmt {
+        pub debug: Option<Debug>,
+        #[tok(SET)]
+        pub rest: Rest,
+    }
 }

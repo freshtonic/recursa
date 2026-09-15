@@ -287,12 +287,25 @@ mod tests {
             .find("recursa::tokens! {")
             .expect("the fixture declares tokens");
         let tokens_end = FIXTURE
-            .find("#[derive(recursa::Node, Debug, Clone)]")
+            .find("recursa::ast_node! {")
             .expect("the fixture has nodes");
         format!(
-            "recursa::grammar! {{ module = crate, keyword_matching = sensitive }}\n{}{nodes}\n\
-             #[derive(recursa::Node)]\npub struct Name<'input> {{\n    #[lex(pattern = r\"[A-Za-z_][A-Za-z0-9_]*\")]\n    pub text: NameText<'input>,\n}}\n\
-             #[derive(recursa::Node)]\n#[tok(BETWEEN)]\npub struct BetweenMark;\n",
+            r#"recursa::grammar! {{ module = crate, keyword_matching = sensitive }}
+{}
+{nodes}
+recursa::ast_node! {{
+
+    pub struct Name {{
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }}
+}}
+recursa::ast_node! {{
+
+    #[tok(BETWEEN)]
+    pub struct BetweenMark;
+}}
+"#,
             &FIXTURE[tokens_start..tokens_end]
         )
     }
@@ -421,35 +434,42 @@ mod tests {
 
     #[test]
     fn a_content_trigger_rewrites_a_token_in_a_synthesized_attachment_rule() {
-        let source = r#"
-recursa::grammar! {
+        let source = r#"recursa::grammar! {
     module = crate,
     keyword_matching = sensitive,
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {
-    Unicode(UnicodeString<'input>),
+recursa::ast_node! {
+
+    #[pratt]
+    pub enum Expr {
+        Unicode(UnicodeString),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct UnicodeString<'input> {
-    #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
-    pub literal: UnicodeStringLit<'input>,
-    pub suffix: Option<UescapeSuffix<'input>>,
+recursa::ast_node! {
+
+    pub struct UnicodeString {
+        #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
+        pub literal: UnicodeStringLit,
+        pub suffix: Option<UescapeSuffix>,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct UescapeSuffix<'input> {
-    #[tok(UESCAPE, this)]
-    pub escape: StringLit<'input>,
+recursa::ast_node! {
+
+    pub struct UescapeSuffix {
+        #[tok(UESCAPE, this)]
+        pub escape: StringLit,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct LiteralBindings<'input> {
-    #[lex(pattern = r"'[^']*'")]
-    pub string: StringLit<'input>,
+recursa::ast_node! {
+
+    pub struct LiteralBindings {
+        #[lex(pattern = r"'[^']*'")]
+        pub string: StringLit,
+    }
 }
 
 // Deliberately declared after the content-token field. Source-order normalization moves the
@@ -483,19 +503,20 @@ recursa::tokens! {
 
     #[test]
     fn a_fixed_trigger_rewrites_a_token_in_synthesized_presence_rules() {
-        let source = r#"
-recursa::grammar! { module = crate, keyword_matching = sensitive }
+        let source = r#"recursa::grammar! { module = crate, keyword_matching = sensitive }
 
 recursa::tokens! {
     keywords { WITH => "with", ORDINALITY => "ordinality", SELECT => "select" }
     lookahead { WITH_LA = WITH before { ORDINALITY } }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT, this)]
-pub struct Root {
-    #[presence(WITH, ORDINALITY)]
-    pub ordinality: bool,
+recursa::ast_node! {
+
+    #[tok(SELECT, this)]
+    pub struct Root {
+        #[presence(WITH, ORDINALITY)]
+        pub ordinality: bool,
+    }
 }
 "#;
         let (_, grammar) = lr(source);
@@ -779,17 +800,20 @@ pub struct Root {
     #[test]
     fn a_token_inside_a_rule_is_twinned_when_what_follows_mixes_triggers_and_others() {
         let source = small_grammar(
-            r#"
-#[derive(recursa::Node)]
-pub struct Wrap<'input> {
-    #[tok(NOT)]
-    pub inner: Thing<'input>,
+            r#"recursa::ast_node! {
+
+    pub struct Wrap {
+        #[tok(NOT)]
+        pub inner: Thing,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Thing<'input> {
-    Between { mark: BetweenMark },
-    Name { name: Name<'input> },
+recursa::ast_node! {
+
+    pub enum Thing {
+        Between { mark: BetweenMark },
+        Name { name: Name },
+    }
 }
 "#,
         );
@@ -851,35 +875,44 @@ pub enum Thing<'input> {
     #[test]
     fn disjoint_filters_sharing_a_token_emit_each_merged_kind_and_the_base() {
         let source = small_grammar(
-            r#"
-#[derive(recursa::Node)]
-pub struct Wrap<'input> {
-    #[tok(NOT)]
-    pub inner: Thing<'input>,
+            r#"recursa::ast_node! {
+
+    pub struct Wrap {
+        #[tok(NOT)]
+        pub inner: Thing,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct OnlyWrap<'input> {
-    #[tok(NOT)]
-    pub inner: TriggerThing<'input>,
+recursa::ast_node! {
+
+    pub struct OnlyWrap {
+        #[tok(NOT)]
+        pub inner: TriggerThing,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Thing<'input> {
-    Between { mark: BetweenMark },
-    In { mark: InMark },
-    Name { name: Name<'input> },
+recursa::ast_node! {
+
+    pub enum Thing {
+        Between { mark: BetweenMark },
+        In { mark: InMark },
+        Name { name: Name },
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum TriggerThing<'input> {
-    Between { mark: BetweenMark },
-    In { mark: InMark },
+recursa::ast_node! {
+
+    pub enum TriggerThing {
+        Between { mark: BetweenMark },
+        In { mark: InMark },
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(IN)]
-pub struct InMark;
+recursa::ast_node! {
+
+    #[tok(IN)]
+    pub struct InMark;
+}
 "#,
         )
         .replace(
@@ -954,19 +987,22 @@ pub struct InMark;
     #[test]
     fn a_rule_with_two_twinned_positions_is_emitted_once_per_combination() {
         let source = small_grammar(
-            r#"
-#[derive(recursa::Node)]
-pub struct Twice<'input> {
-    #[tok(NOT)]
-    pub first: Thing<'input>,
-    #[tok(NOT)]
-    pub second: Thing<'input>,
+            r#"recursa::ast_node! {
+
+    pub struct Twice {
+        #[tok(NOT)]
+        pub first: Thing,
+        #[tok(NOT)]
+        pub second: Thing,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Thing<'input> {
-    Between { mark: BetweenMark },
-    Name { name: Name<'input> },
+recursa::ast_node! {
+
+    pub enum Thing {
+        Between { mark: BetweenMark },
+        Name { name: Name },
+    }
 }
 "#,
         );
@@ -1024,35 +1060,44 @@ pub enum Thing<'input> {
     #[test]
     fn a_token_ending_a_rule_is_twinned_only_when_its_follow_mixes_triggers_and_others() {
         let source = small_grammar(
-            r#"
-#[derive(recursa::Node)]
-#[tok(this, NOT)]
-pub struct Negated<'input> {
-    pub name: Name<'input>,
+            r#"recursa::ast_node! {
+
+    #[tok(this, NOT)]
+    pub struct Negated {
+        pub name: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Pair<'input> {
-    pub left: Negated<'input>,
-    pub right: Tail<'input>,
+recursa::ast_node! {
+
+    pub struct Pair {
+        pub left: Negated,
+        pub right: Tail,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Tail<'input> {
-    Between { mark: BetweenMark },
-    Name { name: Name<'input> },
+recursa::ast_node! {
+
+    pub enum Tail {
+        Between { mark: BetweenMark },
+        Name { name: Name },
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(this, NOT)]
-pub struct Plain<'input> {
-    pub name: Name<'input>,
+recursa::ast_node! {
+
+    #[tok(this, NOT)]
+    pub struct Plain {
+        pub name: Name,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Other<'input> {
-    pub left: Plain<'input>,
-    pub right: Name<'input>,
+recursa::ast_node! {
+
+    pub struct Other {
+        pub left: Plain,
+        pub right: Name,
+    }
 }
 "#,
         );
@@ -1181,8 +1226,7 @@ pub struct Other<'input> {
     /// merged kind, the base token, or neither.
     fn frame_grammar(level: &str) -> String {
         format!(
-            r#"
-recursa::grammar! {{ module = crate, keyword_matching = sensitive }}
+            r#"recursa::grammar! {{ module = crate, keyword_matching = sensitive }}
 recursa::tokens! {{
     ignore = r"[ \t\n\r]+",
     keywords {{
@@ -1198,46 +1242,56 @@ recursa::tokens! {{
     precedence {{ {level} }}
 }}
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(ROWS, this, SEMI)]
-pub struct Frame<'input> {{
-    pub extent: Extent<'input>,
+recursa::ast_node! {{
+    #[derive(Debug, Clone)]
+    #[tok(ROWS, this, SEMI)]
+    pub struct Frame {{
+        pub extent: Extent,
+    }}
 }}
 
-#[derive(recursa::Node, Debug, Clone)]
-pub enum Extent<'input> {{
-    Between {{
-        #[tok(BETWEEN)]
-        low: Bound<'input>,
-        #[tok(AND)]
-        high: Bound<'input>,
-    }},
-    Single(Bound<'input>),
+recursa::ast_node! {{
+    #[derive(Debug, Clone)]
+    pub enum Extent {{
+        Between {{
+            #[tok(BETWEEN)]
+            low: Bound,
+            #[tok(AND)]
+            high: Bound,
+        }},
+        Single(Bound),
+    }}
 }}
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(this, PRECEDING)]
-pub struct Bound<'input> {{
-    pub offset: Expr<'input>,
+recursa::ast_node! {{
+    #[derive(Debug, Clone)]
+    #[tok(this, PRECEDING)]
+    pub struct Bound {{
+        pub offset: Expr,
+    }}
 }}
 
-#[derive(recursa::Node, Debug, Clone)]
-#[pratt]
-pub enum Expr<'input> {{
-    Column(Ident<'input>),
-    #[parse(prefix, bp = 10)]
-    Not(#[tok(NOT, this)] Box<Self>),
-    #[parse(postfix, bp = 20)]
-    NotLike(Box<Self>, #[tok(NOT, LIKE, this)] Box<Self>),
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(LIKE)]
-    Like(Box<Self>, Box<Self>),
+recursa::ast_node! {{
+    #[derive(Debug, Clone)]
+    #[pratt]
+    pub enum Expr {{
+        Column(Ident),
+        #[parse(prefix, bp = 10)]
+        Not(#[tok(NOT, this)] boxed!(Self)),
+        #[parse(postfix, bp = 20)]
+        NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(LIKE)]
+        Like(boxed!(Self), boxed!(Self)),
+    }}
 }}
 
-#[derive(recursa::Node, Debug, Clone)]
-pub struct Ident<'input> {{
-    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(BETWEEN, LIKE))]
-    pub text: IdentText<'input>,
+recursa::ast_node! {{
+    #[derive(Debug, Clone)]
+    pub struct Ident {{
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(BETWEEN, LIKE))]
+        pub text: IdentText,
+    }}
 }}
 "#
         )

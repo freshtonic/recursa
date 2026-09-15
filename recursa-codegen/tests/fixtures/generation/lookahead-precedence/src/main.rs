@@ -3,8 +3,8 @@
 //! the Debug value of every positive parse with the cursor it leaves, the Pretty rendering,
 //! and for every failing input the error and the restored cursor.
 
-use recursa_generated_lookahead_precedence::grammar;
 use recursa::Pretty as _;
+use recursa_generated_lookahead_precedence::grammar;
 
 /// Drives every input through one parser: `$tag` prefixes each printed line and `$input`
 /// builds that parser's input over a lexing result.

@@ -2,8 +2,8 @@
 //! the Debug value of every positive parse with the cursor it leaves, and for every
 //! failing input the error and the restored cursor.
 
-use recursa_generated_table_driven_pratt::grammar;
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
+use recursa_generated_table_driven_pratt::grammar;
 
 /// Drives every input through the parser: `$tag` prefixes each printed line and `$input` builds
 /// its input over a lexing result.
@@ -15,7 +15,8 @@ macro_rules! drive {
         let provenance = |source: &str| {
             let lexed = grammar::lex(source);
             let mut input = $input(&lexed);
-            let parsed = grammar::Expr::parse_spanned(&mut input).expect("positive input parses with capture");
+            let parsed = grammar::Expr::parse_spanned(&mut input)
+                .expect("positive input parses with capture");
             println!("{tag} prov {source:?} => {}", parsed.debug_provenance());
             let elements: Vec<String> = parsed
                 .root()
@@ -118,8 +119,10 @@ fn main() {
     println!("table-driven-pratt-ok");
 }
 
-
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {
-    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+    span.map_or_else(
+        || "-".to_owned(),
+        |span| format!("{}..{}", span.start(), span.end()),
+    )
 }

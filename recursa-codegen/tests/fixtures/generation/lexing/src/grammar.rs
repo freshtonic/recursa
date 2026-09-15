@@ -67,78 +67,94 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(SELECT, this)]
-pub struct Selection<'input> {
-    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(SELECT, NULL))]
-    pub name: WordText<'input>,
+recursa::ast_node! {
+
+    #[tok(SELECT, this)]
+    pub struct Selection {
+        #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(SELECT, NULL))]
+        pub name: WordText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AdmissionDefinitions<'input> {
-    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(WindowRefName))]
-    pub window: WindowName<'input>,
-    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(PsqlVariableName))]
-    pub variable: VariableName<'input>,
-    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(BareLabels))]
-    pub bare: BareName<'input>,
+recursa::ast_node! {
+
+    pub struct AdmissionDefinitions {
+        #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(WindowRefName))]
+        pub window: WindowName,
+        #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(PsqlVariableName))]
+        pub variable: VariableName,
+        #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(BareLabels))]
+        pub bare: BareName,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum WindowOrRows<'input> {
-    Window(WindowName<'input>),
-    #[tok(ROWS)]
-    Rows,
+recursa::ast_node! {
+
+    pub enum WindowOrRows {
+        Window(WindowName),
+        #[tok(ROWS)]
+        Rows,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum VariableOrNull<'input> {
-    Variable(VariableName<'input>),
-    #[tok(NULL)]
-    Null,
+recursa::ast_node! {
+
+    pub enum VariableOrNull {
+        Variable(VariableName),
+        #[tok(NULL)]
+        Null,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum BareOrOther<'input> {
-    Bare(BareName<'input>),
-    #[tok(OTHER)]
-    Other,
+recursa::ast_node! {
+
+    pub enum BareOrOther {
+        Bare(BareName),
+        #[tok(OTHER)]
+        Other,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum FiveTokenChoice {
-    #[tok(SELECT, NULL, TRUE, FALSE, WINDOW)]
-    Window,
-    #[tok(SELECT, NULL, TRUE, FALSE, OTHER)]
-    Other,
+recursa::ast_node! {
+
+    pub enum FiveTokenChoice {
+        #[tok(SELECT, NULL, TRUE, FALSE, WINDOW)]
+        Window,
+        #[tok(SELECT, NULL, TRUE, FALSE, OTHER)]
+        Other,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct QuotedSelection<'input> {
-    #[lex(pattern = r#"'[^']*'|"[^"]*""#)]
-    pub name: QuotedText<'input>,
+recursa::ast_node! {
+
+    pub struct QuotedSelection {
+        #[lex(pattern = r#"'[^']*'|"[^"]*""#)]
+        pub name: QuotedText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct ClosedMatcherDefinitions<'input> {
-    #[lex(matcher)]
-    pub dollar: DollarRegion<'input>,
-    #[lex(matcher)]
-    pub nested: NestedRegion<'input>,
-    #[lex(matcher)]
-    pub number: BoundedNumber<'input>,
-    #[lex(matcher)]
-    pub operator: OperatorText<'input>,
-    #[lex(matcher)]
-    pub question_operator: QuestionOperatorText<'input>,
-    #[lex(matcher)]
-    pub line: PsqlLine<'input>,
-    #[lex(matcher)]
-    pub priority_low: PriorityLow<'input>,
-    #[lex(matcher)]
-    pub priority_high: PriorityHigh<'input>,
-    #[lex(matcher)]
-    pub priority_high_first: PriorityHighFirst<'input>,
-    #[lex(matcher)]
-    pub priority_low_second: PriorityLowSecond<'input>,
+recursa::ast_node! {
+
+    pub struct ClosedMatcherDefinitions {
+        #[lex(matcher)]
+        pub dollar: DollarRegion,
+        #[lex(matcher)]
+        pub nested: NestedRegion,
+        #[lex(matcher)]
+        pub number: BoundedNumber,
+        #[lex(matcher)]
+        pub operator: OperatorText,
+        #[lex(matcher)]
+        pub question_operator: QuestionOperatorText,
+        #[lex(matcher)]
+        pub line: PsqlLine,
+        #[lex(matcher)]
+        pub priority_low: PriorityLow,
+        #[lex(matcher)]
+        pub priority_high: PriorityHigh,
+        #[lex(matcher)]
+        pub priority_high_first: PriorityHighFirst,
+        #[lex(matcher)]
+        pub priority_low_second: PriorityLowSecond,
+    }
 }

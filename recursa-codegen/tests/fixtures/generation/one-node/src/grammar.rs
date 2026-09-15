@@ -8,14 +8,18 @@ recursa::tokens! {
     punctuation { BANG => "!" }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[allow(non_camel_case_types)]
-pub struct r#match<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    pub text: WordText<'input>,
-    pub marker: Option<Marker>,
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[allow(non_camel_case_types)]
+    pub struct r#match {
+        #[lex(pattern = r"[A-Za-z]+")]
+        pub text: WordText,
+        pub marker: Option<Marker>,
+    }
 }
 
-#[derive(recursa::Node, Debug, Clone)]
-#[tok(BANG)]
-pub struct Marker;
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    #[tok(BANG)]
+    pub struct Marker;
+}

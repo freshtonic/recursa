@@ -7,8 +7,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use recursa_generated_precedence::grammar;
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
+use recursa_generated_precedence::grammar;
 
 /// Counts live heap allocations so a failed parse can prove it dropped every boxed partial
 /// value.
@@ -187,5 +187,8 @@ fn main() {
 
 /// Renders an optional span as `start..end` or `-`.
 fn span_text(span: Option<recursa::Span>) -> String {
-    span.map_or_else(|| "-".to_owned(), |span| format!("{}..{}", span.start(), span.end()))
+    span.map_or_else(
+        || "-".to_owned(),
+        |span| format!("{}..{}", span.start(), span.end()),
+    )
 }

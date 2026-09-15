@@ -1,7 +1,7 @@
 # AST Node declarations
 
-Status: design settled. All interview decisions are accepted; implementation has not started.
-This document is the declaration and nested-output contract for the subsequent implementation.
+Status: implemented and validated for nested AST output.
+This document is the declaration and nested-output contract.
 
 ## Settled requirements
 
@@ -243,8 +243,7 @@ final generated API.
 
 ## Acceptance contract
 
-These are required future implementation checks, not checks already run during the design
-interview.
+These observable checks define implementation acceptance. Completed validation is recorded below.
 
 | Area | Required observable result |
 | --- | --- |
@@ -275,7 +274,34 @@ Presence still requires a direct unqualified `bool` with its existing annotation
 It does not make `Option<bool>`, aliased booleans, or unrelated Rust payload types valid grammar
 fields. These are preservation requirements, not a new payload feature.
 
-## Existing implementation facts
+## Implementation evidence
+
+The declaration front end, concrete nested emission, retired-syntax diagnostics, and authored
+grammar migration are implemented. The [converter](../tools/ast-node-converter/README.md) migrated
+pg-sql in one invocation: 1,478 declarations, 752 concrete storage constructors, and 3,837
+declaration-side lifetime occurrences across 67 source files. It reported no unsupported sites;
+a second invocation reported no changes.
+
+Validation completed on 2026-09-15:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --workspace --all-targets --no-fail-fast` | 666 passed; 4 intentionally ignored |
+| `cargo test --workspace --all-targets --all-features --no-fail-fast` | 682 passed; 4 intentionally ignored |
+| Rust 1.88 all-target, all-feature check and representative downstream smoke test | Passed |
+| Workspace Clippy with all targets/features and warnings denied | Passed |
+| All three [documentation gates](agents/documentation.md) | Passed |
+| Workspace formatting and diff whitespace checks | Passed |
+| Converter tests on Stable and Rust 1.88 | 11 passed on each |
+| pg-sql nested grammar, library and integration tests with `arbitrary,spans` | 1,183 passed; 2 ignored |
+| pg-sql migration-tool declaration inventory and live validation tests | 2 passed |
+
+The workspace suites ran with localhost access for the explorer server tests. Benchmarks and
+manual aggregate evidence were not run. pg-sql validation used an isolated nested-only copy
+because its working tree already contained flat-AST work; those eight pre-existing files were
+preserved byte-for-byte. Flat generation remains outside this milestone.
+
+## Historical implementation facts
 
 These facts describe the pre-migration implementation inspected during the design interview.
 The contracts above specify the intended changes.

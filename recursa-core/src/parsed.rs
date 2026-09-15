@@ -348,7 +348,9 @@ self_cell::self_cell! {
 /// A synthesized (Arbitrary-sampled), arena-backed root with no source or provenance.
 #[cfg(feature = "arbitrary")]
 pub struct ArenaSynthetic<F: ArenaAstFamily> {
+    /// Owns the arena and its erased root, dropping the root before releasing arena storage.
     cell: ArenaSyntheticCell,
+    /// Retains the generated family identity needed to recover the erased root's concrete type.
     family: PhantomData<F>,
 }
 

@@ -1252,6 +1252,19 @@ impl Materializer {
         }
         self.materialize_framing();
         if self.diagnostics.is_empty() && lexical_diagnostics.is_empty() {
+            for (field, message) in
+                crate::declaration_layout::validate_declaration_layouts(&self.applications)
+            {
+                let field = self.resolved_field(field).clone();
+                self.push_diagnostic(
+                    field.ty.source,
+                    Some(field.range),
+                    MaterializationDiagnosticKind::UnsupportedType,
+                    message,
+                );
+            }
+        }
+        if self.diagnostics.is_empty() && lexical_diagnostics.is_empty() {
             self.validate_closed_pretty_boundaries();
         }
         #[cfg(test)]
@@ -2423,7 +2436,7 @@ impl Materializer {
                 Some(range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
                 format!(
-                    "a Pratt {role} requires exactly one Box<Self> operand beside its \
+                    "a Pratt {role} requires exactly one boxed!(Self) operand beside its \
                      content-token operator fields; found {operands} other semantic fields",
                 ),
             );
@@ -2437,7 +2450,7 @@ impl Materializer {
                 Some(range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
                 format!(
-                    "the Box<Self> operand of a Pratt {role} must be its last semantic field; \
+                    "the boxed!(Self) operand of a Pratt {role} must be its last semantic field; \
                      a content-token operator follows it",
                 ),
             );
@@ -2454,7 +2467,7 @@ impl Materializer {
             resolved_field.ty.source,
             Some(resolved_field.range),
             MaterializationDiagnosticKind::InvalidPrattShape,
-            format!("a Pratt {role} operand must be an authored Box<Self> for this application"),
+            format!("a Pratt {role} operand must be authored as boxed!(Self) for this application"),
         );
         false
     }
@@ -2488,7 +2501,7 @@ impl Materializer {
                 Some(range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
                 format!(
-                    "a Pratt infix rhs requires exactly one recursive Box<Self> operand; found {} recursive semantic fields",
+                    "a Pratt infix rhs requires exactly one recursive boxed!(Self) operand; found {} recursive semantic fields",
                     recursive.len(),
                 ),
             );
@@ -2505,7 +2518,7 @@ impl Materializer {
             resolved_field.ty.source,
             Some(resolved_field.range),
             MaterializationDiagnosticKind::InvalidPrattShape,
-            "a Pratt infix rhs operand must be an authored Box<Self> for this application"
+            "a Pratt infix rhs operand must be authored as boxed!(Self) for this application"
                 .to_owned(),
         );
         false
@@ -2559,8 +2572,8 @@ impl Materializer {
                 resolved_field.ty.source,
                 Some(resolved_field.range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
-                "an optional Pratt operand must be an authored Option<Box<Self>> attached \
-                 behind a fixed token (`#[tok(X, this)] Option<Box<Self>>`)"
+                "an optional Pratt operand must be authored as Option<boxed!(Self)> attached \
+                 behind a fixed token (`#[tok(X, this)] Option<boxed!(Self)>`)"
                     .to_owned(),
             );
             return false;
@@ -2609,7 +2622,7 @@ impl Materializer {
                 variant_source,
                 Some(resolved_variant.range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
-                "a Pratt led variant requires a first Box<Self> field for its implicit lhs"
+                "a Pratt led variant requires a first boxed!(Self) field for its implicit lhs"
                     .to_owned(),
             );
             return None;
@@ -2628,7 +2641,7 @@ impl Materializer {
                 variant_source,
                 Some(resolved_variant.range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
-                "a Pratt led variant requires a materializable first Box<Self> field".to_owned(),
+                "a Pratt led variant requires a materializable first boxed!(Self) field".to_owned(),
             );
             return None;
         };
@@ -2709,7 +2722,7 @@ impl Materializer {
                 resolved_field.ty.source,
                 Some(resolved_field.range),
                 MaterializationDiagnosticKind::InvalidPrattShape,
-                "the first field of a Pratt led variant must be an authored Box<Self> for this application"
+                "the first field of a Pratt led variant must be authored as boxed!(Self) for this application"
                     .to_owned(),
             );
             return None;
@@ -3065,6 +3078,17 @@ impl Materializer {
                                 .unwrap_or_else(|| lifetime.clone()),
                         );
                         supplied.next();
+                    } else if matches!(
+                        declaration.origin,
+                        crate::resolution::ResolvedNodeOrigin::Declaration(_)
+                    ) {
+                        lifetimes.push(
+                            environment
+                                .lifetimes
+                                .get("input")
+                                .cloned()
+                                .unwrap_or_else(|| syn::parse_quote!('input)),
+                        );
                     }
                 }
                 GenericParam::Type(parameter) => {
@@ -5031,32 +5055,89 @@ mod tests {
     }
 
     #[test]
+    fn declaration_markers_are_accepted_but_concrete_storage_and_aliases_are_rejected() {
+        let accepted = materialize(resolve(
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Leaf;
+    struct Root {
+        values: zero_or_many!(boxed!(Leaf)),
+    }
+}
+"#,
+        ));
+        assert!(
+            accepted.diagnostics.is_empty(),
+            "{:?}",
+            accepted.diagnostics
+        );
+
+        for source in [
+            r#"recursa::grammar! { module = crate }
+recursa::ast_node! {
+    struct Leaf;
+    struct Root {
+        values: Vec<Leaf>,
+    }
+}
+"#,
+            r#"recursa::grammar! { module = crate }
+type Hidden<T> = Vec<T>;
+recursa::ast_node! {
+    struct Leaf;
+    struct Root {
+        values: Hidden<Leaf>,
+    }
+}
+"#,
+        ] {
+            let report = resolve_report(source);
+            assert!(report.resolved.is_none(), "{source}");
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("concrete AST storage")),
+                "{:?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
     fn closed_generic_pretty_boundaries_recheck_concrete_lexical_languages() {
-        let unsafe_source = r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+        let unsafe_source = r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { LBRACE => "{" } }
 
-#[derive(recursa::Node)]
-struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    text: NameText<'input>,
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Merged<'input> {
-    #[lex(pattern = r"\{[A-Za-z]+")]
-    text: MergedText<'input>,
+recursa::ast_node! {
+
+    struct Merged {
+        #[lex(pattern = r"\{[A-Za-z]+")]
+        text: MergedText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Attached<T> {
-    #[tok(LBRACE, this)]
-    value: T,
+recursa::ast_node! {
+
+    struct Attached<T> {
+        #[tok(LBRACE, this)]
+        value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Root<'input> {
-    value: Attached<Name<'input>>,
+recursa::ast_node! {
+
+    struct Root {
+        value: Attached<Name>,
+    }
 }
 "#;
         let unsafe_report = materialize(resolve(unsafe_source));
@@ -5087,25 +5168,30 @@ struct Root<'input> {
         );
 
         let safe_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { LBRACE => "{" } }
 
-#[derive(recursa::Node)]
-struct Name<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    text: NameText<'input>,
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Attached<T> {
-    #[tok(LBRACE, this)]
-    value: T,
+recursa::ast_node! {
+
+    struct Attached<T> {
+        #[tok(LBRACE, this)]
+        value: T,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Root<'input> {
-    value: Attached<Name<'input>>,
+recursa::ast_node! {
+
+    struct Root {
+        value: Attached<Name>,
+    }
 }
 "#,
         ));
@@ -5117,17 +5203,25 @@ struct Root<'input> {
         assert!(safe_report.lowered.is_some());
 
         let fixed_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" } }
 
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)]
-struct Attached<T> {
-    #[tok(COLON, this)]
-    value: T,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
 }
-#[derive(recursa::Node)] struct Root { value: Attached<Colon> }
+recursa::ast_node! {
+
+    struct Attached<T> {
+        #[tok(COLON, this)]
+        value: T,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Attached<Colon>,
+    }
+}
 "#,
         ));
         assert!(fixed_report.lowered.is_none());
@@ -5137,8 +5231,7 @@ struct Attached<T> {
         }));
 
         let mixed_case_report = materialize(resolve(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     derives(Pretty),
     keyword_matching = ascii_insensitive,
@@ -5148,10 +5241,22 @@ recursa::tokens! {
     punctuation { COLON => ":" }
     lexer_tokens { MIXED_MERGED => r"WoRd:" }
 }
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)]
-struct Attached<T> { #[tok(WORD, this)] value: T }
-#[derive(recursa::Node)] struct Root { value: Attached<Colon> }
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
+}
+recursa::ast_node! {
+
+    struct Attached<T> {
+        #[tok(WORD, this)]
+        value: T,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Attached<Colon>,
+    }
+}
 "#,
         ));
         assert!(mixed_case_report.lowered.is_none());
@@ -5161,15 +5266,33 @@ struct Attached<T> { #[tok(WORD, this)] value: T }
         }));
 
         let trivia_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
-#[derive(recursa::Node)]
-struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
-#[derive(recursa::Node)]
-struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
-#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
-#[derive(recursa::Node)]
-struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: NumberText,
+    }
+}
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
+}
+recursa::ast_node! {
+    struct Pair<A, B> {
+        left: A,
+        right: B,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: Pair<Number, Name>,
+    }
+}
 "#,
         ));
         assert!(trivia_report.lowered.is_none());
@@ -5179,16 +5302,34 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
         }));
 
         let trivia_narrow_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ ]+" }
-#[derive(recursa::Node)]
-struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
-#[derive(recursa::Node)]
-struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
-#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
-#[derive(recursa::Node)]
-struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: NumberText,
+    }
+}
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
+}
+recursa::ast_node! {
+    struct Pair<A, B> {
+        left: A,
+        right: B,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: Pair<Number, Name>,
+    }
+}
 "#,
         ));
         assert!(trivia_narrow_report.lowered.is_none());
@@ -5198,16 +5339,34 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
         }));
 
         let trivia_safe_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ \t\r\n]+" }
-#[derive(recursa::Node)]
-struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
-#[derive(recursa::Node)]
-struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
-#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
-#[derive(recursa::Node)]
-struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: NumberText,
+    }
+}
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
+}
+recursa::ast_node! {
+    struct Pair<A, B> {
+        left: A,
+        right: B,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: Pair<Number, Name>,
+    }
+}
 "#,
         ));
         assert!(
@@ -5218,32 +5377,45 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
         assert!(trivia_safe_report.lowered.is_some());
 
         let break_safe_report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { COLON => ":" }
     lexer_tokens { MERGED => r"[A-Za-z]+:" }
     ignore = r"[ \t\r\n]+"
 }
-#[derive(recursa::Node)]
-struct Name<'input> { #[lex(pattern = r"[A-Za-z]+") ] text: NameText<'input> }
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)]
-struct Pair<T> {
-    value: T,
-    #[pretty(break_before = soft)]
-    suffix: Colon,
+recursa::ast_node! {
+
+    struct Name {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
 }
-#[derive(recursa::Node)]
-struct PairAfter<T> {
-    #[pretty(break_after = soft)]
-    value: T,
-    suffix: Colon,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
 }
-#[derive(recursa::Node)]
-struct Root<'input> {
-    before: Pair<Name<'input>>,
-    after: PairAfter<Name<'input>>,
+recursa::ast_node! {
+
+    struct Pair<T> {
+        value: T,
+        #[pretty(break_before = soft)]
+        suffix: Colon,
+    }
+}
+recursa::ast_node! {
+
+    struct PairAfter<T> {
+        #[pretty(break_after = soft)]
+        value: T,
+        suffix: Colon,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        before: Pair<Name>,
+        after: PairAfter<Name>,
+    }
 }
 "#,
         ));
@@ -5258,23 +5430,31 @@ struct Root<'input> {
     #[test]
     fn materialization_reuses_one_prebuilt_pretty_catalog_for_repeated_boundaries() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
 
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)]
-struct Repeated<T> {
-    first: T,
-    second: T,
-    third: T,
-    fourth: T,
-    fifth: T,
-    sixth: T,
-    seventh: T,
-    eighth: T,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
 }
-#[derive(recursa::Node)] struct Root { value: Repeated<Colon> }
+recursa::ast_node! {
+
+    struct Repeated<T> {
+        first: T,
+        second: T,
+        third: T,
+        fourth: T,
+        fifth: T,
+        sixth: T,
+        seventh: T,
+        eighth: T,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Repeated<Colon>,
+    }
+}
 "#,
         ));
 
@@ -5288,28 +5468,38 @@ struct Repeated<T> {
     #[test]
     fn closed_pretty_summaries_converge_once_for_a_recursive_shared_dag() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
 
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)]
-struct Recursive<T> {
-    value: T,
-    next: Option<Box<Self>>,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
 }
-#[derive(recursa::Node)]
-enum Fanout<T> {
-    First(Recursive<T>),
-    Second(Recursive<T>),
-    Third(Recursive<T>),
-    Fourth(Recursive<T>),
-    Fifth(Recursive<T>),
-    Sixth(Recursive<T>),
-    Seventh(Recursive<T>),
-    Eighth(Recursive<T>),
+recursa::ast_node! {
+
+    struct Recursive<T> {
+        value: T,
+        next: Option<boxed!(Self)>,
+    }
 }
-#[derive(recursa::Node)] struct Root { value: Fanout<Colon> }
+recursa::ast_node! {
+
+    enum Fanout<T> {
+        First(Recursive<T>),
+        Second(Recursive<T>),
+        Third(Recursive<T>),
+        Fourth(Recursive<T>),
+        Fifth(Recursive<T>),
+        Sixth(Recursive<T>),
+        Seventh(Recursive<T>),
+        Eighth(Recursive<T>),
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Fanout<Colon>,
+    }
+}
 "#,
         ));
 
@@ -5336,21 +5526,39 @@ enum Fanout<T> {
     #[test]
     fn closed_pretty_fixed_point_matches_cycle_cut_oracle_for_mutual_recursion() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate, derives(Pretty) }
+            r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
 
-#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
-#[derive(recursa::Node)] enum Left { Base(Colon), Next(Box<Right>) }
-#[derive(recursa::Node)] enum Right { Base(Colon), Next(Box<Left>) }
-#[derive(recursa::Node)]
-struct Shared {
-    first: Left,
-    second: Left,
-    third: Left,
-    fourth: Left,
+recursa::ast_node! {
+    #[tok(COLON)]
+    struct Colon;
 }
-#[derive(recursa::Node)] struct Root { value: Shared }
+recursa::ast_node! {
+    enum Left {
+        Base(Colon),
+        Next(boxed!(Right)),
+    }
+}
+recursa::ast_node! {
+    enum Right {
+        Base(Colon),
+        Next(boxed!(Left)),
+    }
+}
+recursa::ast_node! {
+
+    struct Shared {
+        first: Left,
+        second: Left,
+        third: Left,
+        fourth: Left,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Shared,
+    }
+}
 "#,
         ));
 
@@ -5434,26 +5642,29 @@ struct Shared {
     #[test]
     fn contextual_keyword_targets_are_concrete_kind_sets_before_semantic_analysis() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate,
     keyword_matching = ascii_insensitive,
 }
 
-#[derive(recursa::Node)]
-#[tok("SELECT", "FROM", "AS", ",")]
-struct Fixed;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-struct Projection {
-    #[lex(pattern = r"[A-Za-z_]+")]
-    word: Word,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    column: ColumnName,
-    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
-    table: TableName,
-    #[lex(pattern = r"[A-Za-z_]+")]
-    alias: Alias,
+    #[tok("SELECT", "FROM", "AS", ",")]
+    struct Fixed;
+}
+
+recursa::ast_node! {
+
+    struct Projection {
+        #[lex(pattern = r"[A-Za-z_]+")]
+        word: Word,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        column: ColumnName,
+        #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+        table: TableName,
+        #[lex(pattern = r"[A-Za-z_]+")]
+        alias: Alias,
+    }
 }
 "#,
         ));
@@ -5505,15 +5716,16 @@ struct Projection {
     #[test]
     fn content_target_type_ids_preserve_source_definition_order() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate }
+            r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"z")]
-    zeta: Zeta,
-    #[lex(pattern = r"a")]
-    alpha: Alpha,
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = r"z")]
+        zeta: Zeta,
+        #[lex(pattern = r"a")]
+        alpha: Alpha,
+    }
 }
 "#,
         ));
@@ -5580,25 +5792,30 @@ struct Root {
     #[test]
     fn materializes_closed_generic_applications_and_self_without_unrolling_cycles() {
         let resolved = resolve(
-            r#"
-recursa::grammar! { module = crate::arith }
+            r#"recursa::grammar! { module = crate::arith }
 
-#[derive(recursa::Node)]
-struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    text: Digits,
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: Digits,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Recursive<'input, T> {
-    value: T,
-    next: Option<Box<Self>>,
+recursa::ast_node! {
+
+    struct Recursive<T> {
+        value: T,
+        next: Option<boxed!(Self)>,
+    }
 }
 
-#[derive(recursa::Node)]
-struct Root<'input> {
-    expression: Recursive<'input, Number<'input>>,
-    static_expression: Recursive<'static, Number<'static>>,
+recursa::ast_node! {
+
+    struct Root {
+        expression: Recursive<Number>,
+        second_expression: Recursive<Number>,
+    }
 }
 "#,
         );
@@ -5638,11 +5855,11 @@ struct Root<'input> {
             .unwrap();
         assert!(matches!(
             fields(root)[0].0,
-            ClosedType::Node(node) if node.lifetimes[0].to_string() == "'input"
+            ClosedType::Node(node) if node.lifetimes.is_empty()
         ));
         assert!(matches!(
             fields(root)[1].0,
-            ClosedType::Node(node) if node.lifetimes[0].to_string() == "'static"
+            ClosedType::Node(node) if node.lifetimes.is_empty()
         ));
         assert!(matches!(
             fields(recursive)[1].0,
@@ -5650,7 +5867,11 @@ struct Root<'input> {
                 if matches!(inner.as_ref(), ClosedType::Boxed(boxed)
                     if matches!(boxed.as_ref(), ClosedType::Node(node)
                         if node.application == recursive.id
-                            && node.lifetimes[0].to_string() == "'input"))
+                            && node.lifetimes.is_empty()))
+        ));
+        assert!(matches!(
+            &recursive.type_arguments[0],
+            ClosedType::Node(node) if node.lifetimes[0].to_string() == "'input"
         ));
         let recursive_trace = &fields(recursive)[1].1.steps;
         assert!(recursive_trace.contains(&MaterializationTraceStep::SelfApplication(recursive.id)));
@@ -5664,24 +5885,26 @@ struct Root<'input> {
     #[test]
     fn expands_selected_tree_aliases_with_defaults_and_retains_alias_traces() {
         let resolved = resolve(
-            r#"
-recursa::grammar! { module = crate::arith }
+            r#"recursa::grammar! { module = crate::arith }
 
-#[derive(recursa::Node)]
-struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    text: Digits,
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: Digits,
+    }
 }
 
-type Heap<T> = Box<T>;
-type Maybe<'input, T = Number<'input>> = Option<Heap<T>>;
+type Identity<T> = T;
+type Maybe<'input, T = Number<'input>> = Option<Identity<T>>;
 type OpaqueToGrammar = dependency::OrdinaryRustType;
 
-#[derive(recursa::Node)]
-struct Root<'input> {
-    explicit: Maybe<'input, Number<'input>>,
-    defaulted: Maybe<'input>,
-    static_defaulted: Maybe<'static>,
+recursa::ast_node! {
+
+    struct Root {
+        explicit: Maybe<Number>,
+        defaulted: Maybe,
+    }
 }
 "#,
         );
@@ -5732,34 +5955,33 @@ struct Root<'input> {
             Some(MaterializationTraceStep::Application(_))
         ));
         assert!(matches!(
-            fields(root)[2].0,
-            ClosedType::Optional(optional)
-                if matches!(optional.as_ref(), ClosedType::Boxed(boxed)
-                    if matches!(boxed.as_ref(), ClosedType::Node(node)
-                        if node.lifetimes[0].to_string() == "'static"))
-        ));
-        assert!(matches!(
             fields(root)[0].0,
             ClosedType::Optional(optional)
-                if matches!(optional.as_ref(), ClosedType::Boxed(boxed)
-                    if matches!(boxed.as_ref(), ClosedType::Node(_)))
+                if matches!(optional.as_ref(), ClosedType::Node(node)
+                    if node.lifetimes[0].to_string() == "'input")
         ));
     }
 
     #[test]
     fn preserves_box_placement_and_exact_supported_cardinalities_in_normalized_grammar() {
         let resolved = resolve(
-            r#"
-recursa::grammar! { module = crate::shapes }
-#[derive(recursa::Node)]
-struct Leaf { #[lex(pattern = r"x")] text: Text }
-#[derive(recursa::Node)]
-struct Root {
-    one: Box<Leaf>,
-    optional: Option<Box<Leaf>>,
-    zero_or_more: Vec<Box<Leaf>>,
-    one_or_more: recursa::Vec1<Box<Leaf>>,
-    optional_one_or_more: Option<Box<recursa::Vec1<Box<Leaf>>>>,
+            r#"recursa::grammar! { module = crate::shapes }
+recursa::ast_node! {
+
+    struct Leaf {
+        #[lex(pattern = r"x")]
+        text: Text,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        one: boxed!(Leaf),
+        optional: Option<boxed!(Leaf)>,
+        zero_or_more: zero_or_many!(boxed!(Leaf)),
+        one_or_more: one_or_many!(boxed!(Leaf)),
+        optional_one_or_more: Option<boxed!(one_or_many!(boxed!(Leaf)))>,
+    }
 }
 "#,
         );
@@ -5795,15 +6017,20 @@ struct Root {
     #[test]
     fn rejects_open_unsupported_cyclic_and_invalid_closed_types_before_semantic_analysis() {
         let invalid_containers = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Leaf { this: Self }
-#[derive(recursa::Node)] struct Root {
-    a: Option<Option<Leaf>>,
-    b: Option<Vec<Leaf>>,
-    c: Vec<Option<Leaf>>,
-    d: Vec<Vec<Leaf>>,
-    e: recursa::Vec1<Option<Leaf>>,
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Leaf {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        a: Option<Option<Leaf>>,
+        b: Option<zero_or_many!(Leaf)>,
+        c: zero_or_many!(Option<Leaf>),
+        d: zero_or_many!(zero_or_many!(Leaf)),
+        e: one_or_many!(Option<Leaf>),
+    }
 }
 "#,
         ));
@@ -5821,15 +6048,18 @@ recursa::grammar! { module = crate::invalid }
         }));
 
         let unsupported = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Generic<T> { value: T }
-#[derive(recursa::Node)] struct ConstGeneric<const N: usize> { this: Self }
-#[derive(recursa::Node)] struct Root {
-    open: Generic,
-    inferred: _,
-    opaque: impl Sized,
-    constant: ConstGeneric<1>,
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Generic<T> {
+        value: T,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        open: Generic,
+        inferred: _,
+        opaque: impl Sized,
+    }
 }
 "#,
         ));
@@ -5844,7 +6074,6 @@ recursa::grammar! { module = crate::invalid }
                 MaterializationDiagnosticKind::OpenApplication,
                 MaterializationDiagnosticKind::UnsupportedType,
                 MaterializationDiagnosticKind::UnsupportedType,
-                MaterializationDiagnosticKind::ConstGeneric,
             ],
         );
         assert_eq!(
@@ -5853,15 +6082,38 @@ recursa::grammar! { module = crate::invalid }
                 .iter()
                 .map(|diagnostic| crate::source_analysis::materialization_code(diagnostic.kind))
                 .collect::<Vec<_>>(),
-            ["RCA3202", "RCA3204", "RCA3204", "RCA3203"],
+            ["RCA3202", "RCA3204", "RCA3204"],
+        );
+
+        let const_generic = resolve_report(
+            "recursa::grammar! { module = crate } recursa::ast_node! { struct Root<const N: usize>; }",
+        );
+        assert!(const_generic.resolved.is_none());
+        assert!(
+            const_generic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("const-generic") })
+        );
+
+        let const_alias = materialize(resolve(
+            "recursa::grammar! { module = crate } type ConstAlias<const N: usize> = Leaf; recursa::ast_node! { struct Leaf; struct Root { value: ConstAlias<1> } }",
+        ));
+        assert_code(
+            &const_alias.diagnostics[0],
+            MaterializationDiagnosticKind::ConstGeneric,
+            "RCA3203",
         );
 
         let aliases = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
+            r#"recursa::grammar! { module = crate::invalid }
 type A = B;
 type B = A;
-#[derive(recursa::Node)] struct Root { value: A }
+recursa::ast_node! {
+    struct Root {
+        value: A,
+    }
+}
 "#,
         ));
         assert_code(
@@ -5871,10 +6123,13 @@ type B = A;
         );
 
         let default_cycle = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
+            r#"recursa::grammar! { module = crate::invalid }
 type Loop<T = Loop> = T;
-#[derive(recursa::Node)] struct Root { value: Loop }
+recursa::ast_node! {
+    struct Root {
+        value: Loop,
+    }
+}
 "#,
         ));
         assert_eq!(
@@ -5883,11 +6138,22 @@ type Loop<T = Loop> = T;
         );
 
         let changing = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Leaf { this: Self }
-#[derive(recursa::Node)] struct Growing<T> { next: Box<Growing<Option<T>>> }
-#[derive(recursa::Node)] struct Root { value: Growing<Leaf> }
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Leaf {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Growing<T> {
+        next: boxed!(Growing<Option<T>>),
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Growing<Leaf>,
+    }
+}
 "#,
         ));
         assert_code(
@@ -5897,10 +6163,15 @@ recursa::grammar! { module = crate::invalid }
         );
 
         let invalid_arguments = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Leaf;
-#[derive(recursa::Node)] struct Root { value: Option<Leaf, Leaf> }
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Leaf;
+}
+recursa::ast_node! {
+    struct Root {
+        value: Option<Leaf, Leaf>,
+    }
+}
 "#,
         ));
         assert_code(
@@ -5910,20 +6181,37 @@ recursa::grammar! { module = crate::invalid }
         );
 
         for source in [
-            r#"
-recursa::grammar! { module = crate::invalid }
+            r#"recursa::grammar! { module = crate::invalid }
 type External = dependency::Thing;
-#[derive(recursa::Node)] struct Root { value: External }
+recursa::ast_node! {
+    struct Root {
+        value: External,
+    }
+}
 "#,
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Generic<T> { value: T::Associated }
-#[derive(recursa::Node)] struct Root { value: Generic<Root> }
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Generic<T> {
+        value: T::Associated,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Generic<Root>,
+    }
+}
 "#,
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)] struct Generic<T> { value: <T as Trait>::Associated }
-#[derive(recursa::Node)] struct Root { value: Generic<Root> }
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+    struct Generic<T> {
+        value: <T as Trait>::Associated,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        value: Generic<Root>,
+    }
+}
 "#,
         ] {
             let resolution = resolve_report(source);
@@ -5935,21 +6223,37 @@ recursa::grammar! { module = crate::invalid }
     #[test]
     fn arithmetic_generic_application_reaches_successful_semantic_analysis() {
         let resolved = resolve(
-            r#"
-recursa::grammar! {
+            r#"recursa::grammar! {
     module = crate::arith,
     keyword_matching = ascii_insensitive,
 }
-#[derive(recursa::Node)]
-struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: Digits }
-#[derive(recursa::Node)]
-struct Word<'input> { #[lex(pattern = r"[A-Za-z]+")] text: Letters }
-#[derive(recursa::Node)]
-struct Binary<'input, T> { left: T, right: T }
-#[derive(recursa::Node)]
-struct Expression<'input> {
-    sum: Binary<'input, Number<'input>>,
-    words: Binary<'input, Word<'input>>,
+recursa::ast_node! {
+
+    struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        text: Digits,
+    }
+}
+recursa::ast_node! {
+
+    struct Word {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: Letters,
+    }
+}
+recursa::ast_node! {
+
+    struct Binary<T> {
+        left: T,
+        right: T,
+    }
+}
+recursa::ast_node! {
+
+    struct Expression {
+        sum: Binary<Number>,
+        words: Binary<Word>,
+    }
 }
 "#,
         );
@@ -6021,16 +6325,22 @@ struct Expression<'input> {
     #[test]
     fn typed_source_field_and_variant_identities_drive_every_materialized_join() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::choices }
-#[derive(recursa::Node)]
-struct Leaf { #[lex(pattern = "x")] text: Text }
-#[derive(recursa::Node)]
-enum Choice {
-    #[tok("A", this)]
-    First(Leaf),
-    #[tok("B", this)]
-    Second(Leaf),
+            r#"recursa::grammar! { module = crate::choices }
+recursa::ast_node! {
+
+    struct Leaf {
+        #[lex(pattern = "x")]
+        text: Text,
+    }
+}
+recursa::ast_node! {
+
+    enum Choice {
+        #[tok("A", this)]
+        First(Leaf),
+        #[tok("B", this)]
+        Second(Leaf),
+    }
 }
 "#,
         ));
@@ -6107,15 +6417,16 @@ enum Choice {
     #[test]
     fn all_atom_pratt_remains_pratt_in_normalized_grammar() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::atoms }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("INT")]
-    Int,
-    #[tok("NAME")]
-    Name,
+            r#"recursa::grammar! { module = crate::atoms }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("INT")]
+        Int,
+        #[tok("NAME")]
+        Name,
+    }
 }
 "#,
         ));
@@ -6150,22 +6461,23 @@ enum Expr {
     #[test]
     fn materializes_pratt_nud_led_thresholds_and_typed_lhs_correlations() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::arith }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("INT")]
-    Int,
-    #[parse(prefix, bp = 30)]
-    #[tok("-")]
-    Neg(Box<Self>),
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok("+")]
-    Add(Box<Self>, Box<Self>),
-    #[parse(postfix, bp = 40)]
-    #[tok("!")]
-    Factorial(Box<Self>),
+            r#"recursa::grammar! { module = crate::arith }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("INT")]
+        Int,
+        #[parse(prefix, bp = 30)]
+        #[tok("-")]
+        Neg(boxed!(Self)),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok("+")]
+        Add(boxed!(Self), boxed!(Self)),
+        #[parse(postfix, bp = 40)]
+        #[tok("!")]
+        Factorial(boxed!(Self)),
+    }
 }
 "#,
         ));
@@ -6317,17 +6629,22 @@ enum Expr {
     fn rejects_missing_unboxed_and_foreign_pratt_lhs_fields() {
         for invalid_variant in [
             r#"#[parse(infix, lbp = 1, rbp = 2)] Missing"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] Unboxed(Self, Box<Self>)"#,
-            r#"#[parse(postfix, bp = 3)] Foreign(Box<Leaf>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] Unboxed(Self, boxed!(Self))"#,
+            r#"#[parse(postfix, bp = 3)] Foreign(boxed!(Leaf))"#,
         ] {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-struct Leaf;
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {{ {invalid_variant} }}
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    struct Leaf;
+}}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        {invalid_variant},
+    }}
+}}
 "#,
             );
             let report = materialize(resolve(&source));
@@ -6354,21 +6671,26 @@ enum Expr {{ {invalid_variant} }}
         let invalid_variants = [
             r#"#[parse(prefix, bp = 1)] Unit"#,
             r#"#[parse(prefix, bp = 1)] Unboxed(Self)"#,
-            r#"#[parse(prefix, bp = 1)] Foreign(Box<Leaf>)"#,
-            r#"#[parse(prefix, bp = 1)] Multiple(Box<Self>, Box<Self>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] OnlyLhs(Box<Self>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] ForeignRhs(Box<Self>, Box<Leaf>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] MultipleRhs(Box<Self>, Box<Self>, Box<Self>)"#,
+            r#"#[parse(prefix, bp = 1)] Foreign(boxed!(Leaf))"#,
+            r#"#[parse(prefix, bp = 1)] Multiple(boxed!(Self), boxed!(Self))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] OnlyLhs(boxed!(Self))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] ForeignRhs(boxed!(Self), boxed!(Leaf))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] MultipleRhs(boxed!(Self), boxed!(Self), boxed!(Self))"#,
         ];
         for invalid_variant in invalid_variants {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-struct Leaf;
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {{ {invalid_variant} }}
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    struct Leaf;
+}}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        {invalid_variant},
+    }}
+}}
 "#,
             );
             let report = materialize(resolve(&source));
@@ -6382,20 +6704,20 @@ enum Expr {{ {invalid_variant} }}
     #[test]
     fn infix_tail_allows_content_fields_around_one_recursive_rhs() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::operators }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    #[tok("ATOM")]
-    Atom,
-    #[parse(infix, lbp = 8, rbp = 9)]
-    Custom(
-        Box<Self>,
-        #[lex(pattern = r"[~@]+")]
-        OperatorText<'input>,
-        Box<Self>,
-    ),
+            r#"recursa::grammar! { module = crate::operators }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[parse(infix, lbp = 8, rbp = 9)]
+        Custom(
+            boxed!(Self),
+            #[lex(pattern = r"[~@]+")] OperatorText,
+            boxed!(Self),
+        ),
+    }
 }
 "#,
         ));
@@ -6475,17 +6797,26 @@ enum Expr<'input> {
         // gram.y's `a_expr LIKE a_expr ESCAPE a_expr`: the escape operand is optional and its
         // own token decides its presence, on an infix rhs and on a postfix tail alike.
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::like }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("ATOM")]
-    Atom,
-    #[parse(infix, lbp = 6, rbp = 7)]
-    Like(Box<Self>, #[tok("LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
-    #[parse(postfix, bp = 6)]
-    NotLike(Box<Self>, #[tok("NOT", "LIKE", this)] Box<Self>, #[tok("ESCAPE", this)] Option<Box<Self>>),
+            r#"recursa::grammar! { module = crate::like }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[parse(infix, lbp = 6, rbp = 7)]
+        Like(
+            boxed!(Self),
+            #[tok("LIKE", this)] boxed!(Self),
+            #[tok("ESCAPE", this)] Option<boxed!(Self)>,
+        ),
+        #[parse(postfix, bp = 6)]
+        NotLike(
+            boxed!(Self),
+            #[tok("NOT", "LIKE", this)] boxed!(Self),
+            #[tok("ESCAPE", this)] Option<boxed!(Self)>,
+        ),
+    }
 }
 "#,
         ));
@@ -6543,15 +6874,16 @@ enum Expr {
         // gram.y's `qual_Op a_expr %prec Op`: the operator is pg-sql's user-defined operator
         // class, a content token, and the variant keeps its binding power.
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::operators }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {
-    #[tok("ATOM")]
-    Atom,
-    #[parse(prefix, bp = 8)]
-    Custom(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>),
+            r#"recursa::grammar! { module = crate::operators }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[parse(prefix, bp = 8)]
+        Custom(#[lex(pattern = r"[~@]+")] OperatorText, boxed!(Self)),
+    }
 }
 "#,
         ));
@@ -6603,34 +6935,37 @@ enum Expr<'input> {
     fn rejects_prefix_variants_whose_operator_field_has_the_wrong_shape() {
         for (invalid_variant, expected) in [
             (
-                r#"#[parse(prefix, bp = 1)] After(Box<Self>, #[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                r#"#[parse(prefix, bp = 1)] After(boxed!(Self), #[lex(pattern = r"[~@]+")] OperatorText)"#,
                 "must be its last semantic field",
             ),
             (
-                r#"#[parse(prefix, bp = 1)] Node(Leaf, Box<Self>)"#,
+                r#"#[parse(prefix, bp = 1)] Node(Leaf, boxed!(Self))"#,
                 "found 2 other semantic fields",
             ),
             (
-                r#"#[parse(prefix, bp = 1)] Two(#[lex(pattern = r"[~@]+")] OperatorText<'input>, Box<Self>, Box<Self>)"#,
+                r#"#[parse(prefix, bp = 1)] Two(#[lex(pattern = r"[~@]+")] OperatorText, boxed!(Self), boxed!(Self))"#,
                 "found 2 other semantic fields",
             ),
             (
-                r#"#[parse(prefix, bp = 1)] Only(#[lex(pattern = r"[~@]+")] OperatorText<'input>)"#,
+                r#"#[parse(prefix, bp = 1)] Only(#[lex(pattern = r"[~@]+")] OperatorText)"#,
                 "found 0 other semantic fields",
             ),
         ] {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct Leaf;
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {{
-    #[tok("ATOM")]
-    Atom,
-    {invalid_variant},
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    #[tok("LEAF")]
+    struct Leaf;
+}}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        #[tok("ATOM")]
+        Atom,
+        {invalid_variant},
+    }}
 }}
 "#,
             );
@@ -6653,34 +6988,39 @@ enum Expr<'input> {{
         // `AS` excludes the `DEFAULT` atom; an attached operand carries the exclusion on the
         // outer site, the one targeting the attachment unit.
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::namespaces }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("ATOM")]
-    Atom,
-    #[tok("DEFAULT")]
-    Default,
-    #[parse(prefix, bp = 9)]
-    #[tok("NOT")]
-    Not(Box<Self>),
-    #[parse(infix, lbp = 3, rbp = 4)]
-    #[tok("AND")]
-    And(Box<Self>, Box<Self>),
+            r#"recursa::grammar! { module = crate::namespaces }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[tok("DEFAULT")]
+        Default,
+        #[parse(prefix, bp = 9)]
+        #[tok("NOT")]
+        Not(boxed!(Self)),
+        #[parse(infix, lbp = 3, rbp = 4)]
+        #[tok("AND")]
+        And(boxed!(Self), boxed!(Self)),
+    }
 }
-#[derive(recursa::Node)]
-struct Named {
-    #[parse(pratt(exclude(Default, And, Not)))]
-    uri: Box<Expr>,
-    #[tok("AS")]
-    label: Expr,
+recursa::ast_node! {
+
+    struct Named {
+        #[parse(pratt(exclude(Default, And, Not)))]
+        uri: boxed!(Expr),
+        #[tok("AS")]
+        label: Expr,
+    }
 }
-#[derive(recursa::Node)]
-struct Attached {
-    #[parse(pratt(exclude(And)))]
-    #[tok("OPEN", this, "CLOSE")]
-    inner: Box<Expr>,
+recursa::ast_node! {
+
+    struct Attached {
+        #[parse(pratt(exclude(And)))]
+        #[tok("OPEN", this, "CLOSE")]
+        inner: boxed!(Expr),
+    }
 }
 "#,
         ));
@@ -6739,7 +7079,7 @@ struct Attached {
     fn rejects_an_unresolvable_or_unsupported_pratt_exclusion() {
         for (field, expected) in [
             (
-                r#"#[parse(pratt(exclude(Atom, Missing)))] uri: Box<Expr>"#,
+                r#"#[parse(pratt(exclude(Atom, Missing)))] uri: boxed!(Expr)"#,
                 "`uri` excludes `Missing`, which is not a variant of Pratt Node `invalid::Expr`",
             ),
             (
@@ -6749,28 +7089,33 @@ struct Attached {
             // An extender exclusion never touches a FIRST set, but an atom's narrows one, and
             // the decision frontier expands a repetition's tail as the whole target type.
             (
-                r#"#[parse(pratt(exclude(Atom)))] uri: Vec<Expr>"#,
+                r#"#[parse(pratt(exclude(Atom)))] uri: zero_or_many!(Expr)"#,
                 "`uri` excludes the Pratt atom or prefix variant `Atom` at a repeated site; only a single or optional operand may exclude one",
             ),
         ] {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct Leaf;
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {{
-    #[tok("ATOM")]
-    Atom,
-    #[parse(infix, lbp = 3, rbp = 4)]
-    #[tok("AND")]
-    And(Box<Self>, Box<Self>),
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    #[tok("LEAF")]
+    struct Leaf;
 }}
-#[derive(recursa::Node)]
-struct Named {{
-    {field},
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        #[tok("ATOM")]
+        Atom,
+        #[parse(infix, lbp = 3, rbp = 4)]
+        #[tok("AND")]
+        And(boxed!(Self), boxed!(Self)),
+    }}
+}}
+recursa::ast_node! {{
+
+    struct Named {{
+        {field},
+    }}
 }}
 "#,
             );
@@ -6795,46 +7140,49 @@ struct Named {{
     fn rejects_zero_multiple_and_non_exact_recursive_infix_rhs_fields() {
         for (invalid_variant, expected) in [
             (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Zero(Box<Self>, Leaf)"#,
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Zero(boxed!(Self), Leaf)"#,
                 "found 0 recursive semantic fields",
             ),
             (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Multiple(Box<Self>, Box<Self>, Leaf, Box<Self>)"#,
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Multiple(boxed!(Self), boxed!(Self), Leaf, boxed!(Self))"#,
                 "found 2 recursive semantic fields",
             ),
             (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(Box<Self>, Leaf, Option<Box<Self>>)"#,
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(boxed!(Self), Leaf, Option<boxed!(Self)>)"#,
                 "found 0 recursive semantic fields",
             ),
             (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] BareOptional(Box<Self>, Box<Self>, Option<Box<Self>>)"#,
+                r#"#[parse(infix, lbp = 1, rbp = 2)] BareOptional(boxed!(Self), boxed!(Self), Option<boxed!(Self)>)"#,
                 "attached behind a fixed token",
             ),
             (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] TrailingOptional(Box<Self>, Box<Self>, #[tok(this, "LEAF")] Option<Box<Self>>)"#,
+                r#"#[parse(infix, lbp = 1, rbp = 2)] TrailingOptional(boxed!(Self), boxed!(Self), #[tok(this, "LEAF")] Option<boxed!(Self)>)"#,
                 "attached behind a fixed token",
             ),
             (
-                r#"#[parse(postfix, bp = 1)] PostfixBareOptional(Box<Self>, #[tok("LEAF", this)] Box<Self>, Option<Box<Self>>)"#,
+                r#"#[parse(postfix, bp = 1)] PostfixBareOptional(boxed!(Self), #[tok("LEAF", this)] boxed!(Self), Option<boxed!(Self)>)"#,
                 "attached behind a fixed token",
             ),
             (
-                r#"#[parse(postfix, bp = 1)] PostfixOptionalNode(Box<Self>, #[tok("LEAF", this)] Box<Self>, #[tok("LEAF", this)] Option<Box<Expr>>)"#,
+                r#"#[parse(postfix, bp = 1)] PostfixOptionalNode(boxed!(Self), #[tok("LEAF", this)] boxed!(Self), #[tok("LEAF", this)] Option<boxed!(Expr)>)"#,
                 "attached behind a fixed token",
             ),
         ] {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct Leaf;
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {{
-    #[tok("ATOM")]
-    Atom,
-    {invalid_variant},
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    #[tok("LEAF")]
+    struct Leaf;
+}}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        #[tok("ATOM")]
+        Atom,
+        {invalid_variant},
+    }}
 }}
 "#,
             );
@@ -6850,21 +7198,32 @@ enum Expr {{
     #[test]
     fn rejects_named_and_lifetime_mismatched_pratt_self_operands() {
         let invalid_variants = [
-            r#"#[parse(prefix, bp = 1)] Named(Box<Expr<'input>>)"#,
-            r#"#[parse(prefix, bp = 1)] Static(Box<Expr<'static>>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedLhs(Box<Expr<'input>>, Box<Self>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedRhs(Box<Self>, Box<Expr<'input>>)"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] StaticRhs(Box<Self>, Box<Expr<'static>>)"#,
+            r#"#[parse(prefix, bp = 1)] Named(boxed!(Expr))"#,
+            r#"#[parse(prefix, bp = 1)] Static(boxed!(Expr<'static>))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedLhs(boxed!(Expr), boxed!(Self))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedRhs(boxed!(Self), boxed!(Expr))"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] StaticRhs(boxed!(Self), boxed!(Expr<'static>))"#,
         ];
         for invalid_variant in invalid_variants {
             let source = format!(
-                r#"
-recursa::grammar! {{ module = crate::invalid }}
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr<'input> {{ {invalid_variant} }}
+                r#"recursa::grammar! {{ module = crate::invalid }}
+recursa::ast_node! {{
+
+    #[pratt]
+    enum Expr {{
+        {invalid_variant},
+    }}
+}}
 "#,
             );
+            if invalid_variant.contains("'static") {
+                let report = resolve_report(&source);
+                assert!(report.resolved.is_none(), "accepted `{invalid_variant}`");
+                assert!(report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.message.contains("explicit lifetime arguments")
+                }));
+                continue;
+            }
             let report = materialize(resolve(&source));
             assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
             assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -6876,14 +7235,15 @@ enum Expr<'input> {{ {invalid_variant} }}
     #[test]
     fn rejects_fixed_syntax_attached_to_the_implicit_pratt_lhs() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::invalid }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[parse(infix, lbp = 1, rbp = 2)]
-    #[tok("+")]
-    Invalid(#[tok("(", this, ")")] Box<Self>, Box<Self>),
+            r#"recursa::grammar! { module = crate::invalid }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[parse(infix, lbp = 1, rbp = 2)]
+        #[tok("+")]
+        Invalid(#[tok("(", this, ")")] boxed!(Self), boxed!(Self)),
+    }
 }
 "#,
         ));
@@ -6898,22 +7258,23 @@ enum Expr {
     #[test]
     fn preserves_fixed_syntax_attached_to_prefix_and_infix_rhs_operands() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::valid }
-#[derive(recursa::Node)]
-#[pratt]
-enum Expr {
-    #[tok("ATOM")]
-    Atom,
-    #[parse(prefix, bp = 3)]
-    #[tok("!")]
-    Prefix(#[tok("(", this, ")")] Box<Self>),
-    #[parse(infix, lbp = 1, rbp = 2)]
-    #[tok("+")]
-    Infix(
-        #[tok(this, "~")] Box<Self>,
-        #[tok("[", this, "]")] Box<Self>,
-    ),
+            r#"recursa::grammar! { module = crate::valid }
+recursa::ast_node! {
+
+    #[pratt]
+    enum Expr {
+        #[tok("ATOM")]
+        Atom,
+        #[parse(prefix, bp = 3)]
+        #[tok("!")]
+        Prefix(#[tok("(", this, ")")] boxed!(Self)),
+        #[parse(infix, lbp = 1, rbp = 2)]
+        #[tok("+")]
+        Infix(
+            #[tok(this, "~")] boxed!(Self),
+            #[tok("[", this, "]")] boxed!(Self),
+        ),
+    }
 }
 "#,
         ));
@@ -6982,15 +7343,18 @@ enum Expr {
     #[test]
     fn projects_field_attachments_as_private_normalized_sequence_units() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::attached }
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct Leaf;
-#[derive(recursa::Node)]
-struct Root {
-    #[tok("[", this, "]")]
-    value: Option<Leaf>,
+            r#"recursa::grammar! { module = crate::attached }
+recursa::ast_node! {
+
+    #[tok("LEAF")]
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("[", this, "]")]
+        value: Option<Leaf>,
+    }
 }
 "#,
         ));
@@ -7074,15 +7438,17 @@ struct Root {
     #[test]
     fn authored_attachment_suffix_names_remain_visible_in_semantic_projection() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::named }
-#[allow(non_camel_case_types)]
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct __recursa_attachment;
-#[derive(recursa::Node)]
-struct Root {
-    value: __recursa_attachment,
+            r#"recursa::grammar! { module = crate::named }
+recursa::ast_node! {
+    #[allow(non_camel_case_types)]
+    #[tok("LEAF")]
+    struct __recursa_attachment;
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: __recursa_attachment,
+    }
 }
 "#,
         ));
@@ -7101,18 +7467,21 @@ struct Root {
     #[test]
     fn projected_attachment_ordinals_account_for_every_preceding_expansion() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::ordinals }
-#[derive(recursa::Node)]
-#[tok("LEAF")]
-struct Leaf;
-#[derive(recursa::Node)]
-struct Root {
-    #[tok("[", this, "!", "]")]
-    first: Leaf,
-    #[tok("(", "+", this, ")")]
-    second: Leaf,
-    third: Leaf,
+            r#"recursa::grammar! { module = crate::ordinals }
+recursa::ast_node! {
+
+    #[tok("LEAF")]
+    struct Leaf;
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("[", this, "!", "]")]
+        first: Leaf,
+        #[tok("(", "+", this, ")")]
+        second: Leaf,
+        third: Leaf,
+    }
 }
 "#,
         ));
@@ -7146,12 +7515,21 @@ struct Root {
     #[test]
     fn separator_metadata_reaches_the_normalized_repeat_and_is_repeat_only() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::lists }
-#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
-type NonEmpty<T> = Option<Box<recursa::Vec1<Box<T>>>>;
-#[derive(recursa::Node)]
-struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
+            r#"recursa::grammar! { module = crate::lists }
+recursa::ast_node! {
+    struct Leaf {
+        #[lex(pattern = "x")]
+        text: Text,
+    }
+}
+type Maybe<T> = Option<T>;
+recursa::ast_node! {
+
+    struct Root {
+        #[sep(",", trailing)]
+        values: Maybe<boxed!(one_or_many!(boxed!(Leaf)))>,
+    }
+}
 "#,
         ));
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -7174,10 +7552,10 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
         };
         let site = &lowered.grammar.sites[sites[0].index()];
         let ContainerShape::Optional(optional) = &site.container else {
-            panic!("NonEmpty alias keeps optional cardinality")
+            panic!("aliased field keeps optional cardinality")
         };
         let ContainerShape::Boxed(boxed) = optional.as_ref() else {
-            panic!("NonEmpty alias keeps Box placement")
+            panic!("aliased field keeps Box placement")
         };
         let ContainerShape::Repeat {
             cardinality: crate::RepetitionCardinality::OneOrMore,
@@ -7185,7 +7563,7 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
             ..
         } = boxed.as_ref()
         else {
-            panic!("NonEmpty alias keeps one-or-more cardinality")
+            panic!("aliased field keeps one-or-more cardinality")
         };
         assert!(separator.optional_trailing);
         let mut separators = Vec::new();
@@ -7206,11 +7584,23 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
         assert!(separator.optional_trailing);
 
         let invalid = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::lists }
-#[derive(recursa::Node)] struct Vec<T> { value: T }
-#[derive(recursa::Node)] struct Leaf { this: Self }
-#[derive(recursa::Node)] struct Root { #[sep(",")] values: Vec<Leaf> }
+            r#"recursa::grammar! { module = crate::lists }
+recursa::ast_node! {
+    struct Vec<T> {
+        value: T,
+    }
+}
+recursa::ast_node! {
+    struct Leaf {
+        this: Self,
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        #[sep(",")]
+        values: zero_or_many!(Leaf),
+    }
+}
 "#,
         ));
         assert_eq!(
@@ -7222,15 +7612,21 @@ recursa::grammar! { module = crate::lists }
     #[test]
     fn normalized_repeats_keep_cardinality_and_optional_trailing_separately() {
         let report = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::lists }
-#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
-#[derive(recursa::Node)]
-struct Root {
-    #[sep(",")]
-    zero_or_more: Vec<Leaf>,
-    #[sep(";", trailing)]
-    one_or_more: recursa::Vec1<Leaf>,
+            r#"recursa::grammar! { module = crate::lists }
+recursa::ast_node! {
+    struct Leaf {
+        #[lex(pattern = "x")]
+        text: Text,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[sep(",")]
+        zero_or_more: zero_or_many!(Leaf),
+        #[sep(";", trailing)]
+        one_or_more: one_or_many!(Leaf),
+    }
 }
 "#,
         ));
@@ -7276,28 +7672,54 @@ struct Root {
     #[test]
     fn generic_alias_pretty_applicability_is_checked_per_closed_application() {
         let valid = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::pretty, derives(Pretty) }
-#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+            r#"recursa::grammar! { module = crate::pretty, derives(Pretty) }
+recursa::ast_node! {
+    struct Leaf {
+        #[lex(pattern = "x")]
+        text: Text,
+    }
+}
 type Alias<T> = T;
-#[derive(recursa::Node)]
-struct Generic<T> { #[pretty(group = inconsistent)] values: Alias<T> }
-#[derive(recursa::Node)]
-struct Root { value: Generic<Vec<Leaf>> }
+recursa::ast_node! {
+
+    struct Generic<T> {
+        #[pretty(group = inconsistent)]
+        values: Alias<T>,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: Generic<zero_or_many!(Leaf)>,
+    }
+}
 "#,
         ));
         assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
         assert!(valid.lowered.is_some());
 
         let invalid = materialize(resolve(
-            r#"
-recursa::grammar! { module = crate::pretty, derives(Pretty) }
-#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+            r#"recursa::grammar! { module = crate::pretty, derives(Pretty) }
+recursa::ast_node! {
+    struct Leaf {
+        #[lex(pattern = "x")]
+        text: Text,
+    }
+}
 type Alias<T> = T;
-#[derive(recursa::Node)]
-struct Generic<T> { #[pretty(group = consistent)] value: Alias<T> }
-#[derive(recursa::Node)]
-struct Root { value: Generic<Leaf> }
+recursa::ast_node! {
+
+    struct Generic<T> {
+        #[pretty(group = consistent)]
+        value: Alias<T>,
+    }
+}
+recursa::ast_node! {
+
+    struct Root {
+        value: Generic<Leaf>,
+    }
+}
 "#,
         ));
         assert!(invalid.lowered.is_none());

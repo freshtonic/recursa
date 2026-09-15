@@ -15,12 +15,16 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-#[tok(SEMI)]
-pub struct SemicolonStmt;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub struct IdentHolder<'input> {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub ident: Ident<'input>,
+    #[tok(SEMI)]
+    pub struct SemicolonStmt;
+}
+
+recursa::ast_node! {
+
+    pub struct IdentHolder {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub ident: Ident,
+    }
 }

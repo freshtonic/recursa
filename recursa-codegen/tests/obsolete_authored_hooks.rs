@@ -32,15 +32,18 @@ fn downstream_cargo_smokes_one_obsolete_hook_diagnostic() {
         .expect("write obsolete-hook library root");
     fs::write(
         package.path().join("src/grammar.rs"),
-        r#"
-recursa::grammar! { module = crate::grammar }
+        r#"recursa::grammar! { module = crate::grammar }
 
-pub fn scan(_: &mut LexContext<'_>) -> LexAction { LexAction::Emit }
+pub fn scan(_: &mut LexContext<'_>) -> LexAction {
+    LexAction::Emit
+}
 
-#[derive(recursa::Node)]
-pub struct Root<'input> {
-    #[lex(pattern = r"[a-z]+", callback = crate::grammar::scan)]
-    pub word: Word<'input>,
+recursa::ast_node! {
+
+    pub struct Root {
+        #[lex(pattern = r"[a-z]+", callback = crate::grammar::scan)]
+        pub word: Word,
+    }
 }
 "#,
     )

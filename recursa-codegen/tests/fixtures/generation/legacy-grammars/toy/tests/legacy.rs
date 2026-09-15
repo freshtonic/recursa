@@ -1,5 +1,5 @@
-use recursa_legacy_toy::toy;
 use recursa::{HasSpan as _, NodeView as _};
+use recursa_legacy_toy::toy;
 
 fn parse(source: &str) -> Result<toy::SemicolonStmt, recursa::ParseError> {
     let lexed = toy::lex(source);

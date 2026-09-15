@@ -259,13 +259,10 @@ fn main() {
     );
     assert_eq!(attached_absent.render(), "create alpha materialized");
 
-    let atomic_filler = parse_spanned!(
-        grammar::AtomicOptionalAttachment<'_>,
-        "or replace or alpha"
-    );
+    let atomic_filler =
+        parse_spanned!(grammar::AtomicOptionalAttachment<'_>, "or replace or alpha");
     assert_eq!(atomic_filler.render(), "or replace or alpha");
-    let partial_filler =
-        parse_spanned!(grammar::AtomicOptionalAttachment<'_>, "or alpha");
+    let partial_filler = parse_spanned!(grammar::AtomicOptionalAttachment<'_>, "or alpha");
     assert_eq!(partial_filler.render(), "or alpha");
 
     let nested_with = parse_spanned!(grammar::NestedWith<'_>, "alpha with pair beta");
@@ -289,19 +286,18 @@ fn main() {
         "create materialized alpha"
     );
     assert!(!presence_without_fillers.root().value().unlogged);
-    assert_eq!(presence_without_fillers.render(), "create materialized alpha");
-
-    let complete_prefix = parse_spanned!(
-        grammar::OptionalPrefixPrediction<'_>,
-        "or replace alpha"
+    assert_eq!(
+        presence_without_fillers.render(),
+        "create materialized alpha"
     );
+
+    let complete_prefix = parse_spanned!(grammar::OptionalPrefixPrediction<'_>, "or replace alpha");
     assert!(matches!(
         complete_prefix.root().value(),
         grammar::OptionalPrefixPrediction::WithReplace { .. }
     ));
     assert_eq!(complete_prefix.render(), "or replace alpha");
-    let partial_prefix =
-        parse_spanned!(grammar::OptionalPrefixPrediction<'_>, "or alpha");
+    let partial_prefix = parse_spanned!(grammar::OptionalPrefixPrediction<'_>, "or alpha");
     assert!(matches!(
         partial_prefix.root().value(),
         grammar::OptionalPrefixPrediction::Or { .. }
@@ -399,7 +395,9 @@ fn main() {
 
     let mut duplicates = DuplicateVisitor(Vec::new());
     assert!(recursa::Visit::visit(&grammar::public_left::Duplicate, &mut duplicates).is_continue());
-    assert!(recursa::Visit::visit(&grammar::public_right::Duplicate, &mut duplicates).is_continue());
+    assert!(
+        recursa::Visit::visit(&grammar::public_right::Duplicate, &mut duplicates).is_continue()
+    );
     assert_eq!(duplicates.0, ["left", "right"]);
 
     let first_source = String::from("record:first 1");
@@ -485,12 +483,18 @@ fn main() {
     let mut mutations = MutationCounter(0);
     assert!(recursa::VisitMut::visit_mut(&mut detached, &mut mutations).is_continue());
     assert_eq!(mutations.0, 5);
-    assert!(
-        recursa::VisitMut::visit_mut(&mut detached, &mut TypedCountMutator).is_continue()
-    );
+    assert!(recursa::VisitMut::visit_mut(&mut detached, &mut TypedCountMutator).is_continue());
     let grammar::Record { label, count } = detached;
     assert_eq!(label.text.text(), "alpha");
-    assert_eq!(count.as_ref().as_ref().expect("present optional Box").text.text(), "99");
+    assert_eq!(
+        count
+            .as_ref()
+            .as_ref()
+            .expect("present optional Box")
+            .text
+            .text(),
+        "99"
+    );
 
     let absent = parse_spanned!(grammar::Record<'_>, "rEcOrD:beta");
     assert!(absent.root().count().is_none());

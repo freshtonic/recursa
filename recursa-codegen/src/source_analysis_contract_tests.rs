@@ -944,23 +944,26 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
 #[test]
 fn obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam() {
     let package = write_fixture(
-        r#"
-recursa::grammar! { module = crate }
+        r#"recursa::grammar! { module = crate }
 recursa::tokens! {
     post_lex = crate::repair,
     lexer_tokens { Opaque => r"~[a-z]+" with crate::scan }
 }
 
-#[derive(recursa::Node)]
-#[parse(postcondition = crate::condition)]
-struct Root<'input> {
-    #[lex(pattern = r"[a-z]+", callback = crate::scan)]
-    word: Word<'input>,
+recursa::ast_node! {
+
+    #[parse(postcondition = crate::condition)]
+    struct Root {
+        #[lex(pattern = r"[a-z]+", callback = crate::scan)]
+        word: Word,
+    }
 }
 
-#[derive(recursa::Node)]
-#[recursa::parser(postcondition = crate::condition)]
-struct Namespaced;
+recursa::ast_node! {
+
+    #[recursa::parser(postcondition = crate::condition)]
+    struct Namespaced;
+}
 "#,
     );
     let error = crate::source_analysis::analyze_source_tree(
@@ -1011,13 +1014,14 @@ struct Namespaced;
 #[test]
 fn full_source_analysis_pipeline_emits_invalidation_and_stops_at_the_earliest_failing_stage() {
     let package = write_fixture(
-        r#"
-recursa::grammar! { module = crate }
+        r#"recursa::grammar! { module = crate }
 
-#[derive(recursa::Node)]
-struct Root {
-    left: MissingLeft,
-    right: MissingRight,
+recursa::ast_node! {
+
+    struct Root {
+        left: MissingLeft,
+        right: MissingRight,
+    }
 }
 "#,
     );
@@ -1048,8 +1052,7 @@ struct Root {
 fn closed_matcher_priority_ties_fail_at_source_analysis_and_distinct_priorities_succeed() {
     let source = |second_priority| {
         format!(
-            r#"
-recursa::grammar! {{ module = crate }}
+            r#"recursa::grammar! {{ module = crate }}
 
 recursa::tokens! {{
     matchers {{
@@ -1058,8 +1061,10 @@ recursa::tokens! {{
     }}
 }}
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {{
+
+    struct Root;
+}}
 "#
         )
     };
@@ -1094,8 +1099,7 @@ struct Root;
     );
 
     let converging_extent = write_fixture(
-        r#"
-recursa::grammar! { module = crate }
+        r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
     keywords { EXACT_A => "a" }
@@ -1105,8 +1109,10 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-struct Root;
+recursa::ast_node! {
+
+    struct Root;
+}
 "#,
     );
     let error = crate::source_analysis::analyze_source_tree(
@@ -1437,13 +1443,26 @@ fn repeated_physical_inclusions_keep_distinct_permutation_stable_logical_origins
         let package = tempfile::tempdir().expect("temporary repeated-module fixture");
         std::fs::write(
             package.path().join("shared.rs"),
-            "#[derive(recursa::Node)] pub struct Shared { missing: Missing }",
+            r#"recursa::ast_node! {
+    pub struct Shared {
+        missing: Missing,
+    }
+}
+"#,
         )
         .expect("write shared module");
         std::fs::write(
             package.path().join("grammar.rs"),
             format!(
-                "recursa::grammar! {{ module = crate }}\n{order}\n#[derive(recursa::Node)] struct Root {{ left: left::Shared, right: right::Shared }}"
+                r#"recursa::grammar! {{ module = crate }}
+{order}
+recursa::ast_node! {{
+    struct Root {{
+        left: left::Shared,
+        right: right::Shared,
+    }}
+}}
+"#
             ),
         )
         .expect("write repeated-module root");

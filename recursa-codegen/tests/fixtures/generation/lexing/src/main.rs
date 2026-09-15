@@ -5,13 +5,7 @@ fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {
 
 fn assert_content_token_value<T>()
 where
-    T: Clone
-        + std::fmt::Debug
-        + PartialEq
-        + Eq
-        + PartialOrd
-        + Ord
-        + std::hash::Hash,
+    T: Clone + std::fmt::Debug + PartialEq + Eq + PartialOrd + Ord + std::hash::Hash,
 {
 }
 
@@ -52,7 +46,10 @@ fn main() {
     assert_eq!(errors[0].span(), recursa::Span::new(13, 14).unwrap());
     assert_eq!(errors[0].text(), "@");
     assert_eq!(errors[0].code(), "RCA4000");
-    assert_eq!(downstream_error_code(errors[0].diagnostic_code()), "RCA4000");
+    assert_eq!(
+        downstream_error_code(errors[0].diagnostic_code()),
+        "RCA4000"
+    );
     assert_eq!(errors[0].anchor(), recursa::Span::new(13, 14).unwrap());
 
     let retained_source = " /* lead */\nselect -- one\n\t/* two */ alpha\r\n";
@@ -200,9 +197,7 @@ fn main() {
             .map(|gap| {
                 (
                     gap.text(),
-                    gap.trivia()
-                        .map(|trivia| trivia.kind())
-                        .collect::<Vec<_>>(),
+                    gap.trivia().map(|trivia| trivia.kind()).collect::<Vec<_>>(),
                 )
             })
             .collect::<Vec<_>>(),
@@ -317,7 +312,10 @@ fn main() {
         .unwrap();
     assert!(
         alternative_overlap
-            .append(grammar::TokenKind::WordText, recursa::Span::new(0, 2).unwrap())
+            .append(
+                grammar::TokenKind::WordText,
+                recursa::Span::new(0, 2).unwrap()
+            )
             .is_err()
     );
     let mut alternative_invalid_utf8 = grammar::LexBuilder::new("é");
@@ -414,7 +412,10 @@ fn main() {
         .unwrap();
     let alternative_error = alternative_error.finish().errors().next().unwrap();
     assert_eq!(alternative_error.code(), "RCA4000");
-    assert_eq!(alternative_error.anchor(), recursa::Span::new(0, 4).unwrap());
+    assert_eq!(
+        alternative_error.anchor(),
+        recursa::Span::new(0, 4).unwrap()
+    );
 
     let gap_source = "sElEcT unscanned ?";
     let error_start = gap_source.rfind('?').unwrap();
@@ -504,9 +505,11 @@ fn main() {
     assert_eq!(qualified_operator.span(), recursa::Span::new(0, 3).unwrap());
     let stripped_operators = grammar::lex("++").tokens().collect::<Vec<_>>();
     assert_eq!(stripped_operators.len(), 2);
-    assert!(stripped_operators
-        .iter()
-        .all(|token| token.kind() == grammar::TokenKind::OperatorText && token.text() == "+"));
+    assert!(
+        stripped_operators
+            .iter()
+            .all(|token| token.kind() == grammar::TokenKind::OperatorText && token.text() == "+")
+    );
     for fenced_source in ["+-- ignored\n", "+/* ignored */"] {
         let fenced = grammar::lex(fenced_source);
         assert_eq!(fenced.errors().count(), 0);
@@ -552,8 +555,14 @@ fn main() {
         grammar::LexErrorCode::UnterminatedSameDelimiter
     );
     assert_eq!(unterminated_dollar.text(), "$tag$body");
-    assert_eq!(unterminated_dollar.span(), recursa::Span::new(0, 9).unwrap());
-    assert_eq!(unterminated_dollar.anchor(), recursa::Span::new(0, 5).unwrap());
+    assert_eq!(
+        unterminated_dollar.span(),
+        recursa::Span::new(0, 9).unwrap()
+    );
+    assert_eq!(
+        unterminated_dollar.anchor(),
+        recursa::Span::new(0, 5).unwrap()
+    );
 
     for source in ["{-outer", "/* open"] {
         let unterminated_nested = grammar::lex(source);
@@ -568,7 +577,10 @@ fn main() {
             unterminated_nested.span(),
             recursa::Span::new(0, source.len()).unwrap()
         );
-        assert_eq!(unterminated_nested.anchor(), recursa::Span::new(0, 2).unwrap());
+        assert_eq!(
+            unterminated_nested.anchor(),
+            recursa::Span::new(0, 2).unwrap()
+        );
     }
 
     let mut deep_source = "{-".repeat(10_000);
@@ -591,13 +603,19 @@ fn main() {
         deep_unterminated.span(),
         recursa::Span::new(0, deep_unterminated_source.len()).unwrap()
     );
-    assert_eq!(deep_unterminated.anchor(), recursa::Span::new(0, 2).unwrap());
+    assert_eq!(
+        deep_unterminated.anchor(),
+        recursa::Span::new(0, 2).unwrap()
+    );
 
     let declarative = grammar::lex(":NULL :true :FaLsE :'TRUE' :\"FALSE\" !=--comment\n!=-");
     assert_eq!(declarative.errors().count(), 0);
     let declarative = declarative.tokens().collect::<Vec<_>>();
     assert_eq!(
-        declarative.iter().map(|token| token.kind()).collect::<Vec<_>>(),
+        declarative
+            .iter()
+            .map(|token| token.kind())
+            .collect::<Vec<_>>(),
         [
             grammar::TokenKind::COLON,
             grammar::TokenKind::NULL,
@@ -614,10 +632,23 @@ fn main() {
         ]
     );
     assert_eq!(
-        declarative.iter().map(|token| token.text()).collect::<Vec<_>>(),
+        declarative
+            .iter()
+            .map(|token| token.text())
+            .collect::<Vec<_>>(),
         [
-            ":", "NULL", ":", "true", ":", "FaLsE", ":", "'TRUE'", ":", "\"FALSE\"",
-            "!=", "!=-",
+            ":",
+            "NULL",
+            ":",
+            "true",
+            ":",
+            "FaLsE",
+            ":",
+            "'TRUE'",
+            ":",
+            "\"FALSE\"",
+            "!=",
+            "!=-",
         ]
     );
 
@@ -667,7 +698,10 @@ fn main() {
     assert_eq!(declarative_eof_comment.errors().count(), 0);
     let declarative_eof_comment = declarative_eof_comment.tokens().collect::<Vec<_>>();
     assert_eq!(declarative_eof_comment.len(), 1);
-    assert_eq!(declarative_eof_comment[0].kind(), grammar::TokenKind::NOT_EQUAL);
+    assert_eq!(
+        declarative_eof_comment[0].kind(),
+        grammar::TokenKind::NOT_EQUAL
+    );
     assert_eq!(declarative_eof_comment[0].text(), "!=");
 
     let admitted = grammar::lex("select null");
@@ -682,9 +716,7 @@ fn main() {
     let synthetic = grammar::WordText::with_kind(grammar::TokenKind::SELECT, "owned")
         .expect("an admitted kind is valid for public synthesis");
     assert_eq!(synthetic.kind(), grammar::TokenKind::SELECT);
-    assert!(
-        grammar::WordText::with_kind(grammar::TokenKind::COLON, "invalid").is_err()
-    );
+    assert!(grammar::WordText::with_kind(grammar::TokenKind::COLON, "invalid").is_err());
 
     let admission_membership = [
         (grammar::TokenKind::SELECT, true, true, false),
@@ -699,7 +731,10 @@ fn main() {
         (grammar::TokenKind::GROUPS, false, true, false),
     ];
     for (kind, window, variable, bare) in admission_membership {
-        assert_eq!(grammar::WindowName::with_kind(kind, "value").is_ok(), window);
+        assert_eq!(
+            grammar::WindowName::with_kind(kind, "value").is_ok(),
+            window
+        );
         assert_eq!(
             grammar::VariableName::with_kind(kind, "value").is_ok(),
             variable
@@ -725,10 +760,7 @@ fn main() {
         let parsed = grammar::VariableOrNull::parse(&mut input)
             .expect("all-word subtraction participates in generated dispatch");
         assert_eq!(
-            matches!(
-                parsed.root().value(),
-                grammar::VariableOrNull::Variable(_)
-            ),
+            matches!(parsed.root().value(), grammar::VariableOrNull::Variable(_)),
             admitted
         );
         assert!(input.is_eof());
@@ -779,16 +811,26 @@ fn main() {
     for (source, reason) in [
         ("banana", "an unrelated word is not a keyword"),
         ("sel", "a strict prefix of a keyword is not the keyword"),
-        ("selects", "a keyword plus a trailing character is not the keyword"),
+        (
+            "selects",
+            "a keyword plus a trailing character is not the keyword",
+        ),
     ] {
         let classified = grammar::lex(source).tokens().collect::<Vec<_>>();
         assert_eq!(classified.len(), 1);
-        assert_eq!(classified[0].kind(), grammar::TokenKind::WordText, "{reason}");
+        assert_eq!(
+            classified[0].kind(),
+            grammar::TokenKind::WordText,
+            "{reason}"
+        );
         assert_eq!(classified[0].text(), source);
     }
     let mut empty_word = grammar::LexBuilder::new("");
     empty_word
-        .append(grammar::TokenKind::WordText, recursa::Span::new(0, 0).unwrap())
+        .append(
+            grammar::TokenKind::WordText,
+            recursa::Span::new(0, 0).unwrap(),
+        )
         .expect("a zero-length word-shaped record is a well-formed alternative-lexer append");
     let empty_word = empty_word.finish();
     let empty_word = empty_word.tokens().collect::<Vec<_>>();

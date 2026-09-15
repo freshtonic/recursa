@@ -21,52 +21,60 @@ recursa::tokens! {
     }
 }
 
-/// Declares the integer token type used by the closed generic atom.
-#[derive(recursa::Node)]
-pub struct IntAtom {
-    #[lex(pattern = r"[0-9]+")]
-    pub value: IntLit,
+recursa::ast_node! {
+    /// Declares the integer token type used by the closed generic atom.
+
+    pub struct IntAtom {
+        #[lex(pattern = r"[0-9]+")]
+        pub value: IntLit,
+    }
 }
 
-/// Declares the identifier token type used by the closed generic atom.
-#[derive(recursa::Node)]
-pub struct IdentAtom {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub value: Ident,
+recursa::ast_node! {
+    /// Declares the identifier token type used by the closed generic atom.
+
+    pub struct IdentAtom {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub value: Ident,
+    }
 }
 
-/// A real closed generic grammar Node, materialized as `Atom<IntAtom>` and
-/// `Atom<IdentAtom>` below.
-#[derive(recursa::Node)]
-pub struct Atom<T> {
-    pub value: T,
+recursa::ast_node! {
+    /// A real closed generic grammar Node, materialized as `Atom<IntAtom>` and
+    /// `Atom<IdentAtom>` below.
+
+    pub struct Atom<T> {
+        pub value: T,
+    }
 }
 
-/// Arithmetic expressions with atom, prefix, and infix Pratt positions.
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr {
-    IntLit(Atom<IntAtom>),
-    Ident(Atom<IdentAtom>),
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Expr>),
+recursa::ast_node! {
+    /// Arithmetic expressions with atom, prefix, and infix Pratt positions.
 
-    #[parse(prefix, bp = 30)]
-    #[tok(MINUS)]
-    Neg(Box<Self>),
+    #[pratt]
+    pub enum Expr {
+        IntLit(Atom<IntAtom>),
+        Ident(Atom<IdentAtom>),
+        Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+        #[parse(prefix, bp = 30)]
+        #[tok(MINUS)]
+        Neg(boxed!(Self)),
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(MINUS)]
-    Sub(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(STAR)]
-    Mul(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(MINUS)]
+        Sub(boxed!(Self), boxed!(Self)),
 
-    #[parse(infix, lbp = 20, rbp = 21)]
-    #[tok(SLASH)]
-    Div(Box<Self>, Box<Self>),
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(STAR)]
+        Mul(boxed!(Self), boxed!(Self)),
+
+        #[parse(infix, lbp = 20, rbp = 21)]
+        #[tok(SLASH)]
+        Div(boxed!(Self), boxed!(Self)),
+    }
 }

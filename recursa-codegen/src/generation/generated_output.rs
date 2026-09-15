@@ -239,6 +239,14 @@ fn render_word_classifiers(
     candidate_kinds: &[u16],
     facade: &syn::Ident,
 ) -> proc_macro2::TokenStream {
+    if candidate_kinds.is_empty() {
+        return quote! {
+            fn __recursa_classify(
+                _source: &str,
+                _record: &mut #facade::__private::TokenRecord,
+            ) {}
+        };
+    }
     let ascii_insensitive = classifiers
         .first()
         .is_none_or(|classifier| classifier.ascii_insensitive);
@@ -307,11 +315,7 @@ fn render_word_classifiers(
     } else {
         quote!(bytes[index])
     };
-    let fold_first = if ascii_insensitive {
-        quote!(first.to_ascii_lowercase())
-    } else {
-        quote!(first)
-    };
+    let fold_first = ascii_insensitive.then(|| quote!(let first = first.to_ascii_lowercase();));
 
     quote! {
         static __RECURSA_WORD_KEYWORDS: #facade::__private::phf::Map<&'static [u8], u16> =
@@ -334,7 +338,7 @@ fn render_word_classifiers(
         fn __recursa_classify_words(text: &str) -> Option<u16> {
             let bytes = text.as_bytes();
             let first = bytes.first().copied()?;
-            let first = #fold_first;
+            #fold_first
             match (bytes.len(), first) {
                 #(#bucket_arms)*
                 _ => None,
@@ -1897,6 +1901,16 @@ pub(super) fn render_node(
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
     let node_ident = &node.ident;
+    let concrete_item = &node.concrete_item;
+    let declaration_loader = format_ident!("__recursa_emit_declaration_{node_index}");
+    let concrete_declaration = concrete_item.as_ref().map(|item| {
+        quote! {
+            macro_rules! #declaration_loader {
+                ($item:item) => { $item };
+            }
+            #declaration_loader! { #item }
+        }
+    });
     let generics = &node.generics;
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let mut view_generics = generics.clone();
@@ -2056,6 +2070,8 @@ pub(super) fn render_node(
 
     Ok(quote! {
         __recursa_generation_handshake!(#generation);
+
+        #concrete_declaration
 
         #(#token_bindings)*
 

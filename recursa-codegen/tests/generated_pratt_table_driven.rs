@@ -142,8 +142,8 @@ fn the_pratt_expressions_example_parses_through_the_recursa_parser() {
         .replace("    diagrams,\n", "")
         .replace("    derives(Visit),\n", "    derives(Visit, Pretty),\n")
         .replace(
-            "#[derive(recursa::Node)]",
-            "#[derive(recursa::Node, Debug)]",
+            "recursa::ast_node! {",
+            "recursa::ast_node! {\n#[derive(Debug)]",
         );
     let package = scaffold(FIXTURE, Some(&grammar));
     fs::write(package.path().join("src/main.rs"), EXAMPLE_MAIN).unwrap();

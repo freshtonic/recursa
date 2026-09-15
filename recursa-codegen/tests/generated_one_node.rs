@@ -7,6 +7,199 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/generation/one-node";
 
 #[test]
+fn ast_node_declarations_compile_as_concrete_multi_item_rust_api() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r##"recursa::grammar! {
+    module = crate::r#type,
+    derives(Clone),
+    keyword_matching = sensitive,
+}
+
+recursa::tokens! {
+    punctuation { NAMED => "@", TUPLE => "#", UNIT => "$" }
+}
+
+use recursa::ast_node as declare_nodes;
+
+declare_nodes! {
+    #[omit(Clone)]
+    #[derive(Clone, Debug)]
+    struct Leaf {
+        #[lex(pattern = r"[A-Za-z]+")]
+        text: NameText,
+    }
+
+    struct Tuple(Leaf);
+    struct Unit;
+
+    enum Choice<T>
+    where
+        T: Clone,
+    {
+        #[tok(NAMED)]
+        Named { value: T },
+        #[tok(TUPLE)]
+        Tuple(T),
+        #[tok(UNIT)]
+        Unit,
+    }
+
+    struct ChoiceHolder {
+        choice: Choice<Leaf>,
+    }
+
+    struct Leaves {
+        values: zero_or_many!(Leaf),
+    }
+
+    struct AliasHolder {
+        alias: MaybeLeaf,
+    }
+
+    struct Pair<L, R> {
+        left: L,
+        right: R,
+    }
+
+    struct TwoInputHolder {
+        pair: TwoInputs,
+    }
+
+    pub(self) struct Restricted;
+
+    #[cfg(any())]
+    pub struct DisabledByCfg;
+
+    #[cfg_attr(all(), cfg(any()))]
+    pub struct DisabledByCfgAttr;
+
+    #[cfg_attr(all(), cfg_attr(all(), cfg(any())))]
+    pub struct DisabledByNestedCfgAttr;
+
+    #[cfg_attr(all(), cfg(any()), tok(UNIT))]
+    pub struct DisabledByMixedCfgAttr;
+
+    #[omit(Clone)]
+    struct Manual;
+}
+
+type MaybeLeaf<'input> = Option<Leaf<'input>>;
+type TwoInputs<'left, 'right> = Pair<Leaf<'left>, Leaf<'right>>;
+
+pub mod borrowing {
+    use recursa::ast_node as nodes;
+    nodes! {
+        struct Hidden {
+            #[lex(pattern = r"[0-9]+")]
+            text: HiddenText,
+        }
+    }
+}
+
+pub mod plain {
+    use recursa::ast_node as nodes;
+    nodes! { struct Hidden; }
+}
+
+declare_nodes! {
+    struct DuplicateNames {
+        borrowed: borrowing::Hidden,
+        plain: plain::Hidden,
+    }
+}
+
+impl<'input> Leaf<'input> {
+    pub fn authored_text(&self) -> &str {
+        self.text.text()
+    }
+}
+
+impl Clone for Manual {
+    fn clone(&self) -> Self {
+        Self
+    }
+}
+"##,
+    )
+    .expect("write declaration matrix grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_one_node::r#type as grammar;
+
+fn assert_clone<T: Clone>() {}
+
+fn main() {
+    assert_clone::<grammar::Leaves<'static>>();
+    assert_clone::<grammar::AliasHolder<'static>>();
+    assert_clone::<grammar::TwoInputHolder<'static>>();
+    assert_clone::<grammar::Choice<grammar::Leaf<'static>>>();
+    assert_clone::<grammar::ChoiceHolder<'static>>();
+    assert_clone::<grammar::Manual>();
+    assert_clone::<grammar::DuplicateNames<'static>>();
+    let leaf = grammar::Leaf {
+        text: grammar::NameText::new("alpha"),
+    };
+    assert_eq!(leaf.authored_text(), "alpha");
+    let _tuple = grammar::Tuple(leaf.clone());
+    let _unit = grammar::Unit;
+    let _named = grammar::Choice::Named { value: leaf.clone() };
+    let _tuple_variant = grammar::Choice::Tuple(leaf.clone());
+    let _unit_variant: grammar::Choice<grammar::Leaf<'static>> = grammar::Choice::Unit;
+    let _choice_holder = grammar::ChoiceHolder {
+        choice: grammar::Choice::Named { value: leaf.clone() },
+    };
+    let _leaves = grammar::Leaves {
+        values: vec![leaf.clone()],
+    };
+    let _alias = grammar::AliasHolder {
+        alias: None,
+    };
+    let _duplicates = grammar::DuplicateNames {
+        borrowed: grammar::borrowing::Hidden {
+            text: grammar::borrowing::HiddenText::new("1"),
+        },
+        plain: grammar::plain::Hidden,
+    };
+}
+"#,
+    )
+    .expect("write declaration matrix consumer");
+
+    assert_success(&run_fixture(&package));
+
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read heap declaration matrix");
+    fs::write(
+        &grammar,
+        source.replacen(
+            "    keyword_matching = sensitive,",
+            "    keyword_matching = sensitive,\n    arena_ast,",
+            1,
+        ),
+    )
+    .expect("select arena declaration output");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_one_node::r#type as grammar;
+
+fn main() {
+    let _ = std::mem::size_of::<grammar::Leaf<'static>>();
+    let _ = std::mem::size_of::<grammar::Tuple<'static>>();
+    let _ = std::mem::size_of::<grammar::Leaves<'static>>();
+    let _ = std::mem::size_of::<grammar::AliasHolder<'static>>();
+    let _ = std::mem::size_of::<grammar::TwoInputHolder<'static>>();
+    let _ = std::mem::size_of::<grammar::ChoiceHolder<'static>>();
+    let _ = std::mem::size_of::<grammar::DuplicateNames<'static>>();
+}
+"#,
+    )
+    .expect("write arena declaration consumer");
+    assert_success(&run_fixture(&package));
+}
+
+#[test]
 fn generated_downstream_code_is_warning_free_under_clippy() {
     let package = scaffold_fixture();
     let output = lint_fixture(&package);
@@ -163,7 +356,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_28", "protocol_999");
+        .replace("protocol_29", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -246,12 +439,11 @@ fn a_view_variant_and_intrinsic_content_token_value_traits_compile_together() {
 
 recursa::tokens! {}
 
-#[derive(recursa::Node, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Entry<'input> {
-    View(
-        #[lex(pattern = r"[A-Za-z]+")]
-        Word<'input>,
-    ),
+recursa::ast_node! {
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Entry {
+        View(#[lex(pattern = r"[A-Za-z]+")] Word),
+    }
 }
 "#,
     )
@@ -287,36 +479,53 @@ fn local_visit_traits_traverse_content_tokens_without_changing_token_defaults() 
 
 recursa::tokens! {}
 
-#[derive(recursa::Node)]
-#[node(derive(Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize))]
-pub struct Entry<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    pub value: WordText<'input>,
+recursa::ast_node! {
+
+    #[node(derive(
+        Pretty,
+        Visit,
+        VisitMut,
+        Arbitrary,
+        serde::Serialize,
+        serde::Deserialize
+    ))]
+    pub struct Entry {
+        #[lex(pattern = r"[A-Za-z]+")]
+        pub value: WordText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
-pub struct Wrapped<'input> {
-    pub value: Box<WordText<'input>>,
+recursa::ast_node! {
+
+    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+    pub struct Wrapped {
+        pub value: boxed!(WordText),
+    }
 }
 
 pub mod nested {
-    #[derive(recursa::Node)]
-    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
-    pub struct Optional<'input> {
-        pub value: Option<Box<super::WordText<'input>>>,
+    recursa::ast_node! {
+
+        #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+        pub struct Optional {
+            pub value: Option<boxed!(super::WordText)>,
+        }
     }
 
-    #[derive(recursa::Node)]
-    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
-    pub struct Repeated<'input> {
-        pub value: Vec<super::WordText<'input>>,
+    recursa::ast_node! {
+
+        #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+        pub struct Repeated {
+            pub value: zero_or_many!(super::WordText),
+        }
     }
 
-    #[derive(recursa::Node)]
-    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
-    pub struct Nonempty<'input> {
-        pub value: recursa::Vec1<super::WordText<'input>>,
+    recursa::ast_node! {
+
+        #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+        pub struct Nonempty {
+            pub value: one_or_many!(super::WordText),
+        }
     }
 }
 "#,
@@ -512,62 +721,80 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Word<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    pub value: WordText<'input>,
+recursa::ast_node! {
+
+    pub struct Word {
+        #[lex(pattern = r"[A-Za-z]+")]
+        pub value: WordText,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(LPAREN, this, RPAREN)]
-pub struct TextList<'input> {
-    #[sep(COMMA)]
-    pub values: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    #[tok(LPAREN, this, RPAREN)]
+    pub struct TextList {
+        #[sep(COMMA)]
+        pub values: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Open {
-    #[tok(LPAREN)]
-    Value,
+recursa::ast_node! {
+
+    pub enum Open {
+        #[tok(LPAREN)]
+        Value,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Star {
-    #[tok(STAR)]
-    Value,
+recursa::ast_node! {
+
+    pub enum Star {
+        #[tok(STAR)]
+        Value,
+    }
 }
 
-#[derive(recursa::Node)]
-pub enum Close {
-    #[tok(RPAREN)]
-    Value,
+recursa::ast_node! {
+
+    pub enum Close {
+        #[tok(RPAREN)]
+        Value,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct StarCall {
-    pub open: Open,
-    pub star: Star,
-    pub close: Close,
+recursa::ast_node! {
+
+    pub struct StarCall {
+        pub open: Open,
+        pub star: Star,
+        pub close: Close,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(TAIL)]
-pub struct Tail;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub struct WordWithOptionalStar<'input> {
-    pub word: Word<'input>,
-    #[presence(STAR)]
-    #[pretty(break_before = soft)]
-    pub star: bool,
+    #[tok(TAIL)]
+    pub struct Tail;
 }
 
-#[derive(recursa::Node)]
-#[tok(LIST)]
-pub struct OptionalTailList<'input> {
-    #[sep(COMMA)]
-    pub values: recursa::Vec1<WordWithOptionalStar<'input>>,
-    pub tail: Option<Tail>,
+recursa::ast_node! {
+
+    pub struct WordWithOptionalStar {
+        pub word: Word,
+        #[presence(STAR)]
+        #[pretty(break_before = soft)]
+        pub star: bool,
+    }
+}
+
+recursa::ast_node! {
+
+    #[tok(LIST)]
+    pub struct OptionalTailList {
+        #[sep(COMMA)]
+        pub values: one_or_many!(WordWithOptionalStar),
+        pub tail: Option<Tail>,
+    }
 }
 "#,
     )
@@ -645,77 +872,101 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Word<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
-    pub value: WordText<'input>,
+recursa::ast_node! {
+
+    pub struct Word {
+        #[lex(pattern = r"[A-Za-z]+")]
+        pub value: WordText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct TightPath<'input> {
-    #[sep(DOT)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct TightPath {
+        #[sep(DOT)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct BeforePath<'input> {
-    #[sep(BEFORE_SEP)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct BeforePath {
+        #[sep(BEFORE_SEP)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AfterPath<'input> {
-    #[sep(AFTER_SEP)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct AfterPath {
+        #[sep(AFTER_SEP)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct AroundPath<'input> {
-    #[sep(AROUND_SEP)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct AroundPath {
+        #[sep(AROUND_SEP)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct WordPath<'input> {
-    #[sep(WORD_SEP)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct WordPath {
+        #[sep(WORD_SEP)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct OpeningPath<'input> {
-    #[sep(OPEN_SEP)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct OpeningPath {
+        #[sep(OPEN_SEP)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct LeadingAroundPath<'input> {
-    #[sep(AROUND_SEP)]
-    #[pretty(separator = leading)]
-    pub parts: recursa::Vec1<WordText<'input>>,
+recursa::ast_node! {
+
+    pub struct LeadingAroundPath {
+        #[sep(AROUND_SEP)]
+        #[pretty(separator = leading)]
+        pub parts: one_or_many!(WordText),
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(TAIL)]
-pub struct Tail;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-pub struct TrailingAroundPath<'input> {
-    #[sep(AROUND_SEP, trailing)]
-    #[pretty(trailing_separator = always)]
-    pub parts: recursa::Vec1<WordText<'input>>,
-    pub tail: Tail,
+    #[tok(TAIL)]
+    pub struct Tail;
 }
 
-#[derive(recursa::Node)]
-#[tok(ITEM_START, this, ITEM_END)]
-pub struct BoundedWord<'input> {
-    pub value: WordText<'input>,
+recursa::ast_node! {
+
+    pub struct TrailingAroundPath {
+        #[sep(AROUND_SEP, trailing)]
+        #[pretty(trailing_separator = always)]
+        pub parts: one_or_many!(WordText),
+        pub tail: Tail,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct BilateralPath<'input> {
-    #[sep(DOT)]
-    pub parts: recursa::Vec1<BoundedWord<'input>>,
+recursa::ast_node! {
+
+    #[tok(ITEM_START, this, ITEM_END)]
+    pub struct BoundedWord {
+        pub value: WordText,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct BilateralPath {
+        #[sep(DOT)]
+        pub parts: one_or_many!(BoundedWord),
+    }
 }
 "#,
     )

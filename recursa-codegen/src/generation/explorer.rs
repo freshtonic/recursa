@@ -1701,6 +1701,7 @@ fn explorer_diagram_plan_arg(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     quote! { None }
 }
 
+/// Emits schema access and traversal for one exact closed Node application.
 pub(super) fn render_node_application_explorer(
     plan: &EmissionPlan,
     explorer_plan: &ExplorerPlan,

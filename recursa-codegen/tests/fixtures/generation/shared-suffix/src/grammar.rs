@@ -23,102 +23,130 @@ recursa::tokens! {
     }
 }
 
-#[derive(recursa::Node)]
-pub struct Ident<'input> {
-    #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    pub text: IdentText<'input>,
+recursa::ast_node! {
+
+    pub struct Ident {
+        #[lex(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+        pub text: IdentText,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct Number<'input> {
-    #[lex(pattern = r"[0-9]+")]
-    pub text: NumberText<'input>,
+recursa::ast_node! {
+
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
 }
 
-/// A call whose variants share the whole call tail: a dot after the first identifier
-/// qualifies the name, a paren opens the call, so the second token decides.
-#[derive(recursa::Node)]
-pub enum FuncCall<'input> {
-    Qualified(QualifiedFuncCall<'input>),
-    Named(NamedFuncCall<'input>),
+recursa::ast_node! {
+    /// A call whose variants share the whole call tail: a dot after the first identifier
+    /// qualifies the name, a paren opens the call, so the second token decides.
+
+    pub enum FuncCall {
+        Qualified(QualifiedFuncCall),
+        Named(NamedFuncCall),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct QualifiedFuncCall<'input> {
-    pub name: QualifiedFuncName<'input>,
-    pub tail: FunctionCallTail<'input>,
+recursa::ast_node! {
+
+    pub struct QualifiedFuncCall {
+        pub name: QualifiedFuncName,
+        pub tail: FunctionCallTail,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct QualifiedFuncName<'input> {
-    pub first: Ident<'input>,
-    pub parts: recursa::Vec1<FuncNamePart<'input>>,
+recursa::ast_node! {
+
+    pub struct QualifiedFuncName {
+        pub first: Ident,
+        pub parts: one_or_many!(FuncNamePart),
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct FuncNamePart<'input> {
-    #[tok(DOT, this)]
-    pub name: Ident<'input>,
+recursa::ast_node! {
+
+    pub struct FuncNamePart {
+        #[tok(DOT, this)]
+        pub name: Ident,
+    }
 }
 
-#[derive(recursa::Node)]
-pub struct NamedFuncCall<'input> {
-    pub name: Ident<'input>,
-    pub tail: FunctionCallTail<'input>,
+recursa::ast_node! {
+
+    pub struct NamedFuncCall {
+        pub name: Ident,
+        pub tail: FunctionCallTail,
+    }
 }
 
-/// The parens are nodes of their own: a fixed-token envelope on a repeated field
-/// attaches to each element, not to the list.
-#[derive(recursa::Node)]
-pub struct FunctionCallTail<'input> {
-    pub open: CallOpen,
-    #[sep(COMMA)]
-    pub args: Vec<FuncArg<'input>>,
-    pub close: CallClose,
+recursa::ast_node! {
+    /// The parens are nodes of their own: a fixed-token envelope on a repeated field
+    /// attaches to each element, not to the list.
+
+    pub struct FunctionCallTail {
+        pub open: CallOpen,
+        #[sep(COMMA)]
+        pub args: zero_or_many!(FuncArg),
+        pub close: CallClose,
+    }
 }
 
-#[derive(recursa::Node)]
-#[tok(LPAREN)]
-pub struct CallOpen;
+recursa::ast_node! {
 
-#[derive(recursa::Node)]
-#[tok(RPAREN)]
-pub struct CallClose;
-
-/// An argument is a named `name => expr` or a bare expression, so the state after
-/// `f ( name` mixes a derivation inside the expression with one that is not, exactly
-/// as pg-sql's `FuncArg` does.
-#[derive(recursa::Node)]
-pub enum FuncArg<'input> {
-    Named(NamedArg<'input>),
-    Positional(Expr<'input>),
+    #[tok(LPAREN)]
+    pub struct CallOpen;
 }
 
-#[derive(recursa::Node)]
-pub struct NamedArg<'input> {
-    pub name: Ident<'input>,
-    #[tok(ARROW, this)]
-    pub value: Expr<'input>,
+recursa::ast_node! {
+
+    #[tok(RPAREN)]
+    pub struct CallClose;
 }
 
-#[derive(recursa::Node)]
-#[pratt]
-pub enum Expr<'input> {
-    Name(Ident<'input>),
-    Number(Number<'input>),
-    #[tok(NULL)]
-    Null,
+recursa::ast_node! {
+    /// An argument is a named `name => expr` or a bare expression, so the state after
+    /// `f ( name` mixes a derivation inside the expression with one that is not, exactly
+    /// as pg-sql's `FuncArg` does.
 
-    #[parse(infix, lbp = 10, rbp = 11)]
-    #[tok(PLUS)]
-    Add(Box<Self>, Box<Self>),
+    pub enum FuncArg {
+        Named(NamedArg),
+        Positional(Expr),
+    }
 }
 
-/// pg-sql's `IndexTarget` shape: a parenthesized expression, a call, or a bare column.
-/// `f` alone is a column and `f(` opens a call, so the second token decides here too.
-#[derive(recursa::Node)]
-pub enum Target<'input> {
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Expr<'input>>),
-    Func(Box<FuncCall<'input>>),
-    Col(Ident<'input>),
+recursa::ast_node! {
+
+    pub struct NamedArg {
+        pub name: Ident,
+        #[tok(ARROW, this)]
+        pub value: Expr,
+    }
+}
+
+recursa::ast_node! {
+
+    #[pratt]
+    pub enum Expr {
+        Name(Ident),
+        Number(Number),
+        #[tok(NULL)]
+        Null,
+
+        #[parse(infix, lbp = 10, rbp = 11)]
+        #[tok(PLUS)]
+        Add(boxed!(Self), boxed!(Self)),
+    }
+}
+
+recursa::ast_node! {
+    /// pg-sql's `IndexTarget` shape: a parenthesized expression, a call, or a bare column.
+    /// `f` alone is a column and `f(` opens a call, so the second token decides here too.
+
+    pub enum Target {
+        Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
+        Func(boxed!(FuncCall)),
+        Col(Ident),
+    }
 }
