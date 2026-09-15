@@ -36,7 +36,7 @@ impl ParserSet {
     pub(super) fn declared(
         _plan: &EmissionPlan,
         lowered: &crate::materialization::LoweredGrammar,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, LrBuildError> {
         Ok(Self {
             parser: RenderedParser {
                 tables: TableDrivenRendering::build(lowered)?,

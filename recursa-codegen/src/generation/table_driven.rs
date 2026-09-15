@@ -149,25 +149,61 @@ pub(super) struct TableDrivenRendering {
     pub(super) dump: String,
 }
 
-/// Joins conflict diagnostics into one generation failure message.
-fn render_diagnostics(diagnostics: &[LrDiagnostic]) -> String {
-    let mut text = format!(
-        "the Recursa parser cannot be generated: {} conflict(s)\n",
-        diagnostics.len()
-    );
-    for diagnostic in diagnostics {
-        text.push_str(&diagnostic.render());
+/// Why the table-driven parser's LALR(1) construction failed to produce tables.
+///
+/// An unresolved conflict in an authored grammar (or a lowering-stage diagnostic to which no
+/// rule or token binds, such as a Pratt binding power with no precedence equivalent) is an
+/// ordinary authoring error, carried structured so the render-stage caller reports it as its
+/// registered code (`RCA0400`, `RCA0401`, `RCA0402` or `RCA0403`) instead of the internal-
+/// invariant `RCA9105`. Every other failure in this boundary is genuinely unexpected, so it
+/// stays free text for that fallback.
+pub(super) enum LrBuildError {
+    /// Every unresolved conflict or lowering diagnostic the LR analysis reported, in the
+    /// analysis's own deterministic `(state, lookahead)` order.
+    Diagnostics(Vec<LrDiagnostic>),
+    /// An unexpected internal invariant violation.
+    Internal(String),
+}
+
+impl From<String> for LrBuildError {
+    /// Classifies a plain-text failure from elsewhere in this boundary (table packing, plan
+    /// rendering, ...) as an internal invariant violation, so the many helpers below that
+    /// already return `Result<_, String>` keep working unchanged behind `?`.
+    fn from(detail: String) -> Self {
+        Self::Internal(detail)
     }
-    text
+}
+
+#[cfg(test)]
+impl LrBuildError {
+    /// Renders this failure as free text: joined conflict/lowering diagnostics, or the internal
+    /// detail unchanged. Only test code, which cares solely about the message, collapses the
+    /// structured `Diagnostics` case back to text this way; the render-stage boundary
+    /// (`generation.rs`'s `render_lr_parser`) keeps it structured.
+    pub(super) fn render(&self) -> String {
+        match self {
+            Self::Diagnostics(diagnostics) => {
+                let mut text = format!(
+                    "the Recursa parser cannot be generated: {} conflict(s)\n",
+                    diagnostics.len()
+                );
+                for diagnostic in diagnostics {
+                    text.push_str(&diagnostic.render());
+                }
+                text
+            }
+            Self::Internal(detail) => detail.clone(),
+        }
+    }
 }
 
 impl TableDrivenRendering {
     /// Runs the analysis and indexes its rules by node application and content token.
-    pub(super) fn build(lowered: &LoweredGrammar) -> Result<Self, String> {
+    pub(super) fn build(lowered: &LoweredGrammar) -> Result<Self, LrBuildError> {
         let analysis = LrAnalysis::from_lowered(lowered, AutomatonOptions::default())
-            .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
+            .map_err(LrBuildError::Diagnostics)?;
         if !analysis.diagnostics.is_empty() {
-            return Err(render_diagnostics(&analysis.diagnostics));
+            return Err(LrBuildError::Diagnostics(analysis.diagnostics));
         }
         let expected_atoms = expected_atoms(&lowered.grammar)?;
         let map = &lowered.lowering_map;
@@ -228,12 +264,12 @@ impl TableDrivenRendering {
                     Some(application) => Some(DispatchTarget::Application(*application)),
                     None if rule.value_pops <= 1 => None,
                     None => {
-                        return Err(format!(
+                        return Err(LrBuildError::Internal(format!(
                             "table-driven generation cannot reduce `{}`: a normalized type without \
                              a node application carries {} values",
                             grammar.render_rule(crate::lr::RuleId::new(index)),
                             rule.value_pops
-                        ));
+                        )));
                     }
                 },
                 RuleAction::Envelope { .. }
