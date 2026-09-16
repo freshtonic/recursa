@@ -1,8 +1,9 @@
 # Flat AST design
 
 Status: tiered storage design settled on 2026-09-16. Implementation follows the order below and
-has reached the generated flat types, handles, and layout assertions. Mutation and compaction are
-a later milestone.
+has reached flat construction: the generated flat types, handles, and layout assertions, plus the
+flat reduce actions and the `parse_flat` entry points that build a result. Traversal, Pretty,
+mutation and compaction are later milestones.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -31,7 +32,8 @@ In scope:
 - Storage primitives in `recursa-core`, tested under Miri.
 - The `flat` grammar-root flag and the `#[flat(...)]` declaration attribute.
 - Generated flat Node types, handles, and layout assertions.
-- Flat reduce actions and `parse_flat` entry points, with optional per-Node spans.
+- Flat reduce actions and `parse_flat` entry points, with optional per-Node spans, built on the
+  LR extent stack.
 - `NodeRef`, `children`, `Visitor`, and a debug post-order checker.
 - Flat Pretty rendering.
 - The `pg-sql-flat` benchmark entry and correctness evidence.
@@ -168,10 +170,18 @@ The generated owner is a grammar-local `FlatAst<'input>` with private fields.
 
 ## Construction
 
-Flat reduce actions run on the existing LR automaton and value stack. They push handles, not
-values. A parent is reduced after its children, so every typed pool is in post-order for a fresh
-parse. This is a documented contract: for every Node in a typed pool, every same-pool child has
-a smaller index. A debug checker walks `children` over every Node and asserts it.
+Flat reduce actions run on the existing LR automaton, tables and value stack. They push handles,
+not values. A flat action pops and pushes exactly as many values as the nested action of the same
+rule, so the packed `value_pops` table serves both and the two dispatchers cover the same rules.
+A parent is reduced after its children, so every typed pool is in post-order for a fresh parse.
+This is a documented contract: for every Node in a typed pool, every same-pool child has a
+smaller index. A debug checker walks `children` over every Node and asserts it.
+
+`Type::parse_flat` and `Type::parse_flat_without_spans` exist beside `parse` for every Node
+application that has one. They return the grammar's own `FlatAst` rooted at that application's
+flat type. Both run the same automaton loop as `parse`, so diagnostics, prefix acceptance and
+consumed input are identical, and a failure restores the input cursor and drops every store.
+`boxed!` disappears from the flat actions: every child is already a handle.
 
 Lists are built on one scratch stack owned by the parse. Each list-step reduce pushes one
 handle; when the parent rule consumes the list, the action copies the run into the list store
@@ -180,8 +190,25 @@ list receives its next item, so open lists nest.
 
 Content-token reduces push the token's text into the text pool and return a text handle.
 
+A fixed-token unit Node carries no value on the value stack, in the flat path exactly as in the
+nested one. Its parent allocates it and keeps the handle.
+
 Exhausting a handle's `u32` range is a checked panic with a clear message in every build, as ADR
 0009 requires. It is distinct from allocation failure.
+
+### The extent stack
+
+Per-Node spans come from one runtime fact a later step must keep. When a parse tracks extents,
+and only then, the LR loop keeps a stack of source extents parallel to its state stack: a shift
+pushes the shifted token's span, and a reduce replaces its popped frames' extents with the extent
+that covers them, so the goto frame carries the extent of the whole rule. A frame that covers no
+token holds `Span::SYNTHETIC` and merging skips it. A reduce action reads `Reduction::extent` for
+its own rule and `Reduction::symbol_extent` or `Reduction::symbol_range_extent` for one
+right-hand-side symbol, which is how a parent gives an allocated unit Node a span.
+
+Only a flat parse asks for extents. The request that asks for them is the one that suppresses
+occurrence provenance, so the two never run together and nested parsing allocates no extent
+stack and behaves exactly as before.
 
 ## Traversal
 
@@ -252,10 +279,10 @@ flowchart TD
 ## Implementation order
 
 1. Storage primitives in `recursa-core`: handles, typed pool, shared pool, list store, text
-   pool, side table. Unit tests and Miri.
+   pool, side table. Unit tests and Miri. Done.
 2. The `flat` root flag, the `#[flat(...)]` attribute, and generated flat types with size and
-   alignment assertions.
-3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans.
+   alignment assertions. Done.
+3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans. Done.
 4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker.
 5. Flat Pretty.
 6. The `pg-sql-flat` bench entry and correctness evidence.

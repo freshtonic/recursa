@@ -7,6 +7,12 @@
 //! so that a content-token rule can read it, and the [`crate::lr::ValueStack`], which holds only semantic
 //! values, so fixed tokens cost the value stack nothing.
 //!
+//! [`crate::lr::run_flat`] is the same loop for flat construction: it hands every action a Flat
+//! AST builder beside the reduction and returns the root handle the actions built. A parse that
+//! tracks extents ([`crate::parsed::ParseContext::tracks_extents`], which only flat construction
+//! asks for) also keeps a third stack of one source extent per state-stack frame, which gives
+//! each flat Node its span. Nested parsing never allocates it.
+//!
 //! The token feed applies the grammar's lookahead filters (`docs/table-driven-parsing.md`,
 //! section 5) at the one place the loop reads a terminal: a record whose kind is a filtered
 //! token, followed by a record whose kind is one of its triggers, is looked up as the merged
@@ -23,9 +29,9 @@
 //! restores the input cursor and drops every partially built value through the value stack's drop
 //! stack.
 
-use crate::ParseError;
 use crate::input::TokenRecord;
 use crate::parsed::{ContentText, Occurrence, ParseContext, ParsedNode};
+use crate::{ParseError, Span};
 
 pub mod lac;
 pub mod provenance;
@@ -65,6 +71,11 @@ pub struct Reduction<'reduction, 'context, 'input, 'arena, A> {
     values: &'reduction mut ValueStack,
     /// The popped frames in right-hand-side order.
     frames: &'reduction [Frame],
+    /// The extent of each popped frame, in the same order, when the parse tracks extents.
+    ///
+    /// Flat construction reads it to give a Node the extent of its own rule; nested parsing
+    /// never tracks extents, so the field is `None` there and no extent work runs.
+    extents: Option<&'reduction [Span]>,
     /// The parse context, for token text and the builder.
     context: &'reduction mut ParseContext<'context, 'input, 'arena, A>,
     /// Whether this parse keeps an occurrence stack.
@@ -76,6 +87,34 @@ impl<'input, 'arena, A> Reduction<'_, '_, 'input, 'arena, A> {
     /// mandatory, or the grammar has a mandatory site. When false no occurrence work runs.
     pub fn capturing(&self) -> bool {
         self.capturing
+    }
+
+    /// Returns the source extent of the whole rule, or `None` without extent tracking.
+    ///
+    /// The extent runs from the first source token the rule's symbols cover to the last. A rule
+    /// that covers no token, such as an empty list alternative, has no extent. Flat reduce
+    /// actions store it as the constructed Node's span.
+    pub fn extent(&self) -> Option<Span> {
+        merge_extents(self.extents?)
+    }
+
+    /// Returns the source extent of one right-hand-side symbol, counted from zero.
+    ///
+    /// A flat reduce action uses it for a child it allocates itself, such as a fixed-token unit
+    /// Node that carries no value on the value stack. The result is `None` without extent
+    /// tracking, out of range, or when the symbol covers no token.
+    pub fn symbol_extent(&self, index: usize) -> Option<Span> {
+        self.symbol_range_extent(index, 1)
+    }
+
+    /// Returns the source extent of `len` right-hand-side symbols from `start`.
+    ///
+    /// One grammar site may occupy several symbols, because the lowering inlines an attachment's
+    /// own fixed tokens into its parent's rule. A flat reduce action gives an allocated child the
+    /// extent of its whole site.
+    pub fn symbol_range_extent(&self, start: usize, len: usize) -> Option<Span> {
+        let extents = self.extents?;
+        merge_extents(extents.get(start..start.checked_add(len)?)?)
     }
 
     /// Pushes the value the rule built.
@@ -158,6 +197,70 @@ impl<'input, 'arena, A> Reduction<'_, '_, 'input, 'arena, A> {
     }
 }
 
+/// The reduce dispatcher the automaton loop calls for one rule.
+///
+/// The loop needs two shapes of dispatcher: nested parsing's, which owns everything it builds on
+/// the value stack, and flat construction's, which also appends to a Flat AST builder the parse
+/// owns. A trait carries both without a wrapping closure, because a closure over a generic
+/// dispatcher forces the input and arena lifetimes to unify on the workspace's minimum supported
+/// Rust version.
+trait Reducer<'input, 'arena, A> {
+    /// Runs the generated action of `rule`.
+    fn reduce(
+        &mut self,
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, 'input, 'arena, A>,
+    ) -> Result<(), ParseError>;
+}
+
+impl<'input, 'arena, A, F> Reducer<'input, 'arena, A> for F
+where
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>) -> Result<(), ParseError>,
+{
+    fn reduce(
+        &mut self,
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, 'input, 'arena, A>,
+    ) -> Result<(), ParseError> {
+        self(rule, reduction)
+    }
+}
+
+/// One flat construction dispatcher: the generated action and the builder it appends to.
+struct FlatReducer<'builder, B, F> {
+    /// The Flat AST under construction, borrowed for the whole parse.
+    builder: &'builder mut B,
+    /// The generated dispatcher, which takes the builder as a third argument.
+    reduce: F,
+}
+
+impl<'input, 'arena, A, B, F> Reducer<'input, 'arena, A> for FlatReducer<'_, B, F>
+where
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>, &mut B) -> Result<(), ParseError>,
+{
+    fn reduce(
+        &mut self,
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, 'input, 'arena, A>,
+    ) -> Result<(), ParseError> {
+        (self.reduce)(rule, reduction, self.builder)
+    }
+}
+
+/// Merges the extents of a run of frames into the extent that covers all of them.
+///
+/// [`Span::SYNTHETIC`] marks a frame that covers no source token: the start state, a goto frame
+/// of an empty rule, and any frame whose own rule covered nothing. Such frames are skipped, so a
+/// run of them merges to `None`. The result is `None` as well when the merged offsets cannot
+/// form a checked [`Span`], which keeps the overflow behaviour of [`Span::new`] rather than
+/// inventing a range.
+fn merge_extents(extents: &[Span]) -> Option<Span> {
+    let concrete = || extents.iter().copied().filter(|span| !span.is_synthetic());
+    let start = concrete().next()?.start();
+    let end = concrete().next_back()?.end();
+    Span::new(start as usize, end as usize).ok()
+}
+
 /// Runs the automaton from a grammar type's start state and returns its value with the
 /// provenance the parse retained.
 ///
@@ -176,10 +279,57 @@ pub fn run<'input, 'arena, T, A, F>(
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
-    mut reduce: F,
+    reduce: F,
 ) -> Result<ParsedNode<'arena, T>, ParseError>
 where
     F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>) -> Result<(), ParseError>,
+{
+    let (value, occurrence) =
+        run_transactional::<T, A, _>(context, tables, start_state, accept_rule, reduce)?;
+    Ok(ParsedNode::from_parts(value, occurrence))
+}
+
+/// Runs the automaton for one flat construction and returns the root handle its reduce actions
+/// built.
+///
+/// This is `run` for a Flat AST: `builder` is the construction state every flat reduce action
+/// appends to, and it reaches the action as a third argument instead of through the value stack.
+/// The loop, the tables, the diagnostics and the transactional restore are the ones nested
+/// parsing uses, so both representations accept the same inputs and consume the same tokens. A
+/// flat parse retains no occurrence provenance (`docs/adr/0008-keep-flat-asts-semantic-only.md`),
+/// which the context guarantees, and the returned occurrence is therefore dropped.
+pub fn run_flat<'input, 'arena, T, A, B, F>(
+    context: &mut ParseContext<'_, 'input, 'arena, A>,
+    tables: &LrTables,
+    start_state: u32,
+    accept_rule: u32,
+    builder: &mut B,
+    reduce: F,
+) -> Result<T, ParseError>
+where
+    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>, &mut B) -> Result<(), ParseError>,
+{
+    let (value, _) = run_transactional::<T, A, _>(
+        context,
+        tables,
+        start_state,
+        accept_rule,
+        FlatReducer { builder, reduce },
+    )?;
+    Ok(value)
+}
+
+/// Drives the automaton under the transactional guarantee both entry points promise: on failure
+/// the input cursor is restored and every partial value is dropped.
+fn run_transactional<'input, 'arena, T, A, R>(
+    context: &mut ParseContext<'_, 'input, 'arena, A>,
+    tables: &LrTables,
+    start_state: u32,
+    accept_rule: u32,
+    mut reduce: R,
+) -> Result<(T, Occurrence<'arena>), ParseError>
+where
+    R: Reducer<'input, 'arena, A>,
 {
     let checkpoint = context.cursor();
     let mut values = ValueStack::new();
@@ -195,9 +345,9 @@ where
         &mut values,
         &mut occurrences,
     ) {
-        Ok((value, occurrence)) => {
+        Ok(parsed) => {
             debug_assert_eq!(values.depth(), 0, "accept leaves exactly one value");
-            Ok(ParsedNode::from_parts(value, occurrence))
+            Ok(parsed)
         }
         Err(error) => {
             values.unwind();
@@ -229,7 +379,13 @@ fn unexpected_here<A>(
     context.unexpected(&expected)
 }
 
-/// The automaton loop proper; `run` wraps it with the transactional restore.
+/// The automaton loop proper; `run_transactional` wraps it with the transactional restore.
+///
+/// A parse that tracks extents ([`ParseContext::tracks_extents`], which only a flat parse asks
+/// for) keeps one more stack beside the state stack: the source extent of each frame. A shift
+/// pushes the shifted token's span and a reduce replaces its popped frames' extents with the
+/// extent that covers them, so the goto frame carries the extent of the whole rule. A reduce
+/// action reads it through [`Reduction::extent`]. Nested parsing never allocates that stack.
 ///
 /// `tail` tracks whether the current reduction spine requires a following token to belong to the
 /// root FOLLOW. After the last shift, reductions up to acceptance are exactly the spine of last
@@ -239,17 +395,17 @@ fn unexpected_here<A>(
 /// rule whose first symbol is its own left-hand side, which is what an operator variant of an
 /// expression Node lowers to — clears it, because such a reduce completes an operand of an
 /// enclosing expression and what follows belongs to whatever encloses it.
-fn drive<'input, 'arena, T, A, F>(
+fn drive<'input, 'arena, T, A, R>(
     context: &mut ParseContext<'_, 'input, 'arena, A>,
     tables: &LrTables,
     start_state: u32,
     accept_rule: u32,
-    reduce: &mut F,
+    reduce: &mut R,
     values: &mut ValueStack,
     occurrences: &mut Option<OccurrenceStack<'arena>>,
 ) -> Result<(T, Occurrence<'arena>), ParseError>
 where
-    F: FnMut(u32, &mut Reduction<'_, '_, 'input, 'arena, A>) -> Result<(), ParseError>,
+    R: Reducer<'input, 'arena, A>,
 {
     let decoded = tables.decoded();
     let end_marker = tables.end_marker();
@@ -260,6 +416,13 @@ where
     states.push(Frame {
         state: start_state,
         token: NO_TOKEN,
+    });
+    // One extent per state-stack frame, or nothing at all when the parse does not track them.
+    // The start frame covers no token, so it starts synthetic.
+    let mut extents = context.tracks_extents().then(|| {
+        let mut extents = Vec::with_capacity(INITIAL_STATE_CAPACITY);
+        extents.push(Span::SYNTHETIC);
+        extents
     });
     // Keep bison's `yystate` shape: the current state lives in a local as well as at the top of
     // the stack, so the action loop does not reload the frame it just pushed.
@@ -290,6 +453,10 @@ where
                 if let Some(stack) = occurrences.as_mut() {
                     let record = shifted.expect("a shift consumes the lookahead it read");
                     stack.shift(context, token, record.span)?;
+                }
+                if let Some(stack) = extents.as_mut() {
+                    let record = shifted.expect("a shift consumes the lookahead it read");
+                    stack.push(record.span);
                 }
                 states.push(Frame {
                     state: target,
@@ -335,11 +502,17 @@ where
                 let mut reduction = Reduction {
                     values,
                     frames: &states[kept..],
+                    extents: extents.as_ref().map(|stack| &stack[kept..]),
                     context,
                     capturing: occurrences.is_some(),
                 };
                 if rule_info.has_reduce_action {
-                    reduce(rule, &mut reduction)?;
+                    reduce.reduce(rule, &mut reduction)?;
+                }
+                if let Some(stack) = extents.as_mut() {
+                    let merged = merge_extents(&stack[kept..]).unwrap_or(Span::SYNTHETIC);
+                    stack.truncate(kept);
+                    stack.push(merged);
                 }
                 debug_assert!(
                     values.depth() == depth - value_pops
@@ -779,5 +952,99 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), ParseErrorKind::InvalidTokenSpan);
         assert_eq!(input.cursor(), 0);
         assert_eq!(live.get(), 0);
+    }
+
+    /// Records every reduced rule with its whole-rule extent and its first symbol's extent, and
+    /// keeps a value-free stack so the log is the only output.
+    fn record_extents(
+        rule: u32,
+        reduction: &mut Reduction<'_, '_, '_, '_, ExtentLog>,
+    ) -> Result<(), ParseError> {
+        let show = |extent: Option<Span>| match extent {
+            Some(span) => format!("{}..{}", span.start(), span.end()),
+            None => "-".to_owned(),
+        };
+        let line = format!(
+            "{rule}:{} first={}",
+            show(reduction.extent()),
+            show(reduction.symbol_extent(0)),
+        );
+        reduction.builder().borrow_mut().push(line);
+        // SAFETY: every rule of the textbook grammar pushes and pops the same unit value.
+        unsafe {
+            match rule {
+                1 | 3 => {
+                    reduction.pop::<()>();
+                    reduction.pop::<()>();
+                    reduction.push(());
+                }
+                6 => reduction.push(()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The reduce log one extent-tracking parse writes.
+    type ExtentLog = Rc<std::cell::RefCell<Vec<String>>>;
+
+    /// Runs the textbook automaton over `source` with the extent stack on, and returns the log.
+    #[cfg(feature = "spans")]
+    fn extents_of(source: &str) -> Vec<String> {
+        let log: ExtentLog = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let lexed = lex(source);
+        let mut input = lexed.input_with_builder(&GRAMMAR, log.clone());
+        crate::parsed::test_context_flat(&mut input, |context| {
+            assert!(context.tracks_extents(), "a flat request tracks extents");
+            assert!(
+                !context.captures_provenance(true),
+                "a flat parse keeps no occurrence stack even with a mandatory site"
+            );
+            run_flat::<(), _, (), _>(context, &TEXTBOOK, 0, 0, &mut (), |rule, reduction, ()| {
+                record_extents(rule, reduction)
+            })
+        })
+        .expect("the textbook input parses");
+        log.borrow().clone()
+    }
+
+    #[test]
+    #[cfg(feature = "spans")]
+    fn an_extent_tracking_parse_gives_every_rule_the_source_range_of_its_symbols() {
+        // `(2+3)*4`: a token rule takes its own token and a parent covers its first child's
+        // start to its last child's end. The textbook tables mark `E -> T`, `T -> F` and
+        // `F -> ( E )` as rules without a reduce action, so they never reach the log; rule 3's
+        // first symbol proves the extent still travelled through them, because the `T` of
+        // `T -> T * F` covers the whole parenthesized group.
+        assert_eq!(
+            extents_of("(2+3)*4"),
+            [
+                "6:1..2 first=1..2",
+                "6:3..4 first=3..4",
+                "1:1..4 first=1..2",
+                "6:6..7 first=6..7",
+                "3:0..7 first=0..5",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_parse_without_extent_tracking_reports_no_extent_at_all() {
+        // The ordinary nested requests never allocate the extent stack, so every reduce sees
+        // `None` and pays nothing.
+        let log: ExtentLog = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let lexed = lex("2+3");
+        let mut input = lexed.input_with_builder(&GRAMMAR, log.clone());
+        crate::parsed::test_context(&mut input, |context| {
+            assert!(!context.tracks_extents());
+            run_flat::<(), _, (), _>(context, &TEXTBOOK, 0, 0, &mut (), |rule, reduction, ()| {
+                record_extents(rule, reduction)
+            })
+        })
+        .expect("the textbook input parses");
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["6:- first=-", "6:- first=-", "1:- first=-"],
+        );
     }
 }

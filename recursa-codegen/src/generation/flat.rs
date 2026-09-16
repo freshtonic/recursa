@@ -182,7 +182,10 @@ pub(super) fn flat_application_type(
 ///
 /// A flat Node holds a `Text<K>` handle rather than the text itself, and `Text<K>` places no bound
 /// on `K`, so the token type is named at `'static` to keep the flat Node lifetime-free.
-fn content_token_static_type(plan: &EmissionPlan, token: ContentTokenId) -> Result<Type, String> {
+pub(super) fn content_token_static_type(
+    plan: &EmissionPlan,
+    token: ContentTokenId,
+) -> Result<Type, String> {
     let index = plan
         .tokens
         .iter()
@@ -211,15 +214,43 @@ fn flat_field_type(
     parameters: &[Ident],
     projection: &SemanticParseProjection,
 ) -> Result<Type, String> {
+    let SemanticParseProjection::Direct { wrappers, .. } = projection else {
+        return Ok(syn::parse_quote!(bool));
+    };
+    let base = flat_terminal_type(plan, facade, parameters, projection)?
+        .ok_or_else(|| "a direct field projection always has a flat terminal type".to_owned())?;
+    Ok(wrappers
+        .iter()
+        .rev()
+        .filter(|wrapper| !matches!(wrapper, FieldWrapper::Boxed))
+        .fold(base, |ty, wrapper| match wrapper {
+            FieldWrapper::Boxed => ty,
+            FieldWrapper::Optional => syn::parse_quote!(Option<#ty>),
+            FieldWrapper::ZeroOrMore => syn::parse_quote!(#facade::__private::List<#ty>),
+            FieldWrapper::OneOrMore => syn::parse_quote!(#facade::__private::List1<#ty>),
+        }))
+}
+
+/// Maps one authored semantic field's terminal to the flat type that stores it, before the
+/// authored cardinality wraps it.
+///
+/// A Node child becomes a `Handle<Flat{Ident}>` and a content token a `Text<K>`; a presence field
+/// has no terminal at all and returns `None`. Flat construction reads the same mapping, so a
+/// reduce action spells the exact type the field holds instead of relying on inference.
+pub(super) fn flat_terminal_type(
+    plan: &EmissionPlan,
+    facade: &Ident,
+    parameters: &[Ident],
+    projection: &SemanticParseProjection,
+) -> Result<Option<Type>, String> {
     let SemanticParseProjection::Direct {
         terminal,
         terminal_node,
         explorer_terminal,
-        wrappers,
         ..
     } = projection
     else {
-        return Ok(syn::parse_quote!(bool));
+        return Ok(None);
     };
     let base: Type = match (terminal_node, explorer_terminal) {
         (_, ExplorerTerminalPlan::Content(token)) => {
@@ -244,16 +275,7 @@ fn flat_field_type(
             syn::parse_quote!(#facade::__private::Handle<#parameter>)
         }
     };
-    Ok(wrappers
-        .iter()
-        .rev()
-        .filter(|wrapper| !matches!(wrapper, FieldWrapper::Boxed))
-        .fold(base, |ty, wrapper| match wrapper {
-            FieldWrapper::Boxed => ty,
-            FieldWrapper::Optional => syn::parse_quote!(Option<#ty>),
-            FieldWrapper::ZeroOrMore => syn::parse_quote!(#facade::__private::List<#ty>),
-            FieldWrapper::OneOrMore => syn::parse_quote!(#facade::__private::List1<#ty>),
-        }))
+    Ok(Some(base))
 }
 
 /// One flat field: its construction position, optional name, visibility, and flat type.

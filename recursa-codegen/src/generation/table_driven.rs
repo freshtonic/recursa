@@ -77,7 +77,7 @@ pub(super) const LR_TABLE_ASSET_NAMES: [&str; 14] = [
 
 /// What a block of contiguous rules reduces to.
 #[derive(Clone, Copy, Debug)]
-enum DispatchTarget {
+pub(super) enum DispatchTarget {
     /// A node application's reduce function.
     Application(MaterializedApplicationId),
     /// A content token's reduce function.
@@ -85,14 +85,17 @@ enum DispatchTarget {
 }
 
 /// One arm of the root dispatcher: an inclusive rule range and its target.
+///
+/// [`super::table_driven_flat`] renders the flat dispatcher from the same arms, so both
+/// dispatchers cover exactly the same rules.
 #[derive(Clone, Copy, Debug)]
-struct DispatchArm {
+pub(super) struct DispatchArm {
     /// First rule of the block.
-    first: u32,
+    pub(super) first: u32,
     /// Last rule of the block.
-    last: u32,
+    pub(super) last: u32,
     /// Where the block's rules are reduced.
-    target: DispatchTarget,
+    pub(super) target: DispatchTarget,
 }
 
 /// The table facts one grammar type's parse impl needs.
@@ -374,24 +377,58 @@ impl TableDrivenRendering {
     }
 
     /// Reports whether a right-hand-side symbol pushes a value.
-    fn symbol_carries_value(&self, symbol: Symbol) -> bool {
+    pub(super) fn symbol_carries_value(&self, symbol: Symbol) -> bool {
         match symbol {
             Symbol::Terminal(_) => false,
             Symbol::Nonterminal(id) => self.carries_value[id.index()],
         }
     }
+
+    /// Reports whether one grammar type's own symbol pushes a value; a type inlined as a
+    /// terminal does not, so its parent names or allocates the value itself.
+    pub(super) fn type_carries_value(&self, type_id: TypeId) -> bool {
+        self.type_carries_value
+            .get(&type_id)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Returns the node application one normalized grammar type stands for.
+    pub(super) fn application_of_type(&self, type_id: TypeId) -> Option<MaterializedApplicationId> {
+        self.application_by_type.get(&type_id).copied()
+    }
+
+    /// Returns the content token one normalized grammar type stands for.
+    pub(super) fn token_of_type(&self, type_id: TypeId) -> Option<ContentTokenId> {
+        self.token_by_type.get(&type_id).copied()
+    }
+
+    /// Returns the helper and envelope rules the root dispatcher reduces itself.
+    pub(super) fn root_rules(&self) -> &[(u32, Rule)] {
+        &self.root_rules
+    }
+
+    /// Returns the dispatcher arms in ascending rule order.
+    pub(super) fn dispatch_arms(&self) -> &[DispatchArm] {
+        &self.arms
+    }
 }
 
 /// One semantically distinct action of a node application and all grammar-wide rules using it.
-struct ApplicationReduceAction<'a> {
+pub(super) struct ApplicationReduceAction<'a> {
     /// Grammar-wide rule identities routed to this action.
-    rules: Vec<u32>,
+    pub(super) rules: Vec<u32>,
     /// One representative rule from which the action body is rendered.
-    rule: &'a Rule,
+    pub(super) rule: &'a Rule,
 }
 
 /// Coalesces context-cloned rules that execute the same node construction.
-fn application_reduce_actions(tables: &ApplicationTables) -> Vec<ApplicationReduceAction<'_>> {
+///
+/// The flat renderer coalesces the same way, so a flat action index always names the same rules
+/// as the nested action index beside it.
+pub(super) fn application_reduce_actions(
+    tables: &ApplicationTables,
+) -> Vec<ApplicationReduceAction<'_>> {
     let mut positions = HashMap::<&RuleAction, usize>::new();
     let mut actions = Vec::<ApplicationReduceAction<'_>>::new();
     for (global_rule, rule) in &tables.rules {
@@ -458,7 +495,7 @@ fn rule_has_reduce_action(
 }
 
 /// The lifetime name every generated parse impl uses for the input.
-fn input_lifetime() -> syn::Lifetime {
+pub(super) fn input_lifetime() -> syn::Lifetime {
     syn::parse_quote!('__recursa_input)
 }
 
@@ -788,6 +825,7 @@ pub(super) fn render_root_items(
     let safety = "Reduce actions of the helper nonterminals and presence envelopes. SAFETY: each \
                   `pop` names the type the child rule's action pushed for the same grammar \
                   symbol, spelled through the element's node type or content-token path.";
+    let flat_dispatcher = super::table_driven_flat::render_flat_dispatcher(plan, lr)?;
     Ok(quote! {
         #[doc(hidden)]
         pub(crate) mod __recursa_lr {
@@ -812,6 +850,8 @@ pub(super) fn render_root_items(
             }
 
             #(#root_functions)*
+
+            #flat_dispatcher
         }
     })
 }
@@ -1055,6 +1095,13 @@ pub(super) fn render_node_application(
         .collect::<Result<Vec<_>, _>>()?;
     let shims = actions.iter().map(|(shim, _)| shim);
     let methods = actions.iter().map(|(_, method)| method);
+    let flat_items = super::table_driven_flat::render_node_application_flat(
+        plan,
+        node,
+        application,
+        lr,
+        parser,
+    )?;
     Ok(quote! {
         #parse_impl
 
@@ -1063,6 +1110,8 @@ pub(super) fn render_node_application(
         impl #helper_impl_generics #ty #helper_where_clause {
             #(#methods)*
         }
+
+        #flat_items
     })
 }
 
@@ -1286,7 +1335,7 @@ fn render_field_value(
 }
 
 /// Finds the resolved variant a lowered alternative declaration stands for.
-fn plan_variant(
+pub(super) fn plan_variant(
     lr: &TableDrivenRendering,
     application: &NodeApplicationParsePlan,
     declaration: crate::DeclId,
@@ -1392,9 +1441,11 @@ pub(super) fn render_token_items(
             }
         }
     };
+    let flat_items = super::table_driven_flat::render_token_flat_items(plan, token);
     quote! {
         #parse_impl
         #reducer
+        #flat_items
     }
 }
 
