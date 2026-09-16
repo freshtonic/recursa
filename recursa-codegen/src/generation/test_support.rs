@@ -894,7 +894,8 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
         unreachable!("selected fixture semantic field is direct")
     };
     *opaque_provenance = !*opaque_provenance;
-    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens)
+        .expect("fixture-derived Pretty plan has a reachable grouping atom");
 
     let authority_after_corruption =
         authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
@@ -2022,7 +2023,8 @@ recursa::ast_node! {
             .expect("fixture contains an attached word-separated repetition");
     assert_eq!(separator, "AND");
     *separator = "and".to_owned();
-    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens)
+        .expect("fixture-derived Pretty plan has a reachable grouping atom");
 
     assert_ne!(Some(plan.pretty.clone()), authority);
     assert!(

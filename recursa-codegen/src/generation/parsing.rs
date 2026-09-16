@@ -128,6 +128,116 @@ pub(super) struct VariantParsePlan {
     pub(super) capture: Option<PlannedCapturePolicy>,
     /// Formatting hints retained for shared projections.
     pub(super) pretty: PrettyHints,
+    /// Declared `precedence { ... }` level and associativity for a plain enum variant's rule;
+    /// `None` for every Pratt variant, whose level instead comes from its [`PrattPosition`].
+    pub(super) declared_precedence: Option<DeclaredVariantLevel>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Declared `precedence { ... }` level and associativity assigned to one plain enum variant's
+/// rule under the bison-style model that [`crate::lr::declared_precedence`] applies to the LR
+/// tables: a `#[parse(prec = NAME)]` override on the variant, else on its Node, else the last
+/// fixed token in the variant's authored element sequence, tokens attached to fields included,
+/// that names a declared level.
+pub(super) struct DeclaredVariantLevel {
+    /// Zero-based ordinal into the authored `precedence` block, lowest to highest; a higher
+    /// ordinal binds tighter.
+    pub(super) ordinal: u32,
+    /// The level's associativity.
+    pub(super) associativity: PrecedenceAssociativity,
+}
+
+/// Computes the declared level a plain enum variant's rule takes, mirroring
+/// `lr::declared_precedence::apply`'s rule-precedence assignment so Pretty's parenthesization
+/// and the LR resolver never disagree about a rule's level.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps override precedence and terminal-scanning precedence beside one another so
+/// the bison "variant, then Node, then last declared terminal" order stays visibly total.
+/// Invariants: a variant override wins over its Node's, which wins over the last authored
+/// terminal with a declared level; a later authored terminal shadows an earlier one exactly as
+/// bison's own last-terminal rule does.
+/// Phases: checks the variant override, then the Node override, then scans authored elements
+/// left to right, including tokens attached to fields, for the last terminal with a level.
+pub(super) fn declared_variant_level(
+    source: &SourceModel,
+    owner_node: NodeId,
+    resolved_variant: ResolvedVariantId,
+    elements: &[GrammarElement],
+) -> Option<DeclaredVariantLevel> {
+    if source.precedence.is_empty() {
+        return None;
+    }
+    let level_of = |level: PrecedenceLevelId| DeclaredVariantLevel {
+        ordinal: level.get(),
+        associativity: source.precedence[level.index()].associativity,
+    };
+    let override_level = source
+        .precedence_overrides
+        .iter()
+        .find(|over| {
+            matches!(
+                over.owner,
+                PrecedenceOwner::Variant(candidate) if candidate == resolved_variant
+            )
+        })
+        .or_else(|| {
+            source.precedence_overrides.iter().find(|over| {
+                matches!(over.owner, PrecedenceOwner::Type(candidate) if candidate == owner_node)
+            })
+        });
+    if let Some(over) = override_level {
+        return Some(level_of(over.level));
+    }
+    let level_of_token = |definition: TokenDefinitionId| {
+        source
+            .precedence
+            .iter()
+            .enumerate()
+            .find(|(_, level)| {
+                level.kinds.iter().any(
+                    |kind| matches!(kind, PrecedenceKindReference::Token(candidate) if *candidate == definition),
+                )
+            })
+            .map(|(index, level)| DeclaredVariantLevel {
+                ordinal: index as u32,
+                associativity: level.associativity,
+            })
+    };
+    let mut last = None;
+    let mut visit = |token_use: TokenUseId| {
+        let definition = source.token_uses[token_use.index()].definition;
+        if let Some(level) = level_of_token(definition) {
+            last = Some(level);
+        }
+    };
+    for element in elements {
+        match element {
+            GrammarElement::FixedToken { token_use, .. } => visit(*token_use),
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                for token in tokens {
+                    visit(token.token_use);
+                }
+            }
+            GrammarElement::SemanticField { attachment, .. } => {
+                let Some(attachment) = attachment else {
+                    continue;
+                };
+                for syntax in attachment.before.iter().chain(attachment.after.iter()) {
+                    match syntax {
+                        AttachedFixedSyntax::Required(token) => visit(token.token_use),
+                        AttachedFixedSyntax::Optional { tokens, .. } => {
+                            for token in tokens {
+                                visit(token.token_use);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    last
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -419,6 +529,7 @@ pub(super) fn structural_body(
                         .iter()
                         .find(|resolved| resolved.id == variant.resolved_variant)
                         .ok_or_else(|| "authored enum variant lacks resolved shape".to_owned())?;
+                    let source = lowered.source_modeled.source_model();
                     Ok(VariantParsePlan {
                         resolved_variant: resolved_variant.id,
                         ident: emitted_ident(&variant.name)?,
@@ -432,6 +543,12 @@ pub(super) fn structural_body(
                         )?,
                         capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
                         pretty: variant.pretty.clone(),
+                        declared_precedence: declared_variant_level(
+                            source,
+                            node.id,
+                            resolved_variant.id,
+                            &variant.elements,
+                        ),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -463,6 +580,7 @@ pub(super) fn structural_body(
                     )?,
                     capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
                     pretty: source_variant.common.pretty.clone(),
+                    declared_precedence: None,
                 };
                 let position = match source_variant.position {
                     SourcePrattPosition::Atom => PrattPosition::Atom,
