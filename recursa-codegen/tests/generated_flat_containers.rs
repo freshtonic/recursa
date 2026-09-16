@@ -1,10 +1,13 @@
-//! End-to-end proof of step two of the tiered flat AST milestone through a generated grammar: the
-//! `flat` grammar-root flag, the `#[flat(...)]` declaration attribute, one flat type per
-//! declaration, the `FlatAst` owner, and the layout assertions the design requires.
+//! End-to-end proof of the tiered flat AST milestone through a generated grammar: the `flat`
+//! grammar-root flag, the `#[flat(...)]` declaration attribute, one flat type per declaration, the
+//! `FlatAst` owner, the layout assertions the design requires, and the flat reduce actions and
+//! `parse_flat` entry points that build one.
 //!
-//! Flat reduce actions and `parse_flat` are step three, so the fixture binary only compile-checks
-//! the generated surface and prints its sizes. The negative cases mutate the grammar string and
-//! assert the stable diagnostic the build must produce.
+//! The fixture binary drives every container shape of the `table-driven-containers` grammar
+//! through both construction backends and prints what each built; the assertions below pin the
+//! structural rendering of each container shape and the facts that only flat construction can
+//! show. The negative cases mutate the grammar string and assert the stable diagnostic the build
+//! must produce.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,6 +79,365 @@ fn the_flat_containers_fixture_emits_a_flat_type_for_every_declaration_and_one_o
         "{tags}"
     );
 }
+
+#[test]
+fn parse_flat_builds_every_container_shape_out_of_pools_lists_and_text_handles() {
+    let package = scaffold(FIXTURE, None);
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("flat-containers-ok\n"), "{stdout}");
+    let lines = parser_lines(&stdout);
+
+    // Each container shape, as the flat result holds it. The driver walks the result by hand out
+    // of handles, list runs and text handles, so every line is evidence about the stores rather
+    // than about a `Debug` implementation.
+    for expected in [
+        // An empty zero-or-more list is an empty run; an absent optional list is `None`. The two
+        // are distinct values.
+        "flat \"f();\" => Call{callee=Callee(\"f\") args=Args{values=[]}} cursor=4\n",
+        "flat \"boxes;\" => Boxes[] cursor=2\n",
+        "flat \"print [];\" => Print{negated=false value=Value::List{items=-} guard=-} cursor=4\n",
+        // A one-or-more list with a separator, and the same list with a trailing separator.
+        "flat \"with a | b;\" => With{recursive=false names=[Name(\"a\") Name(\"b\")]} cursor=5\n",
+        "flat \"with recursive a | b |;\" => With{recursive=true names=[Name(\"a\") Name(\"b\")]} cursor=7\n",
+        "flat \"trail a, b,;\" => Trail[Name(\"a\") Name(\"b\")] cursor=6\n",
+        // A zero-or-more list with a trailing separator.
+        "flat \"f(1, 2,);\" => Call{callee=Callee(\"f\") args=Args{values=[Value::Number(Number(\"1\")) Value::Number(Number(\"2\"))]}} cursor=8\n",
+        // `Option<one_or_many!>` absent and present, both behind helper nonterminals.
+        "flat \"marks :;\" => Marks{marks=[] tail=-} cursor=3\n",
+        "flat \"marks : !!!;\" => Marks{marks=[] tail=[Bang Bang Bang]} cursor=6\n",
+        // Presences that are true and false, inlined and behind helpers.
+        "flat \"mods one three four six x;\" => Modifiers{four=true five=false six=true name=Name(\"x\")} cursor=7\n",
+        "flat \"mods two five x;\" => Modifiers{four=false five=true six=false name=Name(\"x\")} cursor=5\n",
+        // An envelope presence, a `boxed!` child the flat form stores as a plain handle, and an
+        // inlined optional Node.
+        "flat \"let one if not exists x = 2 as y;\" => Let{unless=true name=Name(\"x\") value=Value::Number(Number(\"2\")) alias=Alias{name=Name(\"y\")}} cursor=11\n",
+        // Erased optional groups leave no value at all, however many of them occur.
+        "flat \"erased x;\" => Erased{name=Name(\"x\")} cursor=3\n",
+        "flat \"erased one two three four five x;\" => Erased{name=Name(\"x\")} cursor=8\n",
+        // Fixed-token unit Nodes, which the parent allocates because they carry no value on the
+        // value stack.
+        "flat \"options as out temp;\" => Options{a=KwAs b=- c=KwOut d=- e=KwTemp} cursor=5\n",
+        "flat \"options as in out only temp;\" => Options{a=KwAs b=KwIn c=KwOut d=KwOnly e=KwTemp} cursor=7\n",
+        "flat \"filter !;\" => Filter{bangs=[Bang] filters=[]} cursor=3\n",
+        // A list inside a list item: the scratch stack nests and the inner list closes first.
+        "flat \"print [[], [1, [2]]];\" => Print{negated=false value=Value::List{items=[Value::List{items=-} Value::List{items=[Value::Number(Number(\"1\")) Value::List{items=[Value::Number(Number(\"2\"))]}]}]} guard=-} cursor=14\n",
+        // Content tokens keep their text in the text pool, borrowed from the input, including a
+        // keyword an admission set reclaims as a name.
+        "flat \"let if exists as = only as temp;\" => Let{unless=false name=Name(\"as\") value=Value::Name(Name(\"only\")) alias=Alias{name=Name(\"temp\")}} cursor=9\n",
+        // A recursive Node through a nested statement list.
+        "flat \"{ print 1; { let if exists x = 2; } f(); }\" => Block[Print{negated=false value=Value::Number(Number(\"1\")) guard=-} Block[Let{unless=false name=Name(\"x\") value=Value::Number(Number(\"2\")) alias=-}] Call{callee=Callee(\"f\") args=Args{values=[]}}] cursor=18\n",
+    ] {
+        assert!(
+            lines.contains(expected),
+            "the flat result must render as\n{expected}\n{lines}"
+        );
+    }
+
+    // `Value` and `Name` are the pooled declarations. The driver asserts that the reachable
+    // handles of each are the dense range `1..=n`, which only a typed pool hands out, and prints
+    // the census it counted.
+    for expected in [
+        "flat-pool \"print [[1, [2, [3]]], []];\" => values=8 names=0\n",
+        "flat-pool \"let if exists as = only as temp;\" => values=1 names=3\n",
+        "flat-pool \"options as in out only temp;\" => values=0 names=0\n",
+    ] {
+        assert!(lines.contains(expected), "{expected}\n{lines}");
+    }
+
+    // With the `spans` feature the root of a fully consumed input spans the whole input. The
+    // driver also asserts that for every input, and that every child's span lies inside its
+    // parent's.
+    assert!(
+        lines.contains("flat-spans \"print [[], [1, [2]]];\" => 0..21\n"),
+        "{lines}"
+    );
+
+    // `parse_flat_without_spans` retains no span at all.
+    assert!(
+        lines.contains("has_spans=false root=-\n"),
+        "a flat parse without spans retains no span\n{lines}"
+    );
+
+    // Prefix acceptance: an input with trailing unconsumed text stops at the same cursor in both
+    // backends, which the driver asserts; these lines record the agreed cursor.
+    assert!(
+        lines.contains("prefix flat Call{callee=Callee(\"f\") args=Args{values=[Value::Number(Number(\"1\"))]}} cursor=5 eof=false\n"),
+        "{lines}"
+    );
+    assert!(
+        lines.contains("prefix nested Call(Call { callee: Callee { text:"),
+        "{lines}"
+    );
+
+    // Every rejected input fails the same way in both backends: the driver compares the two
+    // rendered error lines, asserts both restore the cursor, and parses again after the failure,
+    // so one line per input is enough here.
+    let failures = lines
+        .lines()
+        .filter(|line| line.starts_with("err "))
+        .count();
+    assert_eq!(failures, 24, "every rejected input reports once\n{lines}");
+    assert!(
+        lines.contains("err \"print [1,];\" => code=RCA4100 kind=UnexpectedToken span=Span { start: 9, end: 10 } found=Some(\"fixed:]\") cursor=0\n"),
+        "{lines}"
+    );
+
+    // Entry points other than the grammar root build a Flat AST rooted at their own Node.
+    for expected in [
+        "entry value Value::List{items=[Value::Number(Number(\"1\")) Value::List{items=[Value::Name(Name(\"as\")) Value::Name(Name(\"only\"))]}]} root=0..15\n",
+        "entry params Params[Param{mode=In name=Name(\"x\")} Param{mode=Out name=Name(\"temp\")}]\n",
+        "entry name Name(\"only\")\n",
+        "entry alias Alias{name=Name(\"x\")}\n",
+    ] {
+        assert!(lines.contains(expected), "{expected}\n{lines}");
+    }
+}
+
+#[test]
+fn a_grammar_with_both_arena_ast_and_flat_builds_either_representation() {
+    // The two backends own separate stores: an arena AST allocates in the bump arena and a Flat
+    // AST in its own pools, list store and text pool. This grammar selects both, so the generated
+    // reducer generics must compile for each and both entry points must run.
+    let package = scaffold(FIXTURE, Some(ARENA_FLAT_GRAMMAR));
+    fs::write(package.path().join("src/main.rs"), ARENA_FLAT_DRIVER)
+        .expect("write the arena and flat consumer");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("arena-flat-ok\n"), "{stdout}");
+    assert!(
+        stdout.contains("arena Root { negated: true, name: Name { text:"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("flat negated=true name=\"x\" value=List(FlatList#"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("span=Some(Span { start: 0, end: 20 })"),
+        "the flat root keeps its span with `arena_ast` on\n{stdout}"
+    );
+}
+
+/// A grammar that selects `arena_ast` and `flat` together, with one pooled Node.
+const ARENA_FLAT_GRAMMAR: &str = r#"//! A grammar with both `flat` and `arena_ast`.
+
+recursa::grammar! {
+    module = crate::grammar,
+    flat,
+    arena_ast,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords { LET => "let", NOT => "not" }
+    punctuation {
+        EQ => "=",
+        SEMI => ";",
+        COMMA => ",",
+        LBRACKET => "[",
+        RBRACKET => "]",
+        BANG => "!",
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[tok(LET, this, SEMI)]
+    pub struct Root {
+        #[presence(NOT)]
+        pub negated: bool,
+        pub name: Name,
+        #[tok(EQ)]
+        pub value: boxed!(Value),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[flat(pool)]
+    pub enum Value {
+        Name { name: Name },
+        Negated { mark: Bang, inner: boxed!(Value) },
+        List(List),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[tok(LBRACKET, this, RBRACKET)]
+    pub struct List {
+        #[sep(COMMA)]
+        pub items: zero_or_many!(Value),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[tok(BANG)]
+    pub struct Bang;
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
+}
+"#;
+
+/// The consumer that parses one input through each backend of the `arena_ast` and `flat` grammar.
+const ARENA_FLAT_DRIVER: &str = r#"//! Proves a grammar with `arena_ast` and `flat` builds both representations.
+
+use recursa::Handle;
+use recursa_generated_flat_containers::grammar;
+
+fn main() {
+    let source = "let not x = [a, !b];";
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Root::parse(&mut input).expect("the arena parse succeeds");
+    println!("arena {:?}", parsed.ast());
+
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let flat = grammar::Root::parse_flat(&mut input).expect("the flat parse succeeds");
+    let root = flat[flat.root()];
+    let value: Handle<grammar::FlatValue> = root.value;
+    println!(
+        "flat negated={} name={:?} value={:?} span={:?}",
+        root.negated,
+        flat[flat[root.name].text].as_str(),
+        flat[value],
+        flat.span(flat.root()),
+    );
+    println!("arena-flat-ok");
+}
+"#;
+
+#[test]
+fn a_generic_pooled_node_gets_one_pool_and_one_flat_entry_point_per_application() {
+    // A generic Node has one materialized application per closed argument list, so a pooled one
+    // has one typed pool per application and one flat reduce action and entry point on each
+    // application's own flat type.
+    let package = scaffold(FIXTURE, Some(GENERIC_FLAT_GRAMMAR));
+    fs::write(package.path().join("src/main.rs"), GENERIC_FLAT_DRIVER)
+        .expect("write the generic consumer");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("generic-flat-ok\n"), "{stdout}");
+    assert!(
+        stdout.contains("names=[\"a\", \"b\"] numbers=[\"1\", \"2\"]\n"),
+        "each application stores its own element type\n{stdout}"
+    );
+    // Each application's pool is indexed from one, which is what makes the two pools separate.
+    assert!(
+        stdout.contains("handles names=1 numbers=1\n"),
+        "each application has its own typed pool\n{stdout}"
+    );
+    assert!(
+        stdout.contains("entry len=2\n"),
+        "a generic application has its own flat entry point\n{stdout}"
+    );
+}
+
+/// A grammar whose pooled Node is generic and materialized at two arguments.
+const GENERIC_FLAT_GRAMMAR: &str = r#"//! A generic Node materialized at two arguments, with `flat` on.
+
+recursa::grammar! {
+    module = crate::grammar,
+    flat,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords { PAIR => "pair" }
+    punctuation { COMMA => ",", LBRACKET => "[", RBRACKET => "]", SEMI => ";" }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[tok(PAIR, this, SEMI)]
+    pub struct Root {
+        pub names: Holder<Name>,
+        pub numbers: Holder<Number>,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[flat(pool)]
+    #[tok(LBRACKET, this, RBRACKET)]
+    pub struct Holder<T> {
+        #[sep(COMMA)]
+        pub values: one_or_many!(T),
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    pub struct Number {
+        #[lex(pattern = r"[0-9]+")]
+        pub text: NumberText,
+    }
+}
+"#;
+
+/// The consumer that parses one input of the generic grammar into a Flat AST.
+const GENERIC_FLAT_DRIVER: &str = r#"//! Proves flat construction works for a generic Node materialized twice.
+
+use recursa_generated_flat_containers::grammar;
+
+fn main() {
+    let source = "pair [a, b] [1, 2];";
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let flat = grammar::Root::parse_flat(&mut input).expect("the flat parse succeeds");
+    let root = flat[flat.root()];
+    let names = flat[root.names];
+    let numbers = flat[root.numbers];
+    println!(
+        "names={:?} numbers={:?}",
+        flat[names.values]
+            .iter()
+            .map(|handle| flat[flat[*handle].text].as_str())
+            .collect::<Vec<_>>(),
+        flat[numbers.values]
+            .iter()
+            .map(|handle| flat[flat[*handle].text].as_str())
+            .collect::<Vec<_>>(),
+    );
+    println!(
+        "handles names={} numbers={}",
+        root.names.raw(),
+        root.numbers.raw()
+    );
+    println!(
+        "spans root={:?} names={:?}",
+        flat.span(flat.root()),
+        flat.span(root.names)
+    );
+
+    let lexed = grammar::lex("[x, y]");
+    let mut input = lexed.input();
+    let holder = grammar::Holder::<grammar::Name>::parse_flat(&mut input)
+        .expect("the generic entry point parses");
+    println!("entry len={}", holder[holder[holder.root()].values].len());
+    println!("generic-flat-ok");
+}
+"#;
 
 #[test]
 fn a_flat_declaration_attribute_without_the_root_flag_is_rejected() {

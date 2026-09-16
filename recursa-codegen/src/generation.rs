@@ -93,6 +93,7 @@ mod publication;
 mod reuse;
 mod rust_names;
 mod table_driven;
+mod table_driven_flat;
 mod visit;
 
 use arbitrary_seed::*;

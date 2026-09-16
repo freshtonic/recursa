@@ -113,7 +113,9 @@ pub mod __private {
         LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
         lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
     };
-    pub use crate::lr::{LrTables, Reduction as LrReduction, run as lr_run};
+    pub use crate::lr::{
+        LrTables, Reduction as LrReduction, run as lr_run, run_flat as lr_run_flat,
+    };
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     #[cfg(feature = "arbitrary")]
     pub use crate::parsed::ArenaSynthetic;
@@ -121,8 +123,8 @@ pub mod __private {
         ArenaGeneratedParse, CapturePolicy, ContentText, ElementMetadata, GeneratedInput,
         GeneratedParse as Parse, NodeElements, NodeViewFactory, Occurrence, Occurrences,
         ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor, parse, parse_arena,
-        parse_arena_spanned, parse_arena_without_spans, parse_seal::Sealed as ParseSealed,
-        parse_spanned, parse_without_spans, pretty_view,
+        parse_arena_spanned, parse_arena_without_spans, parse_flat_with,
+        parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
@@ -187,7 +189,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        30,
+        31,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -280,7 +282,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            30,
+            31,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
