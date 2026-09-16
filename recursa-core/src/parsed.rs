@@ -1546,6 +1546,16 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
         self.request.tracks_extents()
     }
 
+    /// Returns the number of token records from the cursor to the end of the lexed input.
+    ///
+    /// Generated flat construction reads it once, before the automaton runs, to pre-size every
+    /// store of the Flat AST from measured per-token multipliers. It is an upper bound on the
+    /// tokens this parse can consume, because a parse never reads past the end of its window, and
+    /// it is zero at EOF. It is a sizing hint only: a store that runs past its reservation grows.
+    pub fn remaining_tokens(&self) -> usize {
+        self.input.remaining_tokens()
+    }
+
     /// Reports whether one resolved fold policy retains its own span for this parse.
     #[inline(always)]
     pub(crate) fn captures_policy(&self, policy: CapturePolicy) -> bool {

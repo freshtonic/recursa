@@ -575,6 +575,19 @@ impl<T> TypedPool<T> {
         }
     }
 
+    /// Creates an empty pool with room for `nodes` Nodes before it reallocates.
+    ///
+    /// The pool behaves exactly as [`TypedPool::new`] does. Capacity is a performance hint only:
+    /// the pool starts empty, it grows past `nodes` when a parse needs more, and a caller cannot
+    /// observe the reservation through the pool's API. A span array, when the pool captures spans,
+    /// reserves the same count, which keeps invariant I5 free of a second reallocation curve.
+    pub fn with_capacity(capture_spans: bool, nodes: usize) -> Self {
+        Self {
+            nodes: Vec::with_capacity(nodes),
+            spans: capture_spans.then(|| Vec::with_capacity(nodes)),
+        }
+    }
+
     /// Appends `node` and returns its handle.
     ///
     /// A pool that does not capture spans drops `span`. A pool that captures spans stores
@@ -667,6 +680,20 @@ impl SharedPool {
     pub fn new(capture_spans: bool) -> Self {
         Self {
             words: vec![0],
+            capture_spans,
+        }
+    }
+
+    /// Creates a pool with room for `words` words, including its reserved word zero.
+    ///
+    /// The pool behaves exactly as [`SharedPool::new`] does: word zero is reserved, so
+    /// [`SharedPool::len_words`] is one immediately after construction. Capacity is a performance
+    /// hint only. A request below one still reserves the reserved word.
+    pub fn with_capacity(capture_spans: bool, words: usize) -> Self {
+        let mut buffer = Vec::with_capacity(words.max(1));
+        buffer.push(0);
+        Self {
+            words: buffer,
             capture_spans,
         }
     }
@@ -826,6 +853,17 @@ impl ListStore {
         Self { slots: vec![0] }
     }
 
+    /// Creates a store with room for `slots` slots, including its reserved slot zero.
+    ///
+    /// The store behaves exactly as [`ListStore::new`] does: slot zero is reserved, so
+    /// [`ListStore::len_slots`] is one immediately after construction. Capacity is a performance
+    /// hint only. A request below one still reserves the reserved slot.
+    pub fn with_capacity(slots: usize) -> Self {
+        let mut buffer = Vec::with_capacity(slots.max(1));
+        buffer.push(0);
+        Self { slots: buffer }
+    }
+
     /// Returns the total number of slots in the store, including the reserved slot zero.
     pub fn len_slots(&self) -> usize {
         self.slots.len()
@@ -945,6 +983,18 @@ impl ListScratch {
         Self { slots: Vec::new() }
     }
 
+    /// Creates an empty scratch stack with room for `slots` items before it reallocates.
+    ///
+    /// The stack behaves exactly as [`ListScratch::new`] does. Capacity is a performance hint
+    /// only: the stack starts empty and it grows past `slots` when a parse needs more. The stack
+    /// only ever holds the items of the lists open at one moment, so it is sized like the list
+    /// store rather than larger.
+    pub fn with_capacity(slots: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(slots),
+        }
+    }
+
     /// Returns the number of items of every open list together.
     pub fn len(&self) -> usize {
         self.slots.len()
@@ -1057,6 +1107,20 @@ impl<'input> TextPool<'input> {
             texts: Vec::new(),
             kinds: Vec::new(),
             spans: capture_spans.then(Vec::new),
+        }
+    }
+
+    /// Creates an empty pool with room for `texts` texts before it reallocates.
+    ///
+    /// The pool behaves exactly as [`TextPool::new`] does. Capacity is a performance hint only:
+    /// the pool starts empty and it grows past `texts` when a parse needs more. The kind vector,
+    /// and the span array when the pool captures spans, reserve the same count, because the pool
+    /// writes one entry of each per text.
+    pub fn with_capacity(capture_spans: bool, texts: usize) -> Self {
+        Self {
+            texts: Vec::with_capacity(texts),
+            kinds: Vec::with_capacity(texts),
+            spans: capture_spans.then(|| Vec::with_capacity(texts)),
         }
     }
 
@@ -1738,6 +1802,157 @@ mod tests {
     fn writing_a_side_table_out_of_range_panics() {
         let mut table = SideTable::<Pair, u32>::new(1, 0);
         table[Handle::from_index(1)] = 1;
+    }
+
+    #[test]
+    fn a_pre_sized_typed_pool_reserves_its_nodes_and_its_spans() {
+        let pool = TypedPool::<Pair>::with_capacity(true, 64);
+        assert!(pool.nodes.capacity() >= 64);
+        assert!(
+            pool.spans
+                .as_ref()
+                .expect("a capturing pool has a span array")
+                .capacity()
+                >= 64
+        );
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+        assert!(TypedPool::<Pair>::with_capacity(false, 64).spans.is_none());
+    }
+
+    #[test]
+    fn a_pre_sized_typed_pool_stores_what_an_unsized_one_stores() {
+        let node = Pair { left: 3, right: 4 };
+        let mut sized = TypedPool::<Pair>::with_capacity(true, 2);
+        let mut unsized_pool = TypedPool::<Pair>::new(true);
+        for index in 0..5u32 {
+            let node = Pair {
+                left: index,
+                ..node
+            };
+            let one = sized.push(node, Some(span(0, 1)));
+            let two = unsized_pool.push(node, Some(span(0, 1)));
+            assert_eq!(one, two);
+        }
+        assert_eq!(sized.len(), unsized_pool.len());
+        for handle in unsized_pool.handles() {
+            assert_eq!(sized.get(handle), unsized_pool.get(handle));
+            assert_eq!(sized.span(handle), unsized_pool.span(handle));
+        }
+    }
+
+    #[test]
+    fn a_pre_sized_shared_pool_reserves_its_words_and_still_reserves_word_zero() {
+        let pool = SharedPool::with_capacity(false, 128);
+        assert!(pool.words.capacity() >= 128);
+        assert_eq!(pool.len_words(), 1);
+        assert_eq!(SharedPool::with_capacity(false, 0).len_words(), 1);
+    }
+
+    #[test]
+    fn a_pre_sized_shared_pool_stores_what_an_unsized_one_stores() {
+        let mut sized = SharedPool::with_capacity(true, 2);
+        let mut unsized_pool = SharedPool::new(true);
+        for index in 0..5u32 {
+            let node = Pair {
+                left: index,
+                right: index + 1,
+            };
+            let one = sized.alloc(node, Some(span(0, 1)));
+            let two = unsized_pool.alloc(node, Some(span(0, 1)));
+            assert_eq!(one, two);
+            assert_eq!(sized.get(one), unsized_pool.get(two));
+            assert_eq!(sized.span(one), unsized_pool.span(two));
+        }
+        assert_eq!(sized.len_words(), unsized_pool.len_words());
+    }
+
+    #[test]
+    fn a_pre_sized_list_store_reserves_its_slots_and_still_reserves_slot_zero() {
+        let store = ListStore::with_capacity(96);
+        assert!(store.slots.capacity() >= 96);
+        assert_eq!(store.len_slots(), 1);
+        assert_eq!(ListStore::with_capacity(0).len_slots(), 1);
+    }
+
+    #[test]
+    fn a_pre_sized_list_store_stores_what_an_unsized_one_stores() {
+        let items: Vec<Handle<Pair>> = (0..5).map(Handle::from_index).collect();
+        let mut sized = ListStore::with_capacity(2);
+        let mut unsized_store = ListStore::new();
+        let one = sized.push(items.iter().copied());
+        let two = unsized_store.push(items.iter().copied());
+        assert_eq!(one, two);
+        assert_eq!(sized.get(one), unsized_store.get(two));
+        assert_eq!(sized.len_slots(), unsized_store.len_slots());
+    }
+
+    #[test]
+    fn a_pre_sized_list_scratch_reserves_its_slots_and_starts_empty() {
+        let scratch = ListScratch::with_capacity(48);
+        assert!(scratch.slots.capacity() >= 48);
+        assert_eq!(scratch.len(), 0);
+        assert!(scratch.is_empty());
+    }
+
+    #[test]
+    fn a_pre_sized_list_scratch_closes_a_list_as_an_unsized_one_does() {
+        let mut sized = ListScratch::with_capacity(1);
+        let mut unsized_scratch = ListScratch::new();
+        let mut sized_store = ListStore::with_capacity(1);
+        let mut unsized_store = ListStore::new();
+        let mut one = sized.open();
+        let mut two = unsized_scratch.open();
+        for index in 0..4 {
+            let item: Handle<Pair> = Handle::from_index(index);
+            sized.push(&mut one, item);
+            unsized_scratch.push(&mut two, item);
+        }
+        let one = sized.close::<Handle<Pair>>(one, &mut sized_store);
+        let two = unsized_scratch.close::<Handle<Pair>>(two, &mut unsized_store);
+        assert_eq!(one, two);
+        assert_eq!(sized_store.get(one), unsized_store.get(two));
+        assert!(sized.is_empty());
+    }
+
+    #[test]
+    fn a_pre_sized_text_pool_reserves_its_texts_kinds_and_spans() {
+        let pool = TextPool::with_capacity(true, 32);
+        assert!(pool.texts.capacity() >= 32);
+        assert!(pool.kinds.capacity() >= 32);
+        assert!(
+            pool.spans
+                .as_ref()
+                .expect("a capturing pool has a span array")
+                .capacity()
+                >= 32
+        );
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+        assert!(TextPool::with_capacity(false, 32).spans.is_none());
+    }
+
+    #[test]
+    fn a_pre_sized_text_pool_stores_what_an_unsized_one_stores() {
+        let mut sized = TextPool::with_capacity(true, 1);
+        let mut unsized_pool = TextPool::new(true);
+        for text in ["a", "bb", "ccc"] {
+            let one = sized.push::<NameText>(
+                ContentText::owned(text.into()),
+                NAME_KIND,
+                Some(span(0, 1)),
+            );
+            let two = unsized_pool.push::<NameText>(
+                ContentText::owned(text.into()),
+                NAME_KIND,
+                Some(span(0, 1)),
+            );
+            assert_eq!(one, two);
+            assert_eq!(sized.get(one), unsized_pool.get(two));
+            assert_eq!(sized.kind(one), unsized_pool.kind(two));
+            assert_eq!(sized.span(one), unsized_pool.span(two));
+        }
+        assert_eq!(sized.len(), unsized_pool.len());
     }
 
     #[test]

@@ -379,11 +379,14 @@ fn drive_without_spans() {
         direct_children(&flat, flat.root_ref())
     );
 
-    // The list store and the text pool, through the owner's read-only accessors.
+    // The list store, the text pool and the shared pool, through the owner's read-only
+    // accessors. The shared word count is the observable the pre-sized store must not change:
+    // pre-sizing reserves capacity, so the words a parse actually writes stay the same.
     println!(
-        "lr flat-stores {source:?} => texts={} lists={}",
+        "lr flat-stores {source:?} => texts={} lists={} shared={}",
         flat.texts().len(),
-        flat.lists().len_slots()
+        flat.lists().len_slots(),
+        flat.shared_words()
     );
 
     // `enter` returns `false` at every `Value`, so the walk reports it and stops there.

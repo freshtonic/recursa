@@ -1111,6 +1111,16 @@ pub(super) fn render_flat_traversal(
             pub fn texts(&self) -> &#facade::__private::TextPool<'__recursa_input> {
                 &self.texts
             }
+
+            /// Returns the number of four-byte words the shared pool holds.
+            ///
+            /// The count includes the pool's reserved word zero, so it is one for a result whose
+            /// every Node is pooled. The shared pool holds no element type a consumer could name,
+            /// so its size is the only fact it can report. A measurement that sizes the store from
+            /// the token count reads it.
+            pub fn shared_words(&self) -> usize {
+                self.shared.len_words()
+            }
         }
 
         /// Checks that every typed pool of this result is in post-order.

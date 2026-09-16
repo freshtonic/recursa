@@ -692,8 +692,10 @@ fn render_flat_entry_points(
                 &#module_anchor::__RECURSA_GRAMMAR,
                 #spans,
                 |context| {
-                    let mut builder =
-                        #module_anchor::FlatAstBuilder::new(context.tracks_extents());
+                    let mut builder = #module_anchor::FlatAstBuilder::new(
+                        context.tracks_extents(),
+                        context.remaining_tokens(),
+                    );
                     let root = #facade::__private::lr_run_flat::<
                         #facade::__private::Handle<#flat_ty>,
                         A,
