@@ -1,230 +1,300 @@
 # Flat AST design
 
-The source-of-truth premise below is superseded by
-[ADR 0010](adr/0010-declare-nodes-independently-of-ast-representation.md): representation-independent
-Node declarations replace authored nested Rust types as the canonical source. The
-[declaration API design](ast-node-declarations.md) is settled separately; this document retains
-the earlier flat milestone design, and its primary-AST transformation and authoring assumptions
-require reconciliation before flat implementation. Flat variant design was outside the declaration
-milestone.
+Status: tiered storage design settled on 2026-09-16. Implementation has not started. Mutation
+and compaction are a later milestone.
 
-Status: parsing-milestone design settled. Implementation has not started. Mutation API design is
-explicitly deferred until parsing works.
+Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
+[ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
+superseded), [ADR 0010](adr/0010-declare-nodes-independently-of-ast-representation.md)
+(declarations are the source), and [ADR 0012](adr/0012-tiered-flat-storage.md) (tiered
+storage). Terms are defined in [CONTEXT.md](../CONTEXT.md).
 
-## Current milestone
+## Purpose
 
-Make parsing into the Flat AST work before designing mutation support. The eventual edit-and-render
-workflow remains required, but mutation APIs and their implementation are explicitly deferred until
-the parser works. Do not turn that future requirement into unrestricted mutable access as a
-temporary implementation shortcut.
+A Flat AST is a second concrete representation of the same Node declarations that produce the
+nested AST. It has three goals:
 
-This milestone includes read-only structural inspection and direct Pretty rendering of unmodified
-Flat ASTs. Prove primary/flat parsing agreement, flat-to-SQL-to-primary semantic equivalence,
-failed-parse cleanup, and `Send + Sync` through compile-time checks. It is not a mutation milestone.
+1. Nodes of a pooled Node type are contiguous in memory.
+2. Every child relationship is a four-byte typed handle, not a pointer.
+3. Only the Node types an author marks get a typed pool. Every other Node shares one pool.
 
-Completion also includes adding `pg-sql-flat` to pg-sql's existing `cargo bench` parser comparison,
-alongside `pg-sql`, `sqlparser`, and `postgres`. A measured speedup is not an acceptance condition;
-correctness and an honest performance report are required.
+Recursa generates the storage, the handles, the flat Node types, the construction from LR
+reductions, the traversal primitive, and Pretty rendering. Consumer workloads such as name
+resolution, type inference, and query rewriting are outside Recursa. They constrain the storage
+API and they prove that it is sufficient, but their code does not live here.
 
-### Decision tree
+## Scope of this milestone
 
-```mermaid
-flowchart TD
-    A[Primary AST remains the grammar source] --> B[flat opt-in generates sibling flat types]
-    B --> C[Shared LR recognition with direct flat reductions]
-    C --> D[Per-result Vec stores and typed NonZeroU32 indices]
-    C --> E[Semantic values only; no occurrence capture]
-    D --> F[Read-only FlatAst owner; Send and Sync]
-    E --> G[Generated Pretty preserves semantics]
-    F --> H[Correctness evidence and pg-sql-flat benchmark entry]
-    G --> H
-    H --> I[Later: design invariant-preserving mutation]
-    H --> J[Later: compare arena allocation]
+In scope:
+
+- Storage primitives in `recursa-core`, tested under Miri.
+- The `flat` grammar-root flag and the `#[flat(...)]` declaration attribute.
+- Generated flat Node types, handles, and layout assertions.
+- Flat reduce actions and `parse_flat` entry points, with optional per-Node spans.
+- `NodeRef`, `children`, `Visitor`, and a debug post-order checker.
+- Flat Pretty rendering.
+- The `pg-sql-flat` benchmark entry and correctness evidence.
+
+Out of scope, deferred to a later milestone:
+
+- The mutation API. The storage facts it depends on are fixed now (see [Mutation](#mutation)).
+- Compaction.
+- Flat Explorer support. `NodeRef` and `children` are designed so an adapter can be added.
+- A flat `Visit` configured trait. It is a later layer over `children`. `VisitMut` cannot exist
+  before the mutation API.
+
+## Storage
+
+One parsed result owns one Flat AST store. The store has four parts and every part is
+append-only.
+
+| Part | Contents | Handle |
+| --- | --- | --- |
+| Typed pool, one per pooled Node application | Every Node of that type, contiguous, in post-order | Node handle |
+| Shared pool | Every Node not in a typed pool, as whole 4-byte words | Node handle |
+| List store | Every list of handles, each list contiguous | List handle |
+| Text pool | Every content token's text | Text handle |
+
+```text
+FlatAst<'input>
+├── one typed pool per #[flat(pool)] application   (nodes, optional spans)
+├── shared pool: Vec<u32>, word 0 reserved          (nodes, optional spans, debug tags)
+├── list store:  Vec<u32>, slot 0 reserved          (runs of handles)
+└── text pool:   Vec<ContentText<'input>>           (borrowed or owned text, optional spans)
 ```
 
-## Settled decisions
+### Which Nodes get a typed pool
 
-- **Purpose:** experiment with parse performance. No performance benefit or numerical target has
-  been established yet.
-- **Required workflow:** parse directly into flat storage, edit the Flat AST directly, and render
-  the edited result back to SQL without materialising a complete primary tree. Conversion APIs
-  are a separate unresolved question.
-- **Source of truth:** the current authored, non-flat representation is the **Primary AST**.
-  The grammar and parser are derived from it.
-- **Derived representation:** generate a corresponding flat version of each primary struct and
-  enum through the mechanical transformation below. Preserve named, tuple, and unit variant shapes.
-- **Direct construction:** reuse the existing LR recognition engine and tables. Generated flat
-  reductions insert Nodes into typed stores and return indices; no intermediate primary AST is
-  built. Construction metadata must still agree with the flat reducer's value-stack behavior.
-- **Semantic storage only:** retain literals, identifiers, and semantic presence booleans.
-  Syntax-only tokens, spans, occurrence provenance, and comments are not stored. Content-token
-  values stay inline initially instead of acquiring separate indexed stores.
-- **No occurrence capture:** flat parsing does not build an occurrence sidecar, including for
-  sites that would request mandatory provenance in the primary parser.
-- **Rendering contract:** edited Flat ASTs render to SQL that reparses to the same semantic tree.
-  Whitespace and comment fidelity are not required; comments are not captured at all.
-- **Storage ownership:** each parsed result owns its typed Node collections and a typed root
-  index. Use standard `Vec` stores for the first working parser. Arena allocation is a later
-  comparison against that baseline, not a prerequisite to implementing parsing.
-- **Text ownership:** parsed content tokens borrow the input. Inserted or replaced content tokens
-  can own text, using the existing token model; flattening introduces no text copying.
-- **Editable topology:** the root-reachable structure is a tree. Each non-root Node has one
-  parent and there are no cycles. A subtree can be moved; using a copy in another location requires
-  copying its Nodes.
-- **Index ownership:** use compact, type-specific indices without a runtime owner tag. Raw
-  construction is private and lookup is bounds-checked; an index belongs to one result by API
-  contract. An in-range index from another result cannot be detected by its stored bits alone.
-- **Index encoding:** use `#[repr(transparent)]` typed wrappers around `NonZeroU32`, encoding
-  the zero-based slot as `slot + 1`. Both an index and an optional index occupy four bytes. Each
-  typed store can represent at most `u32::MAX` Nodes; capacity exhaustion must fail explicitly
-  before conversion, addition, or truncation can corrupt an index.
-- **Capacity guard:** retain the existing `ParseError` return type for ordinary parsing failures.
-  Exhausting the index encoding triggers a checked panic with a clear message, including in
-  release builds. Do not introduce a separate public `FlatParseError` or silently wrap indices.
-- **Slot lifetime:** retain slots until the entire result is dropped. No slot removal, reuse, or
-  compaction is planned initially, so indices remain stable. Disconnected Nodes may remain stored
-  after eventual edits; mutation mechanisms are not being designed in this milestone.
-- **Mutation safety requirement:** the future mutation API must make cycles, multiple parents,
-  and invalid indices impossible to introduce through that API. Allowing arbitrary edits followed
-  by validation before rendering was explicitly rejected. Defer the mechanism until parsing works.
-- **Thread guarantees:** the Flat AST must implement `Send` and `Sync`. Allocation/ownership
-  choices must preserve those guarantees.
-- **Generation opt-in:** a `flat` flag on the main grammar macro opts into generating the derived
-  Flat AST. In the existing macro syntax this is a grammar-root option on `recursa::grammar!`;
-  it adds Flat AST generation while existing primary parsing remains available.
-- **Parsing entry points:** when `flat` is enabled, add `Type::parse_flat(...)` for each currently
-  parseable Node application. Preserve existing recognition, prefix acceptance, and diagnostic
-  behavior, while always omitting occurrence provenance.
-- **Existing arena option:** allow `flat` and `arena_ast` together. `arena_ast` continues to
-  control primary output; the flat path uses its own standard-vector storage.
-- **Generated names:** emit `FlatItem` and `ItemIndex` beside the corresponding primary `Item`.
-  Preserve existing public visibility and diagnose generated-name collisions explicitly. Private
-  fields are a compatibility detail, not a separate design workstream.
-- **Read-only owner API:** expose a grammar-local `FlatAst<'input, RootIndex>` with private stores.
-  `root()` returns a shared reference to the root record, `root_index()` returns its typed index,
-  and `get(index)` returns an optional shared reference to the corresponding typed record.
-  Lookup is bounds-checked; no mutable store access is exposed by this milestone.
-- **Flat Pretty:** generate rendering from grammar syntax and declarative Pretty annotations,
-  independently of primary trait selection. Do not reuse handwritten primary Pretty implementations;
-  leave primary rendering unchanged.
-
-The planned opt-in follows existing grammar-root flags:
+The author decides per declaration:
 
 ```rust,ignore
-recursa::grammar! {
-    module = crate::grammar,
-    flat,
+ast_node! {
+    #[flat(pool, max_size = 16)]
+    pub enum Expr { /* ... */ }
 }
 ```
 
-This is proposed syntax to implement, not a flag already accepted by the current generator.
+- `#[flat(pool)]` puts every application of the declaration into its own typed pool. A generic
+  Node gets one pool per materialized application.
+- `max_size = N` adds a generated compile-time assertion that the flat Node type is at most `N`
+  bytes. Without it the generator only records the size in the generated-code debug bundle.
+- A declaration without the attribute lives in the shared pool.
+- `#[flat(...)]` in a grammar whose root does not enable `flat` is a diagnostic.
 
-### Field transformation
+A type belongs in a typed pool when a consumer visits every instance, or keeps a dense side
+table over it, or scans it linearly. Do not add a type to a pool without a measurement.
 
-For a Node application `Item`:
+### Handles
 
-| Primary field type | Flat field type |
+All handles are `#[repr(transparent)]` over `NonZeroU32`, so an optional handle is also four
+bytes. They use `PhantomData<fn() -> T>` and implement `Copy`, `Eq`, `Hash`, `Debug`, `Send`,
+and `Sync` by hand for every `T`. Raw construction is private to `recursa-core`.
+
+- **Node handle** `Handle<T>`: one type for both pools. A generated trait impl on `T` selects the
+  storage: for a pooled type the raw value is `slot + 1`; for a shared-pool type it is the word
+  offset, which is never zero because word 0 is reserved. Field types do not change when a Node
+  moves between pools.
+- **List handle** `List<H>`: eight bytes, a non-zero start slot and a length. The empty run is a
+  valid value distinct from an absent list. `one_or_many!` maps to a handle type whose length
+  cannot be zero; `zero_or_many!` maps to one whose length can. `Option<one_or_many!>` stays
+  distinct. `Option<zero_or_many!>` stays rejected.
+- **Text handle** `Text<K>`: one text pool per result, typed by the content-token type `K`. The
+  pool owns the `ContentText<'input>`, which borrows the input or owns replacement text. Nodes
+  hold only the handle, so every flat Node is `Copy`. A consumer that wants interned symbols
+  builds them from the text pool into its own table.
+
+Text handles are data, not children. They do not appear in `NodeRef` or `children`.
+
+### Field mapping
+
+| Declaration | Flat field |
 | --- | --- |
-| `Item` | `ItemIndex` |
-| `Box<Item>` | `ItemIndex` |
-| `Option<Item>` | `Option<ItemIndex>` |
-| `Vec<Item>` | `Vec<ItemIndex>` |
-| `Vec1<Item>` | `Vec1<ItemIndex>` |
+| `T` (Node) | `Handle<T>` |
+| `boxed!(T)` | `Handle<T>` (boxing adds nothing in the flat style) |
+| `Option<T>` | `Option<Handle<T>>` |
+| `zero_or_many!(T)` | `List<Handle<T>>` |
+| `one_or_many!(T)` | `List1<Handle<T>>` |
+| `Option<one_or_many!(T)>` | `Option<List1<Handle<T>>>` |
+| content token `K` | `Text<K>` |
+| `#[presence(...)] bool` | `bool` |
 
-Apply the rule within struct fields and enum variant payloads. Remove boxes around relationships
-that become indices and preserve the remaining supported container structure. Content-token
-values and presence booleans remain inline. Generated types retain the original module context
-and the existing distinctions between concrete generic applications; no new arbitrary generic
-instantiations are introduced. Parser-internal states do not create new semantic Node types.
+Every Node application gets a handle. No Node is embedded inline in its parent. Named, tuple,
+and unit shapes are preserved. Zero-size Nodes in the shared pool take one word; there is no
+shared sentinel.
 
-The source-of-truth decision is recorded in
-[ADR 0007](adr/0007-derive-flat-asts-from-the-primary-ast.md), and the deliberate omission of
-provenance is recorded in [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md). Definitions live in
-[CONTEXT.md](../CONTEXT.md). Per-result storage ownership and tree semantics are recorded in
-[ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md).
+### Shared pool layout
 
-## Existing constraints and implementation facts
+The shared pool is a `Vec<u32>`. Every flat Node has alignment at most 4, because handles are
+`u32`, list handles are two `u32`, and `Span` is two `u32`. The generator asserts
+`align_of::<T>() <= 4` for every shared-pool Node and rejects a declaration that breaks it. A
+Node occupies `ceil(size_of::<T>() / 4)` words, minimum one.
 
-- [ADR 0005](adr/0005-sole-lr-parser.md) establishes one Recursa parser. Flat AST construction is
-  a representation question, not a reason to introduce a second recognizer.
-- The LR runtime accepts a generated reduction function and stores arbitrary typed semantic
-  values. Current generated reductions construct authored Node values; they do not yet emit
-  typed-index Flat ASTs.
-- Existing `arena_ast` support places boxes and vectors in a bump arena. It retains nested
-  container relationships and is distinct from the indexed Flat AST defined by the glossary.
-- Provenance is a separate tree of occurrences addressed by generated child ordinals. Flat ASTs
-  omit that tree entirely.
-- Current Pretty, visitors, Node views, and Explorer navigation follow semantic child values.
-  Direct support for flat storage would need a way to resolve typed indices through their owner.
-- Ordinary `Parsed::into_ast` detaches the primary tree and discards occurrence provenance before
-  editing. Source-borrowed token text can still borrow the input; newly constructed tokens own
-  their text. `ArenaParsed` currently exposes no public mutable-root or detach operation.
-- Current Pretty regenerates layout and preserves semantic values, rather than reproducing all
-  whitespace and comments. Detached rendering loses provenance-only optional fixed syntax and
-  uses canonical fixed-token spelling where captured spelling is unavailable.
-- Token records still need temporary source positions for matched text and strict parse errors.
-  Disabling AST provenance does not remove these lexer/input positions. The existing
-  `WithoutSpans` request already suppresses both optional and mandatory occurrence capture.
-- Fixed-token-only unit Nodes can currently be reconstructed by consuming reductions without
-  occupying the value stack. Giving such Nodes flat indices may require different construction
-  metadata even though recognition behavior remains shared.
-- ADR 0006's earlier use of Flat AST for bump-allocated nested storage has been clarified without
-  changing its accepted memory-reporting policy.
+In debug and test builds the word before each Node holds a tag derived from the Node key, and
+lookup checks it. Release builds omit the tag.
 
-## Deferred design
+Reading a shared-pool Node casts an aligned pointer into the word buffer. This `unsafe` code is
+confined to one storage module in `recursa-core`, with the typed handle as the only guard. The
+value stack in the same crate is the precedent. The module's tests run under Miri in CI.
 
-The [allocator research](flat-ast-allocation-research.md) found that bump-backed typed stores are
-feasible, but changing the allocator does not remove child-list allocations or the need to drop
-owned token text. Standard `Vec` stores are now selected for the first working parser; a later
-arena comparison must account for interleaved growth, owner lifetimes, and `Send + Sync`.
-No performance benefit has been measured. There are no remaining open decisions in the current
-parsing milestone. Vector allocation failure and exhaustion of the `NonZeroU32` index range are
-distinct conditions; the latter uses the accepted checked capacity guard.
+### Spans
 
-After parsing works, reopen the deferred mutation branch: invariant-preserving operations,
-cross-result handle use, insertion/replacement/movement, and the edit-to-render workflow. Conversions
-and additional generated capabilities remain separately scoped. These are unresolved branches,
-not commitments to implement every listed capability now.
+Spans follow the existing request: with the `spans` feature on, `parse_flat` captures and
+`parse_flat_without_spans` does not. When capture is on, every Node in both pools and every text
+handle has a span. A pooled Node's span lives in a parallel array; a shared-pool Node's span is
+written beside its words; a text handle's span comes from its token record. A parent's span is
+the extent from its first child or token to its last. Capture off costs nothing.
+
+Flat parsing never builds the occurrence tree. Mandatory occurrence sites do not apply to it.
+This amends ADR 0008 from "no spans" to "no occurrence provenance; spans on request".
+
+### Side tables
+
+A side table is a consumer-owned dense array with one value per Node of one typed pool, indexed
+by Node handle. Recursa provides the generic type and a `grow` operation; consumers own the
+values. A side table cannot cover the shared pool, which is one reason to pool a type.
+
+## Owner API
+
+The generated owner is a grammar-local `FlatAst<'input>` with private fields.
+
+- `root()` returns the root handle.
+- `Index<Handle<T>>`, `Index<List<H>>`, and `Index<Text<K>>` are bounds-checked and panic out of
+  range. `get(handle)` returns `Option`. No `IndexMut` and no mutable store access is public.
+- `span(handle) -> Option<Span>` returns `None` when the parse did not capture. `has_spans()`
+  reports the whole result.
+- `ids()` on a typed pool iterates its handles in post-order.
+- The result is `Send + Sync`, checked at compile time.
+
+## Construction
+
+Flat reduce actions run on the existing LR automaton and value stack. They push handles, not
+values. A parent is reduced after its children, so every typed pool is in post-order for a fresh
+parse. This is a documented contract: for every Node in a typed pool, every same-pool child has
+a smaller index. A debug checker walks `children` over every Node and asserts it.
+
+Lists are built on one scratch stack owned by the parse. Each list-step reduce pushes one
+handle; when the parent rule consumes the list, the action copies the run into the list store
+and truncates the scratch stack. This works because LR completes an inner list before the outer
+list receives its next item, so open lists nest.
+
+Content-token reduces push the token's text into the text pool and return a text handle.
+
+Exhausting a handle's `u32` range is a checked panic with a clear message in every build, as ADR
+0009 requires. It is distinct from allocation failure.
+
+## Traversal
+
+The generator emits:
+
+- `NodeRef`: an enum with one variant per Node application, each holding that application's
+  handle. It is a traversal value only and is never stored in a Node.
+- `children(ast, NodeRef, &mut impl FnMut(NodeRef))`: the direct children in source order.
+- `Visitor` with `enter`, which returns `false` to skip children, and `leave`; and `walk`.
+
+Parent links are not stored. A consumer that needs them builds a side table on demand.
+
+## Pretty
+
+Flat Pretty is generated from grammar syntax and declarative Pretty annotations, as the earlier
+milestone settled. It does not reuse handwritten nested implementations. An edited Flat AST
+renders to SQL that reparses to the same semantic tree; whitespace and comment fidelity are not
+required.
+
+## Mutation
+
+The API is deferred until parsing works. Three storage facts are fixed now because they are hard
+to retrofit:
+
+1. Pools, the list store, and the text pool are append-only. A replaced Node leaves its old
+   storage in place.
+2. Handles are stable for the life of the result. No slot is removed, reused, or compacted in
+   this milestone.
+3. Compaction, when it arrives, is a copying pass into a fresh store that restores post-order
+   and returns a remap per typed pool.
+
+Public `ast[handle] = node` is ruled out. It would allow a cycle or a second parent in one line.
+The eventual API must make cycles, multiple parents, and invalid handles impossible by
+construction, as ADR 0009 requires.
+
+## Invariants
+
+| ID | Invariant | Enforced by |
+| --- | --- | --- |
+| I1 | In a fresh parse, every same-pool child of a pooled Node has a smaller index. | LR reduce order; debug checker over `children`. |
+| I2 | Every handle refers to the store that created it. | API contract; raw construction is private. |
+| I3 | For every shared-pool handle, a Node of that type was written at that word. | Typed handle; debug tag. |
+| I4 | Every slot of a list run was written from the run's handle type. | The list store is the only writer. |
+| I5 | A typed pool and its span array, when present, have equal length. | The pool is the only writer. |
+| I6 | Every shared-pool Node has alignment at most 4. | Generated assertion. |
+| I7 | A pooled Node with `max_size` is at most that size. | Generated assertion. |
+| I8 | A side table has the same length as its pool when read. | `grow` after each append. |
+
+## Design tree
+
+```mermaid
+flowchart TD
+    A[Node declarations are the source] --> B[flat flag generates flat types beside nested]
+    B --> C[Tiered storage: typed pools by attribute, shared pool by default]
+    C --> D[One Node handle type; storage chosen by a trait on T]
+    C --> E[List store and text pool replace per-field Vec and inline text]
+    C --> F[Shared pool is 4-byte words with unsafe reads, Miri-tested]
+    B --> G[Spans per Node on request; never occurrence provenance]
+    B --> H[Every Node gets a handle; boxed! adds nothing]
+    D --> I[Append-only, stable handles, no public IndexMut]
+    I --> J[Later: invariant-preserving mutation and compaction]
+    E --> K[Post-order promised for fresh parses]
+    K --> L[NodeRef, children, Visitor]
+    L --> M[Flat Pretty]
+    M --> N[pg-sql-flat benchmark and correctness evidence]
+```
+
+## Implementation order
+
+1. Storage primitives in `recursa-core`: handles, typed pool, shared pool, list store, text
+   pool, side table. Unit tests and Miri.
+2. The `flat` root flag, the `#[flat(...)]` attribute, and generated flat types with size and
+   alignment assertions.
+3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans.
+4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker.
+5. Flat Pretty.
+6. The `pg-sql-flat` bench entry and correctness evidence.
+7. Later milestone: mutation API and compaction.
 
 ## Correctness and performance acceptance
 
-- Cover existing container shapes, concrete generic applications, module/type identities, and
-  generated Pretty behavior using representative Recursa fixtures.
-- Compare primary and flat recognition, consumed input, and syntax/lexical diagnostics, including
-  failure cleanup. Both paths must remain available with `flat` and `arena_ast` enabled together.
-- Prove flat-to-SQL-to-primary semantic equivalence without spans, provenance, or comment capture.
-- Check `Send + Sync` and compact typed/optional-index layout at compile time or through appropriate
-  structural assertions. Raw indices and mutable store access must remain unavailable publicly.
-- Check index-boundary conversion directly without allocating billions of Nodes; overflow must
-  trigger the documented capacity guard rather than wrap, truncate, or construct zero.
-- Exercise representative pg-sql cases and retain the existing differential suite as correctness
-  evidence. Do not treat fewer accepted benchmark statements as a performance improvement.
+- Cover every supported field shape, generic applications, module and type identities, and
+  generated Pretty with representative Recursa fixtures.
+- Compare nested and flat recognition, consumed input, and diagnostics, including failure
+  cleanup. Both paths stay available with `flat` and `arena_ast` enabled together.
+- Prove flat-to-SQL-to-nested semantic equivalence.
+- Check `Send + Sync`, four-byte optional handles, eight-byte optional list handles, and every
+  `max_size` and alignment assertion at compile time.
+- Check the handle capacity guard without allocating billions of Nodes.
+- Run the post-order checker after every fresh parse in tests.
+- Run the storage module under Miri.
+- Keep the existing pg-sql differential suite as correctness evidence.
 
-### Existing pg-sql comparison
+### Benchmark
 
-Extend the existing `parse` target in `../pg-sql/benches/parse.rs`; do not introduce a replacement
-benchmark harness. Its documented invocation is:
+Extend the existing `parse` target in `../pg-sql/benches/parse.rs` with the engine name
+`pg-sql-flat` beside `pg-sql`, `sqlparser`, and `postgres`, under the same timing boundary:
+lexing, parsing, and destruction inside each call, identical inputs, no prelexed input for the
+flat entry alone. Verify nested and flat acceptance agreement before reporting timings.
 
 ```sh
 cargo bench -p pg-sql --features postgres-oracle --bench parse
 ```
 
-Add the exact engine name `pg-sql-flat` beside `pg-sql`, `sqlparser`, and `postgres` throughout
-acceptance probing, timing, console output, Markdown reports, SVG charts/legends, and raw JSON.
-The existing `BenchRecord` representation in `../pg-sql/src/bench_data.rs` and its serialization
-coverage must include the additional results. Enable `flat` in the existing grammar-root macro
-in `../pg-sql/src/lib.rs`, retaining `arena_ast` for primary parsing.
+The "everything in the shared pool" variant is an opt-in experiment made by removing the pool
+attributes. It is not a third engine name and not an acceptance condition. A measured speedup is
+not an acceptance condition; correctness and an honest report are.
 
-Preserve the comparison's timing boundary: it currently includes lexing, parsing, and destruction
-inside each engine call, with identical source inputs and terminator/EOF handling. The existing
-`pg-sql` entry explicitly disables provenance. The flat entry must follow the same workload and
-measurement rules; it must not receive prelexed input while the other entries pay for lexing.
-Verify primary/flat acceptance agreement before reporting comparative timings so a flat-only
-rejection is not hidden by filtering the benchmark corpus.
+## History
 
-The accepted experimental methodology also calls for primary/flat parse-only measurements on
-identical prelexed inputs, separate destruction costs, allocation counts, and memory reporting.
-Keep those phase-specific measurements clearly distinguished from the existing whole-call
-comparison. Reuse existing measurement infrastructure where possible. Include small statements
-and large list/expression cases, use release builds, and publish negative results as readily as
-positive ones. All benchmark execution remains opt-in under the repository test policy.
+The earlier milestone design gave every Node type its own `Vec` store, kept content-token text
+inline, and planned a bumpalo comparison ([allocation research](flat-ast-allocation-research.md)).
+At pg-sql's scale, 1,463 declarations, that is roughly 35 KB of empty vectors per result and one
+allocation per type touched, and the research found that per-field child vectors survive
+flattening. Tiered storage, the list store, and the text pool answer those findings. The
+`ast_node!` migration ([Node declarations](ast-node-declarations.md)) made the flat types
+derivable from the same source as the nested types.

@@ -1,6 +1,6 @@
 # Give each Flat AST its own typed stores
 
-Status: accepted
+Status: accepted; the one-store-per-type and Vec-first storage choices are superseded by [ADR 0012](0012-tiered-flat-storage.md), while the ownership, index encoding, capacity guard, `Send + Sync`, and mutation requirements stand
 
 Each parsed Flat AST owns its typed Node stores and a typed root index, keeping allocation lifetime
 and cleanup local to one result rather than sharing reusable stores between independently parsed

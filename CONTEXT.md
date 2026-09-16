@@ -355,7 +355,7 @@ The choice of concrete AST representation and ownership model used to realize No
 _Avoid_: Parser style, grammar variant
 
 **Boxed child**:
-An explicitly indirect child relationship whose cardinality is unchanged. Its concrete form is determined by the AST style.
+An explicitly indirect child relationship whose cardinality is unchanged. Its concrete form is determined by the AST style; in the flat style it adds nothing, because every Node already has a handle.
 _Avoid_: Optional child, implicitly boxed recursion
 
 **Primary AST**:
@@ -367,12 +367,40 @@ A semantic tree whose child relationships are represented directly by values and
 _Avoid_: Primary AST, normal AST, pointer AST
 
 **Flat AST**:
-A semantic AST representation whose Nodes live in typed stores and refer to one another through typed indices rather than owning child values. It retains semantic values without spans, comments, or occurrence provenance.
+A semantic AST representation whose Nodes live in pools and refer to one another through typed handles rather than owning child values. It retains semantic values, and one span per Node only when span capture is requested; it never retains comments or occurrence provenance.
 _Avoid_: Secondary AST, packed AST, untyped node table, bump-allocated tree
 
+**Typed pool**:
+A per-result store holding every Node of one pooled Node type contiguously, addressed by Node handle. Nodes of a fresh parse appear in it in post-order: each child precedes its parent.
+_Avoid_: Vec per type, hot table, arena
+
+**Pooled Node**:
+A Node declaration that opts into a typed pool. Every other Node lives in the shared pool.
+_Avoid_: Hot node, tier-1 type
+
+**Shared pool**:
+The per-result store that holds every Node not in a typed pool, each occupying whole words at a typed word offset. It is not the bump arena selected by `arena_ast`.
+_Avoid_: Arena, cold store, untyped node table
+
+**Node handle**:
+The four-byte typed handle of one Node in a Flat AST store. Its type parameter names the Node, and the Node's declaration decides whether it resolves into a typed pool or the shared pool; no storage tag is stored and field types do not change when a Node moves between pools.
+_Avoid_: Pool index, shared reference, node pointer, raw index, u32 slot
+
+**List handle**:
+The eight-byte handle of one contiguous run of handles in a result's list store. An empty run and an absent list are distinct values; a one-or-more field's list handle cannot name an empty run.
+_Avoid_: Child vector, index slice
+
+**Text handle**:
+The four-byte typed handle of one content token's text in a result's text pool. The text still borrows the input or owns its replacement; the pool, not the Node, owns it.
+_Avoid_: Interned symbol, inline token, string ID
+
+**Side table**:
+A consumer-owned dense array with one value per Node of one typed pool, addressed by Node handle. It is not part of the Flat AST store.
+_Avoid_: Node annotation field, type map
+
 **Flat AST store**:
-The per-result owner of the typed Node collections addressed by one Flat AST's indices. The structure reachable from its root has tree semantics: each non-root Node has one parent and there are no cycles.
-_Avoid_: Shared global arena, untyped node table
+The per-result owner of one Flat AST's typed pools, shared pool, list store, and text pool, addressed by that result's handles. Its stores are append-only and its handles are stable. The structure reachable from its root has tree semantics: each non-root Node has one parent and there are no cycles.
+_Avoid_: Shared global arena, untyped node table, Ast struct with public fields
 
 **Construction backend**:
 One caller-selectable, grammar-specific materialization of the representation-independent parser, with its own intermediate Node values and final output.

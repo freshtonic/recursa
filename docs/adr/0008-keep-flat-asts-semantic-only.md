@@ -1,6 +1,6 @@
 # Keep Flat ASTs semantic-only
 
-Status: accepted
+Status: accepted; amended by [ADR 0012](0012-tiered-flat-storage.md), which captures one span per Node on request while still omitting occurrence provenance and comments
 
 Flat AST construction is a parse-performance experiment, so it retains semantic values while
 omitting syntax-only tokens, spans, occurrence provenance, and comments. Literals, identifiers,
