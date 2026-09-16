@@ -38,6 +38,8 @@ pub(super) struct NodeParsePlan {
     pub(super) explorer_visit_configured: bool,
     /// Formatting hints shared with Pretty emission.
     pub(super) pretty: PrettyHints,
+    /// Flat AST storage selection retained from the declaration's `#[flat(...)]` attribute.
+    pub(super) flat: crate::source_model::FlatHints,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -592,6 +594,9 @@ pub(super) fn plan_lr_node(
             configured_traits: Vec::new(),
             explorer_visit_configured: false,
             pretty: application.pretty.clone(),
+            // `#[flat(...)]` is declaration-level, so every application of one declaration shares
+            // the source Node's hints; there is nothing per-application to materialize.
+            flat: source_node.flat,
         },
         application_body,
     ))

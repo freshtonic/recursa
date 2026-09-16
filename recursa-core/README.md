@@ -18,7 +18,9 @@ The public runtime surface includes:
 - `Parsed<T>`, `Node`, `NodeView`, element views, and repeated views;
 - `Visit`/`VisitMut` and visitor contracts;
 - `Pretty`, `PrettyConfig`, `PrettyContext`, `PrettySink`, and source maps;
-- `HasSpan` and `Vec1<T>`.
+- `HasSpan` and `Vec1<T>`;
+- Flat AST storage: `Handle`, `Text`, `List`, `List1`, `TypedPool`,
+  `SharedPool`, `ListStore`, `ListScratch`, `TextPool`, and `SideTable`.
 
 Grammar-local token, lexer, input, and parse entry types are generated for each
 authored grammar. The hidden `__private` module in this crate exists only for

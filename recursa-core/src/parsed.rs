@@ -1131,7 +1131,7 @@ impl<'input> ContentText<'input> {
     }
 
     /// Borrows matched text only when `span` is a valid UTF-8 source range.
-    fn matched(source: &'input str, span: Span) -> Option<Self> {
+    pub(crate) fn matched(source: &'input str, span: Span) -> Option<Self> {
         source
             .get(span.range())
             .map(|text| Self(ContentTextStorage::Matched(text)))
@@ -1215,12 +1215,24 @@ pub(crate) enum CaptureRequest {
     Spanned,
     /// Suppress every optional and mandatory provenance capture.
     WithoutSpans,
+    /// Request one span per flat Node: the LR loop tracks token extents and never collects
+    /// occurrence provenance, which is what `docs/adr/0008-keep-flat-asts-semantic-only.md`
+    /// requires of a flat parse.
+    FlatSpans,
 }
 
 impl CaptureRequest {
-    /// Reports whether this build and entry point permit provenance collection.
+    /// Reports whether this build and entry point permit span retention of any kind.
     const fn permits_spans(self) -> bool {
         cfg!(feature = "spans") && !matches!(self, Self::WithoutSpans)
+    }
+
+    /// Reports whether the LR loop keeps an extent stack for this request.
+    ///
+    /// Only flat construction asks for extents, and it never asks for provenance, so the two are
+    /// mutually exclusive by construction.
+    const fn tracks_extents(self) -> bool {
+        matches!(self, Self::FlatSpans) && cfg!(feature = "spans")
     }
 }
 
@@ -1231,7 +1243,9 @@ impl CapturePolicy {
             return false;
         }
         match (self, request) {
-            (Self::Off, _) => false,
+            // A flat parse retains spans on its own Nodes and never an occurrence tree, so no
+            // grammar policy makes it capture provenance.
+            (Self::Off, _) | (_, CaptureRequest::FlatSpans) => false,
             (Self::Optional, CaptureRequest::Spanned) | (Self::Mandatory, _) => true,
             (Self::Optional, CaptureRequest::WithoutSpans) => false,
         }
@@ -1516,8 +1530,20 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
     }
 
     /// Reports whether this invocation needs an occurrence stack, including mandatory sites.
+    ///
+    /// A flat parse never needs one, not even for a mandatory site: flat construction has no
+    /// occurrence sites to fill, so the request's extent tracking replaces provenance entirely.
     pub(crate) fn captures_provenance(&self, has_mandatory_sites: bool) -> bool {
-        self.request.permits_spans() && (self.captures() || has_mandatory_sites)
+        !self.request.tracks_extents()
+            && self.request.permits_spans()
+            && (self.captures() || has_mandatory_sites)
+    }
+
+    /// Reports whether the LR loop tracks one source extent per state-stack frame.
+    ///
+    /// Generated flat construction reads it to decide whether its stores keep a span per Node.
+    pub fn tracks_extents(&self) -> bool {
+        self.request.tracks_extents()
     }
 
     /// Reports whether one resolved fold policy retains its own span for this parse.
@@ -1847,6 +1873,56 @@ where
     parse_arena_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
 }
 
+/// Runs one generated flat construction transactionally over the same tables nested parsing uses.
+///
+/// This is the entry-point half of `Type::parse_flat`: generated code owns the automaton call and
+/// its Flat AST stores, and this function owns everything that does not depend on the grammar's
+/// own types. It checks that the input belongs to `grammar`, checkpoints the cursor, binds a
+/// context whose request tracks token extents when `spans` asks for them and this build has the
+/// `spans` feature, and restores the cursor when `drive` fails.
+///
+/// The context never collects occurrence provenance, whatever the grammar's capture policy or
+/// mandatory sites say ([`ParseContext::captures_provenance`]), because a Flat AST has no
+/// occurrence tree to fill. `drive` learns whether spans are retained from
+/// [`ParseContext::tracks_extents`], so a build without the `spans` feature costs nothing.
+///
+/// The FOLLOW is the empty table-driven root set, exactly as [`GeneratedParse::root_follow`]
+/// returns for the nested path, so prefix acceptance is identical.
+#[doc(hidden)]
+pub fn parse_flat_with<'input, A, R>(
+    input: &mut Input<'input, A>,
+    grammar: &'static GrammarInfo,
+    spans: bool,
+    drive: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> Result<R, ParseError>,
+) -> Result<R, ParseError> {
+    if !std::ptr::eq(input.grammar(), grammar) {
+        return Err(ParseError::grammar_mismatch(input));
+    }
+    let request = if spans {
+        CaptureRequest::FlatSpans
+    } else {
+        CaptureRequest::WithoutSpans
+    };
+    let checkpoint = input.cursor();
+    // A flat parse retains no provenance, so this arena stays empty; the context still needs one
+    // because every table parse shares the same context type.
+    let arena = Bump::new();
+    let mut context = ParseContext::new(
+        input,
+        crate::__private::empty_follow(),
+        CapturePolicy::Off,
+        request,
+        &arena,
+    );
+    match drive(&mut context) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            input.restore(checkpoint);
+            Err(error)
+        }
+    }
+}
+
 /// Runs a root parser transactionally under one capture request.
 fn parse_with_request<'input, T, A>(
     input: &mut Input<'input, A>,
@@ -1924,6 +2000,15 @@ pub(crate) fn test_context_spanned<'input, A, R>(
     operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
 ) -> R {
     test_context_with_request(input, CaptureRequest::Spanned, operation)
+}
+
+/// Binds a root-style [`ParseContext`] that tracks extents, as `parse_flat` does.
+#[cfg(all(test, feature = "spans"))]
+pub(crate) fn test_context_flat<'input, A, R>(
+    input: &mut Input<'input, A>,
+    operation: impl FnOnce(&mut ParseContext<'_, 'input, '_, A>) -> R,
+) -> R {
+    test_context_with_request(input, CaptureRequest::FlatSpans, operation)
 }
 
 /// Binds a root-style [`ParseContext`] under an optional policy and the given request.

@@ -108,6 +108,34 @@ pub(crate) struct DiscoveredModuleTree {
     pub(crate) inclusions: Vec<ModuleInclusion>,
 }
 
+/// Reports whether every module segment and the declaration itself are public.
+///
+/// A generated capability that must name a declaration from the grammar root, and a
+/// `#[flat(pool)]` declaration whose pool field the Flat AST owner names, are both admissible
+/// only when this returns true.
+pub(crate) fn publicly_reachable(
+    tree: &DiscoveredModuleTree,
+    module: ModuleId,
+    visibility: &syn::Visibility,
+) -> bool {
+    if !matches!(visibility, syn::Visibility::Public(_)) {
+        return false;
+    }
+    let mut current = module;
+    loop {
+        let Some(inclusion) = tree.inclusions.iter().find(|entry| entry.id == current) else {
+            return false;
+        };
+        let Some(parent) = inclusion.parent else {
+            return true;
+        };
+        if !matches!(inclusion.visibility, syn::Visibility::Public(_)) {
+            return false;
+        }
+        current = parent;
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One physical source file parsed once and shared by every logical inclusion.
 pub(crate) struct DiscoveredSourceFile {

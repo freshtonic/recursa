@@ -134,6 +134,8 @@ pub(crate) struct BuildInputs {
     pub(crate) diagrams: bool,
     /// Whether semantic containers allocate in a parse-owned bump arena.
     pub(crate) arena_ast: bool,
+    /// Whether generation emits the Flat AST representation beside the nested one.
+    pub(crate) flat: bool,
     /// Grammar-wide Pretty defaults.
     pub(crate) pretty: PrettyDefaults,
 }

@@ -388,6 +388,8 @@ pub(crate) struct Node {
     pub(crate) configured_traits: ConfiguredTraitPlan,
     /// Preserves Pretty configuration after source-level validation.
     pub(crate) pretty: PrettyHints,
+    /// Preserves Flat AST storage selection after source-level validation.
+    pub(crate) flat: FlatHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -441,6 +443,18 @@ pub(crate) struct Variant {
     pub(crate) site: SourceSite,
     /// Preserves Pretty configuration after source-level validation.
     pub(crate) pretty: PrettyHints,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+/// Flat AST storage selection retained from one declaration's `#[flat(...)]` attribute.
+///
+/// A declaration without the attribute keeps the default, which puts every one of its Node
+/// applications in the grammar's shared pool. `docs/flat-ast-design.md` settles the tiering.
+pub(crate) struct FlatHints {
+    /// Whether every application of the declaration gets its own typed pool.
+    pub(crate) pool: bool,
+    /// Authored `max_size = N` byte bound asserted against the generated flat type.
+    pub(crate) max_size: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -1018,6 +1032,12 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidConfiguration,
     /// Identifies the invalid pretty hint authored-source form.
     InvalidPrettyHint,
+    /// Identifies a malformed or misplaced `#[flat(...)]` declaration attribute.
+    InvalidFlatHint,
+    /// Identifies a `#[flat(...)]` attribute in a grammar whose root omits the `flat` flag.
+    FlatHintWithoutFlatGrammar,
+    /// Identifies a declaration Flat AST generation cannot represent or name.
+    UnsupportedFlatNode,
     /// Identifies the inapplicable pretty hint authored-source form.
     InapplicablePrettyHint,
     /// Identifies the unsafe pretty hint authored-source form.
@@ -1186,6 +1206,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     builder.reject_misplaced_content_declarations();
     builder.lower_central_content_definitions();
     builder.lower_nodes();
+    builder.reject_flat_name_collisions();
     builder.index_pretty_content_definitions();
     builder.validate_pretty_spacing();
     builder.finish()
@@ -5027,6 +5048,13 @@ impl SourceModelBuilder<'_> {
                                     body.into_elements(),
                                     TokenAttachment::Variant,
                                 );
+                                reject_misplaced_flat_hints(
+                                    &self.resolved,
+                                    origin,
+                                    &variant.metas,
+                                    "an enum variant",
+                                    &mut self.diagnostics,
+                                );
                                 self.lower_greedy(origin, &variant.metas);
                                 self.lower_precedence_override(
                                     origin,
@@ -5068,7 +5096,8 @@ impl SourceModelBuilder<'_> {
                 &configured_traits,
                 &mut self.diagnostics,
             );
-            let pretty = self.lower_pretty_hints(origin, configured, node.range);
+            let pretty = self.lower_pretty_hints(origin, configured, node.range.clone());
+            let flat = self.lower_flat_hints(origin, &node);
             self.lower_greedy(origin, configured);
             self.lower_precedence_override(origin, configured, PrecedenceOwner::Type(node.id));
             self.lower_lr_conflict_resolutions(origin, configured, LrRuleOwner::Type(node.id));
@@ -5078,6 +5107,7 @@ impl SourceModelBuilder<'_> {
                 body,
                 configured_traits,
                 pretty,
+                flat,
             });
         }
     }
@@ -5576,6 +5606,13 @@ impl SourceModelBuilder<'_> {
                 field_configured,
                 &mut self.diagnostics,
             );
+            reject_misplaced_flat_hints(
+                &self.resolved,
+                origin,
+                field_configured,
+                "a field",
+                &mut self.diagnostics,
+            );
             if matches!(resolved_field.ty.kind, ResolvedTypeKind::FixedTokenPresence) {
                 let pretty =
                     self.lower_pretty_hints(origin, field_configured, resolved_field.range.clone());
@@ -5707,9 +5744,232 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Lowers one declaration's `#[flat(...)]` attribute after checking its authored context.
+    ///
+    /// Three failures are independent and each keeps lowering going with the default hints: a
+    /// grammar root that omits the `flat` flag, a malformed attribute, and a `#[flat(pool)]`
+    /// declaration the generated owner could not name. The owner names one `TypedPool` field per
+    /// pooled application, so a pooled declaration must be publicly reachable; every other
+    /// declaration reaches the shared pool, which never names its element type.
+    fn lower_flat_hints(
+        &mut self,
+        origin: SourceOrigin,
+        node: &crate::resolution::ResolvedNode,
+    ) -> FlatHints {
+        let metas = &node.metas;
+        let present = metas.iter().find(|meta| meta.path().is_ident("flat"));
+        let Some(present) = present else {
+            return FlatHints::default();
+        };
+        if !self.resolved.build_inputs.flat {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::FlatHintWithoutFlatGrammar,
+                sites: vec![self.site(origin, span_range(present.span()))],
+                message: "`#[flat(...)]` requires the `flat` flag in the grammar root; add \
+                          `flat,` to `recursa::grammar! { ... }`"
+                    .to_owned(),
+            });
+            return FlatHints::default();
+        }
+        let hints = match parse_flat_hints(metas) {
+            Ok(hints) => hints,
+            Err(message) => {
+                self.diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFlatHint,
+                    sites: vec![self.site(origin, span_range(present.span()))],
+                    message,
+                });
+                return FlatHints::default();
+            }
+        };
+        if hints.pool
+            && !crate::discovery::publicly_reachable(
+                &self.resolved.tree,
+                node.module,
+                &node.visibility,
+            )
+        {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::UnsupportedFlatNode,
+                sites: vec![self.site(origin, span_range(present.span()))],
+                message: format!(
+                    "`#[flat(pool)]` on `{}` is unsupported in flat mode because the generated \
+                     Flat AST owner names one typed pool per pooled application, and this \
+                     declaration is not publicly reachable; make the declaration and every \
+                     enclosing module public, or drop the attribute so the Node uses the shared \
+                     pool",
+                    node.ident,
+                ),
+            });
+            return FlatHints::default();
+        }
+        hints
+    }
+
+    /// Rejects a generated flat type name that an authored declaration already occupies.
+    ///
+    /// Generation emits `Flat{Ident}` beside each declaration in the declaration's own module and
+    /// one `FlatAst` owner at the grammar root, so either spelling authored as a Node is a
+    /// collision rather than a silent shadow.
+    fn reject_flat_name_collisions(&mut self) {
+        if !self.resolved.build_inputs.flat {
+            return;
+        }
+        let declared: BTreeSet<(usize, &str)> = self
+            .resolved
+            .nodes
+            .iter()
+            .map(|node| (node.module.index(), node.ident.as_str()))
+            .collect();
+        let mut collisions = Vec::new();
+        for node in &self.resolved.nodes {
+            let flat = format!("Flat{}", node.ident);
+            let taken = declared.contains(&(node.module.index(), flat.as_str()));
+            if taken || node.ident == "FlatAst" || node.ident == "FlatAstBuilder" {
+                collisions.push((
+                    SourceOrigin {
+                        module: node.module,
+                        source: node.source,
+                    },
+                    node.range.clone(),
+                    if taken {
+                        format!(
+                            "Node `{}` is unsupported in flat mode because generation emits \
+                             `{flat}` beside it and `{flat}` is already declared in the same \
+                             module; rename one declaration",
+                            node.ident,
+                        )
+                    } else {
+                        format!(
+                            "Node `{}` is unsupported in flat mode because generation emits the \
+                             Flat AST owner under that name at the grammar root; rename the \
+                             declaration",
+                            node.ident,
+                        )
+                    },
+                ));
+            }
+        }
+        for (origin, range, message) in collisions {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::UnsupportedFlatNode,
+                sites: vec![self.site(origin, range)],
+                message,
+            });
+        }
+    }
+
     /// Derives the site from the retained source model and its correlations.
     fn site(&self, origin: SourceOrigin, range: Range<u32>) -> SourceSite {
         source_site(&self.resolved, origin, range)
+    }
+}
+
+/// Parses one declaration's `#[flat(...)]` attribute list into its retained hints.
+///
+/// `#[flat(pool)]` and `#[flat(pool, max_size = N)]` are the only accepted forms. Every other
+/// spelling returns the authored-facing message the caller reports at the attribute's own site.
+fn parse_flat_hints(metas: &[Meta]) -> Result<FlatHints, String> {
+    let mut hints = FlatHints::default();
+    let mut seen = false;
+    for meta in metas.iter().filter(|meta| meta.path().is_ident("flat")) {
+        if seen {
+            return Err(
+                "duplicate `#[flat(...)]` attribute; one declaration selects its Flat \
+                        AST storage once"
+                    .to_owned(),
+            );
+        }
+        seen = true;
+        let Meta::List(list) = meta else {
+            return Err("`#[flat]` requires a setting list: `#[flat(pool)]` or \
+                        `#[flat(pool, max_size = N)]`"
+                .to_owned());
+        };
+        let settings = list
+            .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+            .map_err(|error| format!("`#[flat(...)]` settings do not parse: {error}"))?;
+        let mut max_size = None;
+        for setting in settings {
+            if setting.path().is_ident("pool") {
+                if !matches!(setting, Meta::Path(_)) {
+                    return Err(
+                        "`pool` is a bare `#[flat(...)]` setting and takes no value".to_owned()
+                    );
+                }
+                if hints.pool {
+                    return Err("duplicate `pool` flat setting".to_owned());
+                }
+                hints.pool = true;
+            } else if setting.path().is_ident("max_size") {
+                if max_size.is_some() {
+                    return Err("duplicate `max_size` flat setting".to_owned());
+                }
+                let Meta::NameValue(value) = &setting else {
+                    return Err(
+                        "`max_size` takes an integer byte bound: `max_size = 16`".to_owned()
+                    );
+                };
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(literal),
+                    ..
+                }) = &value.value
+                else {
+                    return Err(
+                        "`max_size` takes an integer byte bound: `max_size = 16`".to_owned()
+                    );
+                };
+                max_size =
+                    Some(literal.base10_parse::<u32>().map_err(|_| {
+                        "`max_size` must be a byte bound that fits `u32`".to_owned()
+                    })?);
+            } else {
+                let key = setting
+                    .path()
+                    .get_ident()
+                    .map_or_else(|| "?".to_owned(), ToString::to_string);
+                return Err(format!(
+                    "unsupported flat setting `{key}`; `#[flat(...)]` accepts `pool` and \
+                     `max_size = N`"
+                ));
+            }
+        }
+        if max_size.is_some() && !hints.pool {
+            return Err("`max_size` applies only to a pooled Node; write \
+                        `#[flat(pool, max_size = N)]`"
+                .to_owned());
+        }
+        hints.max_size = max_size;
+        if !hints.pool {
+            return Err(
+                "`#[flat(...)]` requires `pool`; a declaration without the attribute \
+                        already uses the shared pool"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(hints)
+}
+
+/// Rejects a `#[flat(...)]` attribute authored anywhere but on a whole declaration.
+///
+/// Flat storage is chosen per declaration, because a typed pool holds every Node of one type and
+/// a variant or field is not a Node of its own.
+fn reject_misplaced_flat_hints(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    subject: &str,
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) {
+    for meta in metas.iter().filter(|meta| meta.path().is_ident("flat")) {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::InvalidFlatHint,
+            sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+            message: format!(
+                "`#[flat(...)]` belongs on a whole struct or enum declaration, not on {subject}"
+            ),
+        });
     }
 }
 
@@ -10872,6 +11132,165 @@ recursa::ast_node! {
                 .token_definitions
                 .iter()
                 .all(|definition| definition.name != "NOT_LA")
+        );
+    }
+
+    #[test]
+    fn the_flat_attribute_selects_a_typed_pool_and_its_authored_byte_bound() {
+        let model = completed(model(
+            r#"recursa::grammar! { module = crate, flat }
+
+recursa::ast_node! {
+    #[flat(pool, max_size = 16)]
+    pub struct Root {
+        pub value: Leaf,
+    }
+}
+
+recursa::ast_node! {
+    #[flat(pool)]
+    pub struct Leaf;
+}
+
+recursa::ast_node! {
+    pub struct Shared {
+        pub value: Leaf,
+    }
+}
+"#,
+        ));
+        let hints = |name: &str| {
+            model
+                .nodes
+                .iter()
+                .find(|node| node.name == name)
+                .expect("the declaration is modeled")
+                .flat
+        };
+        assert!(hints("Root").pool);
+        assert_eq!(hints("Root").max_size, Some(16));
+        assert!(hints("Leaf").pool);
+        assert_eq!(hints("Leaf").max_size, None);
+        assert!(!hints("Shared").pool);
+        assert_eq!(hints("Shared").max_size, None);
+    }
+
+    #[test]
+    fn invalid_flat_declaration_attributes_have_structured_diagnostics() {
+        for (declarations, message) in [
+            (
+                "#[flat(pool, packed)]\n    pub struct Root;",
+                "unsupported flat setting `packed`; `#[flat(...)]` accepts `pool` and `max_size = N`",
+            ),
+            (
+                "#[flat(max_size = 8)]\n    pub struct Root;",
+                "`max_size` applies only to a pooled Node; write `#[flat(pool, max_size = N)]`",
+            ),
+            (
+                "#[flat(pool, max_size = \"8\")]\n    pub struct Root;",
+                "`max_size` takes an integer byte bound: `max_size = 16`",
+            ),
+            (
+                "#[flat(pool)]\n    #[flat(pool)]\n    pub struct Root;",
+                "duplicate `#[flat(...)]` attribute; one declaration selects its Flat AST storage once",
+            ),
+            (
+                "#[flat]\n    pub struct Root;",
+                "`#[flat]` requires a setting list: `#[flat(pool)]` or `#[flat(pool, max_size = N)]`",
+            ),
+            (
+                "pub enum Root {\n        #[flat(pool)]\n        #[tok(\"a\")]\n        A,\n    }",
+                "`#[flat(...)]` belongs on a whole struct or enum declaration, not on an enum variant",
+            ),
+            (
+                "pub struct Root {\n        #[flat(pool)]\n        pub value: Leaf,\n    }\n}\nrecursa::ast_node! {\n    #[tok(\"a\")]\n    pub struct Leaf;",
+                "`#[flat(...)]` belongs on a whole struct or enum declaration, not on a field",
+            ),
+        ] {
+            let source = format!(
+                "recursa::grammar! {{ module = crate, flat }}\nrecursa::ast_node! {{\n    {declarations}\n}}\n"
+            );
+            let report = model(&source);
+            assert_code(
+                &report,
+                SourceModelDiagnosticKind::InvalidFlatHint,
+                "RCA3141",
+            );
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == message),
+                "{declarations}: expected {message:?} in {:?}",
+                report.diagnostics,
+            );
+        }
+
+        let without_root_flag = model(
+            r#"recursa::grammar! { module = crate }
+
+recursa::ast_node! {
+    #[flat(pool)]
+    #[tok("a")]
+    pub struct Root;
+}
+"#,
+        );
+        assert_code(
+            &without_root_flag,
+            SourceModelDiagnosticKind::FlatHintWithoutFlatGrammar,
+            "RCA3142",
+        );
+        assert!(
+            without_root_flag.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message
+                    == "`#[flat(...)]` requires the `flat` flag in the grammar root; add `flat,` \
+                        to `recursa::grammar! { ... }`"
+            }),
+            "{:?}",
+            without_root_flag.diagnostics,
+        );
+
+        let private_pool = model(
+            r#"recursa::grammar! { module = crate, flat }
+
+recursa::ast_node! {
+    #[flat(pool)]
+    #[tok("a")]
+    pub(crate) struct Root;
+}
+"#,
+        );
+        assert_code(
+            &private_pool,
+            SourceModelDiagnosticKind::UnsupportedFlatNode,
+            "RCA3143",
+        );
+
+        let collision = model(
+            r#"recursa::grammar! { module = crate, flat }
+
+recursa::ast_node! {
+    pub struct Root {
+        pub value: Leaf,
+    }
+}
+
+recursa::ast_node! {
+    #[tok("a")]
+    pub struct Leaf;
+}
+
+recursa::ast_node! {
+    #[tok("b")]
+    pub struct FlatLeaf;
+}
+"#,
+        );
+        assert_code(
+            &collision,
+            SourceModelDiagnosticKind::UnsupportedFlatNode,
+            "RCA3143",
         );
     }
 

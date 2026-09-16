@@ -25,6 +25,17 @@ RUSTUP_TOOLCHAIN=1.88.0 cargo +1.88.0 test -p recursa-codegen \
 Keep `RUSTUP_TOOLCHAIN` set for the smoke test because its test harness starts a nested Cargo
 process. This ensures the downstream generated crate is also compiled with Rust 1.88.
 
+The Miri lane runs the Flat AST storage module's unit tests under Miri on nightly. That module
+holds the only pointer casts in the runtime, so its tests are the evidence that the shared pool
+and the list store are free of undefined behavior:
+
+```sh
+cargo +nightly miri test -p recursa-core flat:: --locked
+```
+
+The filter names the `flat` module path. Keep the storage tests in that module so the lane keeps
+covering them.
+
 Tests reached by these commands must assert behavior, structure, diagnostics, or compatibility—not
 wall-clock duration. A test may use a timeout only to prove termination or prevent a hung process;
 the elapsed time is not a performance contract.

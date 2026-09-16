@@ -5,6 +5,13 @@
 mod arbitrary_depth;
 #[cfg(feature = "explorer")]
 pub mod explorer;
+pub mod flat;
+/// The storage-selection contracts a generated Flat AST owner implements.
+pub mod flat_owner;
+/// The rendering contract a generated flat Node type implements per Flat AST store.
+pub mod flat_pretty;
+/// Grammar-erased Flat AST traversal: the children contract and the depth-first walk.
+pub mod flat_visit;
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub mod framing;
 /// Static grammar identity, token kinds, and compact follow-set representation.
@@ -32,6 +39,10 @@ mod visitor;
 
 pub use bumpalo::boxed::Box as ArenaBox;
 pub use bumpalo::collections::Vec as ArenaVec;
+pub use flat::{
+    FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
+    SideTable, Text, TextPool, TypedPool,
+};
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
 pub(crate) use input::Input;
 pub use output::{ArenaVec1, HasSpan, Vec1};
@@ -85,6 +96,15 @@ pub mod __private {
         token_node as explorer_token_node, token_schema as explorer_token_schema,
         variant_schema as explorer_variant_schema,
     };
+    pub use crate::flat::{
+        FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
+        SideTable, Text, TextPool, TypedPool,
+    };
+    pub use crate::flat_owner::{FlatPool, FlatStorage};
+    pub use crate::flat_visit::{
+        FlatChildren, FlatVisitor, OpaqueRef, OpaqueTable, PostOrderViolation,
+        check_post_order_pair, walk,
+    };
     #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
@@ -101,7 +121,9 @@ pub mod __private {
         LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
         lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
     };
-    pub use crate::lr::{LrTables, Reduction as LrReduction, run as lr_run};
+    pub use crate::lr::{
+        LrTables, Reduction as LrReduction, run as lr_run, run_flat as lr_run_flat,
+    };
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     #[cfg(feature = "arbitrary")]
     pub use crate::parsed::ArenaSynthetic;
@@ -109,8 +131,8 @@ pub mod __private {
         ArenaGeneratedParse, CapturePolicy, ContentText, ElementMetadata, GeneratedInput,
         GeneratedParse as Parse, NodeElements, NodeViewFactory, Occurrence, Occurrences,
         ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor, parse, parse_arena,
-        parse_arena_spanned, parse_arena_without_spans, parse_seal::Sealed as ParseSealed,
-        parse_spanned, parse_without_spans, pretty_view,
+        parse_arena_spanned, parse_arena_without_spans, parse_flat_with,
+        parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
@@ -175,7 +197,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        29,
+        33,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -218,6 +240,21 @@ pub mod __private {
         }
         assert!(output_index == N);
         output
+    }
+
+    /// Rebuilds the shared-pool handle of one Node an opaque traversal reference names.
+    ///
+    /// Raw handle construction is private to this crate, because a forged handle would break
+    /// invariant I2 of `docs/flat-ast-design.md`. This function is the one door through it, and
+    /// generated traversal code is the only caller that needs it. A Node the grammar root cannot
+    /// name has no `NodeRef` variant, so an [`OpaqueRef`] carries the raw handle value instead of
+    /// a typed handle. The children function beside that Node's declaration receives the raw
+    /// value and must rebuild the handle to read the shared pool.
+    ///
+    /// The door cannot reach a typed pool: a pooled declaration is always publicly reachable, so
+    /// a Node the root cannot name is always in the shared pool.
+    pub const fn opaque_handle<T>(raw: ::core::num::NonZeroU32) -> Handle<T> {
+        Handle::from_raw(raw)
     }
 
     /// Returns the source retained by a grammar-local generated lexing result.
@@ -268,7 +305,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            29,
+            33,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

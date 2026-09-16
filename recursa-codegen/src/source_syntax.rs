@@ -186,6 +186,8 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) diagrams: bool,
     /// Whether generated semantic boxes and vectors borrow one parse-owned bump arena.
     pub(crate) arena_ast: bool,
+    /// Whether generation emits the Flat AST representation beside the nested one.
+    pub(crate) flat: bool,
     /// Grammar-wide Pretty layout defaults.
     pub(crate) pretty: PrettyDefaults,
     /// Optional generated exact-source document framing declaration.
@@ -546,13 +548,37 @@ mod capture_tests {
     }
 
     #[test]
+    fn the_flat_bare_flag_parses_beside_arena_ast_and_rejects_a_duplicate() {
+        let plain: GrammarConfigSyntax =
+            syn::parse_str("module = crate").expect("default configuration parses");
+        assert!(!plain.flat);
+
+        let selected: GrammarConfigSyntax =
+            syn::parse_str("module = crate, flat").expect("the flat flag parses");
+        assert!(selected.flat);
+        assert!(!selected.arena_ast);
+
+        let combined: GrammarConfigSyntax =
+            syn::parse_str("module = crate, arena_ast, flat").expect("flat and arena_ast combine");
+        assert!(combined.flat);
+        assert!(combined.arena_ast);
+
+        assert_eq!(
+            syn::parse_str::<GrammarConfigSyntax>("module = crate, flat, flat")
+                .unwrap_err()
+                .to_string(),
+            "duplicate flat setting",
+        );
+    }
+
+    #[test]
     fn unknown_grammar_settings_are_reported_at_the_key_before_parsing_a_value() {
-        for setting in ["flat", "flat = true", "flat(option)"] {
+        for setting in ["packed", "packed = true", "packed(option)"] {
             let source = format!("module = crate, {setting},");
             let error = syn::parse_str::<GrammarConfigSyntax>(&source).unwrap_err();
-            assert_eq!(error.to_string(), "unsupported grammar setting `flat`");
+            assert_eq!(error.to_string(), "unsupported grammar setting `packed`");
             let range = super::span_range(error.span());
-            assert_eq!(&source[range.start as usize..range.end as usize], "flat");
+            assert_eq!(&source[range.start as usize..range.end as usize], "packed");
         }
     }
 
@@ -601,6 +627,7 @@ impl Parse for GrammarConfigSyntax {
         let mut derives = None;
         let mut diagrams = false;
         let mut arena_ast = false;
+        let mut flat = false;
         let mut pretty = None;
         let mut framing = None;
         while !input.is_empty() {
@@ -624,6 +651,11 @@ impl Parse for GrammarConfigSyntax {
                     return Err(syn::Error::new(key.span(), "duplicate arena_ast setting"));
                 }
                 arena_ast = true;
+            } else if key == "flat" {
+                if flat {
+                    return Err(syn::Error::new(key.span(), "duplicate flat setting"));
+                }
+                flat = true;
             } else if key == "pretty" {
                 reject_duplicate(&pretty, key.span(), "pretty")?;
                 let content;
@@ -702,6 +734,7 @@ impl Parse for GrammarConfigSyntax {
             derives: derives.unwrap_or_default(),
             diagrams,
             arena_ast,
+            flat,
             pretty: pretty.unwrap_or_default(),
             framing,
         })
