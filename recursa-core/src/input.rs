@@ -233,6 +233,15 @@ impl<'i, A> Input<'i, A> {
             })
     }
 
+    /// Returns the number of token records from the cursor to the end of the lexed window.
+    ///
+    /// The count is the whole remaining input of this session, not one lookahead distance, so a
+    /// caller that must size a store before parsing has an upper bound on the tokens a parse can
+    /// consume. It is zero at EOF.
+    pub(crate) fn remaining_tokens(&self) -> usize {
+        self.records.len().saturating_sub(self.cursor)
+    }
+
     /// Reports whether every finalized token record has been consumed.
     pub fn is_eof(&self) -> bool {
         self.cursor >= self.records.len()

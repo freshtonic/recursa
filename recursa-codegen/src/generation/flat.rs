@@ -24,7 +24,9 @@
 //!
 //! The module emits these items at the grammar root:
 //!
-//! - `FlatAst`, its builder, and the generic index implementations.
+//! - `FlatAst`, its builder, and the generic index implementations. The builder pre-sizes every
+//!   store from the parse's remaining token count, by the measured multipliers this module
+//!   declares below.
 //! - `FLAT_NODE_SIZES`, which records the size of every flat Node type in parse-index order.
 //! - One `FlatStorage` implementation per application whose flat type is publicly reachable. Every
 //!   other application gets that implementation in the declaration's own module. A non-public Node
@@ -35,6 +37,53 @@
 //! `docs/adr/0012-tiered-flat-storage.md` records the decision.
 
 use super::*;
+
+/// Shared-pool words reserved per remaining token when a flat parse creates its store.
+///
+/// Measured over pg-sql's 43,246 pinned corpus statements and its 16 stress fixtures: the shared
+/// pool ends at a median 4.13 words per token, a 90th percentile of 7.17, and a maximum of 13.50.
+/// The pool is a `Vec<u32>`, so a generous reservation is four bytes per token of slack; the
+/// multiplier therefore covers the 90th percentile rather than the median.
+const SHARED_WORDS_PER_TOKEN: usize = 8;
+
+/// List-store slots reserved per remaining token.
+///
+/// Measured on the same inputs: a median 0.40 slots per token, a 90th percentile of 0.67, and a
+/// maximum of 1.00. One slot per token is also a `u32` each, and it covers every statement
+/// measured.
+const LIST_SLOTS_PER_TOKEN: usize = 1;
+
+/// Remaining tokens per reserved text-pool entry.
+///
+/// Measured on the same inputs: a median 0.33 texts per token, a 90th percentile of 0.50, and a
+/// maximum of 0.82. One text per two tokens is the 90th percentile.
+const TOKENS_PER_TEXT: usize = 2;
+
+/// Remaining tokens per reserved Node of one typed pool.
+///
+/// Measured on the same inputs, per pool, as a fraction of the token count: `Expr` a median 0.14
+/// and a 90th percentile of 0.43, `ColumnRef` 0.00 and 0.10, `FuncCall` 0.00 and 0.10,
+/// `SelectStmt` 0.00 and 0.14, `Statement` 0.11 and 0.33. One reservation serves every pool, and a
+/// flat Node is several words wide, so the multiplier sits near the widest pool's median rather
+/// than its 90th percentile. One Node per four tokens cut the allocation count of pg-sql's
+/// `select_list_10000` stress fixture from 31 to 10 and of `in_list_10000` from 19 to 9.
+const TOKENS_PER_POOLED_NODE: usize = 4;
+
+/// Smallest typed pool reservation. A smaller estimate reserves nothing at all.
+///
+/// A typed pool a statement never touches costs one wasted allocation, and pg-sql's median pinned
+/// statement leaves three of its five pools empty. Reserving unconditionally therefore raised the
+/// measured pool allocations per corpus statement from 2.71 to 4.90. Staying lazy below this floor
+/// keeps the short-statement cost at 2.71 and keeps the win on the large inputs, where the
+/// estimate clears the floor.
+const MIN_POOLED_NODES: usize = 16;
+
+/// Smallest reservation for the shared pool, the list store, the scratch stack and the text pool.
+///
+/// Every one of those already allocates on its first write, so a floor costs no allocation that a
+/// parse would not make anyway. It keeps an empty or one-token input from reserving a capacity that
+/// the first few writes immediately outgrow.
+const MIN_STORE_ENTRIES: usize = 16;
 
 /// Returns one declaration's generated flat type identifier.
 pub(super) fn flat_type_ident(ident: &Ident) -> Ident {
@@ -705,6 +754,24 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
     }
     let facade = &plan.facade;
     let pooled = pooled_applications(plan)?;
+    let shared_words_per_token = proc_macro2::Literal::usize_unsuffixed(SHARED_WORDS_PER_TOKEN);
+    let list_slots_per_token = proc_macro2::Literal::usize_unsuffixed(LIST_SLOTS_PER_TOKEN);
+    let tokens_per_text = proc_macro2::Literal::usize_unsuffixed(TOKENS_PER_TEXT);
+    let tokens_per_pooled_node = proc_macro2::Literal::usize_unsuffixed(TOKENS_PER_POOLED_NODE);
+    let min_pooled_nodes = proc_macro2::Literal::usize_unsuffixed(MIN_POOLED_NODES);
+    let min_store_entries = proc_macro2::Literal::usize_unsuffixed(MIN_STORE_ENTRIES);
+    // A grammar with no pooled application never reads the typed pool estimate, so the binding is
+    // emitted only when at least one pool exists.
+    let pooled_nodes_binding = if pooled.is_empty() {
+        proc_macro2::TokenStream::new()
+    } else {
+        quote! {
+            let pooled_nodes = match tokens / #tokens_per_pooled_node {
+                nodes if nodes < #min_pooled_nodes => 0,
+                nodes => nodes,
+            };
+        }
+    };
     let pool_fields = pooled.iter().map(|pool| {
         let (field, ty) = (&pool.field, &pool.ty);
         let doc = format!(
@@ -716,7 +783,7 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
     let builder_pool_fields = pool_fields.clone();
     let pool_initializers = pooled.iter().map(|pool| {
         let field = &pool.field;
-        quote!(#field: #facade::__private::TypedPool::new(capture_spans))
+        quote!(#field: #facade::__private::TypedPool::with_capacity(capture_spans, pooled_nodes))
     });
     let pool_moves = pooled.iter().map(|pool| {
         let field = &pool.field;
@@ -963,15 +1030,34 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         }
 
         impl<'__recursa_input> FlatAstBuilder<'__recursa_input> {
-            /// Creates empty stores that capture one span per Node only when asked.
+            /// Creates empty stores pre-sized for `tokens` remaining tokens, which capture one
+            /// span per Node only when asked.
+            ///
+            /// `tokens` is `ParseContext::remaining_tokens`, an upper bound on the tokens this
+            /// parse can consume. Every store is sized from it by a measured per-token multiplier,
+            /// so a short statement makes one allocation per store instead of growing each from
+            /// zero. The multipliers are documented in `recursa-codegen`'s flat generation module.
+            /// They are hints: a store that outgrows its reservation grows as it always did, and a
+            /// store the parse never writes to holds nothing.
             #[doc(hidden)]
-            pub(crate) fn new(capture_spans: bool) -> Self {
+            pub(crate) fn new(capture_spans: bool, tokens: usize) -> Self {
+                let shared_words = tokens
+                    .saturating_mul(#shared_words_per_token)
+                    .max(#min_store_entries);
+                let list_slots = tokens
+                    .saturating_mul(#list_slots_per_token)
+                    .max(#min_store_entries);
+                let texts = (tokens / #tokens_per_text).max(#min_store_entries);
+                #pooled_nodes_binding
                 Self {
                     #(#pool_initializers,)*
-                    shared: #facade::__private::SharedPool::new(capture_spans),
-                    lists: #facade::__private::ListStore::new(),
-                    texts: #facade::__private::TextPool::new(capture_spans),
-                    scratch: #facade::__private::ListScratch::new(),
+                    shared: #facade::__private::SharedPool::with_capacity(
+                        capture_spans,
+                        shared_words,
+                    ),
+                    lists: #facade::__private::ListStore::with_capacity(list_slots),
+                    texts: #facade::__private::TextPool::with_capacity(capture_spans, texts),
+                    scratch: #facade::__private::ListScratch::with_capacity(list_slots),
                     has_spans: capture_spans,
                 }
             }

@@ -4,7 +4,9 @@ Status: tiered storage delivered on 2026-09-16. Steps 1 to 6 of the implementati
 are done: storage, generated flat types, `parse_flat`, traversal, flat Pretty, and the pg-sql
 `pg-sql-flat` benchmark entry with its correctness evidence. pg-sql now selects `flat` in both
 `grammar!` blocks, pools `Expr`, `ColumnRef`, `FuncCall`, `SelectStmt` and `Statement`, and proves
-nested/flat parity over the whole pinned corpus. Mutation and compaction are a later milestone.
+nested/flat parity over the whole pinned corpus. Each parse pre-sizes its store from the token
+count, which is a follow-up to step 3 recorded under [Construction](#construction). Mutation and
+compaction are a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -188,7 +190,9 @@ The generated owner is a grammar-local `FlatAst<'input>` with private fields.
   reports the whole result.
 - `pool::<T>()` borrows one pooled Node type's typed pool, whose `handles()` iterates its handles
   in post-order and whose `len()` sizes a side table. Only a pooled type has a pool.
-- `lists()` and `texts()` borrow the list store and the text pool, read-only.
+- `lists()` and `texts()` borrow the list store and the text pool, read-only. `shared_words()`
+  reports the shared pool's size, which is the only fact it can report: the pool names no element
+  type a consumer could borrow.
 - `root_ref()` returns the root as a `NodeRef`. It needs the generated `FlatNodeRef` bound on the
   root type, because the owner's root is a type parameter and only a trait can name its variant.
 - The result is `Send + Sync`, checked at compile time.
@@ -207,6 +211,25 @@ application that has one. They return the grammar's own `FlatAst` rooted at that
 flat type. Both run the same automaton loop as `parse`, so diagnostics, prefix acceptance and
 consumed input are identical, and a failure restores the input cursor and drops every store.
 `boxed!` disappears from the flat actions: every child is already a handle.
+
+A flat parse pre-sizes its store. The lexer has already counted the tokens, so
+`ParseContext::remaining_tokens` is an upper bound on the tokens the parse can consume, and the
+generated builder turns that count into one capacity per store. The multipliers are measured, not
+guessed: they come from the final size of each store over pg-sql's 43,246 pinned corpus statements
+and its 16 stress fixtures. The generator declares them as named constants that record the
+measurement. They reserve eight shared-pool words per token (measured median 4.13, 90th percentile
+7.17), one list-store slot per token (median 0.40, 90th percentile 0.67), one text per two tokens
+(median 0.33, 90th percentile 0.50), and one Node per four tokens in every typed pool (the widest
+pool's median is 0.14 and its 90th percentile 0.43). The three word-and-slot stores take the 90th
+percentile because a `u32` of slack is cheap; a typed pool takes roughly its median because a flat
+Node is several words wide and one estimate serves every pool. A floor of sixteen entries keeps a
+one-token input from reserving a capacity its first writes outgrow. A typed pool reserves nothing
+at all when its estimate falls below sixteen Nodes, because pg-sql's median statement leaves three
+of its five pools empty and five speculative allocations cost more than the lazy growth of the two
+it uses. Every capacity is a hint: a store that outgrows it grows as it always did, so the
+reservation changes no stored value. Measured on the pinned corpus, the median statement went from
+seven reallocations to none, 72.9% of statements now reach zero reallocations across every store
+(from 0%), and the mean fell from 6.75 to 0.37 per statement.
 
 Lists are built on one scratch stack owned by the parse. Each list-step reduce pushes one
 handle; when the parent rule consumes the list, the action copies the run into the list store
@@ -409,27 +432,30 @@ exclusion filter.
 cargo bench -p pg-sql --features postgres-oracle --bench parse
 ```
 
-Run on 2026-09-16 against Recursa `6e6c758`. The harness wrote its report to
-`pg-sql/docs/benchmarks/2026-09-16T09-21-17Z-7ea2355/`, which is a local run artifact: that
-directory is gitignored, so the numbers that matter are reproduced here. 238 benchmarks, 33,708
-statements timed by all four engines, and the two representations rejected exactly the same 180
-statements.
+Run twice on 2026-09-16, before and after the store was pre-sized from the token count. The
+harness wrote its reports to `pg-sql/docs/benchmarks/2026-09-16T09-21-17Z-7ea2355/` and
+`pg-sql/docs/benchmarks/2026-09-16T13-19-22Z-e875a61/`, which are local run artifacts: those
+directories are gitignored, so the numbers that matter are reproduced here. Both runs cover 238
+benchmarks, 33,708 statements timed by all four engines, and in both the two representations
+rejected exactly the same 180 statements.
 
-| Engine | Total median time | vs pg-sql |
-| --- | --: | --: |
-| pg-sql (nested arena AST) | 90.092 ms | 1.00× |
-| pg-sql-flat (Flat AST) | 84.876 ms | 1.06× |
-| postgres (PostgreSQL 17.9 raw parser) | 43.184 ms | 2.09× |
-| sqlparser | 194.852 ms | 0.46× |
+| Engine | Total median time, pre-sized | vs pg-sql | Total median time, before | vs pg-sql |
+| --- | --: | --: | --: | --: |
+| pg-sql (nested arena AST) | 92.153 ms | 1.00× | 90.092 ms | 1.00× |
+| pg-sql-flat (Flat AST) | 79.499 ms | 1.16× | 84.876 ms | 1.06× |
+| postgres (PostgreSQL 17.9 raw parser) | 44.117 ms | 2.09× | 43.184 ms | 2.09× |
+| sqlparser | 200.588 ms | 0.46× | 194.852 ms | 0.46× |
 
-Per benchmark the flat entry ranges from 0.86× to 1.41× of the nested entry, median 1.02×. The
-win concentrates where a parse allocates many small Nodes: every generated stress shape except
-deep subquery nesting gains, `select_list_10000` by 1.41×, `in_list_10000` by 1.38×,
-`insert_values_10000` by 1.30×. It is a loss on 54 of the 237 timed benchmarks, all of them short
-corpus files whose statements are few and shallow — `create_schema` 0.86×, `create_role` 0.87×,
-`reindex_catalog` 0.89× — where the flat store's fixed setup is not yet amortized and the median of
-a sub-millisecond workload is noisy. No pool sizing or declaration restructuring was attempted;
-that is a later, measured decision.
+Per benchmark the flat entry now ranges from 0.94× to 1.43× of the nested entry, median 1.12×,
+where before pre-sizing it ranged from 0.86× to 1.41×, median 1.02×. The loss is now on 3 of the
+237 timed benchmarks, where it was on 54: almost every benchmark that lost by the fixed setup
+either won or came back to parity. The short DDL files the earlier run named recovered most of
+the gap: `create_schema` 0.86× to 0.95×, `create_role` 0.87× to 0.98×, `reindex_catalog` 0.89×
+to 0.94×, and `drop_if_exists` 0.91× to 1.00×. The large corpus files gained too, `aggregates`
+1.01× to 1.12×. The stress shapes, whose stores already amortized their growth, gained a little
+more: `select_list_10000` 1.41× to 1.43×, `in_list_10000` 1.38× to 1.43×, and `bool_chain_1000`
+1.29× to 1.32×. Deep subquery nesting turned from a loss into a win, `nested_subquery_15` 0.98×
+to 1.07×. No declaration was restructured; that is a separate, later decision.
 
 The "everything in the shared pool" variant is an opt-in experiment made by removing the pool
 attributes. It is not a third engine name and not an acceptance condition. A measured speedup is
