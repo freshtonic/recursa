@@ -306,8 +306,10 @@ _Avoid_: Cloned helper, split nonterminal, per-site helper
 **Attachment unit**:
 The private sequence type materialized for one semantic field with attached
 fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one
-occurrence of the field's element. It is a nonterminal whose reduce passes the
-element's value through unchanged.
+occurrence of the field's element. A cardinality-one unit lowers inline into
+its owner's rule, so the owner's own reduce takes the field's value from its
+right-hand-side position; every other unit keeps a nonterminal whose reduce
+passes that value through unchanged.
 _Avoid_: Surrounded node, per-element wrapper
 
 **Presence envelope**:
