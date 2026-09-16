@@ -328,7 +328,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "recursa-example-json"
+name = "recursa-example-expressions"
 version = "0.0.0"
 dependencies = [
  "recursa",
@@ -336,7 +336,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "recursa-example-pratt-expressions"
+name = "recursa-example-json"
 version = "0.0.0"
 dependencies = [
  "recursa",

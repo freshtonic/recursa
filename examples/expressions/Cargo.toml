@@ -1,16 +1,16 @@
 [package]
-name = "recursa-example-pratt-expressions"
+name = "recursa-example-expressions"
 version = "0.0.0"
-description = "Compiled Pratt-expression grammar example for Recursa"
+description = "Compiled declared-precedence expression grammar example for Recursa"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://github.com/freshtonic/recursa/tree/main/examples/pratt-expressions"
+documentation = "https://github.com/freshtonic/recursa/tree/main/examples/expressions"
 readme = "README.md"
-keywords = ["parser", "pratt", "grammar", "example"]
+keywords = ["parser", "precedence", "grammar", "example"]
 categories = ["parsing"]
 include = ["build.rs", "src/**", "README.md", "LICENSE"]
 publish = false
