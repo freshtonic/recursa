@@ -182,8 +182,8 @@ pub trait FlatNode: Copy + 'static {
 /// between pools. No storage tag is stored, and raw construction is private to this crate.
 ///
 /// `Debug` prints the Node's short type name and the handle's zero-based value, for example
-/// `Expr#3`. For a typed-pool handle that value is the pool index. For a shared-pool handle it is
-/// the word offset minus one, which identifies the Node but is not an index.
+/// `Expr#3`. For a typed-pool handle that value is the zero-based slot. For a shared-pool handle
+/// it is the word offset minus one, which identifies the Node but is not a slot.
 #[repr(transparent)]
 pub struct Handle<T> {
     /// The raw handle value: `index + 1` in a typed pool, or a word offset in the shared pool.
@@ -262,7 +262,7 @@ impl<T> fmt::Debug for Handle<T> {
 /// `Text<NameText>#0`.
 #[repr(transparent)]
 pub struct Text<K> {
-    /// The raw handle value, which is the text pool index plus one.
+    /// The raw handle value, which is the text pool slot plus one.
     raw: NonZeroU32,
     /// Names the content-token type without storing it, and keeps the handle `Send` and `Sync`.
     _kind: PhantomData<fn() -> K>,
@@ -1202,9 +1202,9 @@ mod tests {
     /// A two-word Node used for pool, list, and side-table tests.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Pair {
-        /// First stored word.
+        /// The value a test reads back to prove the first word survived storage.
         left: u32,
-        /// Second stored word.
+        /// The value a test reads back to prove the second word survived storage.
         right: u32,
     }
 
@@ -1215,9 +1215,9 @@ mod tests {
     /// A Node of the same size as [`Pair`] and a different tag.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Other {
-        /// First stored word.
+        /// A word a tag-mismatch test never reads, because the lookup must fail first.
         first: u32,
-        /// Second stored word.
+        /// The second such word.
         second: u32,
     }
 

@@ -730,7 +730,6 @@ fn fixture_grammar() -> PathBuf {
         .join("src/grammar.rs")
 }
 
-/// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.
 /// The generated flat traversal must be clippy-clean in a downstream crate that lints with
 /// `-D warnings`, `children`'s split dispatch included.
 ///
@@ -751,6 +750,7 @@ fn the_generated_flat_traversal_is_warning_free_under_clippy() {
     );
 }
 
+/// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.
 fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
