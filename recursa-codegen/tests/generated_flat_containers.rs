@@ -731,6 +731,26 @@ fn fixture_grammar() -> PathBuf {
 }
 
 /// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.
+/// The generated flat traversal must be clippy-clean in a downstream crate that lints with
+/// `-D warnings`, `children`'s split dispatch included.
+///
+/// `children` splits its wide `NodeRef` match into leaf helpers of bounded width, and a leaf whose
+/// applications all have no children degenerates to `Pat => { true } ... _ => false`, which is
+/// exactly what `clippy::match_like_matches_macro` rewrites to `matches!`. The generated-code lint
+/// policy therefore has to cover that lint: nothing downstream can edit a generated match, and
+/// pg-sql, whose 1,479 flat types fill dozens of leaves, hit it the moment it enabled `flat`.
+#[test]
+fn the_generated_flat_traversal_is_warning_free_under_clippy() {
+    let package = scaffold(FIXTURE, None);
+    let output = lint_fixture(&package);
+    assert!(
+        output.status.success(),
+        "generated flat code must not warn under `-D warnings`\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -784,6 +804,31 @@ fn toml_path(path: &Path) -> String {
 /// Builds and runs the scaffolded fixture binary.
 fn run_fixture(package: &TempDir) -> Output {
     cargo(package, "run")
+}
+
+/// Lints the scaffolded fixture's library with `-D warnings`, which is what a downstream crate's
+/// own clippy gate does to the generated code it includes.
+///
+/// Only the library is linted: it is what `include!`s the generated files, and the fixture's
+/// `main.rs` is a printing driver written for readability rather than for clippy.
+fn lint_fixture(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("clippy")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--lib")
+        .arg("--message-format=short")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", package.path().join("target"))
+        .output()
+        .expect("lint generated grammar fixture")
 }
 
 /// Builds the scaffolded fixture without running it, for a case that must fail to compile.

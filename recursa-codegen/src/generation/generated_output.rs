@@ -557,6 +557,12 @@ fn input_accessors() -> proc_macro2::TokenStream {
 }
 
 /// Renders the closed generated-code lint policy as one outer attribute.
+///
+/// Every entry is a lint a downstream crate cannot act on, because the code it fires against is
+/// generated and nobody edits it. `clippy::match_like_matches_macro` is one: the flat traversal
+/// splits its wide `NodeRef` match into leaf helpers of bounded width, and a leaf whose
+/// applications all have no children is exactly the `Pat => true, _ => false` shape the lint
+/// rewrites to `matches!`.
 fn generated_lint_policy() -> proc_macro2::TokenStream {
     quote! {
         #[allow(
@@ -569,6 +575,7 @@ fn generated_lint_policy() -> proc_macro2::TokenStream {
             clippy::blocks_in_conditions,
             clippy::borrowed_box,
             clippy::collapsible_if,
+            clippy::match_like_matches_macro,
             clippy::match_single_binding,
             clippy::needless_borrow,
             clippy::needless_return,

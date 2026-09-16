@@ -1,8 +1,10 @@
 # Flat AST design
 
-Status: tiered storage design settled on 2026-09-16. Steps 1 to 5 of the implementation order
-below are done: storage, generated flat types, `parse_flat`, traversal, and flat Pretty. Step 6,
-the pg-sql benchmark entry, follows. Mutation and compaction are a later milestone.
+Status: tiered storage delivered on 2026-09-16. Steps 1 to 6 of the implementation order below
+are done: storage, generated flat types, `parse_flat`, traversal, flat Pretty, and the pg-sql
+`pg-sql-flat` benchmark entry with its correctness evidence. pg-sql now selects `flat` in both
+`grammar!` blocks, pools `Expr`, `ColumnRef`, `FuncCall`, `SelectStmt` and `Statement`, and proves
+nested/flat parity over the whole pinned corpus. Mutation and compaction are a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -85,6 +87,22 @@ ast_node! {
 
 A type belongs in a typed pool when a consumer visits every instance, or keeps a dense side
 table over it, or scans it linearly. Do not add a type to a pool without a measurement.
+
+pg-sql's 1,463 declarations generate 1,479 flat Node types, one per materialized application.
+Five carry `#[flat(pool)]`, which is the hot set a consumer walks or side-tables; the other 1,474
+reach the shared pool. Measured sizes, on which only `FlatExpr` declares a bound:
+
+| Flat type | `size_of` | Bound |
+| --- | --: | --- |
+| `FlatExpr` | 16 | `max_size = 16` |
+| `FlatColumnRef` | 12 | — |
+| `FlatFuncCall` | 8 | — |
+| `FlatSelectStmt` | 20 | — |
+| `FlatStatement` | 8 | — |
+
+The bound is the measured size, not the measured size plus headroom, so widening a variant's
+payload fails to compile and raising the bound is a deliberate edit. No declaration was
+restructured to shrink a flat type; that is a later, measured decision.
 
 ### Handles
 
@@ -228,7 +246,9 @@ The generator emits, at the grammar root beside the owner:
 - `children(ast, node, &mut impl FnMut(NodeRef))`: a free function that calls the sink once per
   direct child in source order. A text handle and a presence flag are data, never children. A wide
   match is split into bounded helper functions, as a wide Visit match is, so a pg-sql-scale
-  grammar typechecks as a series of small functions.
+  grammar typechecks as a series of small functions. A split leaf whose applications all have no
+  children is the `Pat => true, _ => false` shape `clippy::match_like_matches_macro` rewrites, so
+  the generated-code lint policy covers that lint; nothing downstream can edit a generated match.
 - `FlatNodeRef`, which names one flat type's own variant, and the owner's `root_ref` built on it.
 - `check_post_order(ast)`, which walks `children` over every Node of every typed pool and returns
   the first same-pool child that does not precede its parent. A fresh parse always passes, so the
@@ -347,7 +367,7 @@ flowchart TD
 3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans. Done.
 4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker. Done.
 5. Flat Pretty. Done.
-6. The `pg-sql-flat` bench entry and correctness evidence.
+6. The `pg-sql-flat` bench entry and correctness evidence. Done.
 7. Later milestone: mutation API and compaction.
 
 ## Correctness and performance acceptance
@@ -366,14 +386,38 @@ flowchart TD
 
 ### Benchmark
 
-Extend the existing `parse` target in `../pg-sql/benches/parse.rs` with the engine name
-`pg-sql-flat` beside `pg-sql`, `sqlparser`, and `postgres`, under the same timing boundary:
-lexing, parsing, and destruction inside each call, identical inputs, no prelexed input for the
-flat entry alone. Verify nested and flat acceptance agreement before reporting timings.
+The `parse` target in `../pg-sql/benches/parse.rs` carries the engine name `pg-sql-flat` beside
+`pg-sql`, `sqlparser`, and `postgres`, under the same timing boundary: lexing, parsing, and
+destruction inside each call, identical inputs, no prelexed input for the flat entry alone. The
+probe asserts nested and flat acceptance agreement over every statement it looked at and aborts
+with a listing before any timing is taken, so a flat-only rejection cannot hide behind the
+exclusion filter.
 
 ```sh
 cargo bench -p pg-sql --features postgres-oracle --bench parse
 ```
+
+Run on 2026-09-16 against Recursa `6e6c758`. The harness wrote its report to
+`pg-sql/docs/benchmarks/2026-09-16T09-21-17Z-7ea2355/`, which is a local run artifact: that
+directory is gitignored, so the numbers that matter are reproduced here. 238 benchmarks, 33,708
+statements timed by all four engines, and the two representations rejected exactly the same 180
+statements.
+
+| Engine | Total median time | vs pg-sql |
+| --- | --: | --: |
+| pg-sql (nested arena AST) | 90.092 ms | 1.00× |
+| pg-sql-flat (Flat AST) | 84.876 ms | 1.06× |
+| postgres (PostgreSQL 17.9 raw parser) | 43.184 ms | 2.09× |
+| sqlparser | 194.852 ms | 0.46× |
+
+Per benchmark the flat entry ranges from 0.86× to 1.41× of the nested entry, median 1.02×. The
+win concentrates where a parse allocates many small Nodes: every generated stress shape except
+deep subquery nesting gains, `select_list_10000` by 1.41×, `in_list_10000` by 1.38×,
+`insert_values_10000` by 1.30×. It is a loss on 54 of the 237 timed benchmarks, all of them short
+corpus files whose statements are few and shallow — `create_schema` 0.86×, `create_role` 0.87×,
+`reindex_catalog` 0.89× — where the flat store's fixed setup is not yet amortized and the median of
+a sub-millisecond workload is noisy. No pool sizing or declaration restructuring was attempted;
+that is a later, measured decision.
 
 The "everything in the shared pool" variant is an opt-in experiment made by removing the pool
 attributes. It is not a third engine name and not an acceptance condition. A measured speedup is
