@@ -1,4 +1,4 @@
-use recursa_example_pratt_expressions::{grammar, parse};
+use recursa_example_expressions::{grammar, parse};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = std::env::args()

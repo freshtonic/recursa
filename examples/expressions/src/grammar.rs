@@ -27,6 +27,13 @@ recursa::tokens! {
         LPAREN => "(",
         RPAREN => ")",
     }
+    precedence {
+        left(bp = 10) { PLUS },
+        left(bp = 20) { STAR },
+        right(bp = 30) { CARET },
+        right(bp = 35) { UMINUS },
+        left(bp = 40) { BANG },
+    }
 }
 
 recursa::ast_node! {
@@ -47,30 +54,22 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     pub enum Expr {
         Integer(Integer),
         Name(Name),
         Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
 
-        #[parse(prefix, bp = 35)]
-        #[tok(MINUS)]
-        Negate(boxed!(Self)),
+        /// `MINUS` is the rule's only terminal, so the override is what gives the prefix form
+        /// its own level: `UMINUS` is a precedence-only name above `CARET`.
+        #[parse(prec = UMINUS)]
+        Negate(#[tok(MINUS, this)] boxed!(Self)),
 
-        #[parse(postfix, bp = 40)]
-        #[tok(BANG)]
-        Factorial(boxed!(Self)),
+        Factorial(#[tok(this, BANG)] boxed!(Self)),
 
-        #[parse(infix, lbp = 30, rbp = 30)]
-        #[tok(CARET)]
-        Power(boxed!(Self), boxed!(Self)),
+        Power(boxed!(Self), #[tok(CARET, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(STAR)]
-        Multiply(boxed!(Self), boxed!(Self)),
+        Multiply(boxed!(Self), #[tok(STAR, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }

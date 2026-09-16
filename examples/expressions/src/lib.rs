@@ -1,4 +1,4 @@
-//! A compiled expression grammar showing Recursa's Pratt declarations.
+//! A compiled expression grammar showing Recursa's declared precedence.
 
 pub mod grammar;
 

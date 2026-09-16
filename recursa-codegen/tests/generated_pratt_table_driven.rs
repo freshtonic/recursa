@@ -1,5 +1,8 @@
 //! End-to-end proof of Pratt lowering to precedence (#115) through the sole Recursa parser.
-//! It covers the textbook expression fixture and the `examples/pratt-expressions` grammar.
+//! It covers the textbook expression fixture and the frozen Pratt expression grammar that
+//! `examples/expressions` carried before `docs/declared-precedence.md` rewrote it as a plain
+//! enum. The frozen copy lives beside the fixture because Pratt lowering is only removed in
+//! step 3 of that document's landing order and must stay proven until then.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -129,13 +132,13 @@ fn the_pratt_fixture_parses_and_dumps_the_clone() {
 }
 
 #[test]
-fn the_pratt_expressions_example_parses_through_the_recursa_parser() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let example = fs::read_to_string(workspace.join("examples/pratt-expressions/src/grammar.rs"))
-        .expect("read the example grammar");
+fn the_pratt_expression_grammar_parses_through_the_recursa_parser() {
+    let example = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(FIXTURE)
+            .join("example-grammar.rs"),
+    )
+    .expect("read the frozen Pratt expression grammar");
     assert_eq!(example.matches("    diagrams,\n").count(), 1);
     assert_eq!(example.matches("    derives(Visit),\n").count(), 1);
     let grammar = example

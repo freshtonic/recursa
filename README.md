@@ -159,13 +159,14 @@ Run both compiled examples from a checkout:
 
 ```console
 cargo run -p recursa-example-json -- '{"answer":[true,null,42]}'
-cargo run -p recursa-example-pratt-expressions -- '-a! + 2 * 3 ^ 4'
+cargo run -p recursa-example-expressions -- '-a! + 2 * 3 ^ 4'
 ```
 
 - [JSON](examples/json) covers objects, arrays, literals, delimiters,
   separators, and semantic repetition cardinality.
-- [Pratt expressions](examples/pratt-expressions) covers atoms, grouping, and
-  prefix, postfix, and infix operators with precedence and associativity.
+- [Expressions](examples/expressions) covers atoms, grouping, and
+  prefix, postfix, and infix operators with declared precedence and
+  associativity.
 
 ### Local Explorer
 
@@ -220,7 +221,7 @@ to those adapters.
 | [`recursa-test`](recursa-test) | Reserved package; currently no public test harness |
 | [`recursa-explorer`](recursa-explorer) | Supported loopback launcher and bundled interactive Explorer UI |
 | [`recursa-example-json`](examples/json) | Compiled and runnable JSON example |
-| [`recursa-example-pratt-expressions`](examples/pratt-expressions) | Compiled and runnable Pratt-expression example |
+| [`recursa-example-expressions`](examples/expressions) | Compiled and runnable declared-precedence expression example |
 
 Most applications depend on `recursa` and use `recursa-codegen` only from
 `build.rs`. The other packages document implementation and advanced support

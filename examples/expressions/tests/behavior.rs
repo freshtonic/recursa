@@ -1,4 +1,4 @@
-use recursa_example_pratt_expressions::{ParseFailure, grammar, parse};
+use recursa_example_expressions::{ParseFailure, grammar, parse};
 
 fn integer<'ast>(expression: &'ast grammar::Expr<'_>) -> &'ast str {
     let grammar::Expr::Integer(integer) = expression else {
