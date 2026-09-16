@@ -1,7 +1,8 @@
 # Flat AST design
 
-Status: tiered storage design settled on 2026-09-16. Implementation has not started. Mutation
-and compaction are a later milestone.
+Status: tiered storage design settled on 2026-09-16. Implementation follows the order below and
+has reached the generated flat types, handles, and layout assertions. Mutation and compaction are
+a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly

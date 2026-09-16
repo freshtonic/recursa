@@ -940,6 +940,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         spans: configuration.syntax.spans,
         diagrams: configuration.syntax.diagrams,
         arena_ast: configuration.syntax.arena_ast,
+        flat: configuration.syntax.flat,
         pretty: configuration.syntax.pretty,
     };
     let mut declaration_origins = BTreeMap::new();

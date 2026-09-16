@@ -7,14 +7,16 @@
 pub use recursa_core::__private::arbitrary::Arbitrary;
 #[cfg(feature = "explorer")]
 pub use recursa_core::explorer;
+pub use recursa_core::flat_owner::FlatStorage;
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub use recursa_core::framing;
 pub use recursa_core::{
     ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, DebugProvenance,
-    ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
-    Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,
-    Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
-    Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
+    ElementMetadata, ElementRole, ElementView, Elements, FlatNode, Handle, HasSpan, List, List1,
+    ListItem, Node, NodeView, OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Pretty,
+    PrettyConfig, PrettyContext, PrettySink, Repeated, RepeatedIter, SideTable, SourceMap,
+    SourceMapEntry, Span, Text, TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut,
+    Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, ast_node, grammar, tokens};
 
@@ -40,7 +42,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            29,
+            30,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

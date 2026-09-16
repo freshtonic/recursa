@@ -80,3 +80,18 @@ jobs:
           -p recursa-test
           -p recursa-explorer
           --all-features --no-deps --locked
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install nightly Rust with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run the Flat AST storage tests under Miri
+        run: cargo +nightly miri test -p recursa-core flat --locked

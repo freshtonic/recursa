@@ -70,11 +70,6 @@ mod tests {
     }
 }
 
-/// Reports whether authored visibility exposes an item outside its module.
-pub(super) fn is_public(visibility: &Visibility) -> bool {
-    matches!(visibility, Visibility::Public(_))
-}
-
 /// Returns the event variant for a publicly materialized lifetime-only Node application.
 pub(super) fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan) -> Option<Ident> {
     (node.publicly_materialized

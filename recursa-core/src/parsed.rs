@@ -1131,7 +1131,7 @@ impl<'input> ContentText<'input> {
     }
 
     /// Borrows matched text only when `span` is a valid UTF-8 source range.
-    fn matched(source: &'input str, span: Span) -> Option<Self> {
+    pub(crate) fn matched(source: &'input str, span: Span) -> Option<Self> {
         source
             .get(span.range())
             .map(|text| Self(ContentTextStorage::Matched(text)))

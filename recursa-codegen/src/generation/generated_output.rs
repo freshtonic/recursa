@@ -1240,6 +1240,7 @@ pub(super) fn render_root(
         public_exports: trivia_exports,
     } = render_trivia_root_fragments(plan, facade);
     let visit_events = render_visit_events(plan);
+    let flat_owner = render_flat_owner(plan)?;
     let explorer_schema = plan
         .explorer
         .as_ref()
@@ -1862,6 +1863,7 @@ pub(super) fn render_root(
         #content_token_optional_trait_helpers
         #arbitrary_seed_module
         #visit_events
+        #flat_owner
         #explorer_schema
         #explorer_lex
 
@@ -2017,6 +2019,7 @@ pub(super) fn render_node(
             #without_spans_entry_point
         }
     };
+    let flat_items = render_node_flat_items(plan, node)?;
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
     let span_elements = render_span_elements(node, node_index);
@@ -2078,6 +2081,8 @@ pub(super) fn render_node(
         __recursa_generation_handshake!(#generation);
 
         #concrete_declaration
+
+        #flat_items
 
         #(#token_bindings)*
 

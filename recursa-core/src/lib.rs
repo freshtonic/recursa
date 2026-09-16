@@ -5,6 +5,9 @@
 mod arbitrary_depth;
 #[cfg(feature = "explorer")]
 pub mod explorer;
+pub mod flat;
+/// The storage-selection contract a generated Flat AST owner implements.
+pub mod flat_owner;
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub mod framing;
 /// Static grammar identity, token kinds, and compact follow-set representation.
@@ -32,6 +35,10 @@ mod visitor;
 
 pub use bumpalo::boxed::Box as ArenaBox;
 pub use bumpalo::collections::Vec as ArenaVec;
+pub use flat::{
+    FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
+    SideTable, Text, TextPool, TypedPool,
+};
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
 pub(crate) use input::Input;
 pub use output::{ArenaVec1, HasSpan, Vec1};
@@ -85,6 +92,11 @@ pub mod __private {
         token_node as explorer_token_node, token_schema as explorer_token_schema,
         variant_schema as explorer_variant_schema,
     };
+    pub use crate::flat::{
+        FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
+        SideTable, Text, TextPool, TypedPool,
+    };
+    pub use crate::flat_owner::FlatStorage;
     #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
@@ -175,7 +187,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        29,
+        30,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -268,7 +280,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            29,
+            30,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
