@@ -130,6 +130,86 @@ fn an_undeclared_operator_is_an_rca0400_build_error_with_an_authoring_remedy() {
     assert!(!stderr.contains("RCA9105"), "stderr:\n{stderr}");
 }
 
+#[test]
+fn a_level_less_variant_leaves_no_self_comparison_for_a_downstream_lint() {
+    // Every atom of an expression Node has no declared level, so its Pretty body never
+    // parenthesizes. The test must fold to the literal `false`: the two-sided spelling
+    // `false || false` trips `clippy::eq_op`, which is deny-by-default, and so fails every
+    // downstream crate whose expression enum has an atom.
+    let package = scaffold(FIXTURE, None);
+    let output = lint_fixture(&package);
+    assert!(
+        output.status.success(),
+        "generated downstream code must be warning-free under clippy\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let generated = generated_sources(&package.path().join("target"));
+    assert!(
+        !generated.is_empty(),
+        "the fixture publishes its generated Rust"
+    );
+    assert!(
+        generated
+            .iter()
+            .any(|source| source.contains("__recursa_parenthesize = false ;")),
+        "a level-less variant folds its parenthesization test to `false`",
+    );
+    for source in &generated {
+        assert!(
+            !source.contains("false || false"),
+            "no generated parenthesization test compares a literal with itself",
+        );
+    }
+}
+
+/// Reads every generated Rust artifact the fixture published under `root`.
+fn generated_sources(root: &Path) -> Vec<String> {
+    let mut sources = Vec::new();
+    collect_generated_sources(root, &mut sources);
+    sources
+}
+
+/// Walks `root` for the published `recursa-generations` Rust artifacts.
+fn collect_generated_sources(root: &Path, sources: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_generated_sources(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "rs")
+            && path
+                .components()
+                .any(|component| component.as_os_str() == "recursa-generations")
+        {
+            sources.push(fs::read_to_string(&path).expect("read a generated Rust artifact"));
+        }
+    }
+}
+
+/// Lints the scaffolded fixture the way a downstream crate's own CI does.
+fn lint_fixture(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("clippy")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--all-targets")
+        .arg("--message-format=short")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", package.path().join("target"))
+        .output()
+        .expect("lint the generated grammar fixture")
+}
+
 /// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.
 fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");
