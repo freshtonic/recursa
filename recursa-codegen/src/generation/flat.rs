@@ -461,11 +461,13 @@ pub(super) fn render_node_flat_items(
     let storage = (!node.publicly_materialized)
         .then(|| render_shared_storage_impls(plan, node))
         .transpose()?;
+    let pretty = render_node_flat_pretty(plan, node);
     Ok(quote! {
         #declaration
         #tag_implementation
         #(#assertions)*
         #storage
+        #pretty
     })
 }
 
@@ -639,6 +641,7 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         })
         .map(|(node, application)| render_public_storage_impl(plan, node, application))
         .collect::<Result<Vec<_>, String>>()?;
+    let pretty_support = render_flat_pretty_support(plan);
     let layout_checks = plan
         .nodes
         .iter()
@@ -926,6 +929,8 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         }
 
         #layout_checks
+
+        #pretty_support
 
         /// Proves the Flat AST result crosses thread boundaries for every root Node type.
         ///

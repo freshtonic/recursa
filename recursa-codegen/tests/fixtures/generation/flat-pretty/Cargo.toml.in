@@ -1,0 +1,14 @@
+[package]
+name = "recursa-generated-flat-pretty"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+build = "build.rs"
+
+[dependencies]
+recursa = { path = "{{RECURSA}}", features = ["spans"] }
+
+[build-dependencies]
+recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["spans"] }
+
+[workspace]

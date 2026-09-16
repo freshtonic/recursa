@@ -8,19 +8,24 @@
 //! lies inside its parent's, that both backends accept and reject exactly the same inputs with the
 //! same diagnostics, and that a failed flat parse restores the cursor and frees its stores.
 //!
+//! It then drives the generated traversal over the same results: `NodeRef` and `children` through
+//! `walk`, the post-order checker that is invariant I1's evidence, and the owner's `pool`, `lists`
+//! and `texts` accessors. The walk line is the same tree as the hand-walked structural line, named
+//! by Node application instead of by field, so the two renderings check one another.
+//!
 //! Every size line is a compile-time fact about the generated layout, as in step two.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use recursa::{FlatNode, Handle, List, List1, Span};
+use recursa::{FlatNode, FlatVisitor, Handle, List, List1, Span, walk};
 use recursa_generated_flat_containers::grammar;
 use recursa_generated_flat_containers::grammar::{
     FlatAlias, FlatArgs, FlatAst, FlatBang, FlatBlock, FlatBoxes, FlatCall, FlatCallee, FlatDefine,
     FlatErased, FlatFilter, FlatFunctionTail, FlatGuard, FlatKwAs, FlatKwIn, FlatKwOnly, FlatKwOut,
     FlatKwTemp, FlatLet, FlatList, FlatMarks, FlatMode, FlatModifiers, FlatName, FlatNumber,
     FlatOptions, FlatParam, FlatParams, FlatPrint, FlatStatement, FlatTrail, FlatTrailingVariadic,
-    FlatTuple, FlatValue, FlatWith,
+    FlatTuple, FlatValue, FlatWith, NodeRef,
 };
 
 /// Counts live heap allocations so a failed parse can prove it dropped every store it opened.
@@ -258,10 +263,7 @@ fn drive_positive(source: &str) {
     );
     let root = flat.span(flat.root());
     println!("lr flat-spans {source:?} => {}", span_text(root));
-    assert!(
-        flat.has_spans(),
-        "this fixture enables the `spans` feature"
-    );
+    assert!(flat.has_spans(), "this fixture enables the `spans` feature");
     assert_eq!(
         root,
         Span::new(0, source.trim_end().len()).ok(),
@@ -271,6 +273,32 @@ fn drive_positive(source: &str) {
     println!(
         "lr flat-pool {source:?} => values={} names={}",
         census.values, census.names
+    );
+
+    // The generated traversal, over the same result: one `NodeRef` name per Node, nested by
+    // `walk`. Every Node the hand-walked line above renders appears here once.
+    println!(
+        "lr flat-walk {source:?} => {}",
+        walk_text(&flat, flat.root_ref())
+    );
+
+    // Invariant I1, checked by the generated checker rather than by this file's own walk.
+    println!("lr flat-post-order {source:?} => {}", post_order(&flat));
+
+    // The pool census again, this time from the pools themselves. Every Node of a pool is
+    // reachable from the root of a fully consumed input, so the two counts agree.
+    let pools = (
+        flat.pool::<FlatValue>().len(),
+        flat.pool::<FlatName>().len(),
+    );
+    println!(
+        "lr flat-pool-len {source:?} => values={} names={}",
+        pools.0, pools.1
+    );
+    assert_eq!(
+        (census.values, census.names),
+        pools,
+        "every Node of a typed pool is reachable from the root: {source:?}"
     );
 }
 
@@ -335,6 +363,25 @@ fn drive_without_spans() {
     );
     assert!(!flat.has_spans());
     assert!(flat.span(flat.root()).is_none());
+
+    // `children` without a walk: the direct children of one Node, in source order.
+    println!(
+        "lr flat-children {source:?} => {}",
+        direct_children(&flat, flat.root_ref())
+    );
+
+    // The list store and the text pool, through the owner's read-only accessors.
+    println!(
+        "lr flat-stores {source:?} => texts={} lists={}",
+        flat.texts().len(),
+        flat.lists().len_slots()
+    );
+
+    // `enter` returns `false` at every `Value`, so the walk reports it and stops there.
+    println!(
+        "lr flat-walk-skip {source:?} => {}",
+        skipped_walk_text(&flat, flat.root_ref())
+    );
 }
 
 /// Parses a prefix with both backends and proves they stop at the same token.
@@ -382,6 +429,11 @@ fn drive_entry_points() {
         value(&parsed, parsed.root()),
         span_text(parsed.span(parsed.root()))
     );
+    // A result rooted at a Node other than the grammar root still names its own root.
+    println!(
+        "lr entry value-walk {}",
+        walk_text(&parsed, parsed.root_ref())
+    );
 
     let lexed = grammar::lex("(in x, out temp)");
     let mut input = lexed.input();
@@ -396,7 +448,8 @@ fn drive_entry_points() {
 
     let lexed = grammar::lex("as x");
     let mut input = lexed.input();
-    let parsed = grammar::Alias::parse_flat(&mut input).expect("an alias parses from its own entry");
+    let parsed =
+        grammar::Alias::parse_flat(&mut input).expect("an alias parses from its own entry");
     println!("lr entry alias {}", alias(&parsed, parsed.root()));
 }
 
@@ -404,10 +457,7 @@ fn drive_entry_points() {
 ///
 /// `Result::expect_err` needs the success type to be `Debug`, and a Flat AST is not, so the
 /// failure is taken by pattern instead.
-fn flat_error(
-    input: &mut grammar::Input<'_>,
-    source: &str,
-) -> recursa::ParseError {
+fn flat_error(input: &mut grammar::Input<'_>, source: &str) -> recursa::ParseError {
     match grammar::Statement::parse_flat(input) {
         Ok(_) => panic!("failing input {source:?} parsed flat"),
         Err(error) => error,
@@ -557,7 +607,9 @@ fn function_tail<R: FlatNode>(ast: &FlatAst<'_, R>, handle: Handle<FlatFunctionT
     format!(
         "FunctionTail{{values={} trailing={}}}",
         run(&ast[node.values], |item| value(ast, item)),
-        optional(node.trailing_variadic, |inner| trailing_variadic(ast, inner)),
+        optional(node.trailing_variadic, |inner| trailing_variadic(
+            ast, inner
+        )),
     )
 }
 
@@ -724,11 +776,9 @@ fn value<R: FlatNode>(ast: &FlatAst<'_, R>, handle: Handle<FlatValue>) -> String
     match ast[handle] {
         FlatValue::Name { name: inner } => format!("Value::Name({})", name(ast, inner)),
         FlatValue::Number(inner) => format!("Value::Number({})", number(ast, inner)),
-        FlatValue::Negated { mark, inner } => format!(
-            "Value::Negated({} {})",
-            bang(ast, mark),
-            value(ast, inner)
-        ),
+        FlatValue::Negated { mark, inner } => {
+            format!("Value::Negated({} {})", bang(ast, mark), value(ast, inner))
+        }
         FlatValue::List(inner) => format!("Value::{}", list(ast, inner)),
         FlatValue::Tuple(inner) => format!("Value::{}", tuple(ast, inner)),
     }
@@ -944,5 +994,109 @@ fn contains(outer: Option<Span>, inner: Option<Span>) -> bool {
         (Some(outer), Some(inner)) => outer.start() <= inner.start() && inner.end() <= outer.end(),
         (_, None) => true,
         (None, Some(_)) => false,
+    }
+}
+
+// --- the generated traversal: NodeRef, children, walk, and the post-order checker -------------
+//
+// Nothing below names a field or a flat type. Every line comes from the generated `NodeRef`,
+// `children`, `root_ref` and `check_post_order`, so it is evidence about generation rather than
+// about this file's own walk above.
+
+/// Prints one `NodeRef` name per Node, nested one pair of parentheses per level.
+///
+/// A Node with children reads `Parent(first second)`; a Node without children is its name alone.
+/// The printer holds one flag per open level, which is `true` after that level printed a child.
+struct WalkPrinter {
+    /// The tree rendered so far.
+    text: String,
+    /// Whether the Node at each open level has printed a child already.
+    open: Vec<bool>,
+}
+
+impl WalkPrinter {
+    /// Creates an empty printer.
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            open: Vec::new(),
+        }
+    }
+
+    /// Opens one Node: separates it from a sibling, or opens its parent's child list.
+    fn open(&mut self, node: NodeRef) {
+        if let Some(printed) = self.open.last_mut() {
+            if *printed {
+                self.text.push(' ');
+            } else {
+                self.text.push('(');
+                *printed = true;
+            }
+        }
+        self.text.push_str(node.name());
+        self.open.push(false);
+    }
+
+    /// Closes one Node, and its child list when it printed one.
+    fn close(&mut self) {
+        if self.open.pop() == Some(true) {
+            self.text.push(')');
+        }
+    }
+}
+
+impl<'input, R: FlatNode> FlatVisitor<FlatAst<'input, R>> for WalkPrinter {
+    fn enter(&mut self, _ast: &FlatAst<'input, R>, node: NodeRef) -> bool {
+        self.open(node);
+        true
+    }
+
+    fn leave(&mut self, _ast: &FlatAst<'input, R>, _node: NodeRef) {
+        self.close();
+    }
+}
+
+/// Prints the same tree, but stops at every `Value`, to prove `enter` can skip children.
+struct SkipValues(WalkPrinter);
+
+impl<'input, R: FlatNode> FlatVisitor<FlatAst<'input, R>> for SkipValues {
+    fn enter(&mut self, _ast: &FlatAst<'input, R>, node: NodeRef) -> bool {
+        self.0.open(node);
+        !matches!(node, NodeRef::Value(_))
+    }
+
+    fn leave(&mut self, _ast: &FlatAst<'input, R>, _node: NodeRef) {
+        self.0.close();
+    }
+}
+
+/// Renders one result as the nested `NodeRef` names of a whole walk.
+fn walk_text<R: FlatNode>(ast: &FlatAst<'_, R>, root: NodeRef) -> String {
+    let mut printer = WalkPrinter::new();
+    walk(ast, root, &mut printer);
+    printer.text
+}
+
+/// Renders one result as a walk that skips the children of every `Value`.
+fn skipped_walk_text<R: FlatNode>(ast: &FlatAst<'_, R>, root: NodeRef) -> String {
+    let mut printer = SkipValues(WalkPrinter::new());
+    walk(ast, root, &mut printer);
+    printer.0.text
+}
+
+/// Renders the direct children of one Node, which is `children` without a walk.
+fn direct_children<R: FlatNode>(ast: &FlatAst<'_, R>, node: NodeRef) -> String {
+    let mut names = Vec::new();
+    grammar::children(ast, node, &mut |child| names.push(child.name()));
+    format!("[{}]", names.join(" "))
+}
+
+/// Runs the generated post-order checker and renders what it reported.
+///
+/// A fresh parse satisfies invariant I1 by construction, so every positive input prints `ok`.
+fn post_order<R: FlatNode>(ast: &FlatAst<'_, R>) -> String {
+    match grammar::check_post_order(ast) {
+        Ok(()) => "ok".to_owned(),
+        Err(violation) => violation.to_string(),
     }
 }

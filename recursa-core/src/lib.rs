@@ -6,8 +6,12 @@ mod arbitrary_depth;
 #[cfg(feature = "explorer")]
 pub mod explorer;
 pub mod flat;
-/// The storage-selection contract a generated Flat AST owner implements.
+/// The storage-selection contracts a generated Flat AST owner implements.
 pub mod flat_owner;
+/// The rendering contract a generated flat Node type implements per Flat AST store.
+pub mod flat_pretty;
+/// Grammar-erased Flat AST traversal: the children contract and the depth-first walk.
+pub mod flat_visit;
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub mod framing;
 /// Static grammar identity, token kinds, and compact follow-set representation.
@@ -96,7 +100,10 @@ pub mod __private {
         FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
         SideTable, Text, TextPool, TypedPool,
     };
-    pub use crate::flat_owner::FlatStorage;
+    pub use crate::flat_owner::{FlatPool, FlatStorage};
+    pub use crate::flat_visit::{
+        FlatChildren, FlatVisitor, PostOrderViolation, check_post_order_pair, walk,
+    };
     #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
@@ -189,7 +196,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        31,
+        32,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -282,7 +289,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            31,
+            32,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

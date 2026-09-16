@@ -1,9 +1,8 @@
 # Flat AST design
 
-Status: tiered storage design settled on 2026-09-16. Implementation follows the order below and
-has reached flat construction: the generated flat types, handles, and layout assertions, plus the
-flat reduce actions and the `parse_flat` entry points that build a result. Traversal, Pretty,
-mutation and compaction are later milestones.
+Status: tiered storage design settled on 2026-09-16. Steps 1 to 5 of the implementation order
+below are done: storage, generated flat types, `parse_flat`, traversal, and flat Pretty. Step 6,
+the pg-sql benchmark entry, follows. Mutation and compaction are a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -165,7 +164,11 @@ The generated owner is a grammar-local `FlatAst<'input>` with private fields.
   range. `get(handle)` returns `Option`. No `IndexMut` and no mutable store access is public.
 - `span(handle) -> Option<Span>` returns `None` when the parse did not capture. `has_spans()`
   reports the whole result.
-- `ids()` on a typed pool iterates its handles in post-order.
+- `pool::<T>()` borrows one pooled Node type's typed pool, whose `handles()` iterates its handles
+  in post-order and whose `len()` sizes a side table. Only a pooled type has a pool.
+- `lists()` and `texts()` borrow the list store and the text pool, read-only.
+- `root_ref()` returns the root as a `NodeRef`. It needs the generated `FlatNodeRef` bound on the
+  root type, because the owner's root is a type parameter and only a trait can name its variant.
 - The result is `Send + Sync`, checked at compile time.
 
 ## Construction
@@ -212,12 +215,34 @@ stack and behaves exactly as before.
 
 ## Traversal
 
-The generator emits:
+The generator emits, at the grammar root beside the owner:
 
-- `NodeRef`: an enum with one variant per Node application, each holding that application's
-  handle. It is a traversal value only and is never stored in a Node.
-- `children(ast, NodeRef, &mut impl FnMut(NodeRef))`: the direct children in source order.
-- `Visitor` with `enter`, which returns `false` to skip children, and `leave`; and `walk`.
+- `NodeRef`: an enum with one variant per publicly materialized Node application, each holding
+  that application's handle. It is a traversal value only and is never stored in a Node. The
+  variant name is the declaration's name followed by the name of each type argument, so
+  `Holder<Name>` is `HolderName`; two applications that would share a name both take their
+  canonical parse index as a suffix. `NodeRef::name()` returns the variant's own name.
+- One `Opaque` variant, only for a grammar in which a public Node has a child the root cannot
+  name, which is a Node declared in a private module. `children` reports such a child's site as
+  `Opaque` and stops there; the Node is still stored, and its own module can read it.
+- `children(ast, node, &mut impl FnMut(NodeRef))`: a free function that calls the sink once per
+  direct child in source order. A text handle and a presence flag are data, never children. A wide
+  match is split into bounded helper functions, as a wide Visit match is, so a pg-sql-scale
+  grammar typechecks as a series of small functions.
+- `FlatNodeRef`, which names one flat type's own variant, and the owner's `root_ref` built on it.
+- `check_post_order(ast)`, which walks `children` over every Node of every typed pool and returns
+  the first same-pool child that does not precede its parent. A fresh parse always passes, so the
+  call is cheap evidence for invariant I1 in a test or a debug build.
+
+`recursa-core` owns the grammar-erased half, so one walk serves every grammar and an adapter can
+reuse it:
+
+- `FlatChildren`, with the grammar's `NodeRef` as its associated type, implemented by the
+  generated owner. Its sink is a trait object, so the traversal compiles once per grammar.
+- `FlatVisitor`, with `enter`, which returns `false` to skip children, and `leave`. `leave` runs
+  for a skipped Node too, so the two calls always pair.
+- `walk`, which is iterative: it keeps its own stack on the heap and reuses one child buffer, so
+  the depth of the Flat AST does not bound it.
 
 Parent links are not stored. A consumer that needs them builds a side table on demand.
 
@@ -227,6 +252,43 @@ Flat Pretty is generated from grammar syntax and declarative Pretty annotations,
 milestone settled. It does not reuse handwritten nested implementations. An edited Flat AST
 renders to SQL that reparses to the same semantic tree; whitespace and comment fidelity are not
 required.
+
+One renderer serves both representations. The generator renders a Node's nested body and its flat
+body from the same frozen Pretty behavior, so spacing, breaks, groups, separators, `#[pretty(...)]`
+hints, presence and declared-precedence parenthesization cannot drift apart. Two things differ, and
+nothing else does:
+
+- **Value access.** A flat Node is `Copy` and holds each child as a handle, so a field access is
+  spelled exactly as the nested one. The `Box` layer disappears, because the field mapping already
+  dropped it.
+- **Child dispatch.** A nested child renders itself. A flat child is a Node handle, an optional
+  handle, a list handle or a text handle, and only the result's stores can resolve one.
+
+The contract is an equality: for one input, `FlatAst::render` returns exactly what the detached
+nested AST of the same input returns. Neither value carries occurrence provenance, so both emit the
+canonical spelling of every fixed token, omit optional fixed syntax that only provenance could
+report, and read a content token's spelling from stored text — the text pool for the Flat AST, the
+token value for the nested one.
+
+The rendering surface on the owner is:
+
+- `pretty(&self, context)` renders the Node at `root()`.
+- `render()` renders with the grammar's selected layout and `render_with(config)` with a caller's.
+- `pretty_node(handle, context)` renders any Node of the result, which is how a consumer renders
+  one subtree.
+
+The protocol behind them is [`FlatPretty<S>`](../recursa-core/src/flat_pretty.rs) in
+`recursa-core`: one public trait whose `pretty_in` takes the store beside the value. The generator
+implements it once per flat Node type, beside the declaration, so a Node declared without `pub`
+renders too. One generated container trait resolves every handle shape a field can hold, which is
+what keeps the rendering code above it identical for both representations. A declared-precedence
+operand is resolved through the store before its grouping decision is made, because that decision
+reads the operand's own variant.
+
+Evidence is the `flat-pretty` generation fixture: every positive input of the container grammar is
+parsed twice and the two renders are asserted equal, each flat render reparses to the same flat
+document and the same nested semantic tree, and the mutation cases cover declared-precedence
+parenthesization and a grammar that selects `arena_ast` beside `flat`.
 
 ## Mutation
 
@@ -283,8 +345,8 @@ flowchart TD
 2. The `flat` root flag, the `#[flat(...)]` attribute, and generated flat types with size and
    alignment assertions. Done.
 3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans. Done.
-4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker.
-5. Flat Pretty.
+4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker. Done.
+5. Flat Pretty. Done.
 6. The `pg-sql-flat` bench entry and correctness evidence.
 7. Later milestone: mutation API and compaction.
 
