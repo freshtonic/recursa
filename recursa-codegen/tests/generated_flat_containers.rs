@@ -306,10 +306,12 @@ fn the_generated_traversal_reports_every_child_in_source_order_and_proves_post_o
         "{lines}"
     );
 
-    // The list store and the text pool through the owner's read-only accessors: two numbers, and
-    // one reserved slot plus a run of two and a run of one.
+    // The list store, the text pool and the shared pool through the owner's read-only accessors:
+    // two numbers, one reserved slot plus a run of two and a run of one, and the shared words the
+    // parse wrote. The shared count is pinned because the store is now pre-sized from the token
+    // count: a reservation changes capacity, never the words written.
     assert!(
-        lines.contains("flat-stores \"print [1, [2]];\" => texts=2 lists=4\n"),
+        lines.contains("flat-stores \"print [1, [2]];\" => texts=2 lists=4 shared=18\n"),
         "{lines}"
     );
 
