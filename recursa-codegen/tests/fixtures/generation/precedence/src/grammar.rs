@@ -136,32 +136,30 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// An ordinary left-recursive enum: every operator takes its level from the `precedence`
+    /// declaration above, through the rule's last declared terminal or through an override.
     #[derive(Debug, Clone)]
-    #[pratt]
     pub enum Expr {
         Column(Name),
         Number(Number),
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
-        /// `c_expr: select_with_parens %prec UMINUS`.
+        /// `c_expr: select_with_parens %prec UMINUS`: the rule has no terminal of its own.
         #[parse(prec = UMINUS)]
         Sub(SubSelect),
         /// `c_expr: select_with_parens indirection`.
         SubField(SubSelect, #[tok(DOT, this)] Name),
-        #[parse(prefix, bp = 12)]
+        /// `a_expr: '-' a_expr %prec UMINUS`: the override lifts the prefix form above the
+        /// level `MINUS` gives the rule as a binary operator.
+        #[parse(prec = UMINUS)]
         Negate(#[tok(MINUS, this)] boxed!(Self)),
-        #[parse(infix, lbp = 10, rbp = 11)]
         Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
-        #[parse(infix, lbp = 10, rbp = 11)]
         Subtract(boxed!(Self), #[tok(MINUS, this)] boxed!(Self)),
-        #[parse(infix, lbp = 5, rbp = 6)]
         Like(
             boxed!(Self),
             #[tok(LIKE, this)] boxed!(Self),
             Option<EscapeClause>,
         ),
-        #[parse(postfix, bp = 4)]
         IsJson(boxed!(Self), #[tok(IS, this)] IsJsonTail),
-        #[parse(postfix, bp = 20)]
         Field(boxed!(Self), #[tok(DOT, this)] Name),
     }
 }

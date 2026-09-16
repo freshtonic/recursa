@@ -1709,10 +1709,9 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
         shift("NameText -> NESTED", "PATH"),
         // The literal scope keyword below `CHARACTERISTICS`.
         shift("grammar::SetScope -> SESSION", "CHARACTERISTICS"),
-        // The Pratt `LIKE` rule (5) against `ESCAPE` (6), which introduces no operator of
-        // `Expr`.
+        // The `LIKE` rule (5) against `ESCAPE` (6), which introduces no operator of `Expr`.
         shift(
-            "grammar::Expr -> grammar::Expr grammar::Expr::__recursa_attachment#59",
+            "grammar::Expr -> grammar::Expr LIKE grammar::Expr",
             "ESCAPE",
         ),
     ] {
@@ -1721,9 +1720,10 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
             "{expected:?} not in {settled:#?}"
         );
     }
-    // A Pratt rule against a Pratt operator of its owner is still decided by binding powers.
+    // The same rule against an operator of its own right operand: `'+'` (10) is above `LIKE`
+    // (5), so the operand keeps growing.
     assert!(settled.contains(&shift(
-        "grammar::Expr::__recursa_attachment#59 -> LIKE grammar::Expr[min 6]",
+        "grammar::Expr -> grammar::Expr LIKE grammar::Expr",
         "PLUS"
     )));
     let dump = analysis.dump();
