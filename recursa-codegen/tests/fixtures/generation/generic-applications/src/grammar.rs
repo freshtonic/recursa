@@ -24,6 +24,12 @@ recursa::tokens! {
         LBRACE => "{",
         RBRACE => "}",
     }
+    precedence {
+        left(bp = 10) { IS },
+        left(bp = 20) { MINUS },
+        right(bp = 30) { UMINUS },
+        right(bp = 40) { NOTEXISTS },
+    }
 }
 
 recursa::ast_node! {
@@ -191,26 +197,20 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     pub enum Expr {
         Integer(Atom<Integer>),
         Name(Atom<Name>),
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
 
-        #[parse(prefix, bp = 20)]
-        #[tok(MINUS)]
-        Neg(boxed!(Self)),
+        #[parse(prec = UMINUS)]
+        Neg(#[tok(MINUS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(MINUS)]
-        Sub(boxed!(Self), boxed!(Self)),
+        Sub(boxed!(Self), #[tok(MINUS, this)] boxed!(Self)),
 
-        #[parse(prefix, bp = 20)]
-        #[tok(NOT, EXISTS)]
-        NotExists(boxed!(Self)),
+        #[parse(prec = NOTEXISTS)]
+        NotExists(#[tok(NOT, EXISTS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(IS, NOT)]
-        IsNot(boxed!(Self), boxed!(Self)),
+        #[parse(prec = IS)]
+        IsNot(boxed!(Self), #[tok(IS, NOT, this)] boxed!(Self)),
     }
 }

@@ -21,6 +21,9 @@ recursa::tokens! {
         PLUS => "+",
         ARROW => "=>",
     }
+    precedence {
+        left(bp = 10) { PLUS },
+    }
 }
 
 recursa::ast_node! {
@@ -127,16 +130,13 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     pub enum Expr {
         Name(Ident),
         Number(Number),
         #[tok(NULL)]
         Null,
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }
 

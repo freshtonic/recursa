@@ -286,12 +286,6 @@ fn plan_framing(
                 NodeBodyPlan::Enum { variants, .. } => variants
                     .iter()
                     .position(|variant| variant.resolved_variant == resolved_variant),
-                NodeBodyPlan::Pratt(pratt) => pratt
-                    .nud
-                    .iter()
-                    .map(|branch| &branch.variant)
-                    .chain(pratt.led.iter().map(|branch| &branch.variant))
-                    .position(|variant| variant.resolved_variant == resolved_variant),
                 NodeBodyPlan::Struct { .. } => None,
             }
             .ok_or_else(|| {
@@ -827,7 +821,7 @@ impl EmissionPlan {
                 "document framing requires the Recursa `explorer` generation feature".to_owned(),
             );
         }
-        let pretty = emitted_pretty_plan(&nodes, &tokens);
+        let pretty = emitted_pretty_plan(&nodes, &tokens)?;
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
         #[cfg(feature = "explorer")]
@@ -1053,9 +1047,6 @@ impl EmissionPlan {
                     .body
                 {
                     NodeBodyPlan::Enum { variants, .. } => payload.variant_index >= variants.len(),
-                    NodeBodyPlan::Pratt(pratt) => {
-                        payload.variant_index >= pratt.nud.len() + pratt.led.len()
-                    }
                     NodeBodyPlan::Struct { .. } => true,
                 }
             }) {
@@ -1094,7 +1085,6 @@ impl EmissionPlan {
                         .iter()
                         .map(|variant| variant.elements.as_slice())
                         .collect(),
-                    NodeBodyPlan::Pratt(_) => Vec::new(),
                 };
                 for elements in pretty_element_sets {
                     for element in elements {
@@ -1146,7 +1136,6 @@ impl EmissionPlan {
                     .iter()
                     .map(|variant| variant.elements.as_slice())
                     .collect(),
-                NodeBodyPlan::Pratt(_) => Vec::new(),
             };
             for elements in declaration_elements {
                 for element in elements {

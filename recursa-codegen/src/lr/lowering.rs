@@ -3,16 +3,14 @@
 //! Lowering from the normalized grammar to LR rules.
 //!
 //! Terminals are the grammar's token kinds. Every grammar type becomes one nonterminal, except a
-//! fixed token of one kind, which is inlined as its terminal so that keywords cost no reduce.
-//! Pratt enums become plain alternatives with the implicit left operand prepended to infix and
-//! postfix rules, and their binding powers are recorded on the rules for the precedence
-//! resolver; a pair with no precedence equivalent is `RCA0402`. A `#[parse(pratt(exclude(...)))]`
-//! site names a distinct language, so the Pratt nonterminal is cloned once per distinct
-//! exclusion set (`Expr[excl In]`) without the excluded rules, the way gram.y has `b_expr`
-//! beside `a_expr`; an operand the Pratt loop parses with a minimum binding power (every
-//! operand but a bare last one) is cloned the same way without the LED rules below that
-//! minimum (`Expr[min 8]`). Every parse entry type gets a synthetic start rule. A text
-//! predicate other than `Any` is `RCA0403`.
+//! fixed token of one kind, which is inlined as its terminal so that keywords cost no reduce, and
+//! a cardinality-one attachment unit, which is inlined into its owner's rule (see "Attachment
+//! units" below).
+//! An expression Node is an ordinary left-recursive enum whose operator conflicts the declared
+//! precedence resolver settles (`docs/declared-precedence.md`), and an authored restricted
+//! expression (`#[restricts(Base)]`) lowers as its base's admitted alternatives with the
+//! boundary operands retyped, the way gram.y writes `b_expr` beside `a_expr`. Every parse entry
+//! type gets a synthetic start rule. A text predicate other than `Any` is `RCA0403`.
 //!
 //! # Containers
 //!
@@ -32,18 +30,29 @@
 //!
 //! Helpers carry on their rules everything a reduce action needs to name the value it builds:
 //! the element type and its `Box` layers, or the optional's content.
+//!
+//! # Attachment units
+//!
+//! A semantic field with attached fixed tokens materializes as a private attachment-unit
+//! sequence type (`docs/declared-precedence.md`, "Attachment units inline"). A cardinality-one
+//! attachment (`Direct` or boxed, never `Option<...>` or a repetition element) lowers inline
+//! into its owner's rule instead of into that private nonterminal: the owner's reduce takes the
+//! field's value from its right-hand-side position. Every other attachment unit — an optional
+//! attached-token field (cardinality zero-or-one), or one per occurrence of a repeated element
+//! — keeps its private nonterminal, unchanged. `inlinable_attachment_units` states the exact
+//! eligibility rule and `Lowering::inline_attachment` performs the lowering.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::grammar::{
     ElementValue, FoldKind, FoldPolicy, FoldSite, LrGrammar, NonterminalId, NonterminalOrigin,
     OptionalContent, Rule, RuleAction, RuleFold, RulePrecedence, SiteForm, SiteKind, Symbol,
-    TailDecision, TerminalId, UnrepresentableBindingPowers,
+    TailDecision, TerminalId,
 };
-use super::report::{LrDiagnostic, NO_PRECEDENCE_EQUIVALENT, TEXT_PREDICATE};
+use super::report::{LrDiagnostic, TEXT_PREDICATE};
 use crate::{
-    AtomExpression, AtomId, ContainerShape, DeclId, GrammarDescription, KindSet, PrattPosition,
-    PrattVariant, RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
+    AtomExpression, AtomId, ContainerShape, DeclId, GrammarDescription, KindSet,
+    RepetitionCardinality, SiteId, TextPredicate, TypeId, TypeShape,
 };
 
 /// Expands atom membership into concrete token-kind sets for LR lowering.
@@ -79,22 +88,6 @@ pub(crate) fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
         .collect()
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-/// A distinct Pratt language: a Pratt type minus some of its variants, of any position (a
-/// `#[parse(pratt(exclude(...)))]` site, carried into every operand) and minus every LED
-/// variant below a minimum binding power (an operand that the Pratt loop parses with
-/// `parse_bp(min_bp)`, not carried into its operands). Two sites with equal restrictions share
-/// one clone.
-pub struct PrattRestriction {
-    /// The Pratt type restricted.
-    pub type_id: TypeId,
-    /// The excluded variants, atoms and prefix variants included, as normalized declarations
-    /// in ascending order, deduplicated.
-    pub excluded: Vec<DeclId>,
-    /// The minimum binding power: LED variants whose `lbp` or `bp` is below it are left out.
-    pub min_bp: u8,
-}
-
 /// The most alternatives one rule's inlined choices may multiply to before choices are demoted
 /// to helper nonterminals: four binary choices.
 pub const INLINE_BUDGET: usize = 16;
@@ -112,14 +105,9 @@ pub struct TypeRoles {
     pub presence_sites: BTreeSet<SiteId>,
     /// Types that get a start rule: node applications and content tokens.
     pub start_types: Vec<TypeId>,
-    /// Sites that restrict their Pratt target with `#[parse(pratt(exclude(...)))]`, atoms and
-    /// prefix variants included, keyed by the site the authored field lowers to (the outer site
-    /// when fixed tokens are attached); the restriction carries no minimum binding power.
-    pub pratt_exclusions: BTreeMap<SiteId, PrattRestriction>,
     /// Node application types, whose rules construct a node value.
     pub applications: BTreeSet<TypeId>,
-    /// Repetition attachment units, each with the semantic site whose value it passes through;
-    /// a Pratt operand behind one carries its exclusion set through it.
+    /// Repetition attachment units, each with the semantic site whose value it passes through.
     pub attachment_units: BTreeMap<TypeId, SiteId>,
     /// Fixed-token presence envelopes, each with the index of its optional presence site.
     pub presence_envelopes: BTreeMap<TypeId, usize>,
@@ -192,7 +180,6 @@ impl TypeRoles {
         start_types.sort_unstable();
         start_types.dedup();
         Self {
-            pratt_exclusions: pratt_exclusions(lowered, &attachment_units),
             content_tokens,
             fixed_sequences,
             presence_sites,
@@ -204,40 +191,8 @@ impl TypeRoles {
     }
 }
 
-/// Reads every site's resolved `#[parse(pratt(exclude(...)))]` exclusion (materialization
-/// records it on the site the field lowers to, the outer site when fixed tokens are attached)
-/// as the restriction of the Pratt type the operand belongs to, which is the site's target or
-/// the semantic target of the attachment unit it targets.
-fn pratt_exclusions(
-    lowered: &crate::materialization::LoweredGrammar,
-    attachment_units: &BTreeMap<TypeId, SiteId>,
-) -> BTreeMap<SiteId, PrattRestriction> {
-    let grammar = &lowered.grammar;
-    grammar
-        .sites
-        .iter()
-        .enumerate()
-        .filter(|(_, site)| !site.pratt_excluded.is_empty())
-        .map(|(index, site)| {
-            let type_id = attachment_units
-                .get(&site.target)
-                .map_or(site.target, |semantic| {
-                    grammar.sites[semantic.index()].target
-                });
-            (
-                SiteId::new(index as u32),
-                PrattRestriction {
-                    type_id,
-                    excluded: site.pratt_excluded.clone(),
-                    min_bp: 0,
-                },
-            )
-        })
-        .collect()
-}
-
 /// Lowers a normalized grammar to an LR grammar, or reports every text predicate (`RCA0403`)
-/// and every Pratt binding power with no precedence equivalent (`RCA0402`) it carries.
+/// it carries.
 pub fn lower(
     grammar: &GrammarDescription,
     roles: &TypeRoles,
@@ -247,12 +202,8 @@ pub fn lower(
         return Err(diagnostics);
     }
     let mut lowering = Lowering::new(grammar, roles);
-    lowering.note_operands();
     lowering.lower_types();
-    lowering.lower_clones();
-    if !lowering.diagnostics.is_empty() {
-        return Err(lowering.diagnostics);
-    }
+    lowering.lower_restrictions();
     lowering.decide_tails();
     let start_nonterminals = lowering.start_nonterminals();
     super::lookahead::apply(&mut lowering.lr, grammar, &start_nonterminals);
@@ -397,10 +348,16 @@ enum SiteLowering {
     /// A required site: one symbol.
     Required {
         /// The site's symbol.
-        symbol: Symbol,
+        symbols: Vec<Symbol>,
         /// The site's fold: a fixed token's leaf, or a group around any other target.
         kind: SiteKind,
     },
+    /// A cardinality-one attachment unit inlined into its owner's rule (see
+    /// [`Lowering::inline_attachment`]): one alternative per combination of the attachment's own
+    /// interior choices, each already carrying the attachment's own fixed-token and operand
+    /// symbols and the `Node`-kind fold that reproduces the removed private nonterminal's own
+    /// `Node` fold exactly.
+    InlinedAttachment(Vec<Alternative>),
     /// An erased optional group or a presence: inlined as its terminals or a helper.
     FixedOptional {
         /// The fixed-token symbols of the atomic sequence.
@@ -453,6 +410,7 @@ impl SiteLowering {
         };
         match self {
             Self::Required { .. } => 1,
+            Self::InlinedAttachment(combinations) => combinations.len(),
             Self::FixedOptional { inline, .. } => 1 + usize::from(*inline),
             Self::ValuedOptional { inline: false, .. } => 1,
             Self::ValuedOptional {
@@ -542,6 +500,12 @@ struct Alternative {
     kind: SiteKind,
     /// The policy of the site's fold.
     policy: FoldPolicy,
+    /// This alternative's own sub-sites when `kind` is [`SiteKind::Attachment`] (an inlined
+    /// attachment unit's own `Node` fold, reproduced in place of its removed private rule);
+    /// empty otherwise. Each nested site's `start` is relative to this alternative's own
+    /// `symbols`, not yet offset by where the owner's rule places them (see
+    /// [`Lowering::lower_alternative`]).
+    nested: Vec<FoldSite>,
 }
 
 /// What the rules of one alternative set build.
@@ -551,7 +515,7 @@ enum ConstructKind {
     Construct {
         /// The type.
         type_id: TypeId,
-        /// The enum alternative or Pratt variant.
+        /// The enum alternative.
         variant: Option<DeclId>,
     },
     /// A fixed-only sequence: no value.
@@ -588,58 +552,27 @@ struct Lowering<'a> {
     admitted_keywords: KindSet,
     /// The LR grammar under construction.
     lr: LrGrammar,
-    /// The symbol each type lowers to: an inlined terminal or its nonterminal.
-    type_symbols: Vec<Symbol>,
+    /// The symbol each type lowers to: an inlined terminal or its nonterminal; `None` for a
+    /// cardinality-one attachment unit that lowers inline into its owner's rule instead (see
+    /// [`Self::inline_attachments`]).
+    type_symbols: Vec<Option<Symbol>>,
     /// Shared helper nonterminals.
     helpers: HashMap<HelperKey, NonterminalId>,
     /// Names already taken, to keep nonterminal names unique.
     names: BTreeSet<String>,
-    /// `RCA0402` diagnostics collected while lowering Pratt variants.
-    diagnostics: Vec<LrDiagnostic>,
-    /// The clone of each distinct Pratt restriction, created on first reference.
-    clones: BTreeMap<PrattRestriction, NonterminalId>,
-    /// The clone of each attachment sequence around a Pratt operand under an exclusion set.
-    attachment_clones: BTreeMap<(TypeId, Vec<DeclId>), NonterminalId>,
-    /// Clones whose rules are still to be emitted, in creation order.
-    pending_clones: VecDeque<(PrattRestriction, NonterminalId)>,
-    /// What every fixed-token attachment around a Pratt operand belongs to, keyed by the
-    /// attachment sequence type.
-    operand_attachments: HashMap<TypeId, OperandAttachment>,
     /// Optional tail sites that must inline after a preceding separated list.
     separated_tail_sites: BTreeSet<SiteId>,
-}
-
-#[derive(Clone, Copy)]
-/// A fixed-token attachment around the operand of a prefix, infix or postfix Pratt variant.
-struct OperandAttachment {
-    /// The Pratt type the operand belongs to.
-    pratt: TypeId,
-    /// The precedence the attachment's rule inherits from the variant, so that its reduce
-    /// against the next operator is decided as the variant's would be.
-    precedence: Option<RulePrecedence>,
-}
-
-#[derive(Clone, Copy)]
-/// The Pratt rule whose operand sites are lowering: the type its recursive operands belong to
-/// and the exclusion set they carry.
-struct OperandContext<'a> {
-    /// The Pratt type of the rule.
-    pratt: TypeId,
-    /// The excluded variants the rule's operands carry, of any position; empty outside an
-    /// exclusion clone.
-    excluded: &'a [DeclId],
-}
-
-#[derive(Clone, Copy)]
-/// How the operand sites of one alternative lower: under which Pratt rule, and whether the
-/// alternative's last site is a bare operand that keeps the full language (a Pratt variant's
-/// own last operand) rather than one that takes its minimum binding power (every operand of
-/// an attachment sequence).
-struct Operands<'a> {
-    /// The Pratt rule the sites belong to.
-    context: OperandContext<'a>,
-    /// Whether the last site is the rule's bare last operand.
-    bare_last: bool,
+    /// Cardinality-one attachment unit types that lower inline into their owner's rule instead
+    /// of a private nonterminal (see [`inlinable_attachment_units`]).
+    inline_attachments: BTreeSet<TypeId>,
+    /// The nonterminal of each authored restricted expression, dense by
+    /// [`RestrictionId`](crate::RestrictionId); every one exists before any rule is emitted, so
+    /// a site can name a restriction whose own rules are lowered later.
+    restrictions: Vec<NonterminalId>,
+    /// The restricted expression whose rules are being emitted, as `(restricted, base)`
+    /// nonterminals. While it is set, [`Lowering::lower_alternative`] retypes a rule's first and
+    /// last symbol from the base to the restriction (see [`Lowering::lower_restrictions`]).
+    active_restriction: Option<(NonterminalId, NonterminalId)>,
 }
 
 /// Strips the `Box` layers off a container shape, counting them.
@@ -651,6 +584,28 @@ fn strip_boxes(shape: &ContainerShape) -> (u32, &ContainerShape) {
         }
         other => (0, other),
     }
+}
+
+/// Attachment unit types eligible to lower inline into their owner's rule (`docs/declared-
+/// precedence.md`, "Attachment units inline"): a cardinality-one attachment, whose one
+/// referencing site is `Direct` or boxed rather than `Optional` or a repetition element.
+/// Inlining removes the private nonterminal entirely: the owner's reduce takes the field's
+/// value directly from its right-hand-side position instead of from a separate attachment
+/// reduce, so a `#[parse(prec = NAME)]` override authored on the owner lands on the rule an
+/// LALR(1) conflict is actually decided in, and the rule's last terminal is the operator the
+/// author wrote. An attachment behind `Option<...>` (cardinality zero-or-one) or wrapping one
+/// occurrence of a repeated element keeps its private nonterminal, unchanged, because each such
+/// occurrence needs its own reduce.
+fn inlinable_attachment_units(grammar: &GrammarDescription, roles: &TypeRoles) -> BTreeSet<TypeId> {
+    let mut cardinality_one = BTreeSet::new();
+    for site in &grammar.sites {
+        if roles.attachment_units.contains_key(&site.target)
+            && matches!(strip_boxes(&site.container).1, ContainerShape::Direct)
+        {
+            cardinality_one.insert(site.target);
+        }
+    }
+    cardinality_one
 }
 
 /// Computes the FIRST kinds and nullability of every normalized type by fixpoint.
@@ -701,23 +656,6 @@ pub(crate) fn first_sets(
                             sequence_first(&alternative.sites, &first, &nullable);
                         kinds.union_assign(&alternative_kinds);
                         is_nullable |= alternative_nullable;
-                    }
-                    (kinds, is_nullable)
-                }
-                TypeShape::Pratt { variants } => {
-                    let mut kinds = KindSet::empty(kind_count);
-                    let mut is_nullable = false;
-                    for variant in variants {
-                        if matches!(
-                            variant.position,
-                            PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
-                        ) {
-                            continue;
-                        }
-                        let (variant_kinds, variant_nullable) =
-                            sequence_first(&variant.sites, &first, &nullable);
-                        kinds.union_assign(&variant_kinds);
-                        is_nullable |= variant_nullable;
                     }
                     (kinds, is_nullable)
                 }
@@ -892,18 +830,6 @@ fn two_token_summaries(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> 
                     }
                     summary
                 }
-                TypeShape::Pratt { variants } => {
-                    let mut summary = PrefixSummary::empty(grammar.kind_count);
-                    for variant in variants.iter().filter(|variant| {
-                        matches!(
-                            variant.position,
-                            PrattPosition::Atom | PrattPosition::Prefix { .. }
-                        )
-                    }) {
-                        summary.union_assign(&sites(&variant.sites, grammar, &previous));
-                    }
-                    summary
-                }
             };
         }
         if summaries == previous {
@@ -929,11 +855,6 @@ fn separated_tail_sites(grammar: &GrammarDescription, atom_kinds: &[KindSet]) ->
             TypeShape::Enum { alternatives } => {
                 for alternative in alternatives {
                     record(&alternative.sites);
-                }
-            }
-            TypeShape::Pratt { variants } => {
-                for variant in variants {
-                    record(&variant.sites);
                 }
             }
         }
@@ -1004,9 +925,16 @@ impl<'a> Lowering<'a> {
             .expect("kind sets of one grammar share a width");
         let mut lr = LrGrammar::new(terminal_names(grammar, &atom_kinds));
         let mut names = BTreeSet::new();
-        let mut type_symbols: Vec<Symbol> = Vec::with_capacity(grammar.types.len());
+        let inline_attachments = inlinable_attachment_units(grammar, roles);
+        let mut type_symbols: Vec<Option<Symbol>> = Vec::with_capacity(grammar.types.len());
         for (index, description) in grammar.types.iter().enumerate() {
             let type_id = TypeId::new(index as u32);
+            if inline_attachments.contains(&type_id) {
+                // Inlined into its owner's rule (see `site_lowering`); it never gets its own
+                // nonterminal or rule.
+                type_symbols.push(None);
+                continue;
+            }
             let symbol = match &description.shape {
                 TypeShape::Token { atom, .. } if !roles.content_tokens.contains(&type_id) => {
                     let kinds: Vec<_> = atom_kinds[atom.index()].iter().collect();
@@ -1027,8 +955,12 @@ impl<'a> Lowering<'a> {
                         Some(child) => {
                             let target = grammar.sites[child.index()].target;
                             match type_symbols[target.index()] {
-                                Symbol::Terminal(_) => false,
-                                Symbol::Nonterminal(id) => lr.nonterminal(id).carries_value,
+                                Some(Symbol::Terminal(_)) => false,
+                                Some(Symbol::Nonterminal(id)) => lr.nonterminal(id).carries_value,
+                                None => unreachable!(
+                                    "an attachment unit's semantic child is a real grammar \
+                                     type, never itself an inlined attachment"
+                                ),
                             }
                         }
                         None => true,
@@ -1046,8 +978,28 @@ impl<'a> Lowering<'a> {
                     carries_value,
                 ))
             });
-            type_symbols.push(symbol);
+            type_symbols.push(Some(symbol));
         }
+        // Every restricted expression gets its nonterminal before any rule is emitted, so a
+        // site can name one whose own rules are lowered afterwards.
+        let restrictions = grammar
+            .restrictions
+            .iter()
+            .map(|restriction| {
+                let mut name = restriction.name.clone();
+                if !names.insert(name.clone()) {
+                    name = format!("{name}#restricts");
+                    names.insert(name.clone());
+                }
+                lr.add_nonterminal(
+                    name,
+                    NonterminalOrigin::DeclaredRestriction {
+                        type_id: restriction.base,
+                    },
+                    true,
+                )
+            })
+            .collect();
         Self {
             grammar,
             roles,
@@ -1058,59 +1010,10 @@ impl<'a> Lowering<'a> {
             type_symbols,
             helpers: HashMap::new(),
             names,
-            diagnostics: Vec::new(),
-            clones: BTreeMap::new(),
-            attachment_clones: BTreeMap::new(),
-            pending_clones: VecDeque::new(),
-            operand_attachments: HashMap::new(),
             separated_tail_sites,
-        }
-    }
-
-    /// Records, before any rule is emitted, which fixed-token attachments wrap the operand of a
-    /// prefix, infix or postfix Pratt variant and what they inherit: the variant's precedence,
-    /// so that the attachment's reduce against the next operator is decided as the variant's
-    /// would be. The operand inside lowers to the minimum-binding-power clone the Pratt loop
-    /// parses it with.
-    fn note_operands(&mut self) {
-        for (index, description) in self.grammar.types.iter().enumerate() {
-            let TypeShape::Pratt { variants } = &description.shape else {
-                continue;
-            };
-            let type_id = TypeId::new(index as u32);
-            let Symbol::Nonterminal(owner) = self.type_symbols[index] else {
-                continue;
-            };
-            for variant in variants {
-                if matches!(variant.position, PrattPosition::Atom) {
-                    continue;
-                }
-                let precedence = RulePrecedence::from_position(variant.position, owner)
-                    .ok()
-                    .flatten();
-                for site in &variant.sites {
-                    let site = &self.grammar.sites[site.index()];
-                    let unit = site.target;
-                    if self.wraps_operand_of(unit, type_id) {
-                        // The attachment around an optional operand introduces its leading
-                        // token at the variant's level plus one, so that the token shifts
-                        // against the variant's own reduce (`a LIKE b . ESCAPE`).
-                        let optional =
-                            matches!(strip_boxes(&site.container).1, ContainerShape::Optional(_));
-                        let precedence = precedence.map(|precedence| RulePrecedence {
-                            attaches_at: optional.then(|| precedence.level.saturating_add(1)),
-                            ..precedence
-                        });
-                        self.operand_attachments.insert(
-                            unit,
-                            OperandAttachment {
-                                pratt: type_id,
-                                precedence,
-                            },
-                        );
-                    }
-                }
-            }
+            inline_attachments,
+            restrictions,
+            active_restriction: None,
         }
     }
 
@@ -1120,17 +1023,19 @@ impl<'a> Lowering<'a> {
             .start_types
             .iter()
             .filter_map(|type_id| match self.type_symbols[type_id.index()] {
-                Symbol::Nonterminal(target) => Some(target),
-                Symbol::Terminal(_) => None,
+                Some(Symbol::Nonterminal(target)) => Some(target),
+                Some(Symbol::Terminal(_)) | None => None,
             })
             .collect()
     }
 
-    /// Emits the rules of every type that has a nonterminal.
+    /// Emits the rules of every type that has a nonterminal; an inlined attachment unit has
+    /// none, so its `type_symbols` entry is `None` and this loop skips it, exactly as it skips
+    /// a type inlined as a terminal.
     fn lower_types(&mut self) {
         for index in 0..self.grammar.types.len() {
             let type_id = TypeId::new(index as u32);
-            let Symbol::Nonterminal(lhs) = self.type_symbols[index] else {
+            let Some(Symbol::Nonterminal(lhs)) = self.type_symbols[index] else {
                 continue;
             };
             let shape = self.grammar.types[index].shape.clone();
@@ -1160,20 +1065,9 @@ impl<'a> Lowering<'a> {
                         type_id,
                         variant: None,
                     };
-                    self.lower_alternative(lhs, Vec::new(), &[site], kind, None, None);
+                    self.lower_alternative(lhs, &[site], kind, None);
                 }
                 TypeShape::Sequence { sites } => {
-                    let attachment = self.operand_attachments.get(&type_id).copied();
-                    // The operand inside an attachment is parsed with its minimum binding
-                    // power, so it lowers to that clone; the fixed tokens lower as usual.
-                    let operands = attachment.map(|attachment| Operands {
-                        context: OperandContext {
-                            pratt: attachment.pratt,
-                            excluded: &[],
-                        },
-                        bare_last: false,
-                    });
-                    let precedence = attachment.and_then(|attachment| attachment.precedence);
                     let kind = if self.roles.fixed_sequences.contains(&type_id) {
                         ConstructKind::Fixed { type_id }
                     } else if self.roles.attachment_units.contains_key(&type_id) {
@@ -1189,7 +1083,7 @@ impl<'a> Lowering<'a> {
                             variant: None,
                         }
                     };
-                    self.lower_alternative(lhs, Vec::new(), &sites, kind, precedence, operands);
+                    self.lower_alternative(lhs, &sites, kind, None);
                 }
                 TypeShape::Enum { alternatives } => {
                     for alternative in alternatives {
@@ -1197,275 +1091,62 @@ impl<'a> Lowering<'a> {
                             type_id,
                             variant: Some(alternative.declaration),
                         };
-                        self.lower_alternative(
-                            lhs,
-                            Vec::new(),
-                            &alternative.sites,
-                            kind,
-                            None,
-                            None,
-                        );
-                    }
-                }
-                TypeShape::Pratt { variants } => {
-                    for variant in variants {
-                        let precedence = self.variant_precedence(&variant, lhs);
-                        self.add_pratt_rule(lhs, type_id, &variant, precedence, None);
+                        self.lower_alternative(lhs, &alternative.sites, kind, None);
                     }
                 }
             }
         }
     }
 
-    /// Adds the rule of one Pratt variant to `lhs`: the implicit left operand for an infix or
-    /// postfix variant, then its sites. The operands of a prefix, infix or postfix variant carry
-    /// the restriction's exclusion set, and every operand but a bare last one lowers to the
-    /// clone of its minimum binding power; an atom's operands keep the full language, the way
-    /// gram.y's `b_expr` has `'(' a_expr ')'`.
-    fn add_pratt_rule(
-        &mut self,
-        lhs: NonterminalId,
-        type_id: TypeId,
-        variant: &PrattVariant,
-        precedence: Option<RulePrecedence>,
-        restriction: Option<&PrattRestriction>,
-    ) {
-        let mut prefix = Vec::new();
-        if matches!(
-            variant.position,
-            PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
-        ) {
-            prefix.push(Symbol::Nonterminal(lhs));
-        }
-        let operands = match variant.position {
-            PrattPosition::Atom => None,
-            _ => Some(Operands {
-                context: OperandContext {
-                    pratt: type_id,
-                    excluded: restriction
-                        .map_or(&[], |restriction| restriction.excluded.as_slice()),
-                },
-                bare_last: true,
-            }),
-        };
-        let kind = ConstructKind::Construct {
-            type_id,
-            variant: Some(variant.declaration),
-        };
-        self.lower_alternative(lhs, prefix, &variant.sites, kind, precedence, operands);
-    }
-
-    /// Emits the rules of every clone created so far, including the clones those rules create:
-    /// every variant but the excluded ones, whatever their position, and the LED variants
-    /// below the minimum binding power. A clone's rules compare their precedence with the tokens of the exclusion-level
-    /// nonterminal (the base type, or the clone without a minimum), which lists every operator.
-    fn lower_clones(&mut self) {
-        while let Some((restriction, lhs)) = self.pending_clones.pop_front() {
-            let TypeShape::Pratt { variants } = self.grammar.types[restriction.type_id.index()]
-                .shape
-                .clone()
+    /// Emits the rules of every authored restricted expression (`docs/declared-precedence.md`,
+    /// "Restricted expressions"): the admitted alternatives of its base enum, each lowered the
+    /// way the base lowers it, with one substitution — a recursive operand that is the first or
+    /// the last symbol of the rule is retyped to the restriction, every other operand keeps the
+    /// base. That is `gram.y`'s `b_expr`: `b_expr '+' b_expr`, but `'(' a_expr ')'`.
+    ///
+    /// Every rule constructs the base type, so the restriction's nonterminal carries the base's
+    /// value and a field that names it needs no conversion. The rules are emitted after
+    /// [`Self::lower_types`] so that every type already has its nonterminal.
+    fn lower_restrictions(&mut self) {
+        for index in 0..self.grammar.restrictions.len() {
+            let restriction = self.grammar.restrictions[index].clone();
+            let lhs = self.restrictions[index];
+            let TypeShape::Enum { alternatives } =
+                self.grammar.types[restriction.base.index()].shape.clone()
             else {
-                unreachable!("only Pratt types are cloned");
+                unreachable!("source-model lowering admits only an enum Node as a base")
             };
-            let owner = self.restricted_nonterminal(restriction.type_id, &restriction.excluded, 0);
-            for variant in variants {
-                if restriction.excluded.contains(&variant.declaration) {
+            let Some(Symbol::Nonterminal(base)) = self.type_symbols[restriction.base.index()]
+            else {
+                unreachable!("an enum type is never inlined, so it has a nonterminal")
+            };
+            self.active_restriction = Some((lhs, base));
+            for alternative in alternatives {
+                if !restriction.variants.contains(&alternative.declaration) {
                     continue;
                 }
-                let level = match variant.position {
-                    PrattPosition::Infix { lbp, .. } => Some(lbp),
-                    PrattPosition::Postfix { bp } => Some(bp),
-                    PrattPosition::Atom | PrattPosition::Prefix { .. } => None,
+                let kind = ConstructKind::Construct {
+                    type_id: restriction.base,
+                    variant: Some(alternative.declaration),
                 };
-                if level.is_some_and(|level| level < restriction.min_bp) {
-                    continue;
-                }
-                // The base lowering already reported an unrepresentable pair as `RCA0402`.
-                let precedence = RulePrecedence::from_position(variant.position, owner)
-                    .ok()
-                    .flatten();
-                self.add_pratt_rule(
-                    lhs,
-                    restriction.type_id,
-                    &variant,
-                    precedence,
-                    Some(&restriction),
-                );
+                self.lower_alternative(lhs, &alternative.sites, kind, None);
             }
-        }
-    }
-
-    /// Returns the nonterminal of `type_id` restricted to `excluded` and `min_bp`: the type's
-    /// own nonterminal when neither restricts, else the clone, created on first reference
-    /// (its rules are emitted by [`Self::lower_clones`]).
-    fn restricted_nonterminal(
-        &mut self,
-        type_id: TypeId,
-        excluded: &[DeclId],
-        min_bp: u8,
-    ) -> NonterminalId {
-        if excluded.is_empty() && min_bp == 0 {
-            let Symbol::Nonterminal(base) = self.type_symbols[type_id.index()] else {
-                unreachable!("Pratt types carry a value, so they are never inlined");
-            };
-            return base;
-        }
-        let restriction = PrattRestriction {
-            type_id,
-            excluded: excluded.to_vec(),
-            min_bp,
-        };
-        if let Some(clone) = self.clones.get(&restriction) {
-            return *clone;
-        }
-        let name = self.unique_name(
-            self.restriction_name(&self.grammar.types[type_id.index()].name, &restriction),
-        );
-        let clone = self.lr.add_nonterminal(
-            name,
-            NonterminalOrigin::Restriction {
-                type_id,
-                excluded: excluded.to_vec(),
-                min_bp,
-            },
-            true,
-        );
-        self.clones.insert(restriction.clone(), clone);
-        self.pending_clones.push_back((restriction, clone));
-        clone
-    }
-
-    /// Returns the attachment sequence `unit` whose operand carries the context's exclusion
-    /// set: the unit's own nonterminal when the set is empty, else a clone created with its
-    /// rule on first reference. The rule inherits the variant's precedence, owned by the
-    /// exclusion-level nonterminal whose tokens it is compared with.
-    fn attachment_clone(&mut self, unit: TypeId, context: OperandContext<'_>) -> NonterminalId {
-        let Symbol::Nonterminal(original) = self.type_symbols[unit.index()] else {
-            unreachable!("attachment units carry a value, so they are never inlined");
-        };
-        if context.excluded.is_empty() {
-            return original;
-        }
-        let key = (unit, context.excluded.to_vec());
-        if let Some(clone) = self.attachment_clones.get(&key) {
-            return *clone;
-        }
-        let TypeShape::Sequence { sites } = self.grammar.types[unit.index()].shape.clone() else {
-            unreachable!("attachment units are sequences");
-        };
-        let restriction = PrattRestriction {
-            type_id: context.pratt,
-            excluded: context.excluded.to_vec(),
-            min_bp: 0,
-        };
-        let base = self.lr.nonterminal(original).name.clone();
-        let name = self.unique_name(self.restriction_name(&base, &restriction));
-        let clone = self.lr.add_nonterminal(
-            name,
-            NonterminalOrigin::Restriction {
-                type_id: unit,
-                excluded: context.excluded.to_vec(),
-                min_bp: 0,
-            },
-            true,
-        );
-        self.attachment_clones.insert(key, clone);
-        let owner = self.restricted_nonterminal(context.pratt, context.excluded, 0);
-        let precedence = self
-            .operand_attachments
-            .get(&unit)
-            .and_then(|attachment| attachment.precedence)
-            .map(|precedence| RulePrecedence {
-                owner,
-                ..precedence
-            });
-        let operands = Operands {
-            context,
-            bare_last: false,
-        };
-        self.lower_alternative(
-            clone,
-            Vec::new(),
-            &sites,
-            ConstructKind::Attachment { type_id: unit },
-            precedence,
-            Some(operands),
-        );
-        clone
-    }
-
-    /// Names a clone `Type[excl A,B, min N]` after the excluded variants' authored names and
-    /// the minimum binding power, each part present only when it restricts.
-    fn restriction_name(&self, base: &str, restriction: &PrattRestriction) -> String {
-        let owner = format!("{}::", self.grammar.types[restriction.type_id.index()].name);
-        let mut parts = Vec::new();
-        if !restriction.excluded.is_empty() {
-            let excluded: Vec<&str> = restriction
-                .excluded
-                .iter()
-                .map(|declaration| {
-                    let name = self.grammar.declarations[declaration.index()].name.as_str();
-                    name.strip_prefix(&owner).unwrap_or(name)
-                })
-                .collect();
-            parts.push(format!("excl {}", excluded.join(",")));
-        }
-        if restriction.min_bp > 0 {
-            parts.push(format!("min {}", restriction.min_bp));
-        }
-        format!("{base}[{}]", parts.join(", "))
-    }
-
-    /// Derives a Pratt variant's rule precedence, reporting `RCA0402` naming the variant when
-    /// its binding powers have no precedence equivalent; the rule then carries none.
-    fn variant_precedence(
-        &mut self,
-        variant: &PrattVariant,
-        owner: NonterminalId,
-    ) -> Option<RulePrecedence> {
-        match RulePrecedence::from_position(variant.position, owner) {
-            Ok(precedence) => precedence,
-            Err(UnrepresentableBindingPowers { lbp, rbp }) => {
-                self.diagnostics.push(LrDiagnostic {
-                    code: NO_PRECEDENCE_EQUIVALENT,
-                    message: format!(
-                        "Pratt variant `{}` has lbp = {lbp} and rbp = {rbp}, which no rule \
-                         precedence reproduces; the Recursa parser needs rbp = lbp + 1 \
-                         (left-associative), rbp = lbp or rbp = lbp - 1 (right-associative)",
-                        self.grammar.declarations[variant.declaration.index()].name
-                    ),
-                    path: String::new(),
-                    items: Vec::new(),
-                    actions: Vec::new(),
-                    notes: Vec::new(),
-                });
-                None
-            }
+            self.active_restriction = None;
         }
     }
 
     /// Lowers one alternative of a type: its sites become site lowerings, the budget decides
     /// which choices stay inlined, and the cartesian product of the sites' alternatives becomes
-    /// the rules, each after `prefix`.
+    /// the rules.
     fn lower_alternative(
         &mut self,
         lhs: NonterminalId,
-        prefix: Vec<Symbol>,
         sites: &[SiteId],
         kind: ConstructKind,
         precedence: Option<RulePrecedence>,
-        operands: Option<Operands<'_>>,
     ) {
-        let last = sites.len().saturating_sub(1);
-        let mut lowerings: Vec<SiteLowering> = sites
-            .iter()
-            .enumerate()
-            .map(|(position, site)| {
-                let context = operands.map(|operands| operands.context);
-                let bare = operands.is_some_and(|operands| operands.bare_last) && position == last;
-                self.site_lowering(*site, context, bare)
-            })
-            .collect();
+        let mut lowerings: Vec<SiteLowering> =
+            sites.iter().map(|site| self.site_lowering(*site)).collect();
         loop {
             let product: usize = lowerings
                 .iter()
@@ -1511,16 +1192,9 @@ impl<'a> Lowering<'a> {
             .collect();
         let mut selection = vec![0_usize; alternatives.len()];
         loop {
-            let mut rhs = prefix.clone();
+            let mut rhs = Vec::new();
             let mut forms = Vec::with_capacity(alternatives.len());
-            let mut fold_sites = Vec::with_capacity(alternatives.len() + prefix.len());
-            // The implicit left operand of a Pratt rule is grouped like a direct child.
-            fold_sites.extend((0..prefix.len()).map(|position| FoldSite {
-                start: position as u32,
-                len: 1,
-                kind: SiteKind::Group,
-                policy: FoldPolicy::Inherited,
-            }));
+            let mut fold_sites = Vec::with_capacity(alternatives.len());
             for (position, ((site_id, site), choice)) in
                 sites.iter().zip(&alternatives).zip(&selection).enumerate()
             {
@@ -1544,11 +1218,24 @@ impl<'a> Lowering<'a> {
                     present: alternative.present,
                     inlined: alternative.inlined,
                 });
-                fold_sites.push(FoldSite {
-                    start: rhs.len() as u32,
-                    len: alternative.symbols.len() as u32,
-                    kind: site_kind,
-                    policy: alternative.policy,
+                let start = rhs.len() as u32;
+                let len = alternative.symbols.len() as u32;
+                fold_sites.push(if site_kind == SiteKind::Attachment {
+                    // An inlined attachment unit: reproduce its own removed `Node` fold inside
+                    // this site's group, offsetting its nested sites' positions from "relative
+                    // to this alternative's own symbols" to "relative to the owner's popped
+                    // entries", now that the owner's rule carries them directly.
+                    let nested = alternative
+                        .nested
+                        .iter()
+                        .map(|site| FoldSite {
+                            start: site.start + start,
+                            ..site.clone()
+                        })
+                        .collect();
+                    FoldSite::attachment(start, len, alternative.policy, nested)
+                } else {
+                    FoldSite::flat(start, len, site_kind, alternative.policy)
                 });
                 rhs.extend_from_slice(&alternative.symbols);
             }
@@ -1577,6 +1264,20 @@ impl<'a> Lowering<'a> {
                     }
                 }
             };
+            // A restricted expression's rule retypes the base operand it begins or ends with
+            // (`docs/declared-precedence.md`, "Restricted expressions"): `b_expr '+' b_expr`,
+            // but `'(' a_expr ')'`.
+            if let Some((restricted, base)) = self.active_restriction {
+                let base = Symbol::Nonterminal(base);
+                if rhs.first() == Some(&base) {
+                    rhs[0] = Symbol::Nonterminal(restricted);
+                }
+                if let Some(last) = rhs.last_mut()
+                    && *last == base
+                {
+                    *last = Symbol::Nonterminal(restricted);
+                }
+            }
             let value_pops = self.value_pops(&rhs);
             self.lr.add_rule(Rule {
                 lhs,
@@ -1642,82 +1343,115 @@ impl<'a> Lowering<'a> {
         };
         sites
             .iter()
-            .map(|site| self.type_symbols[self.grammar.sites[site.index()].target.index()])
+            .map(|site| {
+                self.type_symbols[self.grammar.sites[site.index()].target.index()]
+                    .expect("a fixed-only sequence's sites target fixed tokens, never an inlined attachment")
+            })
             .collect()
     }
 
-    /// Lowers a site's target under the Pratt rule it belongs to, if any. The site's own
-    /// exclusion set wins, else the rule's applies, when the site is a Pratt operand of the
-    /// type, directly or through an attachment sequence. A direct operand also takes its
-    /// minimum binding power unless it is the rule's bare last symbol (`last`), where the
-    /// rule's own precedence decides; any other target lowers as usual.
-    fn site_target_symbol(
-        &mut self,
-        site_id: SiteId,
-        context: Option<OperandContext<'_>>,
-        last: bool,
-    ) -> Symbol {
+    /// The symbol a site's target lowers to: the nonterminal of the authored restricted
+    /// expression the site parses its target through, if it names one, else the target's own
+    /// symbol.
+    fn site_target_symbol(&mut self, site_id: SiteId) -> Symbol {
         let site = &self.grammar.sites[site_id.index()];
-        let (target, site_min_bp) = (site.target, site.min_bp);
-        let own = self.roles.pratt_exclusions.get(&site_id).cloned();
-        let operand = match (&own, context) {
-            (Some(own), _) => Some(OperandContext {
-                pratt: own.type_id,
-                excluded: own.excluded.as_slice(),
-            }),
-            (None, Some(context)) => Some(context),
-            (None, None) => None,
+        if let Some(restriction) = site.restriction {
+            // The site parses its target through an authored restricted expression: the value
+            // is still the base's, so only the symbol changes.
+            return Symbol::Nonterminal(self.restrictions[restriction.index()]);
+        }
+        self.type_symbols[site.target.index()].expect(
+            "a site's target lowers to a symbol unless it is an inlined attachment unit, \
+             which `site_lowering` handles before calling `site_target_symbol`",
+        )
+    }
+
+    /// Lowers a cardinality-one attachment unit inline: instead of the attachment's own private
+    /// nonterminal and rule (`docs/declared-precedence.md`, "Attachment units inline"), returns
+    /// one alternative per combination of the attachment's own interior choices (the erased
+    /// optional fixed-token groups inside it), each a [`SiteKind::Attachment`] alternative whose
+    /// `nested` sites are exactly the `FoldSite`s the attachment's own removed `Node` fold would
+    /// have built: one nested site per one of `unit`'s own sites, with the same kind
+    /// (`Leaf`/`Group`/`Through`/...) and policy (an erased group still keeps
+    /// [`FoldPolicy::Mandatory`]) [`Self::alternatives`] would have given it as a top-level
+    /// fold. The owner folds this field with one [`SiteKind::Attachment`] `FoldSite` over that
+    /// nested list, which builds the same group around the same node the un-inlined lowering
+    /// built — the owner's own semantic site was a [`SiteKind::Group`] over the single entry the
+    /// attachment nonterminal left — so the field's occurrence is unchanged; only the separate
+    /// reduce that used to build it is gone.
+    fn inline_attachment(&mut self, unit: TypeId) -> SiteLowering {
+        let TypeShape::Sequence { sites } = self.grammar.types[unit.index()].shape.clone() else {
+            unreachable!("an attachment unit is always a sequence type")
         };
-        match operand {
-            Some(operand) if target == operand.pratt => {
-                let min_bp = if context.is_some() && !last {
-                    site_min_bp
+        let pass_through = self.roles.attachment_units.get(&unit).copied();
+        let per_site_alternatives: Vec<Vec<Alternative>> = sites
+            .iter()
+            .map(|site| {
+                let lowering = self.site_lowering(*site);
+                self.alternatives(&lowering)
+            })
+            .collect();
+        let mut combinations = Vec::new();
+        let mut selection = vec![0_usize; per_site_alternatives.len()];
+        loop {
+            let mut symbols = Vec::new();
+            let mut nested = Vec::with_capacity(sites.len());
+            for ((site_id, site_alternatives), choice) in
+                sites.iter().zip(&per_site_alternatives).zip(&selection)
+            {
+                let alternative = &site_alternatives[*choice];
+                let kind = if pass_through == Some(*site_id) {
+                    SiteKind::Through
                 } else {
-                    0
+                    alternative.kind
                 };
-                Symbol::Nonterminal(self.restricted_nonterminal(
-                    operand.pratt,
-                    operand.excluded,
-                    min_bp,
-                ))
+                nested.push(FoldSite::flat(
+                    symbols.len() as u32,
+                    alternative.symbols.len() as u32,
+                    kind,
+                    alternative.policy,
+                ));
+                symbols.extend_from_slice(&alternative.symbols);
             }
-            Some(operand) if self.wraps_operand_of(target, operand.pratt) => {
-                Symbol::Nonterminal(self.attachment_clone(target, operand))
+            combinations.push(Alternative {
+                symbols,
+                present: true,
+                inlined: false,
+                kind: SiteKind::Attachment,
+                policy: FoldPolicy::Inherited,
+                nested,
+            });
+            let mut position = selection.len();
+            loop {
+                if position == 0 {
+                    return SiteLowering::InlinedAttachment(combinations);
+                }
+                position -= 1;
+                selection[position] += 1;
+                if selection[position] < per_site_alternatives[position].len() {
+                    break;
+                }
+                selection[position] = 0;
             }
-            _ => self.type_symbols[target.index()],
         }
     }
 
-    /// Reports whether `unit` is an attachment sequence whose semantic site targets `pratt`.
-    fn wraps_operand_of(&self, unit: TypeId, pratt: TypeId) -> bool {
-        if !self.roles.attachment_units.contains_key(&unit) {
-            return false;
-        }
-        match &self.grammar.types[unit.index()].shape {
-            TypeShape::Sequence { sites } => sites
-                .iter()
-                .any(|site| self.grammar.sites[site.index()].target == pratt),
-            _ => false,
-        }
-    }
-
-    /// Lowers one site to its site lowering, creating the list cores it needs. The site's
-    /// target lowers under the Pratt rule it belongs to, if any (see
-    /// [`Self::site_target_symbol`]).
-    fn site_lowering(
-        &mut self,
-        site_id: SiteId,
-        context: Option<OperandContext<'_>>,
-        last: bool,
-    ) -> SiteLowering {
+    /// Lowers one site to its site lowering, creating the list cores it needs. A required site
+    /// whose target is a cardinality-one attachment unit inlines (see
+    /// [`Self::inline_attachment`]) instead of taking the attachment's own nonterminal as its
+    /// one symbol.
+    fn site_lowering(&mut self, site_id: SiteId) -> SiteLowering {
         let site = self.grammar.sites[site_id.index()].clone();
         let target = site.target;
-        let symbol = self.site_target_symbol(site_id, context, last);
         let presence = self.roles.presence_sites.contains(&site_id);
         let (_, shape) = strip_boxes(&site.container);
+        if matches!(shape, ContainerShape::Direct) && self.inline_attachments.contains(&target) {
+            return self.inline_attachment(target);
+        }
+        let symbol = self.site_target_symbol(site_id);
         match shape {
             ContainerShape::Direct | ContainerShape::Boxed(_) => SiteLowering::Required {
-                symbol,
+                symbols: vec![symbol],
                 kind: self.required_site_kind(target),
             },
             ContainerShape::Optional(inner) => {
@@ -1729,13 +1463,8 @@ impl<'a> Lowering<'a> {
                     };
                 }
                 let (inner_boxes, inner_shape) = strip_boxes(inner);
-                // The attachment around an optional Pratt operand is always inlined: the
-                // variant's own reduce competes with the shift of the attachment's token, and
-                // an epsilon reduce of a helper has no precedence to settle that with.
                 let required_inline = self.separated_tail_sites.contains(&site_id);
-                let inline = self.inline_choice(target)
-                    || self.operand_attachments.contains_key(&target)
-                    || required_inline;
+                let inline = self.inline_choice(target) || required_inline;
                 match inner_shape {
                     ContainerShape::Direct | ContainerShape::Boxed(_) => {
                         SiteLowering::ValuedOptional {
@@ -1758,8 +1487,10 @@ impl<'a> Lowering<'a> {
                             type_id: self.value_type(target),
                             boxes: element_boxes,
                         };
-                        let separator_symbol =
-                            separator.map(|separator| self.type_symbols[separator.type_id.index()]);
+                        let separator_symbol = separator.map(|separator| {
+                            self.type_symbols[separator.type_id.index()]
+                                .expect("a separator token is never an inlined attachment unit")
+                        });
                         let list1 = self.non_empty_list(symbol, separator_symbol, element);
                         SiteLowering::ValuedOptional {
                             inner: OptionalInner::List(InnerList {
@@ -1796,8 +1527,10 @@ impl<'a> Lowering<'a> {
                     type_id: self.value_type(target),
                     boxes: element_boxes,
                 };
-                let separator_symbol =
-                    separator.map(|separator| self.type_symbols[separator.type_id.index()]);
+                let separator_symbol = separator.map(|separator| {
+                    self.type_symbols[separator.type_id.index()]
+                        .expect("a separator token is never an inlined attachment unit")
+                });
                 let trailing = separator
                     .filter(|separator| separator.optional_trailing)
                     .and(separator_symbol);
@@ -1848,6 +1581,7 @@ impl<'a> Lowering<'a> {
                 inlined,
                 kind,
                 policy,
+                nested: Vec::new(),
             };
         let absent = |kind: SiteKind| Alternative {
             symbols: Vec::new(),
@@ -1855,12 +1589,14 @@ impl<'a> Lowering<'a> {
             inlined: true,
             kind,
             policy: FoldPolicy::Inherited,
+            nested: Vec::new(),
         };
         let inherited = FoldPolicy::Inherited;
         match lowering.clone() {
-            SiteLowering::Required { symbol, kind } => {
-                vec![present(vec![symbol], false, kind, inherited)]
+            SiteLowering::Required { symbols, kind } => {
+                vec![present(symbols, false, kind, inherited)]
             }
+            SiteLowering::InlinedAttachment(combinations) => combinations,
             SiteLowering::FixedOptional {
                 tokens,
                 presence,
@@ -1987,30 +1723,22 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Decides every rule's tail (see [`TailDecision`]): Pratt rules clear the flag, an enum
-    /// alternative that derives exactly one token sets it, and a rule that ends in a
-    /// repetition already set it when it was lowered.
+    /// Decides every rule's tail (see [`TailDecision`]): a left-recursive continuation of its
+    /// own enum Node clears the flag, an enum alternative that derives exactly one token sets
+    /// it, and a rule that ends in a repetition already set it when it was lowered.
+    ///
+    /// A left-recursive continuation is an enum alternative whose first right-hand-side symbol
+    /// is its own left-hand side: the operator rules of an expression Node
+    /// (`Expr -> Expr PLUS Expr`, `Expr -> Expr BANG`, and the same rules of a restricted
+    /// expression). Such a reduce completes an operand of an enclosing expression, so what
+    /// follows it belongs to whatever encloses the expression rather than to the root's FOLLOW,
+    /// and the parsed prefix stays acceptable. A rule that merely ends in its own left-hand
+    /// side (`Value -> Number PLUS Value`) is a right-recursive alternative whose reduce does
+    /// end the root, so it keeps the flag.
     fn decide_tails(&mut self) {
         let bounds = token_bounds(&self.lr);
-        let pratt_lhs: Vec<bool> = (0..self.lr.nonterminal_count())
-            .map(|index| {
-                let type_id = match self.lr.nonterminal(NonterminalId::new(index as u32)).origin {
-                    NonterminalOrigin::Type(type_id)
-                    | NonterminalOrigin::Restriction { type_id, .. } => type_id,
-                    _ => return false,
-                };
-                matches!(
-                    self.grammar.types[type_id.index()].shape,
-                    TypeShape::Pratt { .. }
-                )
-            })
-            .collect();
         let grammar = self.grammar;
         for rule in self.lr.rules_mut() {
-            if pratt_lhs[rule.lhs.index()] {
-                rule.tail = TailDecision::Clear;
-                continue;
-            }
             let RuleAction::Construct {
                 type_id,
                 variant: Some(_),
@@ -2020,6 +1748,10 @@ impl<'a> Lowering<'a> {
                 continue;
             };
             if !matches!(grammar.types[type_id.index()].shape, TypeShape::Enum { .. }) {
+                continue;
+            }
+            if matches!(rule.rhs.first(), Some(Symbol::Nonterminal(first)) if *first == rule.lhs) {
+                rule.tail = TailDecision::Clear;
                 continue;
             }
             let (min, max) = rule.rhs.iter().fold((0_u8, 0_u8), |(min, max), symbol| {
@@ -2255,7 +1987,7 @@ impl<'a> Lowering<'a> {
     /// Adds a start rule for every entry type that has a nonterminal.
     fn lower_starts(&mut self) {
         for type_id in &self.roles.start_types {
-            if let Symbol::Nonterminal(target) = self.type_symbols[type_id.index()] {
+            if let Some(Symbol::Nonterminal(target)) = self.type_symbols[type_id.index()] {
                 self.lr.add_start(*type_id, target);
             }
         }

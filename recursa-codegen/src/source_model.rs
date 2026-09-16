@@ -31,7 +31,7 @@ use crate::lowering::{
 use crate::resolution::{
     CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
     ResolvedNodeBody, ResolvedNodeField, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
-    ResolvedVariantId, SemanticTarget,
+    ResolvedVariantId, SemanticTarget, TypeAliasId,
 };
 use crate::source_syntax::{
     CargoCfgSnapshot, configured_attribute_metas as configured_metas,
@@ -134,6 +134,36 @@ pub(crate) struct SourceModel {
     /// Authored LR conflict resolutions, compiled to typed source identities and token
     /// definitions.
     pub(crate) lr_conflict_resolutions: Vec<LrConflictResolution>,
+    /// Validated `#[restricts(Base)]` declarations in authored alias order.
+    pub(crate) restrictions: Vec<SourceRestriction>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One validated restricted expression (`docs/declared-precedence.md`, "Restricted
+/// expressions"): a grammar nonterminal whose rules are a subset of one base enum Node's
+/// variants, never an AST type of its own.
+pub(crate) struct SourceRestriction {
+    /// The type alias the restricted declaration expanded to, which is how a field that names
+    /// the restriction is recognized as parsing its base through it.
+    pub(crate) alias: TypeAliasId,
+    /// The authored name, which becomes the LR nonterminal's name.
+    pub(crate) name: String,
+    /// The root base Node, reached through any chain of restrictions: the Node whose type every
+    /// rule of this restriction constructs.
+    pub(crate) base: NodeId,
+    /// The admitted variants of `base`, in the base's own declaration order.
+    pub(crate) variants: Vec<ResolvedVariantId>,
+    /// Locates the declaration.
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What one restricted expression restricts: an enum Node directly, or another restriction.
+enum RestrictionBase {
+    /// The base is an ordinary enum Node.
+    Node(NodeId),
+    /// The base is another restricted expression, named by the alias it expanded to.
+    Restriction(TypeAliasId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,7 +171,7 @@ pub(crate) struct SourceModel {
 pub(crate) enum LrRuleOwner {
     /// One authored Node declaration.
     Type(NodeId),
-    /// One authored enum or Pratt variant declaration.
+    /// One authored enum variant declaration.
     Variant(ResolvedVariantId),
 }
 
@@ -184,13 +214,13 @@ pub(crate) enum LrLookaheadReference {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One level of the `precedence { ... }` declaration, bison's `%left`, `%right` or
-/// `%nonassoc` line with the binding power that places it on the Pratt scale.
+/// `%nonassoc` line with the `bp` that orders it against the other levels.
 ///
 /// LR lowering reads this declaration when resolving shift/reduce conflicts.
 pub(crate) struct PrecedenceLevel {
     /// The level's associativity.
     pub(crate) associativity: crate::PrecedenceAssociativity,
-    /// The level's binding power, strictly above the previous level's.
+    /// The level's `bp`, strictly above the previous level's.
     pub(crate) binding_power: u8,
     /// Locates the level's declaration.
     pub(crate) site: SourceSite,
@@ -236,7 +266,7 @@ pub(crate) struct PrecedenceOverride {
 pub(crate) enum PrecedenceOwner {
     /// A Node; the override covers every rule of the Node, including all its variants.
     Type(NodeId),
-    /// A variant of an enum or a `#[pratt]` atom; the override covers the variant's rules.
+    /// A variant of an enum; the override covers the variant's rules.
     Variant(ResolvedVariantId),
 }
 
@@ -369,8 +399,6 @@ pub(crate) enum NodeBody {
     Presence(Vec<GrammarElement>),
     /// Identifies the enum authored-source form.
     Enum(Vec<Variant>),
-    /// Identifies the pratt authored-source form.
-    Pratt(Vec<SourcePrattVariant>),
 }
 
 impl Node {
@@ -380,7 +408,6 @@ impl Node {
             NodeBody::Struct(_) => NodeShape::Struct,
             NodeBody::Presence(_) => NodeShape::Presence,
             NodeBody::Enum(_) => NodeShape::Enum,
-            NodeBody::Pratt(_) => NodeShape::Pratt,
         }
     }
 
@@ -388,7 +415,7 @@ impl Node {
     pub(crate) fn elements(&self) -> &[GrammarElement] {
         match &self.body {
             NodeBody::Struct(elements) | NodeBody::Presence(elements) => elements,
-            NodeBody::Enum(_) | NodeBody::Pratt(_) => &[],
+            NodeBody::Enum(_) => &[],
         }
     }
 
@@ -396,15 +423,7 @@ impl Node {
     pub(crate) fn variants(&self) -> &[Variant] {
         match &self.body {
             NodeBody::Enum(variants) => variants,
-            NodeBody::Struct(_) | NodeBody::Presence(_) | NodeBody::Pratt(_) => &[],
-        }
-    }
-
-    /// Derives the pratt variants from the retained source model and its correlations.
-    pub(crate) fn pratt_variants(&self) -> &[SourcePrattVariant] {
-        match &self.body {
-            NodeBody::Pratt(variants) => variants,
-            NodeBody::Struct(_) | NodeBody::Presence(_) | NodeBody::Enum(_) => &[],
+            NodeBody::Struct(_) | NodeBody::Presence(_) => &[],
         }
     }
 }
@@ -479,39 +498,6 @@ impl PrettyHints {
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries the source pratt variant retained from authored source structure.
-pub(crate) struct SourcePrattVariant {
-    /// Declaration metadata shared by all authored Pratt variant roles.
-    pub(crate) common: Variant,
-    /// Supplies the position used to correlate authored source with normalized grammar.
-    pub(crate) position: SourcePrattPosition,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Classifies the source pratt position forms retained in the source model.
-pub(crate) enum SourcePrattPosition {
-    /// Identifies the atom authored-source form.
-    Atom,
-    /// Identifies the prefix authored-source form.
-    Prefix {
-        #[doc = "Authored right binding power of the prefix operand."]
-        bp: u8,
-    },
-    /// Identifies the infix authored-source form.
-    Infix {
-        #[doc = "Authored left binding power of the infix operator."]
-        lbp: u8,
-        #[doc = "Authored right binding power of the infix operand."]
-        rbp: u8,
-    },
-    /// Identifies the postfix authored-source form.
-    Postfix {
-        #[doc = "Authored left binding power of the postfix operator."]
-        bp: u8,
-    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -594,8 +580,6 @@ pub(crate) enum NodeShape {
     Struct,
     /// Identifies the enum authored-source form.
     Enum,
-    /// Identifies the pratt authored-source form.
-    Pratt,
     /// Identifies the presence authored-source form.
     Presence,
 }
@@ -635,8 +619,6 @@ pub(crate) enum GrammarElement {
         attachment: Option<FixedTokenAttachment>,
         /// Supplies the separator used to correlate authored source with normalized grammar.
         separator: Option<Separator>,
-        /// Restricts the Pratt extensions admitted while parsing this field.
-        pratt_extensions: Option<PrattExtensionFilter>,
         /// Preserves Pretty configuration after source-level validation.
         pretty: PrettyHints,
         /// Supplies the attachment before used to correlate authored source with normalized grammar.
@@ -646,15 +628,6 @@ pub(crate) enum GrammarElement {
         /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries an authored restriction on the Pratt extensions available to one field.
-pub(crate) struct PrattExtensionFilter {
-    /// Names the Pratt variants excluded from this field and its recursive operands: an atom
-    /// or prefix variant as well as an infix or postfix one. The names are resolved once, in
-    /// materialization, onto [`crate::ParseSite::pratt_excluded`].
-    pub(crate) excluded: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1077,10 +1050,10 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidFixedTokenPresence,
     /// Identifies the invalid token placement authored-source form.
     InvalidTokenPlacement,
-    /// Identifies the invalid pratt token placement authored-source form.
-    InvalidPrattTokenPlacement,
-    /// Identifies an invalid field-local Pratt extension restriction.
-    InvalidPrattExtensionFilter,
+    /// Identifies a removed Pratt authoring attribute: `#[pratt]`, a `#[parse(prefix | infix |
+    /// postfix, ...)]` role, or a `#[parse(pratt(exclude(...)))]` restriction. Declared
+    /// precedence replaces all three; see `docs/declared-precedence.md`.
+    RemovedPrattSurface,
     /// Identifies use of the removed `#[greedy(...)]` helper.
     InvalidGreedyAcceptance,
     /// Identifies the configured ordinary derive conflict authored-source form.
@@ -1108,12 +1081,22 @@ pub(crate) enum SourceModelDiagnosticKind {
     /// A `lookahead { ... }` declaration names an unknown, duplicate or ambiguous token.
     InvalidLookaheadFilter,
     /// A `precedence { ... }` declaration names an unknown token or is declared twice, or a
-    /// `#[parse(prec = NAME)]` is malformed, names no declared level, or sits on a Pratt
-    /// operator variant whose binding powers already are its precedence.
+    /// `#[parse(prec = NAME)]` is malformed or names no declared level.
     InvalidPrecedenceDeclaration,
     /// A `#[parse(lr_conflict(...))]` declaration is malformed or names an unknown source rule
     /// owner or lookahead token.
     InvalidLrConflictResolution,
+    /// A `#[restricts(Base)]` declaration is not an enum of bare variant names.
+    RestrictedVariantHasFields,
+    /// A `#[restricts(Base)]` declaration names a variant its base does not admit.
+    RestrictedVariantUnknown,
+    /// A `#[restricts(Base)]` declaration names a base that is not an enum Node.
+    RestrictedBaseNotEnum,
+    /// A `#[restricts(Base)]` declaration names itself, directly or around a cycle.
+    RestrictedBaseCycle,
+    /// A restricted expression is used where a type is required, or carries configuration only
+    /// a type can carry.
+    RestrictedExpressionAsType,
 }
 
 impl SourceModelDiagnosticKind {
@@ -1197,6 +1180,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         precedence_overrides: Vec::new(),
         pending_lr_conflict_resolutions: Vec::new(),
         lr_conflict_resolutions: Vec::new(),
+        restrictions: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
@@ -1247,6 +1231,8 @@ struct SourceModelBuilder<'cfg> {
     pending_lr_conflict_resolutions: Vec<PendingLrConflictResolution>,
     /// Validated LR conflict declarations.
     lr_conflict_resolutions: Vec<LrConflictResolution>,
+    /// Validated restricted expressions.
+    restrictions: Vec<SourceRestriction>,
 }
 
 #[derive(Clone)]
@@ -1285,13 +1271,6 @@ enum TokenAttachment {
     Field,
     /// Identifies the variant authored-source form.
     Variant,
-    /// Identifies the pratt variant authored-source form.
-    PrattVariant {
-        /// Supplies the position used to correlate authored source with normalized grammar.
-        position: SourcePrattPosition,
-        /// Supplies the second field attachment used to correlate authored source with normalized grammar.
-        second_field_attachment: Option<usize>,
-    },
 }
 
 #[derive(Default)]
@@ -1301,69 +1280,6 @@ struct LoweredFields {
     elements: Vec<GrammarElement>,
     /// Supplies the attachment starts used to correlate authored source with normalized grammar.
     attachment_starts: Vec<usize>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// Counts required fixed syntax on both sides of one recursive Pratt value.
-struct PrettyPrattGroupingBounds {
-    /// Number of required fixed tokens before the recursive value.
-    before: usize,
-    /// Number of required fixed tokens after the recursive value.
-    after: usize,
-    /// Whether the owner is reached through at least one authored helper Node.
-    delegated: bool,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// Summarizes empty and single-owner derivations used to prove authored Pratt grouping syntax.
-struct PrettyPrattGroupingProof {
-    /// Whether this syntax can contribute no rendered or parsed symbols.
-    empty: bool,
-    /// Distinct authored derivations containing exactly one owning Pratt value, capped at two.
-    witnesses: Vec<PrettyPrattGroupingBounds>,
-    /// Declarations whose re-entry left this witness list possibly incomplete.
-    cyclic: BTreeSet<PrettyPrattGroupingCycle>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Names the declaration whose re-entry left a grouping proof provisional.
-///
-/// A witness list is exact only once every recorded declaration is discharged.
-/// One is discharged when its own frame closes with no witness at all: the cut
-/// that produced that emptiness assumed the same emptiness, so the empty set is
-/// a fixed point of the declaration's own witness equation, and witnesses are
-/// the least fixed point because each stands for a finite derivation.
-enum PrettyPrattGroupingCycle {
-    /// A helper Node re-entered while its own proof was still being derived.
-    Node(usize),
-    /// A type alias re-entered while its own proof was still being derived.
-    TypeAlias(usize),
-}
-
-impl PrettyPrattGroupingProof {
-    /// Retains enough witnesses to distinguish a unique path from an ambiguous one.
-    fn push_witness(&mut self, witness: PrettyPrattGroupingBounds) {
-        if self.witnesses.len() < 2 {
-            self.witnesses.push(witness);
-        }
-    }
-}
-
-#[derive(Default)]
-/// Run-local memo and cycle state shared by every grouping atom in one Pratt family.
-struct PrettyPrattGroupingAnalysis {
-    /// Completed helper summaries keyed by owner and helper Node identities.
-    memo: BTreeMap<(usize, usize), PrettyPrattGroupingProof>,
-    /// Helper Nodes active in the current depth-first proof.
-    active_nodes: BTreeSet<usize>,
-    /// Type aliases active in the current depth-first proof.
-    active_aliases: BTreeSet<usize>,
-    /// Exact fixed-only helper lengths, including failed proofs.
-    fixed_memo: BTreeMap<usize, Option<usize>>,
-    /// Fixed-only helper Nodes active in the current depth-first proof.
-    active_fixed_nodes: BTreeSet<usize>,
-    /// Type aliases active in the current fixed-only proof.
-    active_fixed_aliases: BTreeSet<usize>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -3338,62 +3254,6 @@ impl SourceModelBuilder<'_> {
                         );
                     }
                 }
-                NodeBody::Pratt(variants) => {
-                    self.validate_pretty_multi_scope(
-                        &node.pretty,
-                        variants
-                            .iter()
-                            .map(|variant| variant.common.elements.as_slice()),
-                        "Pratt Node",
-                        &mut diagnostics,
-                    );
-                    let requires_grouping = variants
-                        .iter()
-                        .any(|variant| !matches!(variant.position, SourcePrattPosition::Atom));
-                    let mut grouping_analysis = PrettyPrattGroupingAnalysis::default();
-                    let grouping_candidates = variants
-                        .iter()
-                        .filter_map(|variant| {
-                            matches!(variant.position, SourcePrattPosition::Atom)
-                                .then(|| {
-                                    self.pretty_pratt_grouping_is_delegated(
-                                        node.resolved_node,
-                                        &variant.common,
-                                        &mut grouping_analysis,
-                                    )
-                                })
-                                .flatten()
-                        })
-                        .collect::<Vec<_>>();
-                    let has_grouping = grouping_candidates.iter().any(|delegated| !delegated)
-                        || matches!(grouping_candidates.as_slice(), [true]);
-                    if requires_grouping && !has_grouping {
-                        diagnostics.push(SourceModelDiagnostic {
-                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
-                            sites: variants
-                                .first()
-                                .map(|variant| variant.common.site.clone())
-                                .into_iter()
-                                .collect(),
-                            message: format!(
-                                "Pretty cannot repair precedence for Pratt Node `{}` because its grammar has no atom that encloses Self between fixed tokens",
-                                node.name,
-                            ),
-                        });
-                    }
-                    for variant in variants {
-                        self.validate_pretty_scope(
-                            &variant.common.pretty,
-                            &variant.common.elements,
-                            "Pratt variant",
-                            &mut diagnostics,
-                        );
-                        self.validate_pretty_element_boundaries(
-                            &variant.common.elements,
-                            &mut diagnostics,
-                        );
-                    }
-                }
             }
         }
         self.diagnostics.extend(diagnostics);
@@ -3426,15 +3286,6 @@ impl SourceModelBuilder<'_> {
                     (
                         Some((&variant.pretty, &variant.site)),
                         variant.elements.as_slice(),
-                    )
-                })
-                .collect(),
-            NodeBody::Pratt(variants) => variants
-                .iter()
-                .map(|variant| {
-                    (
-                        Some((&variant.common.pretty, &variant.common.site)),
-                        variant.common.elements.as_slice(),
                     )
                 })
                 .collect(),
@@ -3643,13 +3494,6 @@ impl SourceModelBuilder<'_> {
                                     &mut node_cycle_dependent,
                                 )
                             }),
-                            NodeBody::Pratt(variants) => variants.iter().any(|variant| {
-                                self.pretty_scope_has_soft_opportunity_inner(
-                                    &variant.common.elements,
-                                    visiting,
-                                    &mut node_cycle_dependent,
-                                )
-                            }),
                         });
                     visiting.pop();
                     if result || !node_cycle_dependent {
@@ -3692,484 +3536,6 @@ impl SourceModelBuilder<'_> {
             ResolvedTypeKind::FixedTokenPresence
             | ResolvedTypeKind::Tuple(_)
             | ResolvedTypeKind::Unsupported => false,
-        }
-    }
-
-    /// Reports whether a valid grouping path exists and whether it delegates through a helper.
-    fn pretty_pratt_grouping_is_delegated(
-        &self,
-        node: NodeId,
-        variant: &Variant,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> Option<bool> {
-        let proof = self.pretty_pratt_grouping_elements(node, &variant.elements, analysis);
-        let [witness] = proof.witnesses.as_slice() else {
-            return None;
-        };
-        (proof.cyclic.is_empty()
-            && if witness.delegated {
-                witness.before == 1 && witness.after == 1
-            } else {
-                witness.before > 0 && witness.after > 0
-            })
-        .then_some(witness.delegated)
-    }
-
-    /// Derives empty and single-owner paths through one authored element sequence.
-    fn pretty_pratt_grouping_elements(
-        &self,
-        owner: NodeId,
-        elements: &[GrammarElement],
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> PrettyPrattGroupingProof {
-        let empty = elements
-            .iter()
-            .all(|element| self.pretty_pratt_grouping_element_is_empty(owner, element, analysis));
-        let mut proof = PrettyPrattGroupingProof {
-            empty,
-            ..PrettyPrattGroupingProof::default()
-        };
-        for (index, element) in elements.iter().enumerate() {
-            let GrammarElement::SemanticField {
-                resolved_field,
-                projection: SemanticFieldProjection::Direct,
-                attachment,
-                ..
-            } = element
-            else {
-                continue;
-            };
-            let Some(context_before) =
-                self.pretty_pratt_grouping_fixed_context(owner, &elements[..index], analysis)
-            else {
-                continue;
-            };
-            let Some(context_after) =
-                self.pretty_pratt_grouping_fixed_context(owner, &elements[index + 1..], analysis)
-            else {
-                continue;
-            };
-            let Some((attached_before, attached_after)) =
-                attachment.as_ref().map_or(Some((0, 0)), |attachment| {
-                    Some((
-                        Self::required_pretty_attachment_len(&attachment.before)?,
-                        Self::required_pretty_attachment_len(&attachment.after)?,
-                    ))
-                })
-            else {
-                continue;
-            };
-            let before = context_before + attached_before;
-            let after = context_after + attached_after;
-            let nested = self.pretty_pratt_grouping_type(
-                owner,
-                &self.resolved_field(*resolved_field).ty,
-                analysis,
-            );
-            let context_is_transparent = before == 0 && after == 0;
-            let context_is_enclosure = before > 0 && after > 0;
-            // A half-open fixed context (required syntax on exactly one side)
-            // can never contribute a witness, so an under-enumerated cyclic
-            // subtree behind it cannot hide one either; only witness-capable
-            // contexts propagate cyclic incompleteness into the proof.
-            if context_is_transparent || context_is_enclosure {
-                proof.cyclic.extend(nested.cyclic.iter().copied());
-            }
-            for witness in nested.witnesses {
-                let witness_is_transparent = witness.before == 0 && witness.after == 0;
-                if context_is_transparent || (context_is_enclosure && witness_is_transparent) {
-                    proof.push_witness(PrettyPrattGroupingBounds {
-                        before: before + witness.before,
-                        after: after + witness.after,
-                        delegated: witness.delegated,
-                    });
-                }
-            }
-        }
-        proof
-    }
-
-    /// Counts required fixed syntax around an owner path.
-    ///
-    /// Optional grammar elements take their empty derivation. A required
-    /// semantic sibling is accepted only when it resolves to one exact,
-    /// non-empty fixed-only helper expansion.
-    fn pretty_pratt_grouping_fixed_context(
-        &self,
-        owner: NodeId,
-        elements: &[GrammarElement],
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> Option<usize> {
-        let mut count = 0usize;
-        for element in elements {
-            match element {
-                GrammarElement::FixedToken { .. } => count = count.checked_add(1)?,
-                GrammarElement::OptionalFixedTokenGroup { .. } => {}
-                GrammarElement::SemanticField { .. }
-                    if self.pretty_pratt_grouping_element_is_empty(owner, element, analysis) => {}
-                GrammarElement::SemanticField {
-                    resolved_field,
-                    projection: SemanticFieldProjection::Direct,
-                    attachment,
-                    ..
-                } => {
-                    let attachment = attachment.as_ref();
-                    let before = attachment.map_or(Some(0), |attachment| {
-                        Self::required_pretty_attachment_len(&attachment.before)
-                    })?;
-                    let after = attachment.map_or(Some(0), |attachment| {
-                        Self::required_pretty_attachment_len(&attachment.after)
-                    })?;
-                    let fixed = self.pretty_pratt_fixed_only_type_len(
-                        &self.resolved_field(*resolved_field).ty,
-                        analysis,
-                    )?;
-                    if fixed == 0 {
-                        return None;
-                    }
-                    count = count
-                        .checked_add(before)?
-                        .checked_add(fixed)?
-                        .checked_add(after)?;
-                }
-                GrammarElement::SemanticField {
-                    projection: SemanticFieldProjection::FixedPresence { .. },
-                    ..
-                } => return None,
-            }
-        }
-        Some(count)
-    }
-
-    /// Proves the exact number of required fixed tokens stored by a type.
-    fn pretty_pratt_fixed_only_type_len(
-        &self,
-        ty: &ResolvedType,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> Option<usize> {
-        match &ty.kind {
-            ResolvedTypeKind::Semantic {
-                target, arguments, ..
-            } => match target {
-                SemanticTarget::Node(node) => {
-                    self.pretty_pratt_fixed_only_node_len(*node, analysis)
-                }
-                SemanticTarget::TypeAlias(alias) => {
-                    if !analysis.active_fixed_aliases.insert(alias.index()) {
-                        return None;
-                    }
-                    let fixed = self
-                        .resolved
-                        .type_aliases
-                        .get(alias.index())
-                        .filter(|candidate| candidate.id == *alias)
-                        .and_then(|alias| alias.target.as_ref())
-                        .and_then(|ty| self.pretty_pratt_fixed_only_type_len(ty, analysis));
-                    analysis.active_fixed_aliases.remove(&alias.index());
-                    fixed
-                }
-                SemanticTarget::Catalog(catalog) => {
-                    let mut types = arguments.iter().filter_map(|argument| match argument {
-                        ResolvedGenericArgument::Type(ty) => Some(ty),
-                        ResolvedGenericArgument::Lifetime(_)
-                        | ResolvedGenericArgument::Unsupported(_) => None,
-                    });
-                    let inner = types.next()?;
-                    if types.next().is_some() || !matches!(catalog, CatalogType::Box) {
-                        return None;
-                    }
-                    self.pretty_pratt_fixed_only_type_len(inner, analysis)
-                }
-                SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => None,
-            },
-            ResolvedTypeKind::Group(inner)
-            | ResolvedTypeKind::Parenthesized(inner)
-            | ResolvedTypeKind::Reference(inner) => {
-                self.pretty_pratt_fixed_only_type_len(inner, analysis)
-            }
-            ResolvedTypeKind::FixedTokenPresence
-            | ResolvedTypeKind::Tuple(_)
-            | ResolvedTypeKind::Unsupported => None,
-        }
-    }
-
-    /// Proves one non-recursive helper Node has exactly one fixed-only path.
-    fn pretty_pratt_fixed_only_node_len(
-        &self,
-        node: NodeId,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> Option<usize> {
-        if let Some(fixed) = analysis.fixed_memo.get(&node.index()) {
-            return *fixed;
-        }
-        if !analysis.active_fixed_nodes.insert(node.index()) {
-            return None;
-        }
-        let fixed = self
-            .nodes
-            .get(node.index())
-            .filter(|candidate| candidate.resolved_node == node)
-            .and_then(|node| match &node.body {
-                NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
-                    self.pretty_pratt_fixed_only_elements_len(elements, analysis)
-                }
-                NodeBody::Enum(variants) if variants.len() == 1 => {
-                    self.pretty_pratt_fixed_only_elements_len(&variants[0].elements, analysis)
-                }
-                NodeBody::Enum(_) | NodeBody::Pratt(_) => None,
-            });
-        analysis.active_fixed_nodes.remove(&node.index());
-        analysis.fixed_memo.insert(node.index(), fixed);
-        fixed
-    }
-
-    /// Proves an authored helper sequence contains only exact fixed syntax.
-    fn pretty_pratt_fixed_only_elements_len(
-        &self,
-        elements: &[GrammarElement],
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> Option<usize> {
-        let mut count = 0usize;
-        for element in elements {
-            match element {
-                GrammarElement::FixedToken { .. } => count = count.checked_add(1)?,
-                GrammarElement::SemanticField {
-                    resolved_field,
-                    projection: SemanticFieldProjection::Direct,
-                    attachment,
-                    ..
-                } => {
-                    let attachment = attachment.as_ref();
-                    let before = attachment.map_or(Some(0), |attachment| {
-                        Self::required_pretty_attachment_len(&attachment.before)
-                    })?;
-                    let after = attachment.map_or(Some(0), |attachment| {
-                        Self::required_pretty_attachment_len(&attachment.after)
-                    })?;
-                    let nested = self.pretty_pratt_fixed_only_type_len(
-                        &self.resolved_field(*resolved_field).ty,
-                        analysis,
-                    )?;
-                    count = count
-                        .checked_add(before)?
-                        .checked_add(nested)?
-                        .checked_add(after)?;
-                }
-                GrammarElement::OptionalFixedTokenGroup { .. }
-                | GrammarElement::SemanticField {
-                    projection: SemanticFieldProjection::FixedPresence { .. },
-                    ..
-                } => return None,
-            }
-        }
-        Some(count)
-    }
-
-    /// Reports whether an element can disappear from the selected grouping derivation.
-    fn pretty_pratt_grouping_element_is_empty(
-        &self,
-        owner: NodeId,
-        element: &GrammarElement,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> bool {
-        match element {
-            GrammarElement::OptionalFixedTokenGroup { .. } => true,
-            GrammarElement::SemanticField {
-                resolved_field,
-                projection: SemanticFieldProjection::Direct,
-                ..
-            } => {
-                let proof = self.pretty_pratt_grouping_type(
-                    owner,
-                    &self.resolved_field(*resolved_field).ty,
-                    analysis,
-                );
-                let attachment_is_empty = match element {
-                    GrammarElement::SemanticField { attachment, .. } => {
-                        attachment.as_ref().is_none_or(|attachment| {
-                            attachment.before.iter().all(|syntax| {
-                                matches!(syntax, AttachedFixedSyntax::Optional { .. })
-                            }) && attachment.after.iter().all(|syntax| {
-                                matches!(syntax, AttachedFixedSyntax::Optional { .. })
-                            })
-                        })
-                    }
-                    GrammarElement::FixedToken { .. }
-                    | GrammarElement::OptionalFixedTokenGroup { .. } => false,
-                };
-                proof.cyclic.is_empty() && proof.empty && attachment_is_empty
-            }
-            GrammarElement::FixedToken { .. }
-            | GrammarElement::SemanticField {
-                projection: SemanticFieldProjection::FixedPresence { .. },
-                ..
-            } => false,
-        }
-    }
-
-    /// Counts required fixed tokens, rejecting optional syntax inside a grouping boundary.
-    fn required_pretty_attachment_len(syntax: &[AttachedFixedSyntax]) -> Option<usize> {
-        syntax
-            .iter()
-            .try_fold(0usize, |count, syntax| match syntax {
-                AttachedFixedSyntax::Required(_) => Some(count + 1),
-                AttachedFixedSyntax::Optional { .. } => None,
-            })
-    }
-
-    /// Derives grouping paths through storage wrappers and authored helper Nodes.
-    fn pretty_pratt_grouping_type(
-        &self,
-        owner: NodeId,
-        ty: &ResolvedType,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> PrettyPrattGroupingProof {
-        match &ty.kind {
-            ResolvedTypeKind::Semantic {
-                target, arguments, ..
-            } => match target {
-                SemanticTarget::Node(candidate) if *candidate == owner => {
-                    PrettyPrattGroupingProof {
-                        empty: false,
-                        witnesses: vec![PrettyPrattGroupingBounds::default()],
-                        cyclic: BTreeSet::new(),
-                    }
-                }
-                SemanticTarget::Node(candidate) => {
-                    self.pretty_pratt_grouping_node(owner, *candidate, analysis)
-                }
-                SemanticTarget::Catalog(catalog) => {
-                    let mut types = arguments.iter().filter_map(|argument| match argument {
-                        ResolvedGenericArgument::Type(ty) => Some(ty),
-                        ResolvedGenericArgument::Lifetime(_)
-                        | ResolvedGenericArgument::Unsupported(_) => None,
-                    });
-                    let Some(inner) = types.next() else {
-                        return PrettyPrattGroupingProof::default();
-                    };
-                    if types.next().is_some() {
-                        return PrettyPrattGroupingProof::default();
-                    }
-                    match catalog {
-                        CatalogType::Box | CatalogType::Vec1 => {
-                            self.pretty_pratt_grouping_type(owner, inner, analysis)
-                        }
-                        CatalogType::Option | CatalogType::Vec => PrettyPrattGroupingProof {
-                            empty: true,
-                            witnesses: Vec::new(),
-                            cyclic: BTreeSet::new(),
-                        },
-                    }
-                }
-                SemanticTarget::TypeAlias(alias) => {
-                    if !analysis.active_aliases.insert(alias.index()) {
-                        return PrettyPrattGroupingProof {
-                            cyclic: BTreeSet::from([PrettyPrattGroupingCycle::TypeAlias(
-                                alias.index(),
-                            )]),
-                            ..PrettyPrattGroupingProof::default()
-                        };
-                    }
-                    let mut proof = self
-                        .resolved
-                        .type_aliases
-                        .get(alias.index())
-                        .filter(|candidate| candidate.id == *alias)
-                        .and_then(|alias| alias.target.as_ref())
-                        .map_or_else(PrettyPrattGroupingProof::default, |ty| {
-                            self.pretty_pratt_grouping_type(owner, ty, analysis)
-                        });
-                    analysis.active_aliases.remove(&alias.index());
-                    Self::discharge_witnessless_grouping_cycle(
-                        &mut proof,
-                        PrettyPrattGroupingCycle::TypeAlias(alias.index()),
-                    );
-                    proof
-                }
-                SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => {
-                    PrettyPrattGroupingProof::default()
-                }
-            },
-            ResolvedTypeKind::Group(inner)
-            | ResolvedTypeKind::Parenthesized(inner)
-            | ResolvedTypeKind::Reference(inner) => {
-                self.pretty_pratt_grouping_type(owner, inner, analysis)
-            }
-            ResolvedTypeKind::FixedTokenPresence
-            | ResolvedTypeKind::Tuple(_)
-            | ResolvedTypeKind::Unsupported => PrettyPrattGroupingProof::default(),
-        }
-    }
-
-    /// Derives grouping paths through one non-owning authored struct or enum helper.
-    fn pretty_pratt_grouping_node(
-        &self,
-        owner: NodeId,
-        node: NodeId,
-        analysis: &mut PrettyPrattGroupingAnalysis,
-    ) -> PrettyPrattGroupingProof {
-        let key = (owner.index(), node.index());
-        if let Some(proof) = analysis.memo.get(&key) {
-            return proof.clone();
-        }
-        if !analysis.active_nodes.insert(node.index()) {
-            return PrettyPrattGroupingProof {
-                cyclic: BTreeSet::from([PrettyPrattGroupingCycle::Node(node.index())]),
-                ..PrettyPrattGroupingProof::default()
-            };
-        }
-        let mut proof = self
-            .nodes
-            .get(node.index())
-            .filter(|candidate| candidate.resolved_node == node)
-            .map_or_else(PrettyPrattGroupingProof::default, |node| match &node.body {
-                NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
-                    self.pretty_pratt_grouping_elements(owner, elements, analysis)
-                }
-                NodeBody::Enum(variants) => {
-                    let mut proof = PrettyPrattGroupingProof::default();
-                    for variant in variants {
-                        let variant =
-                            self.pretty_pratt_grouping_elements(owner, &variant.elements, analysis);
-                        proof.empty |= variant.empty;
-                        proof.cyclic.extend(variant.cyclic.iter().copied());
-                        for witness in variant.witnesses {
-                            proof.push_witness(witness);
-                        }
-                    }
-                    proof
-                }
-                NodeBody::Pratt(_) => PrettyPrattGroupingProof::default(),
-            });
-        analysis.active_nodes.remove(&node.index());
-        Self::discharge_witnessless_grouping_cycle(
-            &mut proof,
-            PrettyPrattGroupingCycle::Node(node.index()),
-        );
-        for witness in &mut proof.witnesses {
-            witness.delegated = true;
-        }
-        if proof.cyclic.is_empty() {
-            analysis.memo.insert(key, proof.clone());
-        }
-        proof
-    }
-
-    /// Retires a closed declaration's own cycle mark once it proves witnessless.
-    ///
-    /// The proof was derived with the declaration's re-entry contributing no
-    /// witness. An empty result therefore satisfies the declaration's own
-    /// witness equation, and since a witness stands for a finite derivation the
-    /// least such solution is the true one: no unrolling of this cycle can add a
-    /// witness the proof missed. A declaration that did find a witness keeps its
-    /// mark, because unrolling can wrap that witness in the cycle's own fixed
-    /// syntax and so supply a second, distinct grouping.
-    fn discharge_witnessless_grouping_cycle(
-        proof: &mut PrettyPrattGroupingProof,
-        cycle: PrettyPrattGroupingCycle,
-    ) {
-        if proof.witnesses.is_empty() {
-            proof.cyclic.remove(&cycle);
         }
     }
 
@@ -5073,10 +4439,6 @@ impl SourceModelBuilder<'_> {
                 .iter()
                 .map(|variant| variant.elements.as_slice())
                 .collect(),
-            NodeBody::Pratt(variants) => variants
-                .iter()
-                .map(|variant| variant.common.elements.as_slice())
-                .collect(),
         };
         let mut boundaries = Vec::new();
         let mut seen = HashSet::new();
@@ -5190,6 +4552,7 @@ impl SourceModelBuilder<'_> {
         self.tokens.compile_lookahead_filters(&mut self.diagnostics);
         self.resolve_precedence();
         self.resolve_lr_conflict_resolutions();
+        self.resolve_restrictions();
         let source_modeled = self
             .diagnostics
             .iter()
@@ -5206,6 +4569,7 @@ impl SourceModelBuilder<'_> {
                     precedence: self.precedence,
                     precedence_overrides: self.precedence_overrides,
                     lr_conflict_resolutions: self.lr_conflict_resolutions,
+                    restrictions: self.restrictions,
                 },
             });
         SourceModelReport {
@@ -5215,6 +4579,303 @@ impl SourceModelBuilder<'_> {
             pretty_boundary_node_evaluations,
             #[cfg(test)]
             pretty_soft_node_evaluations,
+        }
+    }
+
+    /// Validates every `#[restricts(Base)]` declaration against its resolved base and records
+    /// the ones a grammar can lower (`docs/declared-precedence.md`, "Restricted expressions").
+    ///
+    /// A restricted expression is a grammar nonterminal, never an AST type: the declaration
+    /// expanded to a type alias for its base, so this pass reads the authored body back off the
+    /// alias and checks the four things the alias cannot express — that the declaration is an
+    /// enum of bare names, that the base is an enum Node, that the base chain is acyclic, and
+    /// that every admitted name is a variant the base itself admits — plus that the declaration
+    /// carries no configuration only a type can carry.
+    ///
+    /// The admitted names are checked against the *immediate* base, which for a restriction of
+    /// a restriction is that restriction's own admitted set, and are then resolved against the
+    /// root base Node, whose type every rule constructs.
+    fn resolve_restrictions(&mut self) {
+        self.reject_restricted_framing();
+        let mut restrictions = Vec::new();
+        for index in 0..self.resolved.type_aliases.len() {
+            let alias_id = self.resolved.type_aliases[index].id;
+            let Some(authored) = self.resolved.type_aliases[index].restriction.clone() else {
+                continue;
+            };
+            let origin = SourceOrigin {
+                module: self.resolved.type_aliases[index].module,
+                source: self.resolved.type_aliases[index].source,
+            };
+            let site = self.site(origin, authored.range.clone());
+            for (path, range) in &authored.configured {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedExpressionAsType.at(
+                        self.site(origin, range.clone()),
+                        format!(
+                            "#[{path}] configures a type, and a restricted expression is a \
+                             grammar nonterminal that generates none",
+                        ),
+                    ));
+            }
+            if !authored.enumerated {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedVariantHasFields.at(
+                        site.clone(),
+                        "a restricted expression is an enum whose variants are the bare names of \
+                         the base variants it admits",
+                    ));
+                continue;
+            }
+            let mut malformed = false;
+            for variant in &authored.variants {
+                if variant.has_fields {
+                    malformed = true;
+                    self.diagnostics.push(
+                        SourceModelDiagnosticKind::RestrictedVariantHasFields.at(
+                            self.site(origin, variant.range.clone()),
+                            format!(
+                                "`{}` names a base variant, so it takes no fields: a restricted \
+                                 expression admits the base's own rule unchanged",
+                                variant.name,
+                            ),
+                        ),
+                    );
+                }
+            }
+            let Some((base, root)) = self.restriction_base(alias_id, &site, &authored) else {
+                continue;
+            };
+            if malformed {
+                continue;
+            }
+            let admitted = self.admitted_variant_names(base);
+            let mut names = Vec::new();
+            for variant in &authored.variants {
+                if admitted.contains(&variant.name) {
+                    names.push(variant.name.clone());
+                    continue;
+                }
+                malformed = true;
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedVariantUnknown.at(
+                        self.site(origin, variant.range.clone()),
+                        format!(
+                            "`{}` is no variant of `{}`; a restricted expression admits only \
+                             variants its base admits",
+                            variant.name,
+                            self.restriction_base_name(base),
+                        ),
+                    ));
+            }
+            if malformed {
+                continue;
+            }
+            let variants = self.root_variant_order(root, &names);
+            restrictions.push(SourceRestriction {
+                alias: alias_id,
+                name: self.resolved.type_aliases[index].ident.clone(),
+                base: root,
+                variants,
+                site,
+            });
+        }
+        self.restrictions = restrictions;
+    }
+
+    /// Rejects a `framing` island or payload owner that names a restricted expression: framing
+    /// parses each island as a type, and a restriction generates none.
+    fn reject_restricted_framing(&mut self) {
+        let Some(framing) = self.resolved.configuration.framing.clone() else {
+            return;
+        };
+        let owners = std::iter::once(&framing.island)
+            .chain(framing.payload.as_ref().map(|payload| &payload.after));
+        let named: Vec<_> = owners
+            .filter_map(|ty| match &ty.kind {
+                ResolvedTypeKind::Semantic {
+                    target: SemanticTarget::TypeAlias(alias),
+                    ..
+                } if self.resolved.type_aliases[alias.index()]
+                    .restriction
+                    .is_some() =>
+                {
+                    Some((
+                        ty.range.clone(),
+                        self.resolved.type_aliases[alias.index()].ident.clone(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        for (range, name) in named {
+            let origin = SourceOrigin {
+                module: self
+                    .resolved
+                    .tree
+                    .inclusions
+                    .first()
+                    .expect("a resolved grammar has a root module inclusion")
+                    .id,
+                source: self.resolved.configuration.source,
+            };
+            let site = self.site(origin, range);
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::RestrictedExpressionAsType.at(
+                    site,
+                    format!(
+                        "`{name}` is a restricted expression, a grammar nonterminal with no \
+                         generated type, and `framing` needs a Node type here",
+                    ),
+                ));
+        }
+    }
+
+    /// Resolves one restriction's base: the Node or restriction its alias target names, with a
+    /// base that is not an enum Node and a base cycle each reported at its own code.
+    fn restriction_base(
+        &mut self,
+        alias: TypeAliasId,
+        site: &SourceSite,
+        authored: &crate::declaration::DeclarationRestriction,
+    ) -> Option<(RestrictionBase, NodeId)> {
+        let origin = SourceOrigin {
+            module: self.resolved.type_aliases[alias.index()].module,
+            source: self.resolved.type_aliases[alias.index()].source,
+        };
+        let base_site = self.site(origin, authored.base_range.clone());
+        let mut current = alias;
+        let mut visited = BTreeSet::from([alias]);
+        // The chain is walked all the way to its root Node even once the immediate base is
+        // known, because only the root proves the chain terminates and is an enum.
+        let mut immediate = None;
+        loop {
+            let Some(target) = self.resolved.type_aliases[current.index()].target.clone() else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                        base_site,
+                        "#[restricts(Base)] names one enum Node, the expression this Node \
+                         restricts",
+                    ));
+                return None;
+            };
+            let ResolvedTypeKind::Semantic { target, .. } = &target.kind else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                        base_site,
+                        "#[restricts(Base)] names one enum Node, not a container or an \
+                         unresolved type",
+                    ));
+                return None;
+            };
+            match *target {
+                SemanticTarget::Node(node) => {
+                    if !self.node_is_plain_enum(node) {
+                        self.diagnostics
+                            .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                                base_site,
+                                format!(
+                                    "`{}` is not an enum Node, so it has no variants to admit",
+                                    self.resolved.nodes[node.index()].ident,
+                                ),
+                            ));
+                        return None;
+                    }
+                    return Some((immediate.unwrap_or(RestrictionBase::Node(node)), node));
+                }
+                SemanticTarget::TypeAlias(next) => {
+                    if !visited.insert(next) {
+                        self.diagnostics
+                            .push(SourceModelDiagnosticKind::RestrictedBaseCycle.at(
+                                site.clone(),
+                                "a restricted expression cannot restrict itself, directly or \
+                                 around a cycle of restrictions",
+                            ));
+                        return None;
+                    }
+                    if immediate.is_none()
+                        && self.resolved.type_aliases[next.index()]
+                            .restriction
+                            .is_some()
+                    {
+                        immediate = Some(RestrictionBase::Restriction(next));
+                    }
+                    current = next;
+                }
+                _ => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                            base_site,
+                            "#[restricts(Base)] names one enum Node, not a token or a generic \
+                             parameter",
+                        ));
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Reports whether one Node is an ordinary enum, the only base a restriction admits.
+    fn node_is_plain_enum(&self, node: NodeId) -> bool {
+        self.nodes
+            .iter()
+            .find(|candidate| candidate.resolved_node == node)
+            .is_some_and(|candidate| matches!(candidate.body, NodeBody::Enum(_)))
+    }
+
+    /// The variant names one restriction base admits: an enum Node's own variants, or the
+    /// admitted subset of a base that is itself a restriction.
+    fn admitted_variant_names(&self, base: RestrictionBase) -> Vec<String> {
+        match base {
+            RestrictionBase::Node(node) => self.node_variant_names(node),
+            // A base that is itself a restriction admits exactly the names it lists, read from
+            // the authored declaration so that the order restrictions are declared in cannot
+            // change what a restriction of a restriction admits.
+            RestrictionBase::Restriction(alias) => self.resolved.type_aliases[alias.index()]
+                .restriction
+                .as_ref()
+                .map(|restriction| {
+                    restriction
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The enum variant names of one Node, in declaration order.
+    fn node_variant_names(&self, node: NodeId) -> Vec<String> {
+        match &self.resolved.nodes[node.index()].body {
+            ResolvedNodeBody::Enum { variants } => variants
+                .iter()
+                .map(|variant| variant.ident.clone())
+                .collect(),
+            ResolvedNodeBody::Struct { .. } => Vec::new(),
+        }
+    }
+
+    /// The display name of one restriction base, for a diagnostic message.
+    fn restriction_base_name(&self, base: RestrictionBase) -> String {
+        match base {
+            RestrictionBase::Node(node) => self.resolved.nodes[node.index()].ident.clone(),
+            RestrictionBase::Restriction(alias) => {
+                self.resolved.type_aliases[alias.index()].ident.clone()
+            }
+        }
+    }
+
+    /// Orders admitted names by the root base's own declaration order and resolves each to its
+    /// variant identity.
+    fn root_variant_order(&self, root: NodeId, names: &[String]) -> Vec<ResolvedVariantId> {
+        match &self.resolved.nodes[root.index()].body {
+            ResolvedNodeBody::Enum { variants } => variants
+                .iter()
+                .filter(|variant| names.contains(&variant.ident))
+                .map(|variant| variant.id)
+                .collect(),
+            ResolvedNodeBody::Struct { .. } => Vec::new(),
         }
     }
 
@@ -5287,14 +4948,7 @@ impl SourceModelBuilder<'_> {
             );
             let body = match &node.body {
                 ResolvedNodeBody::Struct { style } => {
-                    reject_pratt_marker(
-                        &self.resolved,
-                        origin,
-                        configured,
-                        false,
-                        &mut self.diagnostics,
-                    );
-                    reject_pratt_roles_off_pratt(
+                    reject_removed_pratt_surface(
                         &self.resolved,
                         origin,
                         configured,
@@ -5341,147 +4995,63 @@ impl SourceModelBuilder<'_> {
                                 .to_owned(),
                         });
                     }
-                    reject_pratt_roles_off_pratt(
+                    reject_removed_pratt_surface(
                         &self.resolved,
                         origin,
                         configured,
                         &mut self.diagnostics,
                     );
-                    let is_pratt = reject_pratt_marker(
-                        &self.resolved,
-                        origin,
-                        configured,
-                        true,
-                        &mut self.diagnostics,
-                    );
-                    if is_pratt {
-                        NodeBody::Pratt(
-                            resolved_variants
-                                .iter()
-                                .map(|variant| {
-                                    reject_obsolete_parser_postconditions(
-                                        &self.resolved,
+                    NodeBody::Enum(
+                        resolved_variants
+                            .iter()
+                            .map(|variant| {
+                                reject_obsolete_parser_postconditions(
+                                    &self.resolved,
+                                    origin,
+                                    &variant.metas,
+                                    &mut self.diagnostics,
+                                );
+                                reject_removed_pratt_surface(
+                                    &self.resolved,
+                                    origin,
+                                    &variant.metas,
+                                    &mut self.diagnostics,
+                                );
+                                let body = self.lower_fields(origin, &variant.fields);
+                                let elements = PositionalTokenPlanner::lower(
+                                    &self.resolved,
+                                    &mut self.tokens,
+                                    &mut self.diagnostics,
+                                    origin,
+                                    &variant.metas,
+                                    body.into_elements(),
+                                    TokenAttachment::Variant,
+                                );
+                                self.lower_greedy(origin, &variant.metas);
+                                self.lower_precedence_override(
+                                    origin,
+                                    &variant.metas,
+                                    PrecedenceOwner::Variant(variant.id),
+                                );
+                                self.lower_lr_conflict_resolutions(
+                                    origin,
+                                    &variant.metas,
+                                    LrRuleOwner::Variant(variant.id),
+                                );
+                                Variant {
+                                    resolved_variant: variant.id,
+                                    name: variant.ident.clone(),
+                                    elements: reassign_element_ids(elements),
+                                    site: self.site(origin, variant.range.clone()),
+                                    pretty: self.lower_pretty_hints(
                                         origin,
                                         &variant.metas,
-                                        &mut self.diagnostics,
-                                    );
-                                    reject_pratt_marker(
-                                        &self.resolved,
-                                        origin,
-                                        &variant.metas,
-                                        false,
-                                        &mut self.diagnostics,
-                                    );
-                                    let position = SourcePrattPosition::from_attributes(
-                                        &self.resolved,
-                                        origin,
-                                        &variant.metas,
-                                        &mut self.diagnostics,
-                                    );
-                                    let body = self.lower_fields(origin, &variant.fields);
-                                    let second_field_attachment = body.second_attachment_start();
-                                    let elements = PositionalTokenPlanner::lower(
-                                        &self.resolved,
-                                        &mut self.tokens,
-                                        &mut self.diagnostics,
-                                        origin,
-                                        &variant.metas,
-                                        body.into_elements(),
-                                        TokenAttachment::PrattVariant {
-                                            position,
-                                            second_field_attachment,
-                                        },
-                                    );
-                                    self.lower_greedy(origin, &variant.metas);
-                                    self.lower_precedence_override(
-                                        origin,
-                                        &variant.metas,
-                                        PrecedenceOwner::Variant(variant.id),
-                                        !matches!(position, SourcePrattPosition::Atom),
-                                    );
-                                    self.lower_lr_conflict_resolutions(
-                                        origin,
-                                        &variant.metas,
-                                        LrRuleOwner::Variant(variant.id),
-                                    );
-                                    SourcePrattVariant {
-                                        common: Variant {
-                                            resolved_variant: variant.id,
-                                            name: variant.ident.clone(),
-                                            elements: reassign_element_ids(elements),
-                                            site: self.site(origin, variant.range.clone()),
-                                            pretty: self.lower_pretty_hints(
-                                                origin,
-                                                &variant.metas,
-                                                variant.range.clone(),
-                                            ),
-                                        },
-                                        position,
-                                    }
-                                })
-                                .collect(),
-                        )
-                    } else {
-                        NodeBody::Enum(
-                            resolved_variants
-                                .iter()
-                                .map(|variant| {
-                                    reject_obsolete_parser_postconditions(
-                                        &self.resolved,
-                                        origin,
-                                        &variant.metas,
-                                        &mut self.diagnostics,
-                                    );
-                                    reject_pratt_marker(
-                                        &self.resolved,
-                                        origin,
-                                        &variant.metas,
-                                        false,
-                                        &mut self.diagnostics,
-                                    );
-                                    reject_pratt_roles_off_pratt(
-                                        &self.resolved,
-                                        origin,
-                                        &variant.metas,
-                                        &mut self.diagnostics,
-                                    );
-                                    let body = self.lower_fields(origin, &variant.fields);
-                                    let elements = PositionalTokenPlanner::lower(
-                                        &self.resolved,
-                                        &mut self.tokens,
-                                        &mut self.diagnostics,
-                                        origin,
-                                        &variant.metas,
-                                        body.into_elements(),
-                                        TokenAttachment::Variant,
-                                    );
-                                    self.lower_greedy(origin, &variant.metas);
-                                    self.lower_precedence_override(
-                                        origin,
-                                        &variant.metas,
-                                        PrecedenceOwner::Variant(variant.id),
-                                        false,
-                                    );
-                                    self.lower_lr_conflict_resolutions(
-                                        origin,
-                                        &variant.metas,
-                                        LrRuleOwner::Variant(variant.id),
-                                    );
-                                    Variant {
-                                        resolved_variant: variant.id,
-                                        name: variant.ident.clone(),
-                                        elements: reassign_element_ids(elements),
-                                        site: self.site(origin, variant.range.clone()),
-                                        pretty: self.lower_pretty_hints(
-                                            origin,
-                                            &variant.metas,
-                                            variant.range.clone(),
-                                        ),
-                                    }
-                                })
-                                .collect(),
-                        )
-                    }
+                                        variant.range.clone(),
+                                    ),
+                                }
+                            })
+                            .collect(),
+                    )
                 }
             };
             let configured_traits = self.trait_planner.node_plan(
@@ -5500,12 +5070,7 @@ impl SourceModelBuilder<'_> {
             );
             let pretty = self.lower_pretty_hints(origin, configured, node.range);
             self.lower_greedy(origin, configured);
-            self.lower_precedence_override(
-                origin,
-                configured,
-                PrecedenceOwner::Type(node.id),
-                false,
-            );
+            self.lower_precedence_override(origin, configured, PrecedenceOwner::Type(node.id));
             self.lower_lr_conflict_resolutions(origin, configured, LrRuleOwner::Type(node.id));
             self.nodes.push(Node {
                 resolved_node: node.id,
@@ -5538,7 +5103,6 @@ impl SourceModelBuilder<'_> {
         origin: SourceOrigin,
         metas: &[Meta],
         owner: PrecedenceOwner,
-        operator: bool,
     ) {
         let override_metas = metas
             .iter()
@@ -5557,15 +5121,6 @@ impl SourceModelBuilder<'_> {
                     .collect(),
                 message: "a Node or variant accepts at most one #[parse(prec = NAME)]".to_owned(),
             });
-            return;
-        }
-        if operator {
-            self.diagnostics
-                .push(SourceModelDiagnosticKind::InvalidPrecedenceDeclaration.at(
-                    site,
-                    "#[parse(prec = NAME)] is not accepted on a prefix, infix or postfix Pratt \
-                     variant, whose binding powers are its precedence",
-                ));
             return;
         }
         let Meta::List(list) = meta else {
@@ -6015,14 +5570,7 @@ impl SourceModelBuilder<'_> {
                 field_configured,
                 &mut self.diagnostics,
             );
-            reject_pratt_marker(
-                &self.resolved,
-                origin,
-                field_configured,
-                false,
-                &mut self.diagnostics,
-            );
-            reject_pratt_roles_off_pratt(
+            reject_removed_pratt_surface(
                 &self.resolved,
                 origin,
                 field_configured,
@@ -6089,12 +5637,6 @@ impl SourceModelBuilder<'_> {
                     origin,
                     field_configured,
                     &resolved_field,
-                ),
-                pratt_extensions: lower_pratt_extension_filter(
-                    &self.resolved,
-                    origin,
-                    field_configured,
-                    &mut self.diagnostics,
                 ),
                 pretty: self.lower_pretty_hints(
                     origin,
@@ -6257,7 +5799,7 @@ struct TokenCatalog {
 struct PendingPrecedenceDeclaration {
     /// Locates the block's `precedence` keyword.
     site: SourceSite,
-    /// The levels from lowest to highest binding power.
+    /// The levels from loosest to tightest.
     levels: Vec<PendingPrecedenceLevel>,
 }
 
@@ -6266,7 +5808,7 @@ struct PendingPrecedenceDeclaration {
 struct PendingPrecedenceLevel {
     /// The level's associativity.
     associativity: crate::PrecedenceAssociativity,
-    /// The level's binding power.
+    /// The level's `bp`.
     binding_power: u8,
     /// Locates the level's associativity keyword.
     site: SourceSite,
@@ -7932,7 +7474,6 @@ impl PositionalTokenPlanner {
             name,
             attachment: None,
             separator: None,
-            pratt_extensions: None,
             pretty,
             attachment_before: 0,
             attachment_after: 0,
@@ -8014,15 +7555,6 @@ impl PositionalTokenPlanner {
                     .map(|span| source_site(resolved, origin, span_range(*span)))
                     .collect(),
                 message: "a #[tok(...)] sequence may contain at most one `this`".to_owned(),
-            });
-            return body;
-        }
-        if matches!(attachment, TokenAttachment::PrattVariant { .. }) && !this_sites.is_empty() {
-            diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                sites: vec![source_site(resolved, origin, span_range(this_sites[0]))],
-                message: "`this` is prohibited on Pratt variants; attach interleaved syntax to operand fields"
-                    .to_owned(),
             });
             return body;
         }
@@ -8109,35 +7641,14 @@ impl PositionalTokenPlanner {
         Self::place_anchorless(fixed, body, attachment)
     }
 
-    /// Derives the place anchorless from the retained source model and its correlations.
+    /// Places an anchorless `#[tok(...)]` sequence before the semantic body it introduces.
     fn place_anchorless(
         mut fixed: Vec<GrammarElement>,
-        mut body: Vec<GrammarElement>,
+        body: Vec<GrammarElement>,
         attachment: TokenAttachment,
     ) -> Vec<GrammarElement> {
         match attachment {
-            TokenAttachment::PrattVariant {
-                position: SourcePrattPosition::Postfix { .. },
-                ..
-            } => {
-                body.extend(fixed);
-                body
-            }
-            TokenAttachment::PrattVariant {
-                position: SourcePrattPosition::Infix { .. },
-                second_field_attachment,
-            } => {
-                let insertion = second_field_attachment.unwrap_or(body.len());
-                body.splice(insertion..insertion, fixed);
-                body
-            }
-            TokenAttachment::StructBody
-            | TokenAttachment::Field
-            | TokenAttachment::Variant
-            | TokenAttachment::PrattVariant {
-                position: SourcePrattPosition::Atom | SourcePrattPosition::Prefix { .. },
-                ..
-            } => {
+            TokenAttachment::StructBody | TokenAttachment::Field | TokenAttachment::Variant => {
                 fixed.extend(body);
                 fixed
             }
@@ -8169,166 +7680,38 @@ impl PositionalTokenPlanner {
     }
 }
 
-impl SourcePrattPosition {
-    /// Resolves a Pratt variant's role and binding powers from its attributes.
-    fn from_attributes(
-        resolved: &ResolvedSourceGrammar,
-        origin: SourceOrigin,
-        metas: &[Meta],
-        diagnostics: &mut Vec<SourceModelDiagnostic>,
-    ) -> Self {
-        let parse_metas = metas
-            .iter()
-            .filter(|meta| {
-                meta.path().is_ident("parse")
-                    && !is_precedence_override_meta(meta)
-                    && !is_lr_conflict_meta(meta)
-            })
-            .collect::<Vec<_>>();
-        if parse_metas.is_empty() {
-            return Self::Atom;
-        }
-        if parse_metas.len() > 1 {
-            diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                sites: parse_metas
-                    .iter()
-                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
-                    .collect(),
-                message: "a Pratt variant accepts at most one #[parse(...)] operator role"
-                    .to_owned(),
-            });
-            return Self::Atom;
-        }
-        let meta = parse_metas[0];
-        let Meta::List(list) = meta else {
-            diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
-                message: "a Pratt #[parse] role must use parentheses".to_owned(),
-            });
-            return Self::Atom;
-        };
-        match syn::parse2::<PrattSyntax>(list.tokens.clone()) {
-            Ok(syntax) => syntax.position,
-            Err(error) => {
-                diagnostics.push(SourceModelDiagnostic {
-                    kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
-                    message: error.to_string(),
-                });
-                Self::Atom
-            }
-        }
-    }
-}
-
-/// Lowers one field-local Pratt extension restriction.
-fn lower_pratt_extension_filter(
-    resolved: &ResolvedSourceGrammar,
-    origin: SourceOrigin,
-    metas: &[Meta],
-    diagnostics: &mut Vec<SourceModelDiagnostic>,
-) -> Option<PrattExtensionFilter> {
-    let restrictions = metas
-        .iter()
-        .filter(|meta| is_pratt_filter_meta(meta))
-        .collect::<Vec<_>>();
-    if restrictions.is_empty() {
-        return None;
-    }
-    if restrictions.len() > 1 {
-        diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::InvalidPrattExtensionFilter,
-            sites: restrictions
-                .iter()
-                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
-                .collect(),
-            message: "a field accepts at most one Pratt extension restriction".to_owned(),
-        });
-        return None;
-    }
-    let Meta::List(list) = restrictions[0] else {
-        unreachable!("field Pratt restrictions use list-form #[parse(...)] syntax")
-    };
-    match syn::parse2::<PrattFieldSyntax>(list.tokens.clone()) {
-        Ok(syntax) => Some(PrattExtensionFilter {
-            excluded: syntax
-                .excluded
-                .into_iter()
-                .map(|ident| ident.unraw().to_string())
-                .collect(),
-        }),
-        Err(error) => {
-            diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::InvalidPrattExtensionFilter,
-                sites: vec![source_site(resolved, origin, span_range(error.span()))],
-                message: error.to_string(),
-            });
-            None
-        }
-    }
-}
-
-/// Diagnoses Pratt-only attributes used outside a Pratt variant.
-fn reject_pratt_marker(
-    resolved: &ResolvedSourceGrammar,
-    origin: SourceOrigin,
-    metas: &[Meta],
-    enum_body: bool,
-    diagnostics: &mut Vec<SourceModelDiagnostic>,
-) -> bool {
-    let pratt_metas = metas
-        .iter()
-        .filter(|meta| meta.path().is_ident("pratt"))
-        .collect::<Vec<_>>();
-    if pratt_metas.is_empty() {
-        return false;
-    }
-    if !enum_body {
-        diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-            sites: pratt_metas
-                .iter()
-                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
-                .collect(),
-            message: "#[pratt] is valid only on an enum Node".to_owned(),
-        });
-        return false;
-    }
-    if pratt_metas.len() > 1 || !matches!(pratt_metas[0], Meta::Path(_)) {
-        diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-            sites: pratt_metas
-                .iter()
-                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
-                .collect(),
-            message: "a Pratt enum requires exactly one marker-form #[pratt]".to_owned(),
-        });
-    }
-    true
-}
-
-/// Rejects pratt roles off pratt.
-fn reject_pratt_roles_off_pratt(
+/// Diagnoses the removed Pratt authoring attributes at their authored location.
+///
+/// `#[pratt]`, the `#[parse(prefix | infix | postfix, ...)]` roles, and the field-local
+/// `#[parse(pratt(exclude(...)))]` restriction are gone: declared precedence is Recursa's only
+/// precedence model. The derive macro still admits `pratt` as a helper attribute so this
+/// source-aware migration error wins over Rust's unknown-attribute error, the same arrangement
+/// `#[greedy(...)]` uses.
+fn reject_removed_pratt_surface(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
     metas: &[Meta],
     diagnostics: &mut Vec<SourceModelDiagnostic>,
 ) {
-    let parse_metas = metas
-        .iter()
-        .filter(|meta| is_pratt_role_meta(meta))
-        .collect::<Vec<_>>();
-    if !parse_metas.is_empty() {
+    for meta in metas {
+        let removed = if meta.path().is_ident("pratt") {
+            "#[pratt]"
+        } else if is_pratt_role_meta(meta) {
+            "a #[parse(prefix | infix | postfix, ...)] role"
+        } else if is_pratt_filter_meta(meta) {
+            "#[parse(pratt(exclude(...)))]"
+        } else {
+            continue;
+        };
         diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-            sites: parse_metas
-                .iter()
-                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
-                .collect(),
-            message: "Pratt #[parse(...)] roles are valid only on variants of a #[pratt] enum"
-                .to_owned(),
+            kind: SourceModelDiagnosticKind::RemovedPrattSurface,
+            sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+            message: format!(
+                "{removed} has been removed; declared precedence is Recursa's only precedence \
+                 model. Declare ordered `precedence {{ ... }}` levels in `recursa::tokens!`, take \
+                 a level with `#[parse(prec = NAME)]`, and restrict an operand with \
+                 `#[restricts(Base)]`. See docs/declared-precedence.md",
+            ),
         });
     }
 }
@@ -8808,7 +8191,7 @@ struct CentralPrecedenceSyntax {
 struct CentralPrecedenceLevelSyntax {
     /// The parsed associativity keyword.
     associativity: crate::PrecedenceAssociativity,
-    /// The parsed binding power.
+    /// The parsed `bp`.
     binding_power: u8,
     /// Locates the level, from its associativity keyword.
     span: proc_macro2::Span,
@@ -9442,9 +8825,9 @@ impl Parse for CentralTokensSyntax {
 }
 
 /// Parses the body of one `precedence { ... }` block: levels `left(bp = N) { A, B }`,
-/// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from lowest to highest binding power,
+/// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from loosest to tightest,
 /// comma-separated. The shape checks that need no token catalog are made here: the
-/// associativity keyword, `bp` as a `u8`, strictly ascending binding powers, at least one name
+/// associativity keyword, `bp` as a `u8`, strictly ascending `bp` values, at least one name
 /// per level, and a name listed at most once in the block.
 fn parse_precedence_block(
     keyword: syn::Ident,
@@ -9471,7 +8854,7 @@ fn parse_precedence_block(
         if key != "bp" {
             return Err(syn::Error::new(
                 key.span(),
-                "a precedence level takes exactly `bp = N`, its binding power",
+                "a precedence level takes exactly `bp = N`, which orders it against the other levels",
             ));
         }
         options.parse::<Token![=]>()?;
@@ -9479,7 +8862,7 @@ fn parse_precedence_block(
         let binding_power = literal.base10_parse::<u8>().map_err(|_| {
             syn::Error::new(
                 literal.span(),
-                "a precedence level's binding power must be a u8 from 0 to 255",
+                "a precedence level's `bp` must be a u8 from 0 to 255",
             )
         })?;
         if !options.is_empty() {
@@ -9491,7 +8874,7 @@ fn parse_precedence_block(
             return Err(syn::Error::new(
                 literal.span(),
                 format!(
-                    "precedence levels are declared from lowest to highest binding power; \
+                    "precedence levels are declared from loosest to tightest; \
                      bp = {binding_power} does not exceed the previous level's bp = {}",
                     previous.binding_power
                 ),
@@ -9696,129 +9079,6 @@ enum FixedTokenSyntax {
     Definition(LitStr),
     /// Identifies the reference authored-source form.
     Reference(syn::Ident),
-}
-
-/// Carries the pratt syntax retained from authored source structure.
-struct PrattSyntax {
-    /// Supplies the position used to correlate authored source with normalized grammar.
-    position: SourcePrattPosition,
-}
-
-/// Carries field-local Pratt extension restriction syntax.
-struct PrattFieldSyntax {
-    /// Names the variants excluded at this field boundary, of any Pratt position.
-    excluded: Vec<syn::Ident>,
-}
-
-impl Parse for PrattFieldSyntax {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let pratt = syn::Ident::parse_any(input)?;
-        if pratt != "pratt" {
-            return Err(syn::Error::new(
-                pratt.span(),
-                "field Pratt restriction must start with pratt",
-            ));
-        }
-        let pratt_content;
-        syn::parenthesized!(pratt_content in input);
-        let exclude = syn::Ident::parse_any(&pratt_content)?;
-        if exclude != "exclude" {
-            return Err(syn::Error::new(
-                exclude.span(),
-                "field Pratt restriction supports only exclude(...)",
-            ));
-        }
-        let excluded_content;
-        syn::parenthesized!(excluded_content in pratt_content);
-        let excluded = syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(
-            &excluded_content,
-        )?
-        .into_iter()
-        .collect::<Vec<_>>();
-        if excluded.is_empty() {
-            return Err(excluded_content.error("exclude(...) requires at least one Pratt variant"));
-        }
-        if !pratt_content.is_empty() || !input.is_empty() {
-            return Err(input.error("unexpected tokens after field Pratt restriction"));
-        }
-        let mut names = BTreeSet::new();
-        for ident in &excluded {
-            if !names.insert(ident.unraw().to_string()) {
-                return Err(syn::Error::new(
-                    ident.span(),
-                    format!("duplicate excluded Pratt variant `{ident}`"),
-                ));
-            }
-        }
-        Ok(Self { excluded })
-    }
-}
-
-impl Parse for PrattSyntax {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let role = syn::Ident::parse_any(input)?;
-        let role_name = role.to_string();
-        if !matches!(role_name.as_str(), "prefix" | "infix" | "postfix") {
-            return Err(syn::Error::new(
-                role.span(),
-                "Pratt role must be prefix, infix, or postfix",
-            ));
-        }
-        let mut bp = None;
-        let mut lbp = None;
-        let mut rbp = None;
-        while !input.is_empty() {
-            input.parse::<Token![,]>()?;
-            if input.is_empty() {
-                break;
-            }
-            let key = syn::Ident::parse_any(input)?;
-            input.parse::<Token![=]>()?;
-            let value: syn::LitInt = input.parse()?;
-            let value = value.base10_parse::<u8>().map_err(|_| {
-                syn::Error::new(
-                    value.span(),
-                    "Pratt binding power must be a u8 from 0 to 255",
-                )
-            })?;
-            let slot = if key == "bp" {
-                &mut bp
-            } else if key == "lbp" {
-                &mut lbp
-            } else if key == "rbp" {
-                &mut rbp
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("unsupported Pratt binding-power setting `{key}`"),
-                ));
-            };
-            if slot.replace(value).is_some() {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("duplicate Pratt binding-power setting `{key}`"),
-                ));
-            }
-        }
-        let position = match role_name.as_str() {
-            "prefix" if lbp.is_none() && rbp.is_none() => SourcePrattPosition::Prefix {
-                bp: bp.ok_or_else(|| input.error("prefix Pratt variant requires bp"))?,
-            },
-            "infix" if bp.is_none() => SourcePrattPosition::Infix {
-                lbp: lbp.ok_or_else(|| input.error("infix Pratt variant requires lbp"))?,
-                rbp: rbp.ok_or_else(|| input.error("infix Pratt variant requires rbp"))?,
-            },
-            "postfix" if lbp.is_none() && rbp.is_none() => SourcePrattPosition::Postfix {
-                bp: bp.ok_or_else(|| input.error("postfix Pratt variant requires bp"))?,
-            },
-            "prefix" | "postfix" => {
-                return Err(input.error("prefix and postfix Pratt variants accept only bp"));
-            }
-            "infix" => return Err(input.error("infix Pratt variants accept only lbp and rbp")),
-            _ => unreachable!("role spelling validated above"),
-        };
-        Ok(Self { position })
-    }
 }
 
 /// Carries the separator syntax retained from authored source structure.
@@ -10184,15 +9444,6 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
                     assign_ordered_elements(&mut variant.elements, &mut next_element, &use_remap);
                 }
             }
-            NodeBody::Pratt(variants) => {
-                for variant in variants {
-                    assign_ordered_elements(
-                        &mut variant.common.elements,
-                        &mut next_element,
-                        &use_remap,
-                    );
-                }
-            }
         }
     }
 }
@@ -10258,14 +9509,13 @@ mod tests {
     use super::{
         CentralTokensSyntax, ClosedMatcherSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe,
         ContentTextStorage, DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax,
-        NodeBody, NodeShape, PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET,
+        NodeShape, PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET,
         PRETTY_BOUNDARY_PRODUCT_TRANSITION_BUDGET, PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET,
         PrettyBoundaryProductCounts, PrettyBoundaryProver, PrettyPatternAutomaton, PrettySpacing,
-        SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition, TokenDefinitionKind,
-        TokenUseRole, build_pretty_left_product, compiled_patterns_cross,
-        compiled_patterns_cross_counted, compiled_patterns_cross_old_oracle,
-        compiled_right_crosses, fixed_lexical_pattern, fixed_spellings_cross,
-        fixed_then_pattern_intersects_pattern, lower_source_model,
+        SourceModelDiagnosticKind, SourceModelInput, TokenDefinitionKind, TokenUseRole,
+        build_pretty_left_product, compiled_patterns_cross, compiled_patterns_cross_counted,
+        compiled_patterns_cross_old_oracle, compiled_right_crosses, fixed_lexical_pattern,
+        fixed_spellings_cross, fixed_then_pattern_intersects_pattern, lower_source_model,
         pattern_then_fixed_intersects_pattern, pretty_boundary_joint_byte_representatives,
         pretty_boundary_left_transition_len, pretty_boundary_product_len,
         pretty_boundary_reachable_transition_len,
@@ -10850,7 +10100,7 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn non_pratt_variants_keep_independent_positional_token_sequences() {
+    fn enum_variants_keep_independent_positional_token_sequences() {
         let report = model(
             r#"recursa::grammar! { module = crate }
 
@@ -10901,7 +10151,7 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn rejects_duplicate_this_pratt_variant_anchors_and_legacy_fixed_syntax() {
+    fn rejects_duplicate_this_anchors_removed_pratt_roles_and_legacy_fixed_syntax() {
         let report = model(
             r#"recursa::grammar! { module = crate }
 
@@ -10932,7 +10182,7 @@ recursa::ast_node! {
             .iter()
             .map(|diagnostic| diagnostic.kind)
             .collect::<Vec<_>>();
-        assert!(kinds.contains(&SourceModelDiagnosticKind::InvalidPrattTokenPlacement));
+        assert!(kinds.contains(&SourceModelDiagnosticKind::RemovedPrattSurface));
         assert!(kinds.contains(&SourceModelDiagnosticKind::MultipleThisAnchors));
         assert!(kinds.contains(&SourceModelDiagnosticKind::UnsupportedFixedSyntax));
         assert_code(
@@ -10947,8 +10197,22 @@ recursa::ast_node! {
         );
         assert_code(
             &report,
-            SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-            "RCA3115",
+            SourceModelDiagnosticKind::RemovedPrattSurface,
+            "RCA3140",
+        );
+        let migration = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::RemovedPrattSurface)
+            .expect("the removed Pratt surface is reported");
+        assert!(
+            migration.message.contains("has been removed")
+                && migration.message.contains("precedence { ... }")
+                && migration.message.contains("#[parse(prec = NAME)]")
+                && migration.message.contains("#[restricts(Base)]")
+                && migration.message.contains("docs/declared-precedence.md"),
+            "{}",
+            migration.message
         );
     }
 
@@ -11204,18 +10468,11 @@ recursa::ast_node! {
             .nodes
             .iter()
             .flat_map(|node| {
-                node.elements()
-                    .iter()
-                    .chain(
-                        node.variants()
-                            .iter()
-                            .flat_map(|variant| variant.elements.iter()),
-                    )
-                    .chain(
-                        node.pratt_variants()
-                            .iter()
-                            .flat_map(|variant| variant.common.elements.iter()),
-                    )
+                node.elements().iter().chain(
+                    node.variants()
+                        .iter()
+                        .flat_map(|variant| variant.elements.iter()),
+                )
             })
             .collect::<Vec<_>>();
         assert!(
@@ -11863,14 +11120,11 @@ recursa::ast_node! {
 }
 recursa::ast_node! {
 
-    #[pratt]
     enum Expr {
         Name(Name),
         #[parse(prec = UMINUS)]
         Sub(#[tok(LPAREN, SELECT, this, RPAREN)] Name),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Expr), boxed!(Expr)),
+        Add(boxed!(Expr), #[tok(PLUS, this)] boxed!(Expr)),
     }
 }
 recursa::ast_node! {
@@ -12005,6 +11259,170 @@ recursa::ast_node! {
     }
 
     #[test]
+    fn restricted_expressions_lower_to_their_admitted_base_variants() {
+        let report = model(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! { punctuation { PLUS => "+", LPAREN => "(", RPAREN => ")" } }
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+recursa::ast_node! {
+
+    pub enum Expr {
+        Name(Name),
+        Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name,
+        Parenthesized,
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(BExpr)]
+    pub enum CExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(model.restrictions.len(), 2);
+        assert_eq!(model.restrictions[0].name, "BExpr");
+        assert_eq!(model.restrictions[0].variants.len(), 2);
+        assert_eq!(model.restrictions[1].name, "CExpr");
+        // A restriction of a restriction resolves to the root base Node and admits one of its
+        // variants, so its rules still build the type the author declared.
+        assert_eq!(model.restrictions[1].base, model.restrictions[0].base);
+        assert_eq!(model.restrictions[1].variants.len(), 1);
+    }
+
+    #[test]
+    fn invalid_restricted_expressions_have_structured_diagnostics() {
+        const PRELUDE: &str = r#"recursa::grammar! { module = crate }
+recursa::tokens! { punctuation { PLUS => "+" } }
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+recursa::ast_node! {
+
+    pub enum Expr {
+        Name(Name),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
+    }
+}
+"#;
+        let with = |declaration: &str| model(&format!("{PRELUDE}{declaration}"));
+
+        let fields = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name(Name),
+    }
+}
+"#,
+        );
+        assert!(fields.source_modeled.is_none());
+        assert_code(
+            &fields,
+            SourceModelDiagnosticKind::RestrictedVariantHasFields,
+            "RCA3135",
+        );
+
+        let unknown = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Missing,
+    }
+}
+"#,
+        );
+        assert!(unknown.source_modeled.is_none());
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::RestrictedVariantUnknown,
+            "RCA3136",
+        );
+
+        let not_enum = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Name)]
+    pub enum BExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(not_enum.source_modeled.is_none());
+        assert_code(
+            &not_enum,
+            SourceModelDiagnosticKind::RestrictedBaseNotEnum,
+            "RCA3137",
+        );
+
+        let cycle = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(CExpr)]
+    pub enum BExpr {
+        Name,
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(BExpr)]
+    pub enum CExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(cycle.source_modeled.is_none());
+        assert_code(
+            &cycle,
+            SourceModelDiagnosticKind::RestrictedBaseCycle,
+            "RCA3138",
+        );
+
+        let configured = with(
+            r#"recursa::ast_node! {
+
+    #[node(derive(Pretty))]
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(configured.source_modeled.is_none());
+        assert_code(
+            &configured,
+            SourceModelDiagnosticKind::RestrictedExpressionAsType,
+            "RCA3139",
+        );
+    }
+
+    #[test]
     fn malformed_lr_conflict_declarations_are_structured_errors() {
         let source = r#"recursa::grammar! { module = crate }
 recursa::tokens! { keywords { ORDER => "order" } }
@@ -12109,22 +11527,6 @@ recursa::tokens! {
                 "#[parse(prec = NAME)] names one declared precedence level: unexpected tokens \
                  after the precedence level name",
             ),
-            (
-                "precedence { left(bp = 10) { PLUS } }",
-                r#"recursa::ast_node! {
-    #[pratt]
-    enum Root {
-        Atom(#[tok(LIKE)] ()),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[parse(prec = PLUS)]
-        #[tok(PLUS)]
-        Add(boxed!(Root), boxed!(Root)),
-    }
-}
-"#,
-                "#[parse(prec = NAME)] is not accepted on a prefix, infix or postfix Pratt \
-                 variant, whose binding powers are its precedence",
-            ),
         ];
         for (block, node, message) in cases {
             let source = format!("{prelude}{block}\n}}\n{node}\n");
@@ -12159,15 +11561,15 @@ recursa::tokens! {
             ("precedence { left { A } }", "expected parentheses"),
             (
                 "precedence { left(lbp = 1) { A } }",
-                "a precedence level takes exactly `bp = N`, its binding power",
+                "a precedence level takes exactly `bp = N`, which orders it against the other levels",
             ),
             (
                 "precedence { left(bp = 300) { A } }",
-                "a precedence level's binding power must be a u8 from 0 to 255",
+                "a precedence level's `bp` must be a u8 from 0 to 255",
             ),
             (
                 "precedence { left(bp = 2) { A }, left(bp = 2) { B } }",
-                "precedence levels are declared from lowest to highest binding power; bp = 2 \
+                "precedence levels are declared from loosest to tightest; bp = 2 \
                  does not exceed the previous level's bp = 2",
             ),
             (
@@ -12321,7 +11723,6 @@ recursa::ast_node! {
                 r#"recursa::grammar! { module = crate }
 recursa::ast_node! {
 
-    #[pratt]
     enum Root {
         #[tok(this, this)]
         Group(boxed!(Self)),
@@ -12346,15 +11747,14 @@ recursa::ast_node! {
                 r#"recursa::grammar! { module = crate }
 recursa::ast_node! {
 
-    #[pratt]
     enum Root {
         #[parse(prefix)]
         Prefix(boxed!(Self)),
     }
 }
 "#,
-                SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                "RCA3115",
+                SourceModelDiagnosticKind::RemovedPrattSurface,
+                "RCA3140",
             ),
             (
                 r#"recursa::grammar! { module = crate }
@@ -12394,7 +11794,7 @@ recursa::ast_node! {
             emitted_codes,
             [
                 "RCA3102", "RCA3103", "RCA3105", "RCA3114", "RCA3106", "RCA3104", "RCA3113",
-                "RCA3115", "RCA3112",
+                "RCA3140", "RCA3112",
             ],
         );
 
@@ -12437,42 +11837,6 @@ recursa::ast_node! {
             SourceModelDiagnosticKind::InvalidConfiguration,
             "RCA3101",
         );
-    }
-
-    #[test]
-    fn pratt_operand_fields_may_anchor_interleaved_fixed_syntax() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[parse(prefix, bp = 10)]
-        #[tok("!")]
-        Not(#[tok("(", this, ")")] boxed!(Expr)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let elements = &model.nodes[0].pratt_variants()[0].common.elements;
-        assert_eq!(
-            elements
-                .iter()
-                .map(GrammarElement::kind)
-                .collect::<Vec<_>>(),
-            [
-                GrammarElementKind::FixedToken,
-                GrammarElementKind::SemanticField,
-            ],
-        );
-        let attachment = elements[1]
-            .attachment()
-            .expect("Pratt operand keeps its positional attachment");
-        assert_eq!((attachment.before.len(), attachment.after.len()), (1, 1));
     }
 
     #[test]
@@ -12533,76 +11897,6 @@ recursa::ast_node! {
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidContentToken
         }));
-    }
-
-    #[test]
-    fn pratt_roles_are_retained_and_place_anchorless_tokens() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[parse(prefix, bp = 30)]
-        #[tok("!")]
-        Prefix(boxed!(Expr)),
-
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok("+")]
-        Infix(boxed!(Expr), boxed!(Expr)),
-
-        #[parse(postfix, bp = 40)]
-        #[tok("?")]
-        Postfix(boxed!(Expr)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let variants = model.nodes[0].pratt_variants();
-        assert_eq!(
-            variants
-                .iter()
-                .map(|variant| variant.position)
-                .collect::<Vec<_>>(),
-            [
-                SourcePrattPosition::Prefix { bp: 30 },
-                SourcePrattPosition::Infix { lbp: 20, rbp: 21 },
-                SourcePrattPosition::Postfix { bp: 40 },
-            ],
-        );
-        let roles = variants
-            .iter()
-            .map(|variant| {
-                variant
-                    .common
-                    .elements
-                    .iter()
-                    .map(|element| element.kind())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            roles,
-            [
-                vec![
-                    GrammarElementKind::FixedToken,
-                    GrammarElementKind::SemanticField,
-                ],
-                vec![
-                    GrammarElementKind::SemanticField,
-                    GrammarElementKind::FixedToken,
-                    GrammarElementKind::SemanticField,
-                ],
-                vec![
-                    GrammarElementKind::SemanticField,
-                    GrammarElementKind::FixedToken,
-                ],
-            ],
-        );
     }
 
     #[test]
@@ -12669,249 +11963,6 @@ recursa::ast_node! {
                 )
                 .collect::<Vec<_>>(),
             ["IF", "ELSE", "ELSE", "IF"],
-        );
-    }
-
-    #[test]
-    fn unannotated_pratt_variants_are_atoms_without_an_operator_role() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let NodeBody::Pratt(variants) = &model.nodes[0].body else {
-            panic!("#[pratt] must remain a distinct source-model shape")
-        };
-        assert_eq!(variants[0].position, SourcePrattPosition::Atom);
-    }
-
-    #[test]
-    fn pratt_positions_retain_exact_u8_binding_powers() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[parse(prefix, bp = 0)]
-        Prefix(boxed!(Self)),
-        #[parse(infix, lbp = 254, rbp = 255)]
-        Infix(boxed!(Self), boxed!(Self)),
-        #[parse(postfix, bp = 37)]
-        Postfix(boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let NodeBody::Pratt(variants) = &model.nodes[0].body else {
-            panic!("#[pratt] must remain a distinct source-model shape")
-        };
-        assert_eq!(
-            variants
-                .iter()
-                .map(|variant| variant.position)
-                .collect::<Vec<_>>(),
-            [
-                SourcePrattPosition::Atom,
-                SourcePrattPosition::Prefix { bp: 0 },
-                SourcePrattPosition::Infix { lbp: 254, rbp: 255 },
-                SourcePrattPosition::Postfix { bp: 37 },
-            ],
-        );
-    }
-
-    #[test]
-    fn infix_tokens_precede_the_entire_second_field_attachment() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok("+")]
-        Infix(boxed!(Expr), #[tok("AND")] boxed!(Expr)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let rendered = model.nodes[0].pratt_variants()[0]
-            .common
-            .elements
-            .iter()
-            .map(|element| match element {
-                super::GrammarElement::SemanticField { .. } => "field",
-                super::GrammarElement::FixedToken { token_use, .. } => {
-                    let definition = model.token_uses[token_use.index()].definition;
-                    model.token_definitions[definition.index()].name.as_str()
-                }
-                super::GrammarElement::OptionalFixedTokenGroup { .. } => {
-                    unreachable!("fixture contains only required syntax")
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(rendered, ["field", "+", "AND", "field"]);
-    }
-
-    #[test]
-    fn multiple_or_malformed_pratt_roles_remain_diagnostics() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[parse(prefix)]
-        #[parse(postfix)]
-        Multiple(boxed!(Expr)),
-
-        #[parse(sideways)]
-        Malformed(boxed!(Expr)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert_eq!(
-            report
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| {
-                    diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
-                })
-                .count(),
-            2,
-        );
-    }
-
-    #[test]
-    fn rejects_misplaced_and_non_exact_pratt_attributes() {
-        let invalid_roles = [
-            "prefix",
-            "prefix, bp = 1, bp = 2",
-            "prefix, lbp = 1",
-            "infix, lbp = 1",
-            "infix, lbp = 1, rbp = 2, bp = 3",
-            "postfix, bp = 256",
-            "postfix, bp = 1, unknown = 2",
-        ];
-        for role in invalid_roles {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate }}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        #[parse({role})]
-        Invalid(boxed!(Self)),
-    }}
-}}
-"#,
-            );
-            let report = model(&source);
-            assert!(report.source_modeled.is_none(), "accepted #[parse({role})]");
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
-            }));
-        }
-
-        for source in [
-            r#"recursa::grammar! { module = crate }
-recursa::ast_node! {
-
-    #[pratt]
-    struct NotAnEnum;
-}
-"#,
-            r#"recursa::grammar! { module = crate }
-recursa::ast_node! {
-
-    enum NotPratt {
-        #[parse(prefix, bp = 1)]
-        Variant,
-    }
-}
-"#,
-            r#"recursa::grammar! { module = crate }
-recursa::ast_node! {
-
-    #[pratt(unexpected)]
-    enum InvalidMarker {
-        Atom,
-    }
-}
-"#,
-        ] {
-            let report = model(source);
-            assert!(report.source_modeled.is_none());
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
-            }));
-        }
-    }
-
-    #[test]
-    fn rejects_pratt_markers_and_roles_on_variants_and_fields_only() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-recursa::ast_node! {
-
-    #[parse(skip)]
-    struct FutureNodeParseForm {
-        #[parse(prefix, bp = 1)]
-        misplaced_role: Leaf,
-        #[pratt]
-        misplaced_marker: Leaf,
-    }
-}
-recursa::ast_node! {
-
-    enum Choice {
-        #[pratt]
-        MisplacedMarker,
-    }
-}
-recursa::ast_node! {
-
-    struct Leaf;
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert_eq!(
-            report
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| {
-                    diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
-                })
-                .count(),
-            3,
-            "node-level future #[parse] forms must not be classified as Pratt roles",
         );
     }
 
@@ -14350,745 +13401,6 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn pretty_pratt_requires_authored_grouping_syntax() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { punctuation { PLUS => "+" } }
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                && diagnostic.message.contains("cannot repair precedence")
-        }));
-    }
-
-    #[test]
-    fn pretty_pratt_accepts_grammar_owned_grouping_syntax() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    keywords { BEGIN => "begin", END => "end" }
-    punctuation { PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Group(#[tok(BEGIN, this, END)] boxed!(Self)),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert!(report.source_modeled.is_some());
-    }
-
-    #[test]
-    fn pretty_pratt_accepts_exact_fixed_only_grouping_markers() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    enum Open {
-        #[tok(OPEN)]
-        Value,
-    }
-}
-recursa::ast_node! {
-
-    enum Close {
-        #[tok(CLOSE)]
-        Value,
-    }
-}
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-recursa::ast_node! {
-
-    struct Group {
-        open: Open,
-        value: boxed!(Expr),
-        close: Close,
-    }
-}
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Group(Group),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert!(report.source_modeled.is_some());
-    }
-
-    #[test]
-    fn pretty_pratt_rejects_inexact_semantic_grouping_markers() {
-        for source in [
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
-recursa::ast_node! {
-
-    struct Open {
-        #[lex(pattern = r"[a-z]+\[")]
-        text: OpenText,
-    }
-}
-recursa::ast_node! {
-    enum Close {
-        #[tok(CLOSE)]
-        Value,
-    }
-}
-recursa::ast_node! {
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-recursa::ast_node! {
-    struct Group {
-        open: Open,
-        value: boxed!(Expr),
-        close: Close,
-    }
-}
-recursa::ast_node! {
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Group(Group),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { punctuation { OPEN => "(", ALT => "[", CLOSE => ")", PLUS => "+" } }
-recursa::ast_node! {
-    enum Open {
-        #[tok(OPEN)]
-        Round,
-        #[tok(ALT)]
-        Square,
-    }
-}
-recursa::ast_node! {
-    enum Close {
-        #[tok(CLOSE)]
-        Value,
-    }
-}
-recursa::ast_node! {
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-recursa::ast_node! {
-    struct Group {
-        open: Open,
-        value: boxed!(Expr),
-        close: Close,
-    }
-}
-recursa::ast_node! {
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Group(Group),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
-recursa::ast_node! {
-    enum Open {
-        #[tok(OPEN)]
-        Value,
-    }
-}
-recursa::ast_node! {
-    enum Close {
-        #[tok(CLOSE)]
-        Value,
-    }
-}
-recursa::ast_node! {
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-recursa::ast_node! {
-    struct Group {
-        open: one_or_many!(Open),
-        value: boxed!(Expr),
-        close: Close,
-    }
-}
-recursa::ast_node! {
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Group(Group),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        ] {
-            let report = model(source);
-            assert!(report.source_modeled.is_none());
-            assert!(
-                report.diagnostics.iter().any(|diagnostic| {
-                    diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                        && diagnostic.message.contains("cannot repair precedence")
-                }),
-                "{:?}",
-                report.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn pretty_pratt_accepts_unique_grouping_through_authored_helpers() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    keywords { ANY => "any", QUERY => "query" }
-    punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    enum ParenthesizedSuffix {
-        #[tok(DOT, STAR)]
-        Star,
-    }
-}
-
-recursa::ast_node! {
-
-    #[tok(QUERY)]
-    struct Query {
-        value: boxed!(Expr),
-    }
-}
-
-recursa::ast_node! {
-
-    enum ParenthesizedContent {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
-        Query(Query),
-    }
-}
-
-recursa::ast_node! {
-
-    struct ParenthesizedExpr {
-        #[tok(OPEN, this, CLOSE)]
-        content: ParenthesizedContent,
-        suffix: Option<ParenthesizedSuffix>,
-    }
-}
-
-recursa::ast_node! {
-
-    struct QuantifiedExpr {
-        #[tok(ANY, OPEN, this, CLOSE)]
-        content: ParenthesizedContent,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Quantified(QuantifiedExpr),
-        Parenthesized(ParenthesizedExpr),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert!(report.source_modeled.is_some());
-    }
-
-    #[test]
-    fn pretty_pratt_grouping_ignores_cycles_in_witness_dead_branches() {
-        // `Sub`'s `items` sits after required fixed syntax with nothing
-        // following (before=1, after=0): that context can never contribute a
-        // grouping witness, so the self-recursive `R` it reaches must not
-        // poison the proof carried by the sibling `Exprs` witness.
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    keywords { KW => "kw" }
-    punctuation {
-        OPEN => "(", CLOSE => ")", COMMA => ",",
-        LBRACKET => "[", RBRACKET => "]", PLUS => "+"
-    }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    enum R {
-        Nested(#[tok(LBRACKET, this, RBRACKET)] boxed!(R)),
-        Leaf(Integer),
-    }
-}
-
-recursa::ast_node! {
-
-    #[tok(KW, this)]
-    struct S {
-        #[sep(COMMA)]
-        items: one_or_many!(R),
-    }
-}
-
-recursa::ast_node! {
-
-    enum C {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
-        Sub(boxed!(S)),
-    }
-}
-
-recursa::ast_node! {
-
-    struct P {
-        #[tok(OPEN, this, CLOSE)]
-        content: C,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert!(report.source_modeled.is_some());
-    }
-
-    #[test]
-    fn pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant() {
-        // Mirrors gram.y's `select_with_parens: '(' select_no_parens ')' |
-        // '(' select_with_parens ')'`: `C::Query` re-enters `Q` through a
-        // plain enclosure, so the cycle carries no owning `Expr` of its own.
-        // The sibling `C::Exprs` still supplies the one grouping witness, and
-        // the cycle cannot hide a second one, so RCA3101 must stay silent.
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    keywords { SELECT => "select" }
-    punctuation {
-        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
-        COMMA => ",", PLUS => "+"
-    }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    #[tok(SELECT)]
-    struct Simple {
-        #[sep(COMMA)]
-        targets: one_or_many!(Expr),
-    }
-}
-
-recursa::ast_node! {
-
-    struct Paren {
-        #[tok(LBRACKET, this, RBRACKET)]
-        query: boxed!(Q),
-    }
-}
-
-recursa::ast_node! {
-
-    enum Q {
-        Simple(Simple),
-        Paren(Paren),
-    }
-}
-
-recursa::ast_node! {
-
-    enum C {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
-        Query(boxed!(Q)),
-    }
-}
-
-recursa::ast_node! {
-
-    struct P {
-        #[tok(OPEN, this, CLOSE)]
-        content: C,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert!(report.source_modeled.is_some());
-    }
-
-    #[test]
-    fn pretty_pratt_rejects_an_atom_whose_every_variant_is_cyclic() {
-        // `C` reaches no owning `Expr` at all: both of its variants lead into
-        // the `Q`/`Paren` cycle. Discharging a witnessless cycle must not
-        // invent a grouping path, so RCA3101 still fires.
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    keywords { SELECT => "select", STAR => "star" }
-    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    #[tok(SELECT, STAR)]
-    struct Simple;
-}
-
-recursa::ast_node! {
-
-    struct Paren {
-        #[tok(OPEN, this, CLOSE)]
-        query: boxed!(Q),
-    }
-}
-
-recursa::ast_node! {
-
-    enum Q {
-        Simple(Simple),
-        Paren(Paren),
-    }
-}
-
-recursa::ast_node! {
-
-    enum C {
-        Query(boxed!(Q)),
-        Nested(boxed!(Paren)),
-    }
-}
-
-recursa::ast_node! {
-
-    struct P {
-        #[tok(OPEN, this, CLOSE)]
-        content: C,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                && diagnostic.message.contains("cannot repair precedence")
-        }));
-    }
-
-    #[test]
-    fn pretty_pratt_rejects_a_cycle_that_unrolls_a_second_grouping_witness() {
-        // `Q` owns a transparent witness through `Q::Direct`, so unrolling the
-        // `Q -> Paren -> Q` enclosure cycle yields a second, wider grouping
-        // (`[ ( expr ) ]` beside `[ expr ]`). The cycle is therefore not
-        // witnessless and must keep the proof inconclusive.
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    punctuation {
-        OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
-        COMMA => ",", PLUS => "+"
-    }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    struct Paren {
-        #[tok(OPEN, this, CLOSE)]
-        query: boxed!(Q),
-    }
-}
-
-recursa::ast_node! {
-
-    enum Q {
-        Direct(#[sep(COMMA)] one_or_many!(Expr)),
-        Paren(Paren),
-    }
-}
-
-recursa::ast_node! {
-
-    struct P {
-        #[tok(LBRACKET, this, RBRACKET)]
-        content: Q,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                && diagnostic.message.contains("cannot repair precedence")
-        }));
-    }
-
-    #[test]
-    fn pretty_pratt_rejects_ambiguous_grouping_through_authored_helpers() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    ignore = r"[ \t\r\n]+",
-    punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    enum ParenthesizedContent {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
-        Single(boxed!(Expr)),
-    }
-}
-
-recursa::ast_node! {
-
-    struct ParenthesizedExpr {
-        #[tok(OPEN, this, CLOSE)]
-        content: ParenthesizedContent,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        Parenthesized(ParenthesizedExpr),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                && diagnostic.message.contains("cannot repair precedence")
-        }));
-    }
-
-    #[test]
-    fn pretty_pratt_rejects_optional_grouping_like_atoms() {
-        let report = model(
-            r#"recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! {
-    punctuation { OPEN => "[", CLOSE => "]", PLUS => "+" }
-}
-
-recursa::ast_node! {
-
-    struct Integer {
-        #[lex(pattern = r"[0-9]+")]
-        value: IntegerText,
-    }
-}
-
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        Integer(Integer),
-        NotAGroup(#[tok(OPEN, this, CLOSE)] Option<boxed!(Self)>),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        );
-
-        assert!(report.source_modeled.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
-                && diagnostic.message.contains("cannot repair precedence")
-        }));
-    }
-
-    #[test]
     fn pretty_hints_accept_the_closed_local_catalog() {
         let report = model(
             r#"recursa::grammar! { module = crate, derives(Pretty) }
@@ -15248,7 +13560,6 @@ recursa::ast_node! {
 }
 recursa::ast_node! {
 
-    #[pratt]
     #[pretty(indent)]
     enum Atom {
         Value(#[lex(pattern = r"[a-z]+")] Word),
@@ -15260,10 +13571,6 @@ recursa::ast_node! {
         assert!(empty_scopes.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
                 && diagnostic.message.contains("enum Node")
-        }));
-        assert!(empty_scopes.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
-                && diagnostic.message.contains("Pratt Node")
         }));
     }
 

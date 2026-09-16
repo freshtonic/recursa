@@ -20,7 +20,7 @@ through `recursa` and, where generation is involved, `recursa-codegen`.
 Generated output layout and the loader protocol are private matching-version
 details. Supported application setup is demonstrated by the compiled
 [JSON](https://github.com/freshtonic/recursa/tree/main/examples/json) and
-[Pratt-expression](https://github.com/freshtonic/recursa/tree/main/examples/pratt-expressions)
+[expression](https://github.com/freshtonic/recursa/tree/main/examples/expressions)
 examples.
 
 Recursa uses Rust edition 2024 and requires Rust 1.88 or newer. See the

@@ -34,15 +34,14 @@ use crate::resolution::{
 use crate::source_model::PrettyBoundaryProofCounts;
 use crate::source_model::{
     AttachedFixedSyntax, ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement,
-    MaterializedPrettyBoundary, NodeBody, PrattExtensionFilter, PrettyBoundaryProver,
-    PrettyPatternCatalogId, SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar,
-    SourcePrattPosition, SourcePrattVariant, materialized_pretty_boundary_changes_lexing,
-    materialized_pretty_lexical_patterns,
+    MaterializedPrettyBoundary, NodeBody, PrettyBoundaryProver, PrettyPatternCatalogId,
+    SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar,
+    materialized_pretty_boundary_changes_lexing, materialized_pretty_lexical_patterns,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
-    KindDescription, Location, ParseSite, PrattPosition, RepeatSeparator, SiteId, SourceId,
-    TypeDescription, TypeId, TypeShape,
+    KindDescription, Location, ParseSite, RepeatSeparator, SiteId, SourceId, TypeDescription,
+    TypeId, TypeShape,
 };
 
 /// Defines a dense materialization identity with checked allocation and indexing.
@@ -130,7 +129,7 @@ pub(crate) struct LoweringMap {
     pub(crate) framing: Option<FramingApplicationCorrelation>,
     /// Authored variants correlated with normalized alternatives.
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
-    /// Authored fields correlated with parse sites or implicit Pratt operands.
+    /// Authored fields correlated with their normalized parse sites.
     pub(crate) fields: Vec<MaterializedFieldCorrelation>,
     /// Repetition attachment units correlated with their normalized sites.
     pub(crate) attachments: Vec<AttachmentUnitCorrelation>,
@@ -196,13 +195,6 @@ pub(crate) struct MaterializedFieldCorrelation {
 pub(crate) enum MaterializedFieldLowering {
     /// Correlates an ordinary semantic field with its normalized parse site.
     ParseSite(SiteId),
-    /// Selects the pratt lhs materialization alternative.
-    PrattLhs {
-        #[doc = "Normalized Pratt type that owns the implicit left-hand side."]
-        owner: TypeId,
-        #[doc = "Normalized led variant containing the implicit left-hand side."]
-        variant: DeclId,
-    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,50 +289,25 @@ pub(crate) enum MaterializedNodeBody {
     Presence(Vec<MaterializedElement>),
     /// Selects the enum materialization alternative.
     Enum(Vec<MaterializedVariant>),
-    /// Selects the pratt materialization alternative.
-    Pratt(Vec<MaterializedPrattVariant>),
 }
 
-/// Borrows one source-ordered materialized element group with its Pratt operand threshold.
+/// Borrows one source-ordered materialized element group.
 pub(crate) struct MaterializedElementGroup<'a> {
-    /// Elements belonging to one struct, enum variant, or Pratt branch.
+    /// Elements belonging to one struct or enum variant.
     pub(crate) elements: &'a [MaterializedElement],
-    /// Minimum binding power applied to recursive operands in this group.
-    pub(crate) recursive_min_bp: u8,
 }
 
 impl MaterializedNodeBody {
     /// Returns every source-ordered element group through one shared body traversal.
     pub(crate) fn element_groups(&self) -> Vec<MaterializedElementGroup<'_>> {
         match self {
-            Self::Struct(elements) | Self::Presence(elements) => vec![MaterializedElementGroup {
-                elements,
-                recursive_min_bp: 0,
-            }],
+            Self::Struct(elements) | Self::Presence(elements) => {
+                vec![MaterializedElementGroup { elements }]
+            }
             Self::Enum(variants) => variants
                 .iter()
                 .map(|variant| MaterializedElementGroup {
                     elements: &variant.elements,
-                    recursive_min_bp: 0,
-                })
-                .collect(),
-            Self::Pratt(variants) => variants
-                .iter()
-                .map(|variant| match variant {
-                    MaterializedPrattVariant::Nud(nud) => MaterializedElementGroup {
-                        elements: &nud.body,
-                        recursive_min_bp: match nud.position {
-                            MaterializedPrattNudPosition::Atom => 0,
-                            MaterializedPrattNudPosition::Prefix { bp } => bp,
-                        },
-                    },
-                    MaterializedPrattVariant::Led(led) => MaterializedElementGroup {
-                        elements: &led.tail,
-                        recursive_min_bp: match led.position {
-                            MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
-                            MaterializedPrattLedPosition::Postfix { bp } => bp,
-                        },
-                    },
                 })
                 .collect(),
         }
@@ -368,21 +335,6 @@ impl MaterializedNodeBody {
                         .filter_map(MaterializedFieldView::parsed)
                 }));
             }
-            Self::Pratt(variants) => {
-                for variant in variants {
-                    match variant {
-                        MaterializedPrattVariant::Nud(nud) => {
-                            fields
-                                .extend(nud.body.iter().filter_map(MaterializedFieldView::parsed));
-                        }
-                        MaterializedPrattVariant::Led(led) => {
-                            fields.push(MaterializedFieldView::PrattLhs(&led.lhs));
-                            fields
-                                .extend(led.tail.iter().filter_map(MaterializedFieldView::parsed));
-                        }
-                    }
-                }
-            }
         }
         fields.into_iter()
     }
@@ -399,106 +351,6 @@ pub(crate) struct MaterializedVariant {
     pub(crate) pretty: crate::source_model::PrettyHints,
     /// Supplies the elements needed to materialize a concrete grammar application.
     pub(crate) elements: Vec<MaterializedElement>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Classifies the materialized pratt variant alternatives supported during materialization.
-pub(crate) enum MaterializedPrattVariant {
-    /// Selects the nud materialization alternative.
-    Nud(MaterializedPrattNud),
-    /// Selects the led materialization alternative.
-    Led(MaterializedPrattLed),
-}
-
-impl MaterializedPrattVariant {
-    /// Borrows the declaration metadata shared by all Pratt variant roles.
-    fn common(&self) -> &MaterializedPrattCommon {
-        match self {
-            Self::Nud(variant) => &variant.common,
-            Self::Led(variant) => &variant.common,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries the materialized pratt common while expanding resolved grammar type applications.
-pub(crate) struct MaterializedPrattCommon {
-    /// Supplies the resolved variant needed to materialize a concrete grammar application.
-    pub(crate) resolved_variant: ResolvedVariantId,
-    /// Supplies the name needed to materialize a concrete grammar application.
-    pub(crate) name: String,
-    /// Supplies the pretty needed to materialize a concrete grammar application.
-    pub(crate) pretty: crate::source_model::PrettyHints,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries the materialized pratt nud while expanding resolved grammar type applications.
-pub(crate) struct MaterializedPrattNud {
-    /// Declaration metadata shared by all Pratt null-denotation roles.
-    pub(crate) common: MaterializedPrattCommon,
-    /// Supplies the position needed to materialize a concrete grammar application.
-    pub(crate) position: MaterializedPrattNudPosition,
-    /// Supplies the body needed to materialize a concrete grammar application.
-    pub(crate) body: Vec<MaterializedElement>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Classifies the materialized pratt nud position alternatives supported during materialization.
-pub(crate) enum MaterializedPrattNudPosition {
-    /// Selects the atom materialization alternative.
-    Atom,
-    /// Selects the prefix materialization alternative.
-    Prefix {
-        #[doc = "Right binding power of the recursive prefix operand."]
-        bp: u8,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries the materialized pratt led while expanding resolved grammar type applications.
-pub(crate) struct MaterializedPrattLed {
-    /// Declaration metadata shared by all Pratt left-denotation roles.
-    pub(crate) common: MaterializedPrattCommon,
-    /// Supplies the position needed to materialize a concrete grammar application.
-    pub(crate) position: MaterializedPrattLedPosition,
-    /// Supplies the lhs needed to materialize a concrete grammar application.
-    pub(crate) lhs: MaterializedPrattLhs,
-    /// Supplies the tail needed to materialize a concrete grammar application.
-    pub(crate) tail: Vec<MaterializedElement>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Classifies the materialized pratt led position alternatives supported during materialization.
-pub(crate) enum MaterializedPrattLedPosition {
-    /// Selects the infix materialization alternative.
-    Infix {
-        #[doc = "Left binding power required to select the infix operator."]
-        lbp: u8,
-        #[doc = "Right binding power used for the infix operand."]
-        rbp: u8,
-    },
-    /// Selects the postfix materialization alternative.
-    Postfix {
-        #[doc = "Left binding power required to select the postfix operator."]
-        bp: u8,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Carries the materialized pratt lhs while expanding resolved grammar type applications.
-pub(crate) struct MaterializedPrattLhs {
-    /// Supplies the field needed to materialize a concrete grammar application.
-    pub(crate) field: ResolvedFieldId,
-    /// Supplies the owner needed to materialize a concrete grammar application.
-    pub(crate) owner: MaterializedNodeUse,
-    /// Supplies the trace needed to materialize a concrete grammar application.
-    pub(crate) trace: MaterializationTrace,
-    /// Supplies the pretty needed to materialize a concrete grammar application.
-    pub(crate) pretty: crate::source_model::PrettyHints,
-    /// Supplies the attachment before needed to materialize a concrete grammar application.
-    pub(crate) attachment_before: usize,
-    /// Supplies the attachment after needed to materialize a concrete grammar application.
-    pub(crate) attachment_after: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -542,8 +394,6 @@ pub(crate) enum MaterializedSemanticFieldProjection {
         trace: MaterializationTrace,
         /// Supplies repetition-separator metadata.
         separator: Option<Separator>,
-        /// Restricts the Pratt extensions admitted while parsing this field.
-        pratt_extensions: Option<PrattExtensionFilter>,
         /// Counts standalone fixed syntax before the semantic element.
         attachment_before: usize,
         /// Counts standalone fixed syntax after the semantic element.
@@ -626,8 +476,6 @@ pub(crate) enum MaterializedFieldView<'a> {
         /// Supplies the separator needed to materialize a concrete grammar application.
         separator: Option<&'a Separator>,
     },
-    /// Selects the pratt lhs materialization alternative.
-    PrattLhs(&'a MaterializedPrattLhs),
 }
 
 impl<'a> MaterializedFieldView<'a> {
@@ -704,6 +552,10 @@ pub(crate) struct MaterializedNodeUse {
     pub(crate) application: MaterializedApplicationId,
     /// Supplies the lifetimes needed to materialize a concrete grammar application.
     pub(crate) lifetimes: Vec<syn::Lifetime>,
+    /// The restricted expression this use names (`docs/declared-precedence.md`, "Restricted
+    /// expressions"). The application stays the base's, because the restriction's rules build
+    /// the base's value and its name is no type; only the grammar symbol differs.
+    pub(crate) restriction: Option<crate::RestrictionId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -747,11 +599,6 @@ pub(crate) enum MaterializationDiagnosticKind {
     InvalidArguments,
     /// Selects the invalid container materialization alternative.
     InvalidContainer,
-    /// Selects the invalid pratt shape materialization alternative.
-    InvalidPrattShape,
-    /// A `#[parse(pratt(exclude(...)))]` name that is not a variant of the field's Pratt
-    /// target, or a restriction on a field whose target is not a Pratt Node.
-    InvalidPrattExclusion,
     /// Selects the inapplicable pretty hint materialization alternative.
     InapplicablePrettyHint,
     /// Selects the unsafe pretty boundary materialization alternative.
@@ -801,8 +648,6 @@ struct AttachmentUnitProjection {
     ty: ClosedType,
     /// Supplies the attachment needed to materialize a concrete grammar application.
     attachment: MaterializedFixedAttachment,
-    /// Supplies the recursive min bp needed to materialize a concrete grammar application.
-    recursive_min_bp: u8,
 }
 
 #[derive(Clone)]
@@ -971,6 +816,13 @@ struct Materializer {
     diagnostics: Vec<MaterializationDiagnostic>,
     /// Supplies the active aliases needed to materialize a concrete grammar application.
     active_aliases: Vec<TypeAliasId>,
+    /// Restricted expressions in the order a site first parsed its target through one, which is
+    /// the order their [`RestrictionId`](crate::RestrictionId)s and normalized descriptions take.
+    /// A restriction no site names generates no nonterminal and is absent here.
+    used_restrictions: Vec<TypeAliasId>,
+    /// The base application each used restriction restricts, recorded when it is first parsed
+    /// through, so its normalized description names the exact type its rules construct.
+    restriction_bases: BTreeMap<TypeAliasId, MaterializedApplicationId>,
     /// Supplies the active applications needed to materialize a concrete grammar application.
     active_applications: Vec<ApplicationKey>,
     /// Reuses compiled regular-language products across Pretty-boundary checks in this run.
@@ -1115,6 +967,8 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
         framing: None,
         diagnostics: Vec::new(),
         active_aliases: Vec::new(),
+        used_restrictions: Vec::new(),
+        restriction_bases: BTreeMap::new(),
         active_applications: Vec::new(),
         pretty_boundary_prover: RefCell::new(pretty_boundary_prover),
         pretty_lexical_catalog,
@@ -1293,8 +1147,7 @@ impl Materializer {
                 closed_pretty_summary_counts,
             };
         }
-        let (mut grammar, lowering_map) = self.project_normalized_grammar();
-        self.resolve_pratt_exclusions(&mut grammar, &lowering_map);
+        let (grammar, lowering_map) = self.project_normalized_grammar();
         if !self.diagnostics.is_empty() {
             return MaterializationReport {
                 lexical_diagnostics: Vec::new(),
@@ -1322,158 +1175,6 @@ impl Materializer {
             pretty_boundary_proof_counts,
             #[cfg(test)]
             closed_pretty_summary_counts,
-        }
-    }
-
-    /// Resolves every `#[parse(pratt(exclude(...)))]` filter to the normalized declarations of
-    /// the excluded variants and records them on the site the field lowers to (the outer site
-    /// when fixed tokens are attached), so that the analysis, the lowering and the renderers
-    /// read one resolution. A name that is not a variant of the target, or a restriction on a
-    /// field whose target is not a Pratt Node, is `InvalidPrattExclusion`.
-    fn resolve_pratt_exclusions(
-        &mut self,
-        grammar: &mut GrammarDescription,
-        lowering_map: &LoweringMap,
-    ) {
-        let application_of_type: BTreeMap<TypeId, MaterializedApplicationId> = lowering_map
-            .applications
-            .iter()
-            .map(|correlation| (correlation.lowered, correlation.application))
-            .collect();
-        let unit_semantic_site: BTreeMap<TypeId, SiteId> = lowering_map
-            .attachments
-            .iter()
-            .map(|unit| (unit.unit, unit.sites[unit.semantic_index]))
-            .collect();
-        let mut resolutions: Vec<(SiteId, Vec<DeclId>)> = Vec::new();
-        let mut diagnostics: Vec<(SourceId, Range<u32>, String)> = Vec::new();
-        for application in &self.applications {
-            for group in application.body.element_groups() {
-                for element in group.elements {
-                    let MaterializedElement::SemanticField {
-                        field,
-                        projection:
-                            MaterializedSemanticFieldProjection::Direct {
-                                pratt_extensions: Some(filter),
-                                ..
-                            },
-                        ..
-                    } = element
-                    else {
-                        continue;
-                    };
-                    let Some(site) = lowering_map.fields.iter().find_map(|correlation| {
-                        match correlation.lowered {
-                            MaterializedFieldLowering::ParseSite(site)
-                                if correlation.application == application.id
-                                    && correlation.field == *field =>
-                            {
-                                Some(site)
-                            }
-                            _ => None,
-                        }
-                    }) else {
-                        continue;
-                    };
-                    let resolved_field = self.resolved_field(*field);
-                    let (source, range) = (resolved_field.ty.source, resolved_field.range.clone());
-                    let field_name = resolved_field
-                        .syntax
-                        .ident
-                        .as_ref()
-                        .map_or_else(|| "the field".to_owned(), |ident| format!("`{ident}`"));
-                    let mut target = grammar.sites[site.index()].target;
-                    if let Some(semantic) = unit_semantic_site.get(&target) {
-                        target = grammar.sites[semantic.index()].target;
-                    }
-                    let target_application = application_of_type.get(&target).and_then(|id| {
-                        self.applications
-                            .iter()
-                            .find(|candidate| candidate.id == *id)
-                    });
-                    let Some(MaterializedNodeBody::Pratt(variants)) =
-                        target_application.map(|candidate| &candidate.body)
-                    else {
-                        diagnostics.push((
-                            source,
-                            range,
-                            format!(
-                                "{field_name} restricts a Pratt language with \
-                                 `#[parse(pratt(exclude(...)))]`, but its type is not a Pratt Node"
-                            ),
-                        ));
-                        continue;
-                    };
-                    let target_application =
-                        target_application.expect("a Pratt body has an application");
-                    let repeated = Self::repeats(&grammar.sites[site.index()].container);
-                    let mut excluded = Vec::new();
-                    for name in &filter.excluded {
-                        let Some((resolved, is_nud)) =
-                            variants.iter().find_map(|variant| match variant {
-                                MaterializedPrattVariant::Nud(nud) if nud.common.name == *name => {
-                                    Some((nud.common.resolved_variant, true))
-                                }
-                                MaterializedPrattVariant::Led(led) if led.common.name == *name => {
-                                    Some((led.common.resolved_variant, false))
-                                }
-                                _ => None,
-                            })
-                        else {
-                            diagnostics.push((
-                                source,
-                                range.clone(),
-                                format!(
-                                    "{field_name} excludes `{name}`, which is not a variant of \
-                                     Pratt Node `{}`",
-                                    target_application.display_name
-                                ),
-                            ));
-                            continue;
-                        };
-                        // An atom or prefix exclusion narrows the site's FIRST set, and the
-                        // decision frontier cannot carry that narrowing across a repetition:
-                        // its repeat tail expands the whole target type. Excluding an
-                        // extender leaves every FIRST set alone, so it stays admitted.
-                        if is_nud && repeated {
-                            diagnostics.push((
-                                source,
-                                range.clone(),
-                                format!(
-                                    "{field_name} excludes the Pratt atom or prefix variant \
-                                     `{name}` at a repeated site; only a single or optional \
-                                     operand may exclude one"
-                                ),
-                            ));
-                            continue;
-                        }
-                        let declaration = lowering_map
-                            .variants
-                            .iter()
-                            .find(|correlation| {
-                                correlation.application == target_application.id
-                                    && correlation.variant == resolved
-                            })
-                            .map(|correlation| correlation.lowered)
-                            .expect("every materialized Pratt variant is projected");
-                        excluded.push(declaration);
-                    }
-                    excluded.sort_unstable();
-                    excluded.dedup();
-                    resolutions.push((site, excluded));
-                }
-            }
-        }
-        for (site, excluded) in resolutions {
-            grammar.sites[site.index()].pratt_excluded = excluded;
-        }
-        for (source, range, message) in diagnostics {
-            self.push_diagnostic(
-                source,
-                Some(range),
-                MaterializationDiagnosticKind::InvalidPrattExclusion,
-                message,
-            );
         }
     }
 
@@ -1729,16 +1430,6 @@ impl Materializer {
             MaterializedNodeBody::Enum(variants) => variants
                 .iter()
                 .find_map(|variant| self.sequence_pretty_lexing_violation(&variant.elements)),
-            MaterializedNodeBody::Pratt(variants) => {
-                variants.iter().find_map(|variant| match variant {
-                    MaterializedPrattVariant::Nud(nud) => {
-                        self.sequence_pretty_lexing_violation(&nud.body)
-                    }
-                    MaterializedPrattVariant::Led(led) => {
-                        self.sequence_pretty_lexing_violation(&led.tail)
-                    }
-                })
-            }
         }
     }
 
@@ -2097,16 +1788,6 @@ impl Materializer {
                     .iter()
                     .map(|variant| self.elements_pretty_boundaries(&variant.elements, active)),
             ),
-            MaterializedNodeBody::Pratt(variants) => {
-                self.alternative_pretty_boundaries(variants.iter().map(|variant| match variant {
-                    MaterializedPrattVariant::Nud(nud) => {
-                        self.elements_pretty_boundaries(&nud.body, active)
-                    }
-                    MaterializedPrattVariant::Led(led) => {
-                        self.elements_pretty_boundaries(&led.tail, active)
-                    }
-                }))
-            }
         }
     }
 
@@ -2266,6 +1947,7 @@ impl Materializer {
         let environment = EvaluationEnvironment { types, lifetimes };
         let current_use = MaterializedNodeUse {
             application: id,
+            restriction: None,
             lifetimes: node
                 .generics
                 .params
@@ -2306,279 +1988,12 @@ impl Materializer {
                         })
                         .collect(),
                 ),
-                NodeBody::Pratt(variants) => MaterializedNodeBody::Pratt(
-                    variants
-                        .into_iter()
-                        .filter_map(|variant| {
-                            self.materialize_pratt_variant(variant, &current_use, &environment)
-                        })
-                        .collect(),
-                ),
             };
         self.applications[id.index()].pretty = source_node.pretty;
         self.applications[id.index()].body = body;
         let popped = self.active_applications.pop();
         debug_assert!(popped.is_some_and(|application| application.node == node_id));
         Some(id)
-    }
-
-    /// Derives the materialize pratt variant while materializing grammar applications and container shapes.
-    fn materialize_pratt_variant(
-        &mut self,
-        variant: SourcePrattVariant,
-        current_application: &MaterializedNodeUse,
-        environment: &EvaluationEnvironment,
-    ) -> Option<MaterializedPrattVariant> {
-        let common = MaterializedPrattCommon {
-            resolved_variant: variant.common.resolved_variant,
-            name: variant.common.name,
-            pretty: variant.common.pretty,
-        };
-        let mut elements =
-            self.materialize_elements(&variant.common.elements, current_application, environment);
-        match variant.position {
-            SourcePrattPosition::Atom => {
-                Some(MaterializedPrattVariant::Nud(MaterializedPrattNud {
-                    common,
-                    position: MaterializedPrattNudPosition::Atom,
-                    body: elements,
-                }))
-            }
-            SourcePrattPosition::Prefix { bp } => {
-                if !self.validate_single_pratt_operand(
-                    common.resolved_variant,
-                    current_application,
-                    &elements,
-                    "prefix",
-                ) {
-                    return None;
-                }
-                Some(MaterializedPrattVariant::Nud(MaterializedPrattNud {
-                    common,
-                    position: MaterializedPrattNudPosition::Prefix { bp },
-                    body: elements,
-                }))
-            }
-            SourcePrattPosition::Infix { lbp, rbp } => {
-                let lhs = self.take_pratt_lhs(
-                    common.resolved_variant,
-                    current_application,
-                    &mut elements,
-                )?;
-                if !self.validate_single_pratt_rhs(
-                    common.resolved_variant,
-                    current_application,
-                    &elements,
-                ) {
-                    return None;
-                }
-                Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
-                    common,
-                    position: MaterializedPrattLedPosition::Infix { lbp, rbp },
-                    lhs,
-                    tail: elements,
-                }))
-            }
-            SourcePrattPosition::Postfix { bp } => {
-                let lhs = self.take_pratt_lhs(
-                    common.resolved_variant,
-                    current_application,
-                    &mut elements,
-                )?;
-                if !self.validate_optional_pratt_operands(current_application, &elements) {
-                    return None;
-                }
-                Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
-                    common,
-                    position: MaterializedPrattLedPosition::Postfix { bp },
-                    lhs,
-                    tail: elements,
-                }))
-            }
-        }
-    }
-
-    /// Validates the one exact `Box<Self>` operand of a prefix variant, which must be its last
-    /// semantic field; content-token fields before it are the operator, gram.y's
-    /// `qual_Op a_expr %prec Op` (pg-sql's user-defined operator class). No other semantic
-    /// field is admitted.
-    fn validate_single_pratt_operand(
-        &mut self,
-        variant: ResolvedVariantId,
-        current_application: &MaterializedNodeUse,
-        elements: &[MaterializedElement],
-        role: &str,
-    ) -> bool {
-        let semantic = elements
-            .iter()
-            .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
-            .collect::<Vec<_>>();
-        let content_token = |element: &MaterializedElement| {
-            matches!(
-                element,
-                MaterializedElement::SemanticField {
-                    projection: MaterializedSemanticFieldProjection::Direct {
-                        ty: ClosedType::ContentToken(_),
-                        ..
-                    },
-                    ..
-                }
-            )
-        };
-        let operands = semantic
-            .iter()
-            .filter(|element| !content_token(element))
-            .count();
-        if operands != 1 {
-            let (source, range) = self.resolved_variant_site(variant);
-            self.push_diagnostic(
-                source,
-                Some(range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                format!(
-                    "a Pratt {role} requires exactly one boxed!(Self) operand beside its \
-                     content-token operator fields; found {operands} other semantic fields",
-                ),
-            );
-            return false;
-        }
-        let operand = semantic.last().copied().expect("one operand was counted");
-        if content_token(operand) {
-            let (source, range) = self.resolved_variant_site(variant);
-            self.push_diagnostic(
-                source,
-                Some(range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                format!(
-                    "the boxed!(Self) operand of a Pratt {role} must be its last semantic field; \
-                     a content-token operator follows it",
-                ),
-            );
-            return false;
-        }
-        if exact_pratt_self_operand(operand, current_application) {
-            return true;
-        }
-        let MaterializedElement::SemanticField { field, .. } = operand else {
-            unreachable!("Pratt operand selection contains only semantic fields")
-        };
-        let resolved_field = self.resolved_field(*field).clone();
-        self.push_diagnostic(
-            resolved_field.ty.source,
-            Some(resolved_field.range),
-            MaterializationDiagnosticKind::InvalidPrattShape,
-            format!("a Pratt {role} operand must be authored as boxed!(Self) for this application"),
-        );
-        false
-    }
-
-    /// Validates exactly one required recursive infix rhs while admitting ordinary semantic
-    /// tail fields and attached optional operands (`#[tok(X, this)] Option<Box<Self>>`).
-    fn validate_single_pratt_rhs(
-        &mut self,
-        variant: ResolvedVariantId,
-        current_application: &MaterializedNodeUse,
-        elements: &[MaterializedElement],
-    ) -> bool {
-        let recursive = elements
-            .iter()
-            .filter(|element| {
-                let MaterializedElement::SemanticField {
-                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
-                    ..
-                } = element
-                else {
-                    return false;
-                };
-                !matches!(ty, ClosedType::Optional(_))
-                    && is_recursive_pratt_operand(ty, current_application.application)
-            })
-            .collect::<Vec<_>>();
-        if recursive.len() != 1 {
-            let (source, range) = self.resolved_variant_site(variant);
-            self.push_diagnostic(
-                source,
-                Some(range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                format!(
-                    "a Pratt infix rhs requires exactly one recursive boxed!(Self) operand; found {} recursive semantic fields",
-                    recursive.len(),
-                ),
-            );
-            return false;
-        }
-        if exact_pratt_self_operand(recursive[0], current_application) {
-            return self.validate_optional_pratt_operands(current_application, elements);
-        }
-        let MaterializedElement::SemanticField { field, .. } = recursive[0] else {
-            unreachable!("recursive Pratt rhs selection contains only semantic fields")
-        };
-        let resolved_field = self.resolved_field(*field).clone();
-        self.push_diagnostic(
-            resolved_field.ty.source,
-            Some(resolved_field.range),
-            MaterializationDiagnosticKind::InvalidPrattShape,
-            "a Pratt infix rhs operand must be authored as boxed!(Self) for this application"
-                .to_owned(),
-        );
-        false
-    }
-
-    /// Validates every optional recursive operand of a led tail: it is exactly
-    /// `Option<Box<Self>>` and it follows a fixed token of its own
-    /// (`#[tok(ESCAPE, this)] Option<Box<Self>>`), which decides its presence the way gram.y's
-    /// `a_expr LIKE a_expr ESCAPE a_expr` does. A bare optional operand would decide its
-    /// presence by the operand language's FIRST set, which every extender's operand shares.
-    fn validate_optional_pratt_operands(
-        &mut self,
-        current_application: &MaterializedNodeUse,
-        elements: &[MaterializedElement],
-    ) -> bool {
-        for element in elements {
-            let MaterializedElement::SemanticField {
-                field,
-                projection:
-                    MaterializedSemanticFieldProjection::Direct {
-                        ty,
-                        trace,
-                        separator,
-                        ..
-                    },
-                attachment,
-                ..
-            } = element
-            else {
-                continue;
-            };
-            let ClosedType::Optional(inner) = ty else {
-                continue;
-            };
-            if !is_recursive_pratt_operand(ty, current_application.application) {
-                continue;
-            }
-            let exact =
-                exact_pratt_self_parts(inner, trace, separator.as_ref(), current_application);
-            let attached = attachment.as_ref().is_some_and(|attachment| {
-                matches!(
-                    attachment.before.first(),
-                    Some(MaterializedAttachedFixedSyntax::Required(_))
-                )
-            });
-            if exact && attached {
-                continue;
-            }
-            let resolved_field = self.resolved_field(*field).clone();
-            self.push_diagnostic(
-                resolved_field.ty.source,
-                Some(resolved_field.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "an optional Pratt operand must be authored as Option<boxed!(Self)> attached \
-                 behind a fixed token (`#[tok(X, this)] Option<boxed!(Self)>`)"
-                    .to_owned(),
-            );
-            return false;
-        }
-        true
     }
 
     /// Derives the resolved variant site while materializing grammar applications and container shapes.
@@ -2593,154 +2008,7 @@ impl Materializer {
                     .map(|variant| (node.source, variant.range.clone())),
                 crate::resolution::ResolvedNodeBody::Struct { .. } => None,
             })
-            .expect("source Pratt variant has a resolved identity")
-    }
-
-    /// Removes and validates the single implicit left operand from a Pratt led body.
-    fn take_pratt_lhs(
-        &mut self,
-        variant: ResolvedVariantId,
-        current_application: &MaterializedNodeUse,
-        elements: &mut Vec<MaterializedElement>,
-    ) -> Option<MaterializedPrattLhs> {
-        // Extract exactly one typed Pratt left-hand side before materializing led fields and binding-power thresholds.
-        let (variant_source, resolved_variant) = self
-            .resolved()
-            .nodes
-            .iter()
-            .find_map(|node| match &node.body {
-                crate::resolution::ResolvedNodeBody::Enum { variants } => variants
-                    .iter()
-                    .find(|candidate| candidate.id == variant)
-                    .map(|variant| (node.source, variant)),
-                crate::resolution::ResolvedNodeBody::Struct { .. } => None,
-            })
-            .map(|(source, variant)| (source, variant.clone()))
-            .expect("source Pratt variant has a resolved identity");
-        let Some(lhs_field) = resolved_variant.fields.first().copied() else {
-            self.push_diagnostic(
-                variant_source,
-                Some(resolved_variant.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "a Pratt led variant requires a first boxed!(Self) field for its implicit lhs"
-                    .to_owned(),
-            );
-            return None;
-        };
-        let Some(index) = elements.iter().position(|element| {
-            matches!(
-                element,
-                MaterializedElement::SemanticField {
-                    field,
-                    projection: MaterializedSemanticFieldProjection::Direct { .. },
-                    ..
-                } if *field == lhs_field
-            )
-        }) else {
-            self.push_diagnostic(
-                variant_source,
-                Some(resolved_variant.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "a Pratt led variant requires a materializable first boxed!(Self) field".to_owned(),
-            );
-            return None;
-        };
-        if elements[..index]
-            .iter()
-            .any(|element| matches!(element, MaterializedElement::FixedToken { .. }))
-        {
-            let resolved_field = self.resolved_field(lhs_field).clone();
-            self.push_diagnostic(
-                resolved_field.ty.source,
-                Some(resolved_field.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "fixed syntax before the implicit Pratt lhs cannot be consumed by a led variant"
-                    .to_owned(),
-            );
-            return None;
-        }
-        let MaterializedElement::SemanticField {
-            field,
-            projection:
-                MaterializedSemanticFieldProjection::Direct {
-                    ty,
-                    trace,
-                    separator,
-                    attachment_before,
-                    attachment_after,
-                    ..
-                },
-            attachment,
-            pretty,
-        } = elements.remove(index)
-        else {
-            unreachable!("the selected Pratt lhs element is semantic")
-        };
-        if attachment
-            .as_ref()
-            .is_some_and(|attachment| !attachment.before.is_empty())
-        {
-            let resolved_field = self.resolved_field(lhs_field).clone();
-            self.push_diagnostic(
-                resolved_field.ty.source,
-                Some(resolved_field.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "fixed syntax before the implicit Pratt lhs cannot be consumed by a led variant"
-                    .to_owned(),
-            );
-            return None;
-        }
-        if attachment.as_ref().is_some_and(|attachment| {
-            attachment
-                .after
-                .iter()
-                .any(|syntax| matches!(syntax, MaterializedAttachedFixedSyntax::Optional { .. }))
-        }) {
-            let resolved_field = self.resolved_field(lhs_field).clone();
-            self.push_diagnostic(
-                resolved_field.ty.source,
-                Some(resolved_field.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "optional fixed syntax cannot be attached to the implicit Pratt lhs".to_owned(),
-            );
-            return None;
-        }
-        if let Some(attachment) = attachment {
-            elements.splice(
-                index..index,
-                attachment.after.into_iter().map(|syntax| {
-                    let MaterializedAttachedFixedSyntax::Required(token_use) = syntax else {
-                        unreachable!("optional Pratt lhs syntax was rejected")
-                    };
-                    MaterializedElement::FixedToken { token_use }
-                }),
-            );
-        }
-        if !exact_pratt_self_parts(&ty, &trace, separator.as_ref(), current_application) {
-            let resolved_field = self.resolved_field(field).clone();
-            self.push_diagnostic(
-                resolved_field.ty.source,
-                Some(resolved_field.range),
-                MaterializationDiagnosticKind::InvalidPrattShape,
-                "the first field of a Pratt led variant must be authored as boxed!(Self) for this application"
-                    .to_owned(),
-            );
-            return None;
-        }
-        let ClosedType::Boxed(inner) = ty else {
-            unreachable!("validated Pratt lhs is boxed")
-        };
-        let ClosedType::Node(owner) = *inner else {
-            unreachable!("validated Pratt lhs targets the owning Node")
-        };
-        Some(MaterializedPrattLhs {
-            field,
-            owner,
-            trace,
-            pretty,
-            attachment_before,
-            attachment_after,
-        })
+            .expect("source variant has a resolved identity")
     }
 
     /// Derives the materialize elements while materializing grammar applications and container shapes.
@@ -2771,7 +2039,6 @@ impl Materializer {
                     projection,
                     attachment,
                     separator,
-                    pratt_extensions,
                     pretty,
                     attachment_before,
                     attachment_after,
@@ -2877,7 +2144,6 @@ impl Materializer {
                                 steps: evaluated.trace,
                             },
                             separator: separator.clone(),
-                            pratt_extensions: pratt_extensions.clone(),
                             attachment_before: *attachment_before,
                             attachment_after: *attachment_after,
                         },
@@ -2898,6 +2164,25 @@ impl Materializer {
             .flat_map(|node| &node.fields)
             .find(|field| field.id == id)
             .expect("source-model field identity belongs to resolved grammar")
+    }
+
+    /// Assigns one restricted expression its dense identity on first use, and records the base
+    /// application its rules construct.
+    fn restriction_id(
+        &mut self,
+        alias: TypeAliasId,
+        base: MaterializedApplicationId,
+    ) -> crate::RestrictionId {
+        if let Some(index) = self
+            .used_restrictions
+            .iter()
+            .position(|candidate| *candidate == alias)
+        {
+            return crate::RestrictionId::new(index as u32);
+        }
+        self.used_restrictions.push(alias);
+        self.restriction_bases.insert(alias, base);
+        crate::RestrictionId::new((self.used_restrictions.len() - 1) as u32)
     }
 
     /// Closes a resolved semantic type under the current generic substitution.
@@ -3022,6 +2307,7 @@ impl Materializer {
                             closed: ClosedType::Node(MaterializedNodeUse {
                                 application,
                                 lifetimes,
+                                restriction: None,
                             }),
                             trace,
                         })
@@ -3286,11 +2572,17 @@ impl Materializer {
         let evaluated = self.evaluate_type(target, current_application, &alias_environment);
         let popped = self.active_aliases.pop();
         debug_assert_eq!(popped, Some(alias));
+        let restricted = declaration.restriction.is_some();
         evaluated.map(|mut evaluated| {
             let mut steps = prefix;
             steps.push(MaterializationTraceStep::Alias(alias));
             steps.extend(evaluated.trace);
             evaluated.trace = steps;
+            if restricted && let ClosedType::Node(node) = &mut evaluated.closed {
+                // The site parses the base through this restriction: the outermost restriction
+                // of a chain wins, because it is the nonterminal the site's symbol names.
+                node.restriction = Some(self.restriction_id(alias, node.application));
+            }
             evaluated
         })
     }
@@ -3542,10 +2834,10 @@ impl Materializer {
     ///
     /// # Long-function contract
     ///
-    /// Rationale: struct, enum, and Pratt shapes share one dense application namespace and one
+    /// Rationale: struct and enum shapes share one dense application namespace and one
     /// field-correlation stream. Invariants: each application is published at its reserved type
     /// identity, and every variant/field correlation is recorded while its parse site is created.
-    /// Phases: reserves application declarations, projects each structural/enum/Pratt body, then
+    /// Phases: reserves application declarations, projects each structural or enum body, then
     /// publishes the completed application type at its preallocated identity.
     fn project_normalized_application_bodies(
         &self,
@@ -3588,7 +2880,6 @@ impl Materializer {
                         &reservations.optional_fixed_types,
                         &reservations.attachment_types,
                         &mut fields,
-                        0,
                     ),
                 },
                 MaterializedNodeBody::Enum(materialized_variants) => TypeShape::Enum {
@@ -3641,116 +2932,7 @@ impl Materializer {
                                     &reservations.optional_fixed_types,
                                     &reservations.attachment_types,
                                     &mut fields,
-                                    0,
                                 ),
-                            }
-                        })
-                        .collect(),
-                },
-                MaterializedNodeBody::Pratt(materialized_variants) => TypeShape::Pratt {
-                    variants: materialized_variants
-                        .iter()
-                        .map(|variant| {
-                            let common = variant.common();
-                            let source_variant = self
-                                .source_model()
-                                .nodes
-                                .iter()
-                                .find(|node| node.resolved_node == application.node)
-                                .expect("materialized Node belongs to source model")
-                                .pratt_variants()
-                                .iter()
-                                .find(|source_variant| {
-                                    source_variant.common.resolved_variant
-                                        == common.resolved_variant
-                                })
-                                .expect("typed Pratt variant belongs to materialized Node");
-                            let location = grammar.push_location(Location::new(
-                                source_variant.common.site.source,
-                                source_variant.common.site.range.clone(),
-                            ));
-                            let declaration =
-                                grammar.push_declaration(self.with_precedence_override(
-                                    crate::source_model::PrecedenceOwner::Variant(
-                                        common.resolved_variant,
-                                    ),
-                                    Declaration::new(
-                                        format!("{}::{}", application.display_name, common.name),
-                                        location,
-                                    ),
-                                ));
-                            variants.push(VariantAlternativeCorrelation {
-                                application: application.id,
-                                variant: common.resolved_variant,
-                                lowered: declaration,
-                            });
-                            match variant {
-                                MaterializedPrattVariant::Nud(nud) => {
-                                    let (position, min_bp) = match nud.position {
-                                        MaterializedPrattNudPosition::Atom => {
-                                            (PrattPosition::Atom, 0)
-                                        }
-                                        MaterializedPrattNudPosition::Prefix { bp } => {
-                                            (PrattPosition::Prefix { bp }, bp)
-                                        }
-                                    };
-                                    crate::PrattVariant {
-                                        declaration,
-                                        position,
-                                        sites: self.project_elements(
-                                            grammar,
-                                            application,
-                                            owner,
-                                            &nud.body,
-                                            Some(common.resolved_variant),
-                                            terminal_type_count,
-                                            fixed_types,
-                                            content_types,
-                                            &reservations.presence_types,
-                                            &reservations.optional_fixed_types,
-                                            &reservations.attachment_types,
-                                            &mut fields,
-                                            min_bp,
-                                        ),
-                                    }
-                                }
-                                MaterializedPrattVariant::Led(led) => {
-                                    fields.push(MaterializedFieldCorrelation {
-                                        application: application.id,
-                                        field: led.lhs.field,
-                                        lowered: MaterializedFieldLowering::PrattLhs {
-                                            owner,
-                                            variant: declaration,
-                                        },
-                                    });
-                                    let (position, min_bp) = match led.position {
-                                        MaterializedPrattLedPosition::Infix { lbp, rbp } => {
-                                            (PrattPosition::Infix { lbp, rbp }, rbp)
-                                        }
-                                        MaterializedPrattLedPosition::Postfix { bp } => {
-                                            (PrattPosition::Postfix { bp }, bp)
-                                        }
-                                    };
-                                    crate::PrattVariant {
-                                        declaration,
-                                        position,
-                                        sites: self.project_elements(
-                                            grammar,
-                                            application,
-                                            owner,
-                                            &led.tail,
-                                            Some(common.resolved_variant),
-                                            terminal_type_count,
-                                            fixed_types,
-                                            content_types,
-                                            &reservations.presence_types,
-                                            &reservations.optional_fixed_types,
-                                            &reservations.attachment_types,
-                                            &mut fields,
-                                            min_bp,
-                                        ),
-                                    }
-                                }
                             }
                         })
                         .collect(),
@@ -3838,10 +3020,7 @@ impl Materializer {
                             && correlation.field == unit.field)
                             .then_some(correlation.lowered)
                     })
-                    .and_then(|lowering| match lowering {
-                        MaterializedFieldLowering::ParseSite(site) => Some(site),
-                        MaterializedFieldLowering::PrattLhs { .. } => None,
-                    })
+                    .map(|MaterializedFieldLowering::ParseSite(site)| site)
                     .expect("a fixed presence has one correlated authored field site");
                 FixedPresenceCorrelation {
                     application: unit.application,
@@ -3939,10 +3118,7 @@ impl Materializer {
                             && correlation.field == unit.field)
                             .then_some(correlation.lowered)
                     })
-                    .and_then(|lowering| match lowering {
-                        MaterializedFieldLowering::ParseSite(site) => Some(site),
-                        MaterializedFieldLowering::PrattLhs { .. } => None,
-                    })
+                    .map(|MaterializedFieldLowering::ParseSite(site)| site)
                     .expect("an attachment unit has one correlated authored field site");
                 let TypeShape::Sequence { sites } = &grammar.types[unit.id.index()].shape else {
                     unreachable!("attachment units are synthetic sequences")
@@ -4006,7 +3182,7 @@ impl Materializer {
             &reservations,
             &projected_fields,
         );
-        self.project_pratt_exclusions(&mut grammar, &projected_fields, &variant_correlations);
+        self.project_restrictions(&mut grammar, terminal_type_count, &variant_correlations);
         self.project_lr_conflict_resolutions(
             &mut grammar,
             &reservations.applications,
@@ -4147,8 +3323,7 @@ impl Materializer {
     ) -> Vec<AttachmentUnitProjection> {
         let mut units = Vec::new();
         let mut collect = |application: &MaterializedNodeApplication,
-                           elements: &[MaterializedElement],
-                           recursive_min_bp: u8| {
+                           elements: &[MaterializedElement]| {
             for element in elements {
                 let MaterializedElement::SemanticField {
                     field,
@@ -4170,13 +3345,12 @@ impl Materializer {
                     field: *field,
                     ty: ty.clone(),
                     attachment: attachment.clone(),
-                    recursive_min_bp,
                 });
             }
         };
         for application in &self.applications {
             for group in application.body.element_groups() {
-                collect(application, group.elements, group.recursive_min_bp);
+                collect(application, group.elements);
             }
         }
         units
@@ -4233,10 +3407,8 @@ impl Materializer {
             ),
             Terminal::ContentToken(token) => content_types[&token],
         };
-        let mut semantic = ParseSite::new(unit.id, target, declaration, ContainerShape::Direct);
-        if is_recursive_pratt_operand(&unit.ty, unit.application) {
-            semantic = semantic.with_min_bp(unit.recursive_min_bp);
-        }
+        let semantic = ParseSite::new(unit.id, target, declaration, ContainerShape::Direct)
+            .with_restriction(closed_restriction(&unit.ty));
         sites.push(grammar.push_site(semantic));
         for syntax in &unit.attachment.after {
             let index = sites.len();
@@ -4436,81 +3608,48 @@ impl Materializer {
             .collect()
     }
 
-    /// Records each field's `#[parse(pratt(exclude(...)))]` on its normalized parse site.
+    /// Publishes one normalized description per restricted expression a site parses through, in
+    /// the dense order [`Materializer::restriction_id`] assigned (`docs/declared-precedence.md`,
+    /// "Restricted expressions").
     ///
-    /// Runs after every application has its Pratt variant declarations, because a field
-    /// may exclude variants of a Pratt type materialized later than its owner. Names that
-    /// do not resolve to a led variant of the field's target are left out here; emission
-    /// reports them, and the build fails before analysis facts are consumed. The filter
-    /// names led variants only today; once a field can also exclude NUD atoms (#122), the
-    /// same pass should record them so FIRST-based overlaps subtract them as well.
-    fn project_pratt_exclusions(
+    /// Each description names the base type its rules construct — the application the alias
+    /// resolved to, which is the root base of a chain of restrictions — and the admitted
+    /// alternatives of that type, as the declarations the base's own body projection created.
+    fn project_restrictions(
         &self,
         grammar: &mut GrammarDescription,
-        fields: &[MaterializedFieldCorrelation],
+        terminal_type_count: usize,
         variants: &[VariantAlternativeCorrelation],
     ) {
-        for correlation in fields {
-            let MaterializedFieldLowering::ParseSite(site) = correlation.lowered else {
-                continue;
-            };
-            let Some(application) = self
-                .applications
+        for alias in &self.used_restrictions {
+            let restriction = self
+                .source_model()
+                .restrictions
                 .iter()
-                .find(|application| application.id == correlation.application)
-            else {
-                continue;
-            };
-            let Some((ty, filter)) =
-                application
-                    .body
-                    .parsed_elements()
-                    .find_map(|element| match element {
-                        MaterializedElement::SemanticField {
-                            field,
-                            projection:
-                                MaterializedSemanticFieldProjection::Direct {
-                                    ty,
-                                    pratt_extensions: Some(filter),
-                                    ..
-                                },
-                            ..
-                        } if *field == correlation.field => Some((ty, filter)),
-                        _ => None,
-                    })
-            else {
-                continue;
-            };
-            let (Terminal::Node(target), _) = terminal_and_container(ty, None) else {
-                continue;
-            };
-            let Some(target) = self
-                .applications
+                .find(|restriction| restriction.alias == *alias)
+                .expect("a parsed restriction is a validated source-model restriction");
+            let base = self.restriction_bases[alias];
+            let admitted = restriction
+                .variants
                 .iter()
-                .find(|application| application.id == target)
-            else {
-                continue;
-            };
-            let MaterializedNodeBody::Pratt(target_variants) = &target.body else {
-                continue;
-            };
-            let excluded = filter
-                .excluded
-                .iter()
-                .filter_map(|name| {
-                    let led = target_variants.iter().find_map(|variant| match variant {
-                        MaterializedPrattVariant::Led(led) if led.common.name == *name => {
-                            Some(led.common.resolved_variant)
-                        }
-                        _ => None,
-                    })?;
+                .filter_map(|variant| {
                     variants
                         .iter()
-                        .find(|variant| variant.application == target.id && variant.variant == led)
-                        .map(|variant| variant.lowered)
+                        .find(|correlation| {
+                            correlation.application == base && correlation.variant == *variant
+                        })
+                        .map(|correlation| correlation.lowered)
                 })
-                .collect::<Vec<_>>();
-            grammar.sites[site.index()].pratt_excluded = excluded;
+                .collect();
+            grammar.restrictions.push(crate::RestrictionDescription {
+                name: restriction.name.clone(),
+                base: TypeId::new(
+                    (terminal_type_count + base.index())
+                        .try_into()
+                        .expect("normalized type ID overflow"),
+                ),
+                variants: admitted,
+            });
         }
     }
 
@@ -4595,7 +3734,6 @@ impl Materializer {
         optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
         attachment_types: &BTreeMap<(MaterializedApplicationId, ResolvedFieldId), TypeId>,
         field_correlations: &mut Vec<MaterializedFieldCorrelation>,
-        recursive_min_bp: u8,
     ) -> Vec<SiteId> {
         elements
             .iter()
@@ -4717,11 +3855,10 @@ impl Materializer {
                     let target = attachment.as_ref().map_or(semantic_target, |_| {
                         attachment_types[&(application.id, *field)]
                     });
-                    let mut parse_site = ParseSite::new(owner, target, declaration, container);
-                    if is_recursive_pratt_operand(ty, application.id) {
-                        parse_site = parse_site.with_min_bp(recursive_min_bp);
-                    }
-                    let site = grammar.push_site(parse_site);
+                    let site = grammar.push_site(
+                        ParseSite::new(owner, target, declaration, container)
+                            .with_restriction(closed_restriction(ty)),
+                    );
                     field_correlations.push(MaterializedFieldCorrelation {
                         application: application.id,
                         field: *field,
@@ -4867,61 +4004,6 @@ enum Terminal {
     ContentToken(ContentTokenId),
 }
 
-/// Derives the exact pratt self operand while materializing grammar applications and container shapes.
-fn exact_pratt_self_operand(
-    element: &MaterializedElement,
-    current_application: &MaterializedNodeUse,
-) -> bool {
-    let MaterializedElement::SemanticField {
-        projection:
-            MaterializedSemanticFieldProjection::Direct {
-                ty,
-                trace,
-                separator,
-                ..
-            },
-        ..
-    } = element
-    else {
-        return false;
-    };
-    exact_pratt_self_parts(ty, trace, separator.as_ref(), current_application)
-}
-
-/// Derives the exact pratt self parts while materializing grammar applications and container shapes.
-fn exact_pratt_self_parts(
-    ty: &ClosedType,
-    trace: &MaterializationTrace,
-    separator: Option<&Separator>,
-    current_application: &MaterializedNodeUse,
-) -> bool {
-    let ClosedType::Boxed(inner) = ty else {
-        return false;
-    };
-    let ClosedType::Node(owner) = inner.as_ref() else {
-        return false;
-    };
-    separator.is_none()
-        && owner == current_application
-        && trace
-            .steps
-            .contains(&MaterializationTraceStep::SelfApplication(
-                current_application.application,
-            ))
-}
-
-/// Reports whether this value is recursive pratt operand.
-fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId) -> bool {
-    match ty {
-        ClosedType::Node(node) => node.application == owner,
-        ClosedType::Boxed(inner)
-        | ClosedType::Optional(inner)
-        | ClosedType::ZeroOrMore(inner)
-        | ClosedType::OneOrMore(inner) => is_recursive_pratt_operand(inner, owner),
-        ClosedType::ContentToken(_) => false,
-    }
-}
-
 /// Derives the attachment terminal while materializing grammar applications and container shapes.
 fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
     match ty {
@@ -4934,6 +4016,20 @@ fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
 }
 
 /// Derives the terminal and container while materializing grammar applications and container shapes.
+/// The restricted expression one closed type parses its terminal through, looking past every
+/// container layer to the node use that names it.
+fn closed_restriction(ty: &ClosedType) -> Option<crate::RestrictionId> {
+    match ty {
+        ClosedType::Node(node) => node.restriction,
+        ClosedType::ContentToken(_) => None,
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => closed_restriction(inner),
+    }
+}
+
+/// Splits one closed type into the terminal it reaches and the container shape around it.
 fn terminal_and_container(
     ty: &ClosedType,
     separator: Option<RepeatSeparator>,
@@ -4983,10 +4079,8 @@ mod tests {
 
     use super::{
         ClosedType, MaterializationDiagnosticKind, MaterializationTraceStep, MaterializedElement,
-        MaterializedFieldLowering, MaterializedFieldView, MaterializedNodeApplication,
-        MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition,
-        MaterializedPrattNud, MaterializedPrattNudPosition, MaterializedPrattVariant,
-        MaterializedSemanticFieldProjection, PrettyBoundarySummary, materialize,
+        MaterializedNodeApplication, MaterializedSemanticFieldProjection, PrettyBoundarySummary,
+        materialize,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::{RustEdition, TokenDefinitionId};
@@ -6411,932 +5505,6 @@ recursa::ast_node! {
                 .token_uses
                 .iter()
                 .all(|token_use| token_use.site.source == resolved_choice.source)
-        );
-    }
-
-    #[test]
-    fn all_atom_pratt_remains_pratt_in_normalized_grammar() {
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::atoms }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("INT")]
-        Int,
-        #[tok("NAME")]
-        Name,
-    }
-}
-"#,
-        ));
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report.lowered.unwrap();
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "atoms::Expr")
-            .unwrap();
-        let correlation = lowered
-            .lowering_map
-            .applications
-            .iter()
-            .find(|correlation| correlation.application == expr.id)
-            .unwrap();
-        let TypeShape::Pratt { variants } =
-            &lowered.grammar.types[correlation.lowered.index()].shape
-        else {
-            panic!("#[pratt] must not collapse to an ordinary enum")
-        };
-        assert_eq!(
-            variants
-                .iter()
-                .map(|variant| variant.position)
-                .collect::<Vec<_>>(),
-            [crate::PrattPosition::Atom, crate::PrattPosition::Atom],
-        );
-    }
-
-    #[test]
-    fn materializes_pratt_nud_led_thresholds_and_typed_lhs_correlations() {
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::arith }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("INT")]
-        Int,
-        #[parse(prefix, bp = 30)]
-        #[tok("-")]
-        Neg(boxed!(Self)),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok("+")]
-        Add(boxed!(Self), boxed!(Self)),
-        #[parse(postfix, bp = 40)]
-        #[tok("!")]
-        Factorial(boxed!(Self)),
-    }
-}
-"#,
-        ));
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report.lowered.unwrap();
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "arith::Expr")
-            .unwrap();
-        let MaterializedNodeBody::Pratt(materialized_variants) = &expr.body else {
-            panic!("materialized Expr is Pratt")
-        };
-        assert!(matches!(
-            materialized_variants[0],
-            MaterializedPrattVariant::Nud(MaterializedPrattNud {
-                position: MaterializedPrattNudPosition::Atom,
-                ..
-            })
-        ));
-        assert!(matches!(
-            materialized_variants[1],
-            MaterializedPrattVariant::Nud(MaterializedPrattNud {
-                position: MaterializedPrattNudPosition::Prefix { bp: 30 },
-                ..
-            })
-        ));
-        let MaterializedPrattVariant::Led(infix) = &materialized_variants[2] else {
-            panic!("Add is a typed led variant")
-        };
-        assert_eq!(
-            infix.position,
-            MaterializedPrattLedPosition::Infix { lbp: 10, rbp: 11 },
-        );
-        assert_eq!(infix.lhs.owner.application, expr.id);
-        assert_eq!(
-            infix
-                .tail
-                .iter()
-                .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
-                .count(),
-            1,
-        );
-        assert!(matches!(
-            materialized_variants[3],
-            MaterializedPrattVariant::Led(MaterializedPrattLed {
-                position: MaterializedPrattLedPosition::Postfix { bp: 40 },
-                ..
-            })
-        ));
-        assert_eq!(
-            expr.fields().count(),
-            4,
-            "the all-field seam includes both implicit led lhs fields",
-        );
-        assert_eq!(
-            expr.fields()
-                .filter(|field| matches!(field, MaterializedFieldView::PrattLhs(_)))
-                .count(),
-            2,
-        );
-        let expr_type = lowered
-            .lowering_map
-            .applications
-            .iter()
-            .find(|correlation| correlation.application == expr.id)
-            .unwrap()
-            .lowered;
-        let TypeShape::Pratt { variants } = &lowered.grammar.types[expr_type.index()].shape else {
-            panic!("Expr is Pratt")
-        };
-        assert_eq!(
-            variants
-                .iter()
-                .map(|variant| variant.position)
-                .collect::<Vec<_>>(),
-            [
-                crate::PrattPosition::Atom,
-                crate::PrattPosition::Prefix { bp: 30 },
-                crate::PrattPosition::Infix { lbp: 10, rbp: 11 },
-                crate::PrattPosition::Postfix { bp: 40 },
-            ],
-        );
-        let prefix_recursive = variants[1]
-            .sites
-            .iter()
-            .map(|site| &lowered.grammar.sites[site.index()])
-            .find(|site| site.target == expr_type)
-            .unwrap();
-        assert_eq!(prefix_recursive.min_bp, 30);
-        let infix_recursive = variants[2]
-            .sites
-            .iter()
-            .map(|site| &lowered.grammar.sites[site.index()])
-            .find(|site| site.target == expr_type)
-            .unwrap();
-        assert_eq!(infix_recursive.min_bp, 11);
-        assert_eq!(
-            lowered
-                .lowering_map
-                .fields
-                .iter()
-                .filter(|correlation| matches!(
-                    correlation.lowered,
-                    MaterializedFieldLowering::PrattLhs { owner, .. } if owner == expr_type
-                ))
-                .count(),
-            2,
-        );
-        let lhs_variants = lowered
-            .lowering_map
-            .fields
-            .iter()
-            .filter_map(|correlation| match correlation.lowered {
-                MaterializedFieldLowering::PrattLhs { variant, .. } => Some(variant),
-                MaterializedFieldLowering::ParseSite(_) => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            lhs_variants,
-            [variants[2].declaration, variants[3].declaration],
-        );
-        assert_eq!(
-            lowered
-                .lowering_map
-                .fields
-                .iter()
-                .filter(|correlation| matches!(
-                    correlation.lowered,
-                    MaterializedFieldLowering::ParseSite(_)
-                ))
-                .count(),
-            2,
-        );
-        assert_eq!(
-            variants[2].sites.len(),
-            2,
-            "lhs is not a normalized parse site"
-        );
-        assert_eq!(
-            variants[3].sites.len(),
-            1,
-            "lhs is not a normalized parse site"
-        );
-    }
-
-    #[test]
-    fn rejects_missing_unboxed_and_foreign_pratt_lhs_fields() {
-        for invalid_variant in [
-            r#"#[parse(infix, lbp = 1, rbp = 2)] Missing"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] Unboxed(Self, boxed!(Self))"#,
-            r#"#[parse(postfix, bp = 3)] Foreign(boxed!(Leaf))"#,
-        ] {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    struct Leaf;
-}}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        {invalid_variant},
-    }}
-}}
-"#,
-            );
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-            }));
-            let diagnostic = report
-                .diagnostics
-                .iter()
-                .find(|diagnostic| {
-                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-                })
-                .unwrap();
-            assert_eq!(
-                crate::source_analysis::materialization_code(diagnostic.kind),
-                "RCA3209"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_prefix_and_infix_without_exact_recursive_operand_shapes() {
-        let invalid_variants = [
-            r#"#[parse(prefix, bp = 1)] Unit"#,
-            r#"#[parse(prefix, bp = 1)] Unboxed(Self)"#,
-            r#"#[parse(prefix, bp = 1)] Foreign(boxed!(Leaf))"#,
-            r#"#[parse(prefix, bp = 1)] Multiple(boxed!(Self), boxed!(Self))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] OnlyLhs(boxed!(Self))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] ForeignRhs(boxed!(Self), boxed!(Leaf))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] MultipleRhs(boxed!(Self), boxed!(Self), boxed!(Self))"#,
-        ];
-        for invalid_variant in invalid_variants {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    struct Leaf;
-}}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        {invalid_variant},
-    }}
-}}
-"#,
-            );
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-            }));
-        }
-    }
-
-    #[test]
-    fn infix_tail_allows_content_fields_around_one_recursive_rhs() {
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::operators }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[parse(infix, lbp = 8, rbp = 9)]
-        Custom(
-            boxed!(Self),
-            #[lex(pattern = r"[~@]+")] OperatorText,
-            boxed!(Self),
-        ),
-    }
-}
-"#,
-        ));
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report
-            .lowered
-            .expect("one recursive rhs with an ordinary operator field materializes");
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "operators::Expr")
-            .expect("Expr application materializes");
-        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
-            panic!("Expr is Pratt")
-        };
-        let MaterializedPrattVariant::Led(custom) = &variants[1] else {
-            panic!("Custom is led")
-        };
-        assert_eq!(custom.tail.len(), 2);
-        assert!(matches!(
-            &custom.tail[0],
-            MaterializedElement::SemanticField {
-                projection: MaterializedSemanticFieldProjection::Direct {
-                    ty: ClosedType::ContentToken(_),
-                    ..
-                },
-                ..
-            }
-        ));
-        let MaterializedElement::SemanticField {
-            projection:
-                MaterializedSemanticFieldProjection::Direct {
-                    ty: ClosedType::Boxed(rhs),
-                    trace,
-                    separator: None,
-                    ..
-                },
-            ..
-        } = &custom.tail[1]
-        else {
-            panic!("the final infix field is the direct boxed rhs")
-        };
-        let ClosedType::Node(rhs) = rhs.as_ref() else {
-            panic!("the infix rhs targets Expr")
-        };
-        assert_eq!(rhs.application, expr.id);
-        assert!(
-            trace
-                .steps
-                .contains(&MaterializationTraceStep::SelfApplication(expr.id))
-        );
-        let application = lowered
-            .lowering_map
-            .applications
-            .iter()
-            .find(|correlation| correlation.application == expr.id)
-            .expect("Expr retains its lowered type correlation");
-        let TypeShape::Pratt { variants } =
-            &lowered.grammar.types[application.lowered.index()].shape
-        else {
-            panic!("lowered Expr is Pratt")
-        };
-        assert_eq!(
-            variants[1]
-                .sites
-                .iter()
-                .map(|site| lowered.grammar.sites[site.index()].min_bp)
-                .collect::<Vec<_>>(),
-            [0, 9],
-            "only the recursive infix rhs receives rbp",
-        );
-    }
-
-    #[test]
-    fn led_tails_admit_an_optional_operand_attached_behind_a_fixed_token() {
-        // gram.y's `a_expr LIKE a_expr ESCAPE a_expr`: the escape operand is optional and its
-        // own token decides its presence, on an infix rhs and on a postfix tail alike.
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::like }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[parse(infix, lbp = 6, rbp = 7)]
-        Like(
-            boxed!(Self),
-            #[tok("LIKE", this)] boxed!(Self),
-            #[tok("ESCAPE", this)] Option<boxed!(Self)>,
-        ),
-        #[parse(postfix, bp = 6)]
-        NotLike(
-            boxed!(Self),
-            #[tok("NOT", "LIKE", this)] boxed!(Self),
-            #[tok("ESCAPE", this)] Option<boxed!(Self)>,
-        ),
-    }
-}
-"#,
-        ));
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report.lowered.unwrap();
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "like::Expr")
-            .unwrap();
-        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
-            panic!("materialized Expr is Pratt")
-        };
-        for (index, position) in [
-            (1, MaterializedPrattLedPosition::Infix { lbp: 6, rbp: 7 }),
-            (2, MaterializedPrattLedPosition::Postfix { bp: 6 }),
-        ] {
-            let MaterializedPrattVariant::Led(led) = &variants[index] else {
-                panic!("variant {index} is a led variant")
-            };
-            assert_eq!(led.position, position);
-            let semantic: Vec<&MaterializedElement> = led
-                .tail
-                .iter()
-                .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
-                .collect();
-            assert_eq!(semantic.len(), 2);
-            let MaterializedElement::SemanticField {
-                projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
-                attachment: Some(attachment),
-                ..
-            } = semantic[1]
-            else {
-                panic!("the escape operand is an attached direct field")
-            };
-            assert!(matches!(ty, ClosedType::Optional(_)));
-            assert!(matches!(
-                attachment.before.as_slice(),
-                [crate::materialization::MaterializedAttachedFixedSyntax::Required(_)]
-            ));
-        }
-        // Both optional operands project to a site that carries the operand minimum.
-        let minimums: Vec<u8> = lowered
-            .grammar
-            .sites
-            .iter()
-            .filter(|site| matches!(site.container, ContainerShape::Optional(_)))
-            .map(|site| site.min_bp)
-            .collect();
-        assert_eq!(minimums, [7, 6]);
-    }
-
-    #[test]
-    fn a_prefix_variant_admits_a_content_token_operator_before_its_operand() {
-        // gram.y's `qual_Op a_expr %prec Op`: the operator is pg-sql's user-defined operator
-        // class, a content token, and the variant keeps its binding power.
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::operators }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[parse(prefix, bp = 8)]
-        Custom(#[lex(pattern = r"[~@]+")] OperatorText, boxed!(Self)),
-    }
-}
-"#,
-        ));
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report.lowered.unwrap();
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "operators::Expr")
-            .unwrap();
-        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
-            panic!("materialized Expr is Pratt")
-        };
-        let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
-            panic!("Custom is a nud variant")
-        };
-        assert_eq!(
-            prefix.position,
-            MaterializedPrattNudPosition::Prefix { bp: 8 }
-        );
-        let types: Vec<bool> = prefix
-            .body
-            .iter()
-            .filter_map(|element| match element {
-                MaterializedElement::SemanticField {
-                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
-                    ..
-                } => Some(matches!(ty, ClosedType::ContentToken(_))),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(types, [true, false]);
-        // The operand site, and only it, carries the prefix binding power as its minimum.
-        let minimums: Vec<u8> = lowered
-            .grammar
-            .sites
-            .iter()
-            .map(|site| site.min_bp)
-            .collect();
-        assert_eq!(
-            minimums.iter().filter(|minimum| **minimum == 8).count(),
-            1,
-            "{minimums:?}"
-        );
-        assert_eq!(minimums.last(), Some(&8), "{minimums:?}");
-    }
-
-    #[test]
-    fn rejects_prefix_variants_whose_operator_field_has_the_wrong_shape() {
-        for (invalid_variant, expected) in [
-            (
-                r#"#[parse(prefix, bp = 1)] After(boxed!(Self), #[lex(pattern = r"[~@]+")] OperatorText)"#,
-                "must be its last semantic field",
-            ),
-            (
-                r#"#[parse(prefix, bp = 1)] Node(Leaf, boxed!(Self))"#,
-                "found 2 other semantic fields",
-            ),
-            (
-                r#"#[parse(prefix, bp = 1)] Two(#[lex(pattern = r"[~@]+")] OperatorText, boxed!(Self), boxed!(Self))"#,
-                "found 2 other semantic fields",
-            ),
-            (
-                r#"#[parse(prefix, bp = 1)] Only(#[lex(pattern = r"[~@]+")] OperatorText)"#,
-                "found 0 other semantic fields",
-            ),
-        ] {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    #[tok("LEAF")]
-    struct Leaf;
-}}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        #[tok("ATOM")]
-        Atom,
-        {invalid_variant},
-    }}
-}}
-"#,
-            );
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
-            assert!(
-                report.diagnostics.iter().any(|diagnostic| {
-                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-                        && diagnostic.message.contains(expected)
-                }),
-                "`{invalid_variant}`: {:?}",
-                report.diagnostics
-            );
-        }
-    }
-
-    #[test]
-    fn an_exclusion_resolves_atoms_and_extenders_onto_the_site_it_lowers_to() {
-        // gram.y's `xmlnamespace_el: b_expr AS ColLabel | DEFAULT b_expr`: the operand before
-        // `AS` excludes the `DEFAULT` atom; an attached operand carries the exclusion on the
-        // outer site, the one targeting the attachment unit.
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::namespaces }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[tok("DEFAULT")]
-        Default,
-        #[parse(prefix, bp = 9)]
-        #[tok("NOT")]
-        Not(boxed!(Self)),
-        #[parse(infix, lbp = 3, rbp = 4)]
-        #[tok("AND")]
-        And(boxed!(Self), boxed!(Self)),
-    }
-}
-recursa::ast_node! {
-
-    struct Named {
-        #[parse(pratt(exclude(Default, And, Not)))]
-        uri: boxed!(Expr),
-        #[tok("AS")]
-        label: Expr,
-    }
-}
-recursa::ast_node! {
-
-    struct Attached {
-        #[parse(pratt(exclude(And)))]
-        #[tok("OPEN", this, "CLOSE")]
-        inner: boxed!(Expr),
-    }
-}
-"#,
-        ));
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report.lowered.unwrap();
-        let grammar = &lowered.grammar;
-        let declaration = |name: &str| {
-            crate::DeclId::new(
-                grammar
-                    .declarations
-                    .iter()
-                    .position(|declaration| declaration.name == name)
-                    .unwrap_or_else(|| panic!("{name} is declared")) as u32,
-            )
-        };
-        let restricted: Vec<(String, Vec<crate::DeclId>)> = grammar
-            .sites
-            .iter()
-            .filter(|site| !site.pratt_excluded.is_empty())
-            .map(|site| {
-                (
-                    grammar.types[site.owner.index()].name.clone(),
-                    site.pratt_excluded.clone(),
-                )
-            })
-            .collect();
-        let mut named = vec![
-            declaration("namespaces::Expr::Default"),
-            declaration("namespaces::Expr::Not"),
-            declaration("namespaces::Expr::And"),
-        ];
-        named.sort_unstable();
-        assert_eq!(
-            restricted,
-            [
-                ("namespaces::Named".to_owned(), named),
-                (
-                    "namespaces::Attached".to_owned(),
-                    vec![declaration("namespaces::Expr::And")]
-                ),
-            ]
-        );
-        // The attached operand's exclusion sits on the outer site, whose target is the unit.
-        let attached = grammar
-            .sites
-            .iter()
-            .find(|site| grammar.types[site.owner.index()].name == "namespaces::Attached")
-            .unwrap();
-        assert!(matches!(
-            grammar.types[attached.target.index()].shape,
-            TypeShape::Sequence { .. }
-        ));
-    }
-
-    #[test]
-    fn rejects_an_unresolvable_or_unsupported_pratt_exclusion() {
-        for (field, expected) in [
-            (
-                r#"#[parse(pratt(exclude(Atom, Missing)))] uri: boxed!(Expr)"#,
-                "`uri` excludes `Missing`, which is not a variant of Pratt Node `invalid::Expr`",
-            ),
-            (
-                r#"#[parse(pratt(exclude(Atom)))] uri: Leaf"#,
-                "`uri` restricts a Pratt language with `#[parse(pratt(exclude(...)))]`, but its type is not a Pratt Node",
-            ),
-            // An extender exclusion never touches a FIRST set, but an atom's narrows one, and
-            // the decision frontier expands a repetition's tail as the whole target type.
-            (
-                r#"#[parse(pratt(exclude(Atom)))] uri: zero_or_many!(Expr)"#,
-                "`uri` excludes the Pratt atom or prefix variant `Atom` at a repeated site; only a single or optional operand may exclude one",
-            ),
-        ] {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    #[tok("LEAF")]
-    struct Leaf;
-}}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        #[tok("ATOM")]
-        Atom,
-        #[parse(infix, lbp = 3, rbp = 4)]
-        #[tok("AND")]
-        And(boxed!(Self), boxed!(Self)),
-    }}
-}}
-recursa::ast_node! {{
-
-    struct Named {{
-        {field},
-    }}
-}}
-"#,
-            );
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{field}`");
-            let diagnostic = report
-                .diagnostics
-                .iter()
-                .find(|diagnostic| {
-                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattExclusion
-                })
-                .unwrap_or_else(|| panic!("`{field}`: {:?}", report.diagnostics));
-            assert_eq!(diagnostic.message, expected);
-            assert_eq!(
-                crate::source_analysis::materialization_code(diagnostic.kind),
-                "RCA3212"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_zero_multiple_and_non_exact_recursive_infix_rhs_fields() {
-        for (invalid_variant, expected) in [
-            (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Zero(boxed!(Self), Leaf)"#,
-                "found 0 recursive semantic fields",
-            ),
-            (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Multiple(boxed!(Self), boxed!(Self), Leaf, boxed!(Self))"#,
-                "found 2 recursive semantic fields",
-            ),
-            (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(boxed!(Self), Leaf, Option<boxed!(Self)>)"#,
-                "found 0 recursive semantic fields",
-            ),
-            (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] BareOptional(boxed!(Self), boxed!(Self), Option<boxed!(Self)>)"#,
-                "attached behind a fixed token",
-            ),
-            (
-                r#"#[parse(infix, lbp = 1, rbp = 2)] TrailingOptional(boxed!(Self), boxed!(Self), #[tok(this, "LEAF")] Option<boxed!(Self)>)"#,
-                "attached behind a fixed token",
-            ),
-            (
-                r#"#[parse(postfix, bp = 1)] PostfixBareOptional(boxed!(Self), #[tok("LEAF", this)] boxed!(Self), Option<boxed!(Self)>)"#,
-                "attached behind a fixed token",
-            ),
-            (
-                r#"#[parse(postfix, bp = 1)] PostfixOptionalNode(boxed!(Self), #[tok("LEAF", this)] boxed!(Self), #[tok("LEAF", this)] Option<boxed!(Expr)>)"#,
-                "attached behind a fixed token",
-            ),
-        ] {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    #[tok("LEAF")]
-    struct Leaf;
-}}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        #[tok("ATOM")]
-        Atom,
-        {invalid_variant},
-    }}
-}}
-"#,
-            );
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-                    && diagnostic.message.contains(expected)
-            }));
-        }
-    }
-
-    #[test]
-    fn rejects_named_and_lifetime_mismatched_pratt_self_operands() {
-        let invalid_variants = [
-            r#"#[parse(prefix, bp = 1)] Named(boxed!(Expr))"#,
-            r#"#[parse(prefix, bp = 1)] Static(boxed!(Expr<'static>))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedLhs(boxed!(Expr), boxed!(Self))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedRhs(boxed!(Self), boxed!(Expr))"#,
-            r#"#[parse(infix, lbp = 1, rbp = 2)] StaticRhs(boxed!(Self), boxed!(Expr<'static>))"#,
-        ];
-        for invalid_variant in invalid_variants {
-            let source = format!(
-                r#"recursa::grammar! {{ module = crate::invalid }}
-recursa::ast_node! {{
-
-    #[pratt]
-    enum Expr {{
-        {invalid_variant},
-    }}
-}}
-"#,
-            );
-            if invalid_variant.contains("'static") {
-                let report = resolve_report(&source);
-                assert!(report.resolved.is_none(), "accepted `{invalid_variant}`");
-                assert!(report.diagnostics.iter().any(|diagnostic| {
-                    diagnostic.message.contains("explicit lifetime arguments")
-                }));
-                continue;
-            }
-            let report = materialize(resolve(&source));
-            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
-            assert!(report.diagnostics.iter().any(|diagnostic| {
-                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-            }));
-        }
-    }
-
-    #[test]
-    fn rejects_fixed_syntax_attached_to_the_implicit_pratt_lhs() {
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::invalid }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[parse(infix, lbp = 1, rbp = 2)]
-        #[tok("+")]
-        Invalid(#[tok("(", this, ")")] boxed!(Self), boxed!(Self)),
-    }
-}
-"#,
-        ));
-
-        assert!(report.lowered.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
-                && diagnostic.message.contains("implicit Pratt lhs")
-        }));
-    }
-
-    #[test]
-    fn preserves_fixed_syntax_attached_to_prefix_and_infix_rhs_operands() {
-        let report = materialize(resolve(
-            r#"recursa::grammar! { module = crate::valid }
-recursa::ast_node! {
-
-    #[pratt]
-    enum Expr {
-        #[tok("ATOM")]
-        Atom,
-        #[parse(prefix, bp = 3)]
-        #[tok("!")]
-        Prefix(#[tok("(", this, ")")] boxed!(Self)),
-        #[parse(infix, lbp = 1, rbp = 2)]
-        #[tok("+")]
-        Infix(
-            #[tok(this, "~")] boxed!(Self),
-            #[tok("[", this, "]")] boxed!(Self),
-        ),
-    }
-}
-"#,
-        ));
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let lowered = report
-            .lowered
-            .expect("valid interleaved syntax materializes");
-        let expr = lowered
-            .applications
-            .iter()
-            .find(|application| application.display_name == "valid::Expr")
-            .unwrap();
-        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
-            panic!("Expr is Pratt")
-        };
-        let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
-            panic!("Prefix is nud")
-        };
-        assert_eq!(
-            prefix
-                .body
-                .iter()
-                .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
-                .count(),
-            1,
-        );
-        let MaterializedElement::SemanticField {
-            attachment: Some(prefix_attachment),
-            ..
-        } = &prefix.body[1]
-        else {
-            panic!("prefix operand retains its fixed attachment")
-        };
-        assert_eq!(
-            (
-                prefix_attachment.before.len(),
-                prefix_attachment.after.len()
-            ),
-            (1, 1),
-        );
-        let MaterializedPrattVariant::Led(infix) = &variants[2] else {
-            panic!("Infix is led")
-        };
-        assert_eq!(
-            infix
-                .tail
-                .iter()
-                .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
-                .count(),
-            2,
-        );
-        let MaterializedElement::SemanticField {
-            attachment: Some(infix_attachment),
-            ..
-        } = infix.tail.last().unwrap()
-        else {
-            panic!("infix rhs retains its fixed attachment")
-        };
-        assert_eq!(
-            (infix_attachment.before.len(), infix_attachment.after.len()),
-            (1, 1),
         );
     }
 

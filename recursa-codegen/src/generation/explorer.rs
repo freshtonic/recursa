@@ -172,7 +172,7 @@ pub(super) struct ExplorerNodePlan {
     pub(super) qualified_name: String,
     /// Human-readable type spelling for Explorer consumers.
     pub(super) display: ExplorerDisplayPlan,
-    /// Struct, enum, or Pratt occurrence shape.
+    /// Struct or enum occurrence shape.
     pub(super) body: ExplorerNodeBodyPlan,
 }
 
@@ -183,8 +183,6 @@ pub(super) enum ExplorerNodeBodyPlan {
     Struct(ExplorerVariantPlan),
     /// One of the authored enum variants.
     Enum(Vec<ExplorerVariantPlan>),
-    /// One of the analyzed Pratt variant roles.
-    Pratt(Vec<ExplorerVariantPlan>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,7 +205,7 @@ pub(super) struct ExplorerElementPlan {
     pub(super) source: ExplorerElementSource,
     /// Stable source-facing element label.
     pub(super) name: String,
-    /// Fixed-token, semantic-field, or Pratt-left-hand role.
+    /// Fixed-token or semantic-field role.
     pub(super) role: ExplorerElementRolePlan,
     /// Occurrence cardinality after supported-container lowering.
     pub(super) cardinality: ExplorerCardinalityPlan,
@@ -243,8 +241,6 @@ pub(super) enum ExplorerElementSource {
     OptionalFixed(crate::lowering::ElementId),
     /// Originates from an ordinary semantic field.
     Semantic(ResolvedFieldId),
-    /// Originates from a Pratt extender's left operand.
-    PrattLhs(ResolvedFieldId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,28 +583,6 @@ pub(super) fn emitted_explorer_node(
                 })
                 .collect(),
         ),
-        NodeBodyPlan::Pratt(pratt) => ExplorerNodeBodyPlan::Pratt(
-            pratt
-                .nud
-                .iter()
-                .map(|branch| {
-                    emitted_explorer_variant(
-                        Some(branch.variant.resolved_variant),
-                        Some(branch.variant.ident.unraw().to_string()),
-                        &qualified_name,
-                        branch.variant.elements.iter(),
-                    )
-                })
-                .chain(pratt.led.iter().map(|branch| {
-                    emitted_explorer_variant(
-                        Some(branch.variant.resolved_variant),
-                        Some(branch.variant.ident.unraw().to_string()),
-                        &qualified_name,
-                        std::iter::once(&branch.lhs).chain(branch.variant.elements.iter()),
-                    )
-                }))
-                .collect(),
-        ),
     };
     ExplorerNodePlan {
         node: node.node,
@@ -751,93 +725,6 @@ pub(super) fn authoritative_explorer_node(
                 })
                 .collect::<Result<Vec<_>, String>>()?,
         ),
-        MaterializedNodeBody::Pratt(variants) => {
-            let mut planned = variants
-                .iter()
-                .map(|variant| match variant {
-                    MaterializedPrattVariant::Nud(nud) => authoritative_explorer_variant(
-                        lowered,
-                        node,
-                        Some(nud.common.resolved_variant),
-                        Some(&nud.common.name),
-                        &nud.body,
-                    ),
-                    MaterializedPrattVariant::Led(led) => {
-                        let mut planned = authoritative_explorer_variant(
-                            lowered,
-                            node,
-                            Some(led.common.resolved_variant),
-                            Some(&led.common.name),
-                            &led.tail,
-                        )?;
-                        let resolved_variant = resolved
-                            .nodes
-                            .iter()
-                            .find(|candidate| candidate.id == node.id)
-                            .and_then(|candidate| match &candidate.body {
-                                ResolvedNodeBody::Enum { variants } => variants
-                                    .iter()
-                                    .find(|variant| variant.id == led.common.resolved_variant),
-                                ResolvedNodeBody::Struct { .. } => None,
-                            })
-                            .ok_or_else(|| {
-                                "a Pratt explorer variant lacks source syntax".to_owned()
-                            })?;
-                        let field = node
-                            .fields
-                            .iter()
-                            .find(|field| field.id == led.lhs.field)
-                            .ok_or_else(|| "a Pratt explorer lhs lacks source syntax".to_owned())?;
-                        let index = resolved_variant
-                            .fields
-                            .iter()
-                            .position(|candidate| *candidate == led.lhs.field)
-                            .ok_or_else(|| {
-                                "a Pratt explorer lhs lacks its variant slot".to_owned()
-                            })?;
-                        let base = field.syntax.ident.as_ref().map_or_else(
-                            || format!("field_{index}"),
-                            |ident| ident.unraw().to_string(),
-                        );
-                        planned.elements.insert(
-                            0,
-                            ExplorerElementPlan {
-                                source: ExplorerElementSource::PrattLhs(led.lhs.field),
-                                name: format!("{}_{}", snake_case(&led.common.name), base),
-                                role: ExplorerElementRolePlan::SemanticField,
-                                cardinality: ExplorerCardinalityPlan::One,
-                                token_classification: None,
-                                target: Some(ExplorerElementTargetPlan::Node(
-                                    led.lhs.owner.application,
-                                )),
-                                token_kind: None,
-                                attachment_semantic_child: None,
-                                display: ExplorerDisplayPlan::None,
-                                occurrence: ExplorerOccurrencePlan::Children {
-                                    wrappers: vec![FieldWrapper::Boxed],
-                                    terminal: ExplorerTerminalPlan::Node(led.lhs.owner.application),
-                                },
-                            },
-                        );
-                        Ok(planned)
-                    }
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            planned.sort_by_key(|planned| {
-                variants
-                    .iter()
-                    .find(|variant| match variant {
-                        MaterializedPrattVariant::Nud(nud) => {
-                            Some(nud.common.resolved_variant) == planned.variant
-                        }
-                        MaterializedPrattVariant::Led(led) => {
-                            Some(led.common.resolved_variant) == planned.variant
-                        }
-                    })
-                    .is_some_and(|variant| matches!(variant, MaterializedPrattVariant::Led(_)))
-            });
-            ExplorerNodeBodyPlan::Pratt(planned)
-        }
     };
     Ok(ExplorerNodePlan {
         node: node.id,
@@ -1248,9 +1135,7 @@ pub(super) fn validate_explorer_collisions(
         )?;
         let variants = match &explorer_node.body {
             ExplorerNodeBodyPlan::Struct(_) => vec![None],
-            ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
-                (0..variants.len()).map(Some).collect()
-            }
+            ExplorerNodeBodyPlan::Enum(variants) => (0..variants.len()).map(Some).collect(),
         };
         for variant in variants {
             if let Some(variant) = variant {
@@ -1781,54 +1666,6 @@ pub(super) fn render_node_application_explorer(
                 quote!(match self { #(#field_arms)* }),
             )
         }
-        (NodeBodyPlan::Pratt(pratt), ExplorerNodeBodyPlan::Pratt(explorer_variants)) => {
-            let base = explorer_schema_static(node_index, None);
-            let mut node_arms = Vec::new();
-            let mut field_arms = Vec::new();
-            for (variant_index, explorer) in explorer_variants.iter().enumerate() {
-                let variant = if variant_index < pratt.nud.len() {
-                    pratt
-                        .nud
-                        .iter()
-                        .map(|branch| branch.variant.clone())
-                        .find(|variant| Some(variant.resolved_variant) == explorer.variant)
-                        .expect("typed explorer Pratt nud retains its parse shape")
-                } else {
-                    let branch = pratt
-                        .led
-                        .iter()
-                        .find(|branch| Some(branch.variant.resolved_variant) == explorer.variant)
-                        .expect("typed explorer Pratt led retains its parse shape");
-                    let mut variant = branch.variant.clone();
-                    variant.elements.insert(0, branch.lhs.clone());
-                    variant
-                };
-                let (field_pattern, bindings) =
-                    explorer_variant_pattern_and_bindings(node_ident, &variant);
-                let schema_pattern = explorer_variant_schema_pattern(node_ident, &variant);
-                let bindings = bindings
-                    .into_iter()
-                    .map(|binding| binding.map(|binding| quote!(#binding)))
-                    .collect::<Vec<_>>();
-                let active = explorer_schema_static(node_index, Some(variant_index));
-                let field =
-                    render_explorer_variant_field(facade, explorer, &variant.elements, &bindings);
-                node_arms.push(quote!(#schema_pattern => Some(&#module_anchor::#active),));
-                field_arms.push(quote!(#field_pattern => #field,));
-            }
-            (
-                quote!({
-                    let active = match self { #(#node_arms)* };
-                    #facade::__private::explorer_node(
-                        self,
-                        &#module_anchor::#base,
-                        active,
-                        cursor,
-                    )
-                }),
-                quote!(match self { #(#field_arms)* }),
-            )
-        }
         _ => unreachable!("typed explorer and parse Node bodies have identical shapes"),
     };
 
@@ -2305,7 +2142,7 @@ pub(super) fn render_explorer_schema_entries(
     }
 }
 
-/// Renders one Node application's struct, enum, or Pratt schema topology.
+/// Renders one Node application's struct or enum schema topology.
 pub(super) fn render_explorer_schema(
     plan: &EmissionPlan,
     node: &ExplorerNodePlan,
@@ -2331,7 +2168,7 @@ pub(super) fn render_explorer_schema(
                     );
             }
         }
-        ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+        ExplorerNodeBodyPlan::Enum(variants) => {
             let base = explorer_schema_static(node_index, None);
             let definitions = variants.iter().enumerate().map(|(variant_index, variant)| {
                 let entries = render_explorer_schema_entries(
@@ -2344,11 +2181,11 @@ pub(super) fn render_explorer_schema(
                 let variant_name = variant
                     .name
                     .as_deref()
-                    .expect("enum and Pratt explorer variants retain their names");
+                    .expect("enum explorer variants retain their names");
                 let variant_qualified_name = variant
                     .qualified_name
                     .as_deref()
-                    .expect("enum and Pratt variants retain qualified names");
+                    .expect("enum variants retain qualified names");
                 let elements = explorer_elements_static(node_index, Some(variant_index));
                 quote! {
                     #entries

@@ -46,7 +46,7 @@ fn six_rust_2024_fixtures_match_location_and_id_free_semantic_projections() {
 }
 
 #[test]
-fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
+fn projection_exposes_parse_site_swaps_and_field_correlation_loss() {
     use crate::materialization::MaterializedFieldLowering;
 
     let mut success = analyzed("arith");
@@ -59,9 +59,9 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
         .fields
         .iter()
         .enumerate()
-        .filter_map(|(index, correlation)| match correlation.lowered {
-            MaterializedFieldLowering::ParseSite(site) => Some((index, site)),
-            MaterializedFieldLowering::PrattLhs { .. } => None,
+        .map(|(index, correlation)| {
+            let MaterializedFieldLowering::ParseSite(site) = correlation.lowered;
+            (index, site)
         })
         .collect::<Vec<_>>();
     let ((left_index, left), (right_index, right)) = distinct_parse_sites
@@ -83,22 +83,12 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
     assert_ne!(swapped, original, "same-typed field swaps must be visible");
 
     let mut success = analyzed("arith");
-    success
-        .analyzed
-        .lowered
-        .lowering_map
-        .fields
-        .retain(|correlation| {
-            !matches!(
-                correlation.lowered,
-                MaterializedFieldLowering::PrattLhs { .. }
-            )
-        });
-    let missing_lhs =
+    success.analyzed.lowered.lowering_map.fields.pop();
+    let missing_field =
         crate::semantic_projection::canonical_fixture_projection("arith", &success.analyzed);
     assert_ne!(
-        missing_lhs, original,
-        "Pratt lhs correlation loss must be visible"
+        missing_field, original,
+        "field correlation loss must be visible"
     );
 }
 

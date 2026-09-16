@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "examples/json",
-    "examples/pratt-expressions",
+    "examples/expressions",
     "recursa",
     "recursa-core",
     "recursa-codegen",

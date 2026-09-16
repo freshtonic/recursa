@@ -52,9 +52,9 @@ tests/arith.rs::double_prefix_minus	test	recursa-codegen/tests/fixtures/generati
 tests/arith.rs::first_set_contains_atom_starters_and_prefix_minus	test	recursa-codegen/tests/normalized_analysis.rs#normalized_grammar_lowers_to_the_expected_lr_entry_language
 tests/arith.rs::extenders_set_contains_infix_operators	test	recursa-codegen/tests/normalized_analysis.rs#normalized_grammar_lowers_to_the_expected_lr_entry_language
 tests/arith.rs::nullable_is_false	test	recursa-codegen/tests/normalized_analysis.rs#normalized_grammar_lowers_to_the_expected_lr_entry_language
-tests/arith.rs::pratt_d3_fires_when_extender_in_follow	gate	M4-PRATT-DIAGRAM
-tests/arith.rs::pratt_d3_does_not_fire_when_non_extender_in_follow	gate	M4-PRATT-DIAGRAM
-tests/arith.rs::pratt_d3_paren_subexpr_is_unambiguous	gate	M4-PRATT-DIAGRAM
+tests/arith.rs::pratt_d3_fires_when_extender_in_follow	test	examples/expressions/tests/behavior.rs#precedence_and_associativity_are_visible_in_the_ast
+tests/arith.rs::pratt_d3_does_not_fire_when_non_extender_in_follow	test	examples/expressions/tests/behavior.rs#left_associativity_prefix_postfix_and_grouping_are_explicit
+tests/arith.rs::pratt_d3_paren_subexpr_is_unambiguous	test	examples/expressions/tests/behavior.rs#invalid_or_trailing_expressions_are_rejected
 tests/arith.rs::tokenize_handles_whitespace_and_mixed_input	test	recursa-codegen/tests/fixtures/generation/legacy-grammars/arith/tests/legacy.rs#tokenize_handles_whitespace_and_mixed_input
 tests/json.rs::null_literal	test	recursa-codegen/tests/fixtures/generation/legacy-grammars/json/tests/legacy.rs#null_literal
 tests/json.rs::true_literal	test	recursa-codegen/tests/fixtures/generation/legacy-grammars/json/tests/legacy.rs#true_literal
@@ -153,10 +153,10 @@ tests/diagram.rs::depth_2_expands_col_but_not_as_alias	gate	M4-DIAGRAM-DECL-LOCA
 tests/diagram.rs::depth_3_expands_through_to_as_keyword	gate	M4-DIAGRAM-DECL-LOCAL
 tests/diagram.rs::sql_statement_depth_1_matches_macro_shallowness	gate	M4-DIAGRAM-DECL-LOCAL
 tests/diagram.rs::sql_statement_depth_2_expands_each_body	gate	M4-DIAGRAM-DECL-LOCAL
-tests/diagram.rs::recursive_reference_renders_as_self_consistently	gate	M4-PRATT-DIAGRAM
-tests/diagram.rs::pratt_expr_renders_variant_structure	gate	M4-PRATT-DIAGRAM
-tests/diagram.rs::aux_paren_node_renders_paren_expr	gate	M4-PRATT-DIAGRAM
-tests/diagram.rs::aux_binary_node_renders_expr_op_expr	gate	M4-PRATT-DIAGRAM
+tests/diagram.rs::recursive_reference_renders_as_self_consistently	test	recursa-codegen/tests/generated_expressions.rs#expression_variants_render_as_the_rules_the_author_wrote
+tests/diagram.rs::pratt_expr_renders_variant_structure	test	recursa-codegen/tests/generated_expressions.rs#expression_variants_render_as_the_rules_the_author_wrote
+tests/diagram.rs::aux_paren_node_renders_paren_expr	test	recursa-codegen/tests/generated_expressions.rs#expression_variants_render_as_the_rules_the_author_wrote
+tests/diagram.rs::aux_binary_node_renders_expr_op_expr	test	recursa-codegen/tests/generated_expressions.rs#expression_variants_render_as_the_rules_the_author_wrote
 tests/diagram.rs::svg_for_type_renders_an_svg_document	gate	M4-DIAGRAM-DECL-LOCAL
 tests/diagram.rs::svg_has_explicit_natural_size	gate	M4-DIAGRAM-DECL-LOCAL
 tests/diagram.rs::unknown_type_has_no_diagram	gate	M4-DIAGRAM-DECL-LOCAL

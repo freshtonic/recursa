@@ -24,7 +24,7 @@ containers and required lifetimes under the grammar's storage policy.
 See the complete build scripts for the compiled
 [JSON](https://github.com/freshtonic/recursa/blob/main/examples/json/build.rs)
 and
-[Pratt-expression](https://github.com/freshtonic/recursa/blob/main/examples/pratt-expressions/build.rs)
+[expression](https://github.com/freshtonic/recursa/blob/main/examples/expressions/build.rs)
 examples.
 
 ## Analysis API

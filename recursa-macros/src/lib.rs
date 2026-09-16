@@ -18,6 +18,10 @@ const PRIVATE_PROTOCOL: u32 = 29;
 ///
 /// Use [`ast_node`] to declare representation-independent Nodes. The generator emits their
 /// concrete declarations and parsing behavior together from that canonical source.
+///
+/// `pratt` and `greedy` stay in the helper-attribute list although both authoring surfaces are
+/// removed, so that Recursa's own migration diagnostic reaches the author instead of Rust's
+/// unknown-attribute error (`docs/declared-precedence.md`).
 #[proc_macro_derive(
     Node,
     attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy)
@@ -76,6 +80,14 @@ pub fn ast_node(input: TokenStream) -> TokenStream {
                 continue;
             }
         };
+        // A restricted expression (`#[restricts(Base)]`) is a grammar nonterminal, not an AST
+        // type: generation emits no declaration for it, so there is nothing to load here.
+        if attributes
+            .iter()
+            .any(|attribute| attribute.path().is_ident("restricts"))
+        {
+            continue;
+        }
         let conditional = attributes.into_iter().filter_map(conditional_gate);
         let loader = load_declared_node(&ident);
         output.extend(quote! {

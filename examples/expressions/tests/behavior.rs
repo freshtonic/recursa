@@ -1,4 +1,4 @@
-use recursa_example_pratt_expressions::{ParseFailure, grammar, parse};
+use recursa_example_expressions::{ParseFailure, grammar, parse};
 
 fn integer<'ast>(expression: &'ast grammar::Expr<'_>) -> &'ast str {
     let grammar::Expr::Integer(integer) = expression else {
@@ -74,11 +74,11 @@ fn precedence_and_associativity_are_visible_in_the_ast() {
 
 #[cfg(feature = "explorer")]
 #[test]
-fn recursive_pratt_expression_parses_through_the_erased_explorer_adapter() {
+fn a_recursive_expression_parses_through_the_erased_explorer_adapter() {
     let source = "1 + 2 * 3";
     let document = grammar::Expr::explorer()
         .parse(source)
-        .expect("recursive Pratt expression parses through the adapter");
+        .expect("a recursive expression parses through the adapter");
     assert_eq!(document.source(), Some(source));
     assert_eq!(document.root().active_variant().unwrap().name(), "Add");
 }

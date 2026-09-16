@@ -1,5 +1,5 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/optq.rs description=src/descriptions/optq.rs
-transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality
 recursa-semantic-projection-v1
 grammar edition=Rust2024 anchor=optq equivalence=Sensitive
 
@@ -33,11 +33,11 @@ type fixed:DEBUG = token(atom=fixed:DEBUG, text=any)
 type fixed:PRINT = token(atom=fixed:PRINT, text=any)
 type fixed:READ = token(atom=fixed:READ, text=any)
 type fixed:SET = token(atom=fixed:SET, text=any)
-type optq::Debug = sequence(optq::Debug::element0:optq::Debug target=fixed:DEBUG cardinality=one separator=- min_bp=0)
-type optq::Stmt = enum(optq::Stmt::Print => [optq::Stmt::Print::element0:optq::Stmt target=optq::PrintStmt cardinality=one separator=- min_bp=0]; optq::Stmt::Read => [optq::Stmt::Read::element0:optq::Stmt target=optq::ReadStmt cardinality=one separator=- min_bp=0]; optq::Stmt::Set => [optq::Stmt::Set::element0:optq::Stmt target=optq::SetStmt cardinality=one separator=- min_bp=0])
-type optq::PrintStmt = sequence(optq::PrintStmt::element0:optq::PrintStmt target=optq::Debug cardinality=optional separator=- min_bp=0, optq::PrintStmt::element1:optq::PrintStmt target=fixed:PRINT cardinality=one separator=- min_bp=0, optq::PrintStmt::element2:optq::PrintStmt target=Rest cardinality=one separator=- min_bp=0)
-type optq::ReadStmt = sequence(optq::ReadStmt::element0:optq::ReadStmt target=optq::Debug cardinality=optional separator=- min_bp=0, optq::ReadStmt::element1:optq::ReadStmt target=fixed:READ cardinality=one separator=- min_bp=0, optq::ReadStmt::element2:optq::ReadStmt target=Rest cardinality=one separator=- min_bp=0)
-type optq::SetStmt = sequence(optq::SetStmt::element0:optq::SetStmt target=optq::Debug cardinality=optional separator=- min_bp=0, optq::SetStmt::element1:optq::SetStmt target=fixed:SET cardinality=one separator=- min_bp=0, optq::SetStmt::element2:optq::SetStmt target=Rest cardinality=one separator=- min_bp=0)
+type optq::Debug = sequence(optq::Debug::element0:optq::Debug target=fixed:DEBUG cardinality=one separator=-)
+type optq::Stmt = enum(optq::Stmt::Print => [optq::Stmt::Print::element0:optq::Stmt target=optq::PrintStmt cardinality=one separator=-]; optq::Stmt::Read => [optq::Stmt::Read::element0:optq::Stmt target=optq::ReadStmt cardinality=one separator=-]; optq::Stmt::Set => [optq::Stmt::Set::element0:optq::Stmt target=optq::SetStmt cardinality=one separator=-])
+type optq::PrintStmt = sequence(optq::PrintStmt::element0:optq::PrintStmt target=optq::Debug cardinality=optional separator=-, optq::PrintStmt::element1:optq::PrintStmt target=fixed:PRINT cardinality=one separator=-, optq::PrintStmt::element2:optq::PrintStmt target=Rest cardinality=one separator=-)
+type optq::ReadStmt = sequence(optq::ReadStmt::element0:optq::ReadStmt target=optq::Debug cardinality=optional separator=-, optq::ReadStmt::element1:optq::ReadStmt target=fixed:READ cardinality=one separator=-, optq::ReadStmt::element2:optq::ReadStmt target=Rest cardinality=one separator=-)
+type optq::SetStmt = sequence(optq::SetStmt::element0:optq::SetStmt target=optq::Debug cardinality=optional separator=-, optq::SetStmt::element1:optq::SetStmt target=fixed:SET cardinality=one separator=-, optq::SetStmt::element2:optq::SetStmt target=Rest cardinality=one separator=-)
 
 [lowering-correlations]
 field optq::Stmt::Print::field0 -> parse-site(optq::Stmt::Print::element0)

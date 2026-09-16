@@ -16,8 +16,10 @@ semantic value and, when requested, folds exact occurrence provenance in
 parallel. Fixed tokens carry no semantic value. Document framing and Explorer
 invoke this sole parser for each strict island.
 
-LALR conflicts are hard generation errors. Pratt binding powers lower to LR
-precedence. Scoped conflict resolutions name source-level rules and
+LALR conflicts are hard generation errors. The `precedence { ... }`
+declaration of the token grammar is the sole source of rule and token
+precedence, in bison's exact terms; see
+[declared precedence](declared-precedence.md). Scoped conflict resolutions name source-level rules and
 lookaheads, never generated state numbers, and must match exactly the cells
 they claim. Text predicates remain an unsupported grammar construct until they
 have a useful LR lowering. A future IELR or canonical-LR mode would be a

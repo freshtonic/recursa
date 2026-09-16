@@ -118,7 +118,7 @@ The interpretation of an authored Rust module tree into a source model and lower
 _Avoid_: M3, source parsing
 
 **Semantic analysis**:
-The source-independent computation of nullable, FIRST, FOLLOW, dispatch, conflict, Pratt, and provenance facts over a normalized grammar.
+The source-independent computation of nullable, FIRST, FOLLOW, dispatch, conflict, precedence, and provenance facts over a normalized grammar.
 _Avoid_: Source analysis, Generation
 
 **Source model**:
@@ -306,8 +306,10 @@ _Avoid_: Cloned helper, split nonterminal, per-site helper
 **Attachment unit**:
 The private sequence type materialized for one semantic field with attached
 fixed tokens (`#[tok(OPEN, this, CLOSE)]`): the fixed tokens around one
-occurrence of the field's element. It is a nonterminal whose reduce passes the
-element's value through unchanged.
+occurrence of the field's element. A cardinality-one unit lowers inline into
+its owner's rule, so the owner's own reduce takes the field's value from its
+right-hand-side position; every other unit keeps a nonterminal whose reduce
+passes that value through unchanged.
 _Avoid_: Surrounded node, per-element wrapper
 
 **Presence envelope**:
@@ -317,22 +319,27 @@ fixed tokens before or after its optional sequence (`#[tok(IF, this, EXISTS)]
 whose reduce yields the `bool`.
 _Avoid_: Presence wrapper, optional keyword node
 
-**Binding-power precedence**:
-The lowering of a Pratt Node's binding powers into LR rule precedence and
-associativity. A binding-power combination with no such lowering is a build
-error, and each distinct variant exclusion set (extenders, atoms or prefix
-variants) becomes its own lowered expression type.
-_Avoid_: Runtime Pratt loop, precedence climbing
-
 **Declared precedence**:
-A token-grammar declaration of precedence levels, each left, right or
-non-associative over token names and placed on the binding-power scale, that
-the Recursa parser uses where binding-power precedence says nothing: a rule
-outside the Pratt hierarchy takes the level of its last declared token or of
-the level its Node or variant names as an override, and a lookahead at a
-declared level is compared with the reducing rule's level. A precedence-only
-name is a level member that is neither and exists for overrides alone.
-_Avoid_: Token precedence table, %left line, keyword weight
+A token-grammar declaration of ordered precedence levels, each left, right or
+non-associative over token names and precedence-only names, and the sole source
+of rule and token precedence for LR conflict resolution. A rule takes the level
+of its last declared terminal unless its Node or variant names a level as an
+override; a shift/reduce conflict compares the reducing rule's level with the
+lookahead's level, and a tie follows the rule's associativity. A rule or
+lookahead with no level leaves the conflict unresolved.
+_Avoid_: Binding power, Pratt hierarchy, precedence climbing, %left line
+
+**Precedence-only name**:
+A member of a declared precedence level that names no token and exists only so
+that a Node or variant override can take that level.
+_Avoid_: Pseudo-token, UMINUS token
+
+**Restricted expression**:
+An authored Node that accepts a subset of another expression Node's productions
+so that an interior operand cannot consume a token that also closes the enclosing
+syntax. It is written by hand, as PostgreSQL writes b_expr, and is not derived
+from an exclusion list.
+_Avoid_: Exclusion set, Pratt clone, minimum binding power
 
 **Parse capability**:
 The sealed facade contract that gives a generated grammar type its safe

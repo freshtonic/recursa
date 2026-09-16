@@ -1,4 +1,4 @@
-//! Parse-plan construction, validation, dispatch, Pratt, container, and FOLLOW rendering.
+//! Parse-plan construction, validation, dispatch, container, and FOLLOW rendering.
 //!
 //! This module keeps source-aware construction beside executable parser emission. Frozen
 //! semantic decisions are consumed here without recomputing analysis during rendering.
@@ -26,7 +26,7 @@ pub(super) struct NodeParsePlan {
     pub(super) generics: Generics,
     /// Lifetime used for source-borrowing fields in generated types.
     pub(super) input_lifetime: syn::Lifetime,
-    /// Frozen structural or Pratt parsing strategy.
+    /// Frozen structural parsing strategy.
     pub(super) body: NodeBodyPlan,
     /// Materialized applications emitted in canonical application order.
     pub(super) parse_applications: Vec<NodeApplicationParsePlan>,
@@ -58,7 +58,7 @@ pub(super) struct NodeApplicationParsePlan {
 }
 
 #[derive(Clone, Debug, Hash)]
-/// Frozen structural or Pratt shape consumed by LR lowering.
+/// Frozen structural shape consumed by LR lowering.
 pub(super) enum NodeBodyPlan {
     /// Parses a single field sequence into a struct.
     Struct {
@@ -72,45 +72,6 @@ pub(super) enum NodeBodyPlan {
         /// Variant bodies in authored declaration order.
         variants: Vec<VariantParsePlan>,
     },
-    /// Parses an expression family using frozen Pratt roles.
-    Pratt(Box<PrattParsePlan>),
-}
-
-#[derive(Clone, Debug, Hash)]
-/// Frozen prefix/infix shape for a Pratt node.
-pub(super) struct PrattParsePlan {
-    /// Frozen prefix-variant count checked before emission.
-    pub(super) expected_nud_count: usize,
-    /// Frozen extender-variant count checked before emission.
-    pub(super) expected_led_count: usize,
-    /// Prefix branches in authored variant order.
-    pub(super) nud: Vec<PrattNudParsePlan>,
-    /// Extender branches in authored variant order.
-    pub(super) led: Vec<PrattLedParsePlan>,
-}
-
-#[derive(Clone, Debug, Hash)]
-/// Prefix branch paired with its authored identity and binding position.
-pub(super) struct PrattNudParsePlan {
-    /// Authored variant index retained for diagnostics and identity.
-    pub(super) source_index: usize,
-    /// Frozen prefix variant body.
-    pub(super) variant: VariantParsePlan,
-    /// Binding-power position assigned by semantic analysis.
-    pub(super) position: PrattPosition,
-}
-
-#[derive(Clone, Debug, Hash)]
-/// Extender branch paired with its left operand and binding position.
-pub(super) struct PrattLedParsePlan {
-    /// Authored variant index retained for diagnostics and identity.
-    pub(super) source_index: usize,
-    /// Frozen extender variant body.
-    pub(super) variant: VariantParsePlan,
-    /// Element receiving the already-parsed left operand.
-    pub(super) lhs: ElementParsePlan,
-    /// Binding-power position assigned by semantic analysis.
-    pub(super) position: PrattPosition,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -128,6 +89,116 @@ pub(super) struct VariantParsePlan {
     pub(super) capture: Option<PlannedCapturePolicy>,
     /// Formatting hints retained for shared projections.
     pub(super) pretty: PrettyHints,
+    /// Declared `precedence { ... }` level and associativity for the variant's rule; `None`
+    /// when the rule has no declared terminal and no `#[parse(prec = NAME)]` override.
+    pub(super) declared_precedence: Option<DeclaredVariantLevel>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Declared `precedence { ... }` level and associativity assigned to one plain enum variant's
+/// rule under the bison-style model that [`crate::lr::declared_precedence`] applies to the LR
+/// tables: a `#[parse(prec = NAME)]` override on the variant, else on its Node, else the last
+/// fixed token in the variant's authored element sequence, tokens attached to fields included,
+/// that names a declared level.
+pub(super) struct DeclaredVariantLevel {
+    /// Zero-based ordinal into the authored `precedence` block, lowest to highest; a higher
+    /// ordinal binds tighter.
+    pub(super) ordinal: u32,
+    /// The level's associativity.
+    pub(super) associativity: PrecedenceAssociativity,
+}
+
+/// Computes the declared level a plain enum variant's rule takes, mirroring
+/// `lr::declared_precedence::apply`'s rule-precedence assignment so Pretty's parenthesization
+/// and the LR resolver never disagree about a rule's level.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps override precedence and terminal-scanning precedence beside one another so
+/// the bison "variant, then Node, then last declared terminal" order stays visibly total.
+/// Invariants: a variant override wins over its Node's, which wins over the last authored
+/// terminal with a declared level; a later authored terminal shadows an earlier one exactly as
+/// bison's own last-terminal rule does.
+/// Phases: checks the variant override, then the Node override, then scans authored elements
+/// left to right, including tokens attached to fields, for the last terminal with a level.
+pub(super) fn declared_variant_level(
+    source: &SourceModel,
+    owner_node: NodeId,
+    resolved_variant: ResolvedVariantId,
+    elements: &[GrammarElement],
+) -> Option<DeclaredVariantLevel> {
+    if source.precedence.is_empty() {
+        return None;
+    }
+    let level_of = |level: PrecedenceLevelId| DeclaredVariantLevel {
+        ordinal: level.get(),
+        associativity: source.precedence[level.index()].associativity,
+    };
+    let override_level = source
+        .precedence_overrides
+        .iter()
+        .find(|over| {
+            matches!(
+                over.owner,
+                PrecedenceOwner::Variant(candidate) if candidate == resolved_variant
+            )
+        })
+        .or_else(|| {
+            source.precedence_overrides.iter().find(|over| {
+                matches!(over.owner, PrecedenceOwner::Type(candidate) if candidate == owner_node)
+            })
+        });
+    if let Some(over) = override_level {
+        return Some(level_of(over.level));
+    }
+    let level_of_token = |definition: TokenDefinitionId| {
+        source
+            .precedence
+            .iter()
+            .enumerate()
+            .find(|(_, level)| {
+                level.kinds.iter().any(
+                    |kind| matches!(kind, PrecedenceKindReference::Token(candidate) if *candidate == definition),
+                )
+            })
+            .map(|(index, level)| DeclaredVariantLevel {
+                ordinal: index as u32,
+                associativity: level.associativity,
+            })
+    };
+    let mut last = None;
+    let mut visit = |token_use: TokenUseId| {
+        let definition = source.token_uses[token_use.index()].definition;
+        if let Some(level) = level_of_token(definition) {
+            last = Some(level);
+        }
+    };
+    for element in elements {
+        match element {
+            GrammarElement::FixedToken { token_use, .. } => visit(*token_use),
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                for token in tokens {
+                    visit(token.token_use);
+                }
+            }
+            GrammarElement::SemanticField { attachment, .. } => {
+                let Some(attachment) = attachment else {
+                    continue;
+                };
+                for syntax in attachment.before.iter().chain(attachment.after.iter()) {
+                    match syntax {
+                        AttachedFixedSyntax::Required(token) => visit(token.token_use),
+                        AttachedFixedSyntax::Optional { tokens, .. } => {
+                            for token in tokens {
+                                visit(token.token_use);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    last
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -227,11 +298,6 @@ pub(super) enum SemanticParseProjection {
         capture: PlannedCapturePolicy,
         /// Source-capture policy applied to each parsed child.
         child_capture: PlannedCapturePolicy,
-        /// Minimum binding power when parsing a Pratt child.
-        pratt_min_bp: Option<u8>,
-        /// Variant ordinals excluded at this authored field boundary: LED ordinals, then NUD
-        /// ordinals offset by the LED count (see `planned_pratt_exclusions`).
-        pratt_excluded: Vec<usize>,
         /// Canonical repetition separator spelling, if any.
         separator: Option<String>,
         /// Pretty spacing declared by the repetition separator, if any.
@@ -394,7 +460,7 @@ impl From<CaptureMode> for PlannedCapturePolicy {
 pub(super) fn structural_body(
     node: &ResolvedNode,
     source_node: &SourceNode,
-    materialized_body: &MaterializedNodeBody,
+    _materialized_body: &MaterializedNodeBody,
     lowered: &crate::materialization::LoweredGrammar,
     kind_count: usize,
 ) -> Result<NodeBodyPlan, String> {
@@ -419,6 +485,7 @@ pub(super) fn structural_body(
                         .iter()
                         .find(|resolved| resolved.id == variant.resolved_variant)
                         .ok_or_else(|| "authored enum variant lacks resolved shape".to_owned())?;
+                    let source = lowered.source_modeled.source_model();
                     Ok(VariantParsePlan {
                         resolved_variant: resolved_variant.id,
                         ident: emitted_ident(&variant.name)?,
@@ -432,99 +499,16 @@ pub(super) fn structural_body(
                         )?,
                         capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
                         pretty: variant.pretty.clone(),
+                        declared_precedence: declared_variant_level(
+                            source,
+                            node.id,
+                            resolved_variant.id,
+                            &variant.elements,
+                        ),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             NodeBodyPlan::Enum { variants }
-        }
-        (
-            SourceNodeBody::Pratt(variants),
-            ResolvedNodeBody::Enum {
-                variants: resolved_variants,
-            },
-        ) => {
-            let mut nud = Vec::new();
-            let mut led = Vec::new();
-            for (source_index, source_variant) in variants.iter().enumerate() {
-                let resolved_variant = resolved_variants
-                    .iter()
-                    .find(|resolved| resolved.id == source_variant.common.resolved_variant)
-                    .ok_or_else(|| "authored Pratt variant lacks resolved shape".to_owned())?;
-                let mut variant = VariantParsePlan {
-                    resolved_variant: resolved_variant.id,
-                    ident: emitted_ident(&source_variant.common.name)?,
-                    style: resolved_variant.style,
-                    elements: declaration_elements(
-                        node,
-                        Some((&source_variant.common, resolved_variant)),
-                        &source_variant.common.elements,
-                        lowered,
-                        kind_count,
-                    )?,
-                    capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
-                    pretty: source_variant.common.pretty.clone(),
-                };
-                let position = match source_variant.position {
-                    SourcePrattPosition::Atom => PrattPosition::Atom,
-                    SourcePrattPosition::Prefix { bp } => PrattPosition::Prefix { bp },
-                    SourcePrattPosition::Infix { lbp, rbp } => PrattPosition::Infix { lbp, rbp },
-                    SourcePrattPosition::Postfix { bp } => PrattPosition::Postfix { bp },
-                };
-                match position {
-                    PrattPosition::Atom | PrattPosition::Prefix { .. } => {
-                        nud.push(PrattNudParsePlan {
-                            source_index,
-                            variant,
-                            position,
-                        });
-                    }
-                    PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
-                        let MaterializedNodeBody::Pratt(materialized_variants) = materialized_body
-                        else {
-                            return Err(
-                                "materialized Pratt declaration has a non-Pratt body".to_owned()
-                            );
-                        };
-                        let materialized = materialized_variants
-                            .iter()
-                            .find_map(|candidate| match candidate {
-                                MaterializedPrattVariant::Led(candidate)
-                                    if candidate.common.resolved_variant == resolved_variant.id =>
-                                {
-                                    Some(candidate)
-                                }
-                                MaterializedPrattVariant::Nud(_)
-                                | MaterializedPrattVariant::Led(_) => None,
-                            })
-                            .ok_or_else(|| {
-                                "authored Pratt led lacks its materialized lhs".to_owned()
-                            })?;
-                        let lhs_index = variant
-                            .elements
-                            .iter()
-                            .position(|element| {
-                                element.explorer_source
-                                    == ExplorerElementSource::Semantic(materialized.lhs.field)
-                            })
-                            .ok_or_else(|| {
-                                "authored Pratt led variant lacks its recursive lhs".to_owned()
-                            })?;
-                        let lhs = variant.elements.remove(lhs_index);
-                        led.push(PrattLedParsePlan {
-                            source_index,
-                            variant,
-                            lhs,
-                            position,
-                        });
-                    }
-                }
-            }
-            NodeBodyPlan::Pratt(Box::new(PrattParsePlan {
-                expected_nud_count: nud.len(),
-                expected_led_count: led.len(),
-                nud,
-                led,
-            }))
         }
         _ => {
             return Err(format!(
@@ -644,70 +628,13 @@ fn materialize_lr_body(
             }
             Ok(())
         }
-        (NodeBodyPlan::Pratt(pratt), MaterializedNodeBody::Pratt(values)) => {
-            for value in values {
-                match value {
-                    MaterializedPrattVariant::Nud(value) => {
-                        let variant = pratt
-                            .nud
-                            .iter_mut()
-                            .find(|variant| {
-                                variant.variant.resolved_variant == value.common.resolved_variant
-                            })
-                            .ok_or_else(|| {
-                                "materialized Pratt nud lacks a declaration plan".to_owned()
-                            })?;
-                        materialize_lr_elements(
-                            node,
-                            &mut variant.variant.elements,
-                            &value.body,
-                            lowered,
-                            input_lifetime,
-                        )?;
-                    }
-                    MaterializedPrattVariant::Led(value) => {
-                        let variant = pratt
-                            .led
-                            .iter_mut()
-                            .find(|variant| {
-                                variant.variant.resolved_variant == value.common.resolved_variant
-                            })
-                            .ok_or_else(|| {
-                                "materialized Pratt led lacks a declaration plan".to_owned()
-                            })?;
-                        let ResolvedNodeBody::Enum { variants: resolved } = &node.body else {
-                            return Err(
-                                "materialized Pratt Node lacks resolved variants".to_owned()
-                            );
-                        };
-                        let resolved = resolved
-                            .iter()
-                            .find(|candidate| candidate.id == value.common.resolved_variant)
-                            .ok_or_else(|| {
-                                "materialized Pratt led lacks its resolved variant".to_owned()
-                            })?;
-                        variant.lhs =
-                            plan_pratt_lhs(node, resolved, value, lowered, input_lifetime)?;
-                        materialize_lr_elements(
-                            node,
-                            &mut variant.variant.elements,
-                            &value.tail,
-                            lowered,
-                            input_lifetime,
-                        )?;
-                    }
-                }
-            }
-            Ok(())
-        }
         _ => Err("materialized and declared LR node shapes disagree".to_owned()),
     }
 }
 
 /// Joins materialized LR elements by source identity and closes semantic field types.
 ///
-/// Pratt materialization may move required syntax attached after the implicit lhs into the led
-/// tail. Such fixed elements have no declaration-tail entry and are reconstructed here.
+/// A fixed element with no declaration-tail entry is reconstructed here.
 fn materialize_lr_elements(
     node: &ResolvedNode,
     planned: &mut Vec<ElementParsePlan>,
@@ -762,7 +689,7 @@ fn materialize_lr_elements(
     Ok(())
 }
 
-/// Builds a standalone fixed element moved from a Pratt lhs attachment into its led tail.
+/// Builds a standalone fixed element that has no declaration-tail entry of its own.
 fn declaration_fixed_element(
     node: &ResolvedNode,
     token_use: crate::lowering::TokenUseId,
@@ -849,73 +776,6 @@ fn close_lr_semantic_element(
         *repetition_break = PlannedRepetitionBreak::TopLevelStatement(application);
     }
     Ok(())
-}
-
-/// Plans the distinguished left operand of one materialized Pratt extender.
-fn plan_pratt_lhs(
-    node: &ResolvedNode,
-    resolved_variant: &crate::resolution::ResolvedNodeVariant,
-    led: &MaterializedPrattLed,
-    lowered: &crate::materialization::LoweredGrammar,
-    input_lifetime: &syn::Lifetime,
-) -> Result<ElementParsePlan, String> {
-    let resolved_field = node
-        .fields
-        .iter()
-        .find(|candidate| candidate.id == led.lhs.field)
-        .ok_or_else(|| "materialized Pratt lhs lacks source syntax".to_owned())?;
-    let field_index = resolved_variant
-        .fields
-        .iter()
-        .position(|candidate| *candidate == led.lhs.field)
-        .ok_or_else(|| "materialized Pratt lhs is absent from its source variant".to_owned())?;
-    let base = resolved_field
-        .syntax
-        .ident
-        .clone()
-        .unwrap_or_else(|| format_ident!("field_{field_index}"));
-    let variant_name = snake_case(&resolved_variant.ident);
-    let accessor = if base.unraw() == variant_name {
-        base.clone()
-    } else {
-        format_ident!("{}_{}", variant_name, base)
-    };
-    let variant_capture = resolved_variant
-        .capture
-        .map(PlannedCapturePolicy::from)
-        .or_else(|| node.capture.map(PlannedCapturePolicy::from))
-        .unwrap_or(PlannedCapturePolicy::Inherited);
-    let field_override = resolved_field.capture.map(PlannedCapturePolicy::from);
-    let closed = ClosedType::Boxed(Box::new(ClosedType::Node(led.lhs.owner.clone())));
-    Ok(ElementParsePlan {
-        explorer_source: ExplorerElementSource::PrattLhs(led.lhs.field),
-        metadata_name: format!("{}_{}", variant_name, base.unraw()),
-        kind: ElementParseKind::Semantic {
-            field: FieldPlan {
-                ident: resolved_field.syntax.ident.clone(),
-                index: field_index,
-                accessor: Some(accessor),
-            },
-            projection: Box::new(SemanticParseProjection::Direct {
-                terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
-                terminal_node: Some(node.id),
-                terminal_application: Some(led.lhs.owner.application),
-                explorer_terminal: ExplorerTerminalPlan::Node(led.lhs.owner.application),
-                wrappers: vec![FieldWrapper::Boxed],
-                container: Box::new(PlannedContainer::Direct),
-                capture: field_override.unwrap_or(variant_capture),
-                child_capture: field_override.unwrap_or(variant_capture),
-                pratt_min_bp: None,
-                pratt_excluded: Vec::new(),
-                separator: None,
-                separator_spacing: None,
-                attachment: None,
-                opaque_provenance: false,
-                repetition_break: PlannedRepetitionBreak::Soft,
-                pretty: led.lhs.pretty.clone(),
-            }),
-        },
-    })
 }
 
 /// Plans declaration elements in authored field order.
@@ -1131,8 +991,6 @@ pub(super) fn declaration_elements(
                             )),
                             capture: PlannedCapturePolicy::Inherited,
                             child_capture: PlannedCapturePolicy::Inherited,
-                            pratt_min_bp: None,
-                            pratt_excluded: Vec::new(),
                             separator: separator_behavior
                                 .as_ref()
                                 .map(|(spelling, _)| spelling.clone()),
@@ -1234,9 +1092,7 @@ pub(super) fn declaration_explorer_terminal(
     let explorer = authoritative_explorer_node(lowered, application)?;
     let variants: Vec<&ExplorerVariantPlan> = match &explorer.body {
         ExplorerNodeBodyPlan::Struct(variant) => vec![variant],
-        ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
-            variants.iter().collect()
-        }
+        ExplorerNodeBodyPlan::Enum(variants) => variants.iter().collect(),
     };
     variants
         .into_iter()
@@ -1244,9 +1100,7 @@ pub(super) fn declaration_explorer_terminal(
         .find_map(|element| {
             matches!(
                 element.source,
-                ExplorerElementSource::Semantic(candidate)
-                    | ExplorerElementSource::PrattLhs(candidate)
-                    if candidate == field
+                ExplorerElementSource::Semantic(candidate) if candidate == field
             )
             .then_some(&element.occurrence)
         })
@@ -1665,15 +1519,6 @@ pub(super) fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&Elem
             .iter()
             .flat_map(|variant| &variant.elements)
             .for_each(visit),
-        NodeBodyPlan::Pratt(pratt) => {
-            for branch in &pratt.nud {
-                branch.variant.elements.iter().for_each(&mut *visit);
-            }
-            for branch in &pratt.led {
-                visit(&branch.lhs);
-                branch.variant.elements.iter().for_each(&mut *visit);
-            }
-        }
     }
 }
 
@@ -1744,24 +1589,6 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
                 qualify(
                     &mut variant.elements,
                     Some(&variant.ident),
-                    &counts,
-                    &mut occupied,
-                )?;
-            }
-        }
-        NodeBodyPlan::Pratt(pratt) => {
-            for branch in &mut pratt.nud {
-                qualify(
-                    &mut branch.variant.elements,
-                    Some(&branch.variant.ident),
-                    &counts,
-                    &mut occupied,
-                )?;
-            }
-            for branch in &mut pratt.led {
-                qualify(
-                    &mut branch.variant.elements,
-                    Some(&branch.variant.ident),
                     &counts,
                     &mut occupied,
                 )?;
@@ -1951,14 +1778,7 @@ pub(super) fn closed_terminal_application(
     }
 }
 
-/// Reads the site's resolved `#[parse(pratt(exclude(...)))]` variants
-/// ([`crate::ParseSite::pratt_excluded`], the one resolution, made by materialization's
-/// `resolve_pratt_exclusions`) as the ordinals the
-/// generated exclusion slice carries: an infix or postfix variant's ordinal among the LED
-/// variants, and an atom or prefix variant's ordinal among the NUD variants offset by the LED
-/// count, so that the LED loop's check is unchanged by NUD exclusions. Only the position of an
-/// already-resolved declaration is decided here; which name denotes which variant is not
-/// decided a second time during generation.
+/// Renders the Rust type of one closed Node application.
 pub(super) fn materialized_application_type(
     application: &MaterializedNodeApplication,
     lifetimes: &[syn::Lifetime],
@@ -2072,7 +1892,7 @@ pub(super) fn closed_type(
     })
 }
 
-/// Emits one Pratt extender branch around the existing left operand.
+/// Renders the construction expression of one variant or struct body.
 pub(super) fn render_construction(
     variant: Option<&Ident>,
     style: ResolvedFieldStyle,

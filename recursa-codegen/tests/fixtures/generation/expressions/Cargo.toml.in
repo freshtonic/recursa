@@ -1,12 +1,12 @@
 [package]
-name = "recursa-generated-table-driven-pratt"
+name = "recursa-generated-expressions"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.88"
 build = "build.rs"
 
 [dependencies]
-recursa = { path = "{{RECURSA}}", features = ["spans"] }
+recursa = { path = "{{RECURSA}}", features = ["arbitrary", "spans"] }
 
 [build-dependencies]
 recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["spans"] }

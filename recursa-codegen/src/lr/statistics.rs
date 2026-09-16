@@ -14,7 +14,7 @@ use super::grammar::{LrGrammar, NonterminalOrigin, RuleAction};
 use super::lowering::{TypeRoles, expand_atoms};
 use super::tables::{EncodedLrTables, LrTables};
 use crate::materialization::LoweredGrammar;
-use crate::{DeclId, TypeId, TypeShape};
+use crate::{TypeId, TypeShape};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Stable categories used to attribute nonterminals, rules and state kernels.
@@ -27,8 +27,8 @@ pub enum LrOrigin {
     Helper,
     /// A conflict-driven per-site copy of a shared helper.
     HelperCopy,
-    /// A restricted Pratt language or its attachment unit.
-    Restriction,
+    /// An authored restricted expression.
+    DeclaredRestriction,
 }
 
 impl LrOrigin {
@@ -39,7 +39,7 @@ impl LrOrigin {
             Self::Start => "start",
             Self::Helper => "helper",
             Self::HelperCopy => "helper-copy",
-            Self::Restriction => "restriction",
+            Self::DeclaredRestriction => "declared-restriction",
         }
     }
 }
@@ -55,14 +55,14 @@ pub struct OriginStatistics {
     pub helper: usize,
     /// Conflict-driven helper copies.
     pub helper_copy: usize,
-    /// Restricted Pratt languages and attachment units.
-    pub restriction: usize,
+    /// Authored restricted expressions.
+    pub declared_restriction: usize,
 }
 
 impl OriginStatistics {
     /// Returns the sum of all origin categories.
     pub const fn total(&self) -> usize {
-        self.r#type + self.start + self.helper + self.helper_copy + self.restriction
+        self.r#type + self.start + self.helper + self.helper_copy + self.declared_restriction
     }
 
     /// Increments one origin category.
@@ -72,7 +72,7 @@ impl OriginStatistics {
             LrOrigin::Start => self.start += 1,
             LrOrigin::Helper => self.helper += 1,
             LrOrigin::HelperCopy => self.helper_copy += 1,
-            LrOrigin::Restriction => self.restriction += 1,
+            LrOrigin::DeclaredRestriction => self.declared_restriction += 1,
         }
     }
 }
@@ -88,14 +88,12 @@ pub struct NormalizedShapeStatistics {
     pub sequence: usize,
     /// Enum types.
     pub r#enum: usize,
-    /// Pratt types.
-    pub pratt: usize,
 }
 
 impl NormalizedShapeStatistics {
     /// Returns the number of normalized types.
     pub const fn total(&self) -> usize {
-        self.token + self.alias + self.sequence + self.r#enum + self.pratt
+        self.token + self.alias + self.sequence + self.r#enum
     }
 }
 
@@ -110,8 +108,6 @@ pub struct TypeRoleStatistics {
     pub presence_sites: usize,
     /// Types retaining parse capability.
     pub start_types: usize,
-    /// Sites carrying authored Pratt exclusions.
-    pub pratt_exclusions: usize,
     /// Materialized Node applications.
     pub applications: usize,
     /// Repetition attachment units.
@@ -127,7 +123,7 @@ pub struct RuleActionStatistics {
     pub accept: usize,
     /// Content-token rules.
     pub token: usize,
-    /// Node, enum, sequence and Pratt construction rules.
+    /// Node, enum and sequence construction rules.
     pub construct: usize,
     /// Fixed-token-only sequence rules.
     pub fixed_sequence: usize,
@@ -245,23 +241,6 @@ pub struct ContentTokenStatistics {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Counts for one distinct restricted Pratt language.
-pub struct PrattRestrictionStatistics {
-    /// Restricted normalized type.
-    pub type_id: TypeId,
-    /// Normalized type name.
-    pub name: String,
-    /// Excluded declarations in normalized order.
-    pub excluded: Vec<DeclId>,
-    /// Minimum admitted binding power.
-    pub min_bp: u8,
-    /// Nonterminals carrying this restriction.
-    pub nonterminals: usize,
-    /// Rules owned by those nonterminals.
-    pub rules: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 /// Reachability statistics for one public parse-capability start.
 pub struct StartStatistics {
     /// Dense normalized grammar type identity.
@@ -299,8 +278,6 @@ pub struct LrStatistics {
     pub tables: Vec<TableStatistics>,
     /// Content-bearing token types in normalized type order.
     pub content_tokens: Vec<ContentTokenStatistics>,
-    /// Distinct restricted Pratt languages in semantic order.
-    pub pratt_restrictions: Vec<PrattRestrictionStatistics>,
     /// Public parse-capability starts in start-rule order.
     pub starts: Vec<StartStatistics>,
 }
@@ -339,7 +316,6 @@ impl LrStatistics {
             states: state_statistics(grammar, automaton),
             tables: table_statistics(tables),
             content_tokens: content_token_statistics(lowered, roles),
-            pratt_restrictions: pratt_restriction_statistics(lowered, grammar),
             starts: start_statistics(lowered, automaton),
         }
     }
@@ -355,7 +331,6 @@ impl LrStatistics {
         writeln!(out, "shape.alias={}", self.shapes.alias).expect("String write");
         writeln!(out, "shape.sequence={}", self.shapes.sequence).expect("String write");
         writeln!(out, "shape.enum={}", self.shapes.r#enum).expect("String write");
-        writeln!(out, "shape.pratt={}", self.shapes.pratt).expect("String write");
         render_roles(&mut out, &self.roles);
         writeln!(out, "nonterminal.total={}", self.nonterminals.total()).expect("String write");
         render_origins(&mut out, "nonterminal", &self.nonterminals);
@@ -396,19 +371,6 @@ impl LrStatistics {
             )
             .expect("String write");
         }
-        for (index, restriction) in self.pratt_restrictions.iter().enumerate() {
-            writeln!(
-                out,
-                "pratt-restriction.{index}=type:{} name:{} excluded:{} min-bp:{} nonterminals:{} rules:{}",
-                restriction.type_id.index(),
-                restriction.name,
-                restriction.excluded.len(),
-                restriction.min_bp,
-                restriction.nonterminals,
-                restriction.rules
-            )
-            .expect("String write");
-        }
         for start in &self.starts {
             writeln!(
                 out,
@@ -431,7 +393,7 @@ fn origin(origin: &NonterminalOrigin) -> LrOrigin {
         NonterminalOrigin::Start(_) => LrOrigin::Start,
         NonterminalOrigin::Helper => LrOrigin::Helper,
         NonterminalOrigin::HelperCopy { .. } => LrOrigin::HelperCopy,
-        NonterminalOrigin::Restriction { .. } => LrOrigin::Restriction,
+        NonterminalOrigin::DeclaredRestriction { .. } => LrOrigin::DeclaredRestriction,
     }
 }
 
@@ -444,7 +406,6 @@ fn shape_statistics(lowered: &LoweredGrammar) -> NormalizedShapeStatistics {
             TypeShape::Alias { .. } => result.alias += 1,
             TypeShape::Sequence { .. } => result.sequence += 1,
             TypeShape::Enum { .. } => result.r#enum += 1,
-            TypeShape::Pratt { .. } => result.pratt += 1,
         }
     }
     result
@@ -457,7 +418,6 @@ fn role_statistics(roles: &TypeRoles) -> TypeRoleStatistics {
         fixed_sequences: roles.fixed_sequences.len(),
         presence_sites: roles.presence_sites.len(),
         start_types: roles.start_types.len(),
-        pratt_exclusions: roles.pratt_exclusions.len(),
         applications: roles.applications.len(),
         attachment_units: roles.attachment_units.len(),
         presence_envelopes: roles.presence_envelopes.len(),
@@ -560,44 +520,6 @@ fn content_token_statistics(
         .collect()
 }
 
-/// Groups restriction-origin nonterminals and their rules by distinct Pratt language.
-fn pratt_restriction_statistics(
-    lowered: &LoweredGrammar,
-    grammar: &LrGrammar,
-) -> Vec<PrattRestrictionStatistics> {
-    let mut groups = BTreeMap::<(TypeId, Vec<DeclId>, u8), (usize, usize)>::new();
-    for (index, nonterminal) in grammar.nonterminals().iter().enumerate() {
-        let NonterminalOrigin::Restriction {
-            type_id,
-            excluded,
-            min_bp,
-        } = &nonterminal.origin
-        else {
-            continue;
-        };
-        let entry = groups
-            .entry((*type_id, excluded.clone(), *min_bp))
-            .or_default();
-        entry.0 += 1;
-        entry.1 += grammar
-            .rules_of(super::grammar::NonterminalId::new(index as u32))
-            .len();
-    }
-    groups
-        .into_iter()
-        .map(
-            |((type_id, excluded, min_bp), (nonterminals, rules))| PrattRestrictionStatistics {
-                type_id,
-                name: lowered.grammar.types[type_id.index()].name.clone(),
-                excluded,
-                min_bp,
-                nonterminals,
-                rules,
-            },
-        )
-        .collect()
-}
-
 /// Computes graph reachability for every existing parse-capability start.
 fn start_statistics(lowered: &LoweredGrammar, automaton: &Automaton) -> Vec<StartStatistics> {
     automaton
@@ -634,7 +556,6 @@ fn render_origins(out: &mut String, prefix: &str, counts: &OriginStatistics) {
     writeln!(out, "{prefix}.start={}", counts.start).expect("String write");
     writeln!(out, "{prefix}.helper={}", counts.helper).expect("String write");
     writeln!(out, "{prefix}.helper-copy={}", counts.helper_copy).expect("String write");
-    writeln!(out, "{prefix}.restriction={}", counts.restriction).expect("String write");
 }
 
 /// Renders normalized materialization-role counts.
@@ -643,7 +564,6 @@ fn render_roles(out: &mut String, roles: &TypeRoleStatistics) {
     writeln!(out, "role.fixed-sequence={}", roles.fixed_sequences).expect("String write");
     writeln!(out, "role.presence-site={}", roles.presence_sites).expect("String write");
     writeln!(out, "role.start-type={}", roles.start_types).expect("String write");
-    writeln!(out, "role.pratt-exclusion={}", roles.pratt_exclusions).expect("String write");
     writeln!(out, "role.application={}", roles.applications).expect("String write");
     writeln!(out, "role.attachment-unit={}", roles.attachment_units).expect("String write");
     writeln!(out, "role.presence-envelope={}", roles.presence_envelopes).expect("String write");

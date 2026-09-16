@@ -226,6 +226,139 @@ fn int(text: &'static str) -> selcyc::Expr<'static> {
     assert_eq!(parse(&rendered).render(), rendered, "repaired grouping is idempotent");
 "#,
     },
+    Golden {
+        fixtures: PRETTY_GOLDEN_FIXTURES,
+        fixture: "declared-precedence",
+        module: "declared_precedence",
+        root: "Expr",
+        source: "1 - 2 - 3",
+        expected: "1 - 2 - 3",
+        fingerprint: r#"
+fn fingerprint(value: &declared_precedence::Expr<'_>) -> String {
+    match value {
+        declared_precedence::Expr::Integer(atom) => format!("int:{}", atom.text.text()),
+        declared_precedence::Expr::Name(atom) => format!("name:{}", atom.text.text()),
+        declared_precedence::Expr::Parenthesized(inner) => format!("paren({})", fingerprint(inner)),
+        declared_precedence::Expr::Negate(inner) => format!("neg({})", fingerprint(inner)),
+        declared_precedence::Expr::Factorial(inner) => format!("fact({})", fingerprint(inner)),
+        declared_precedence::Expr::Power(left, right) => format!("pow({},{})", fingerprint(left), fingerprint(right)),
+        declared_precedence::Expr::Multiply(left, right) => format!("mul({},{})", fingerprint(left), fingerprint(right)),
+        declared_precedence::Expr::Add(left, right) => format!("add({},{})", fingerprint(left), fingerprint(right)),
+        declared_precedence::Expr::Subtract(left, right) => format!("sub({},{})", fingerprint(left), fingerprint(right)),
+        declared_precedence::Expr::Equals(left, right) => format!("eq({},{})", fingerprint(left), fingerprint(right)),
+    }
+}
+
+fn int(text: &'static str) -> declared_precedence::Expr<'static> {
+    declared_precedence::Expr::Integer(declared_precedence::Integer {
+        text: declared_precedence::IntegerText::new(text),
+    })
+}
+
+fn name(text: &'static str) -> declared_precedence::Expr<'static> {
+    declared_precedence::Expr::Name(declared_precedence::Name {
+        text: declared_precedence::NameText::new(text),
+    })
+}
+"#,
+        repair: r#"
+    // The parsed round trip above already proves an enum with a declared
+    // `precedence { ... }` block generates and pretty-prints a left-assoc chain on its first
+    // operand without parentheses. Every other declared-precedence case needs a value no parse
+    // of this grammar can produce without an authored `Parenthesized` node, so it is built
+    // directly, exactly like the grouping repair above.
+    use declared_precedence::Expr;
+
+    // Left-assoc: chaining on the last operand keeps parentheses the first-operand chain does
+    // not need.
+    let left_nested_right = Expr::Subtract(
+        Box::new(int("1")),
+        Box::new(Expr::Subtract(Box::new(int("2")), Box::new(int("3")))),
+    );
+    assert_eq!(
+        left_nested_right.render(),
+        "1 - (2 - 3)",
+        "left-assoc chaining on the last operand keeps parentheses",
+    );
+
+    // Right-assoc: the mirror image of left-assoc.
+    let right_chain = Expr::Power(
+        Box::new(int("2")),
+        Box::new(Expr::Power(Box::new(int("3")), Box::new(int("4")))),
+    );
+    assert_eq!(
+        right_chain.render(),
+        "2 ^ 3 ^ 4",
+        "right-assoc chaining on the last operand needs no parentheses",
+    );
+    let right_nested_left = Expr::Power(
+        Box::new(Expr::Power(Box::new(int("2")), Box::new(int("3")))),
+        Box::new(int("4")),
+    );
+    assert_eq!(
+        right_nested_left.render(),
+        "(2 ^ 3) ^ 4",
+        "right-assoc chaining on the first operand keeps parentheses",
+    );
+
+    // Prefix: `#[parse(prec = UMINUS)]` gives `Negate` a level between `Add` and `Power`, so it
+    // parenthesizes a looser-binding operand and does not parenthesize a tighter one.
+    let negate_looser = Expr::Negate(Box::new(Expr::Add(Box::new(name("a")), Box::new(name("b")))));
+    assert_eq!(
+        negate_looser.render(),
+        "-(a + b)",
+        "a prefix variant parenthesizes a looser-binding operand",
+    );
+    let negate_tighter = Expr::Negate(Box::new(Expr::Factorial(Box::new(name("a")))));
+    assert_eq!(
+        negate_tighter.render(),
+        "-a!",
+        "a prefix variant needs no parentheses around a tighter-binding operand",
+    );
+
+    // Postfix: the mirror image of prefix.
+    let factorial_looser =
+        Expr::Factorial(Box::new(Expr::Add(Box::new(name("a")), Box::new(name("b")))));
+    assert_eq!(
+        factorial_looser.render(),
+        "(a + b)!",
+        "a postfix variant parenthesizes a looser-binding operand",
+    );
+
+    // Nonassoc: unlike left- or right-assoc, a same-level tie parenthesizes on both sides.
+    let nonassoc_first = Expr::Equals(
+        Box::new(Expr::Equals(Box::new(int("1")), Box::new(int("2")))),
+        Box::new(int("3")),
+    );
+    assert_eq!(
+        nonassoc_first.render(),
+        "(1 == 2) == 3",
+        "a nonassoc level parenthesizes a same-level first operand",
+    );
+    let nonassoc_last = Expr::Equals(
+        Box::new(int("1")),
+        Box::new(Expr::Equals(Box::new(int("2")), Box::new(int("3")))),
+    );
+    assert_eq!(
+        nonassoc_last.render(),
+        "1 == (2 == 3)",
+        "a nonassoc level parenthesizes a same-level last operand",
+    );
+
+    for rendered in [
+        left_nested_right.render(),
+        right_chain.render(),
+        right_nested_left.render(),
+        negate_looser.render(),
+        negate_tighter.render(),
+        factorial_looser.render(),
+        nonassoc_first.render(),
+        nonassoc_last.render(),
+    ] {
+        assert_eq!(parse(&rendered).render(), rendered, "repaired precedence is idempotent");
+    }
+"#,
+    },
 ];
 
 #[test]

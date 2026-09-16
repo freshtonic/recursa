@@ -26,11 +26,7 @@ pub(crate) fn validate_declaration_layouts(
         .map(|application| {
             application
                 .fields()
-                .filter_map(|field| {
-                    let MaterializedFieldView::Parsed { field, ty, .. } = field else {
-                        // Pratt lhs extraction has already required an explicit boxed!(Self).
-                        return None;
-                    };
+                .filter_map(|MaterializedFieldView::Parsed { field, ty, .. }| {
                     inline_target(ty).map(|target| LayoutEdge { target, field })
                 })
                 .collect::<Vec<_>>()

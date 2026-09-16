@@ -20,22 +20,21 @@ use syn::spanned::Spanned as _;
 use syn::visit::{self as syn_visit, Visit as _};
 use syn::{GenericArgument, GenericParam, Generics, Ident, Item, PathArguments, Type, Visibility};
 
-use crate::PrattPosition;
 use crate::TypeShape;
-use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
+use crate::build_diagnostic::{
+    BuildReport, DiagnosticEvidence, DiagnosticLocation, DiagnosticRemedy, DiagnosticStage,
+    GenerateError,
+};
 use crate::lexical::{
     KeywordRecognition, LexicalMatcher, LexicalPriority, NonTokenLexicalOutcome, TokenKindIdentity,
 };
 use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
+use crate::lr::LrDiagnostic;
+#[cfg(feature = "diagrams")]
+use crate::materialization::MaterializedFixedAttachment;
 use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedNodeApplication,
-    MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattVariant,
-    MaterializedSemanticFieldProjection,
-};
-#[cfg(feature = "diagrams")]
-use crate::materialization::{
-    MaterializedFixedAttachment, MaterializedPrattLedPosition, MaterializedPrattNud,
-    MaterializedPrattNudPosition,
+    MaterializedNodeBody, MaterializedSemanticFieldProjection,
 };
 use crate::profile::{ENVIRONMENT as PROFILE_ENVIRONMENT, Span};
 use crate::resolution::{
@@ -48,13 +47,15 @@ use crate::resolution::{
 use crate::source_analysis::analyze_source_tree;
 use crate::source_analysis::{
     CargoOutput, DiscoveredSourceTree, SourceAnalysisInput, analyze_discovered_tree,
-    discover_source_tree, internal_generate_error, warning_directives,
+    discover_source_tree, internal_generate_error, make_diagnostic, warning_directives,
 };
 use crate::source_model::{
-    ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
-    NodeBody as SourceNodeBody, PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition,
-    PrettySpacing, PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
+    AttachedFixedSyntax, ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
+    NodeBody as SourceNodeBody, PrecedenceKindReference, PrecedenceOwner, PrettyBreak, PrettyGroup,
+    PrettyHints, PrettySeparatorPosition, PrettySpacing, PrettyTrailingSeparator,
+    SemanticFieldProjection, SourceModel, TokenDefinitionKind,
 };
+use crate::{PrecedenceAssociativity, PrecedenceLevelId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Cardinality operation implemented by one generated container projection.
@@ -247,8 +248,10 @@ pub(crate) fn generate_with(
     };
     let rendered = {
         let _stage = Span::enter("render");
-        render_lr_parser(&plan, &success.analyzed.lowered)
-            .map_err(|detail| failure(root, &detail))?
+        render_lr_parser(&plan, &success.analyzed.lowered).map_err(|error| match error {
+            LrBuildError::Diagnostics(diagnostics) => lr_conflict_error(root, &diagnostics),
+            LrBuildError::Internal(detail) => failure(root, &detail),
+        })?
     };
     let debug_bundle = {
         let _stage = Span::enter("debug-bundle");
@@ -285,7 +288,7 @@ pub(crate) fn generate_with(
 fn render_lr_parser(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
-) -> Result<RenderedGeneration, String> {
+) -> Result<RenderedGeneration, LrBuildError> {
     render_declared(plan, lowered)
 }
 
@@ -300,6 +303,60 @@ fn emit_debug_directory_invalidation(cargo: &mut impl CargoOutput) {
 /// Converts an emission invariant into a stable-coded diagnostic at the selected root.
 fn failure(selected_root: &Path, detail: &str) -> GenerateError {
     internal_generate_error(DiagnosticStage::Emission, detail, selected_root)
+}
+
+/// Converts every unresolved LR conflict or lowering diagnostic into a stable-coded build
+/// report: an ordinary authoring error (`RCA0400`/`RCA0401` for an unresolved shift/reduce or
+/// reduce/reduce conflict, `RCA0403` for a text predicate the
+/// table-driven style cannot lower) whose evidence carries the automaton dump's content for
+/// that state — its shortest path, items and competing actions — so an unresolved conflict in
+/// an authored grammar is never wrapped as the internal-invariant `RCA9105`. A shift/reduce
+/// conflict's summary also carries the authoring remedy: declare a precedence level for the
+/// lookahead token, or add `#[parse(prec = NAME)]` to the rule that reduces.
+fn lr_conflict_error(selected_root: &Path, diagnostics: &[LrDiagnostic]) -> GenerateError {
+    let location = DiagnosticLocation::new(selected_root.to_owned(), None).ok();
+    let reports = diagnostics
+        .iter()
+        .enumerate()
+        .map(|(index, diagnostic)| {
+            let mut witness = Vec::new();
+            if !diagnostic.path.is_empty() {
+                witness.push(format!("path: {}", diagnostic.path));
+            }
+            witness.extend(diagnostic.items.iter().map(|item| format!("item: {item}")));
+            witness.extend(
+                diagnostic
+                    .actions
+                    .iter()
+                    .map(|action| format!("action: {action}")),
+            );
+            witness.extend(diagnostic.notes.iter().cloned());
+            let summary = if diagnostic.code == crate::lr::report::SHIFT_REDUCE {
+                format!(
+                    "{}; declare a precedence level for the lookahead token, or add \
+                     `#[parse(prec = NAME)]` to the rule that reduces",
+                    diagnostic.message
+                )
+            } else {
+                diagnostic.message.clone()
+            };
+            make_diagnostic(
+                diagnostic.code,
+                &summary,
+                location.clone(),
+                DiagnosticEvidence::SemanticWitness {
+                    subject: diagnostic.message.clone(),
+                    witness,
+                },
+                DiagnosticRemedy::CorrectSource,
+                Some((
+                    index as u64,
+                    format!("{}#{}", diagnostic.code, diagnostic.path),
+                )),
+            )
+        })
+        .collect();
+    GenerateError::new(BuildReport::new(reports))
 }
 
 #[cfg(test)]

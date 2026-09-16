@@ -16,10 +16,13 @@ value stacks, action/goto tables, and start states are implementation details.
 Every generated Node retains `Parse` as its entry point, but authors do not
 select parser implementations or configure parser lookahead.
 
-Grammar ambiguity is resolved by ordinary LALR precedence or an exact scoped
-conflict resolution. Unresolved conflicts fail generation. Pratt declarations
-lower to LR precedence, and fixed-token, container, and lexical declarations
-retain the contracts documented in the [facade guide](../recursa/README.md).
+Grammar ambiguity is resolved by the token grammar's `precedence { ... }`
+declaration or by an exact scoped conflict resolution. Unresolved conflicts
+fail generation. An expression Node is an ordinary left-recursive enum whose
+operators take declared levels; see
+[declared precedence](declared-precedence.md). Fixed-token, container, and
+lexical declarations retain the contracts documented in the
+[facade guide](../recursa/README.md).
 
 The supported grammar surface is the compiled facade API and its Rustdoc. For
 the parser architecture, migration of removed declarations, and the acceptance

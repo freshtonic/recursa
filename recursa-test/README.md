@@ -7,7 +7,7 @@ Grammar authors should use ordinary Rust tests against their generated public
 lexing and parsing entry points. The compiled
 [JSON behavior tests](https://github.com/freshtonic/recursa/blob/main/examples/json/tests/behavior.rs)
 and
-[Pratt-expression behavior tests](https://github.com/freshtonic/recursa/blob/main/examples/pratt-expressions/tests/behavior.rs)
+[expression behavior tests](https://github.com/freshtonic/recursa/blob/main/examples/expressions/tests/behavior.rs)
 show this approach. Recursa's own generator validation remains in workspace
 tests rather than being promised as an API from this package.
 

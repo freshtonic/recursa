@@ -22,9 +22,6 @@ use super::paths::{SymbolPath, render_path, shortest_paths};
 pub const SHIFT_REDUCE: &str = "RCA0400";
 /// Registered code of a reduce/reduce conflict: a state where two rules end on one lookahead.
 pub const REDUCE_REDUCE: &str = "RCA0401";
-/// Registered code of a Pratt binding power with no precedence equivalent: the table-driven
-/// style cannot reproduce the recursive Pratt parse of that variant.
-pub const NO_PRECEDENCE_EQUIVALENT: &str = "RCA0402";
 /// Registered code of a token type refined by a text predicate, which table mode cannot lower.
 pub const TEXT_PREDICATE: &str = "RCA0403";
 /// Registered code of the note attached to a reduce/reduce conflict that no canonical LR(1)

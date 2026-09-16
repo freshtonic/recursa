@@ -4,12 +4,12 @@
 //! of the token grammar.
 //!
 //! The declaration lists levels from lowest to highest, each `left`, `right` or `nonassoc`
-//! over token names, with a binding power that places the level on the Pratt scale; the
+//! over token names, with a `bp` that orders the level against the others; the
 //! lowering records each terminal's level on the [`LrGrammar`]. This module assigns rule
-//! precedence the way bison does: a rule with no Pratt precedence and no `#[parse(prec =
-//! ...)]` override takes the level of its last terminal that has one. The resolver in
+//! precedence the way bison does: a rule with no `#[parse(prec = ...)]` override takes the
+//! level of its last terminal that has one. The resolver in
 //! [`precedence`](crate::lr::precedence) then compares a reducing rule's level with the
-//! lookahead's declared level whenever the Pratt levels do not decide.
+//! lookahead's declared level.
 
 use super::grammar::{
     Associativity, DeclaredPrecedence, LrGrammar, RuleAction, Symbol, TerminalId,
@@ -42,9 +42,7 @@ pub fn apply(grammar: &mut LrGrammar, description: &GrammarDescription) {
             grammar.declare_precedence(TerminalId::new(u32::from(kind.get())), level(id));
         }
     }
-    // A variant's override wins over its Node's; a rule that already carries a Pratt
-    // precedence keeps it, which the model guarantees by rejecting the attribute on operator
-    // variants.
+    // A variant's override wins over its Node's.
     let override_of = |rule: &super::grammar::Rule| -> Option<PrecedenceLevelId> {
         let (type_id, variant) = match rule.action {
             RuleAction::Construct {
@@ -65,15 +63,15 @@ pub fn apply(grammar: &mut LrGrammar, description: &GrammarDescription) {
             continue;
         }
         if let Some(id) = override_of(rule) {
-            rule.precedence = Some(level(id).rule_precedence(rule.lhs));
+            rule.precedence = Some(level(id).rule_precedence());
         }
     }
     assign_rule_precedence(grammar);
 }
 
 /// Gives every rule that still has no precedence the declared precedence of its last terminal
-/// with one, in the rule's own left-hand side. Rules that already carry a Pratt precedence or
-/// an override keep it; a rule whose terminals are all undeclared keeps none.
+/// with one. A rule that already carries an override keeps it; a rule whose terminals are all
+/// undeclared keeps none.
 pub fn assign_rule_precedence(grammar: &mut LrGrammar) {
     let declared: Vec<_> = (0..grammar.terminal_count())
         .map(|index| grammar.declared_precedence(super::grammar::TerminalId::new(index as u32)))
@@ -86,7 +84,7 @@ pub fn assign_rule_precedence(grammar: &mut LrGrammar) {
             Symbol::Terminal(terminal) => declared[terminal.index()],
             Symbol::Nonterminal(_) => None,
         });
-        rule.precedence = last.map(|level| level.rule_precedence(rule.lhs));
+        rule.precedence = last.map(DeclaredPrecedence::rule_precedence);
     }
 }
 
@@ -95,12 +93,9 @@ mod tests {
     //! The declaration over textbook grammars shaped after gram.y's conflict families.
 
     use super::assign_rule_precedence;
-    use crate::PrattPosition;
     use crate::lr::automaton::{Automaton, AutomatonOptions, ConflictKind, Resolution};
-    use crate::lr::grammar::{
-        Associativity, LrGrammar, PrecedenceOrigin, RuleId, TerminalId, TextbookGrammar,
-    };
-    use crate::lr::precedence::BindingPowerPrecedence;
+    use crate::lr::grammar::{Associativity, LrGrammar, RuleId, TerminalId, TextbookGrammar};
+    use crate::lr::precedence::PrecedenceResolver;
     use crate::lr::report::automaton_dump;
     use crate::lr::tables::{LrTables, SimulationError, simulate};
 
@@ -117,8 +112,7 @@ mod tests {
         textbook.assign_declared_precedence();
         textbook.start(start);
         let grammar = textbook.finish();
-        let precedence =
-            BindingPowerPrecedence::new(&grammar).expect("the grammar has a precedence equivalent");
+        let precedence = PrecedenceResolver::new(&grammar).expect("the resolver is infallible");
         let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
         (grammar, automaton)
     }
@@ -162,7 +156,7 @@ mod tests {
     /// `a LIKE b . ESCAPE`: pg-sql attaches the pattern and its optional escape clause to the
     /// `LIKE` variant, and a target may end in a bare label, so `ESCAPE` can also name the
     /// column. gram.y: `%nonassoc BETWEEN IN_P LIKE ...` then `%nonassoc ESCAPE`.
-    fn like_escape() -> TextbookGrammar {
+    fn like_escape() -> (TextbookGrammar, RuleId) {
         let mut grammar = TextbookGrammar::new(&["id", "LIKE", "ESCAPE", "VALUE", "+"]);
         grammar.rule("T", "E");
         grammar.rule("T", "E Label");
@@ -170,26 +164,15 @@ mod tests {
         grammar.rule("Label", "VALUE");
         grammar.rule("Label", "id");
         grammar.rule("E", "id");
-        grammar.pratt_rule("E", "E Like", PrattPosition::Infix { lbp: 5, rbp: 6 });
-        grammar.attachment_rule(
-            "Like",
-            "LIKE E",
-            "E",
-            PrattPosition::Infix { lbp: 5, rbp: 6 },
-        );
-        grammar.attachment_rule(
-            "Like",
-            "LIKE E ESCAPE E",
-            "E",
-            PrattPosition::Infix { lbp: 5, rbp: 6 },
-        );
-        grammar.pratt_rule("E", "E + E", PrattPosition::Infix { lbp: 10, rbp: 11 });
-        grammar
+        grammar.rule("E", "E LIKE E");
+        let escape = grammar.rule("E", "E LIKE E ESCAPE E");
+        grammar.rule("E", "E + E");
+        (grammar, escape)
     }
 
     #[test]
     fn without_the_declaration_the_escape_clause_is_a_conflict() {
-        let (grammar, automaton) = build(like_escape(), "T");
+        let (grammar, automaton) = build(like_escape().0, "T");
         let escape = terminal(&grammar, "ESCAPE");
         let conflicts: Vec<_> = automaton
             .conflicts()
@@ -205,11 +188,14 @@ mod tests {
 
     #[test]
     fn escape_declared_above_like_shifts_the_escape_clause() {
-        let mut textbook = like_escape();
+        let (mut textbook, escape_rule) = like_escape();
         textbook.precedence_level(Associativity::NonAssociative, 5, &["LIKE"]);
         textbook.precedence_level(Associativity::NonAssociative, 6, &["ESCAPE"]);
         textbook.precedence_level(Associativity::NonAssociative, 7, &["id", "VALUE"]);
         textbook.precedence_level(Associativity::Left, 10, &["+"]);
+        // `a_expr LIKE a_expr ESCAPE a_expr %prec LIKE`: the clause's last declared terminal is
+        // `ESCAPE`, one level above `LIKE`, so the override keeps the rule at `LIKE`'s level.
+        textbook.rule_precedence(escape_rule, "LIKE");
         let (grammar, automaton) = build(textbook, "T");
         assert!(
             automaton.conflicts().is_empty(),
@@ -219,17 +205,16 @@ mod tests {
         let settled = settled(&grammar, &automaton);
         assert!(
             settled.contains(&(
-                "Like -> LIKE E".to_owned(),
+                "E -> E LIKE E".to_owned(),
                 "ESCAPE".to_owned(),
                 Resolution::Shift
             )),
             "{settled:?}"
         );
-        // The `+` after the pattern is a Pratt operator of `E`, decided by binding powers as
-        // before: `Like -> LIKE E` (5) against `+` (10) shifts.
+        // `E -> E LIKE E` (5) against `+` (10) shifts.
         assert!(
             settled.contains(&(
-                "Like -> LIKE E".to_owned(),
+                "E -> E LIKE E".to_owned(),
                 "+".to_owned(),
                 Resolution::Shift
             )),
@@ -241,8 +226,7 @@ mod tests {
                 "E -> id",
                 "E -> id",
                 "E -> id",
-                "Like -> LIKE E ESCAPE E",
-                "E -> E Like",
+                "E -> E LIKE E ESCAPE E",
                 "T -> E"
             ]
         );
@@ -254,8 +238,7 @@ mod tests {
                 "E -> id",
                 "E -> E + E",
                 "E -> id",
-                "Like -> LIKE E ESCAPE E",
-                "E -> E Like",
+                "E -> E LIKE E ESCAPE E",
                 "T -> E"
             ]
         );
@@ -279,16 +262,12 @@ mod tests {
         grammar.rule("Label", "VALUE");
         grammar.rule("Label", "id");
         grammar.rule("E", "id");
-        grammar.pratt_rule("E", "E IsJson", PrattPosition::Postfix { bp: 6 });
-        grammar.attachment_rule("IsJson", "IS JSON", "E", PrattPosition::Postfix { bp: 6 });
-        grammar.attachment_rule(
-            "IsJson",
-            "IS JSON VALUE",
-            "E",
-            PrattPosition::Postfix { bp: 6 },
-        );
+        grammar.rule("E", "E IS JSON");
+        let typed = grammar.rule("E", "E IS JSON VALUE");
         grammar.precedence_level(Associativity::NonAssociative, 6, &["IS"]);
         grammar.precedence_level(Associativity::NonAssociative, 7, &["id", "VALUE"]);
+        // `%prec IS`: the typed form's last declared terminal is `VALUE`, one level above.
+        grammar.rule_precedence(typed, "IS");
         let (grammar, automaton) = build(grammar, "T");
         assert!(
             automaton.conflicts().is_empty(),
@@ -298,29 +277,18 @@ mod tests {
         assert_eq!(
             settled(&grammar, &automaton),
             [(
-                "IsJson -> IS JSON".to_owned(),
+                "E -> E IS JSON".to_owned(),
                 "VALUE".to_owned(),
                 Resolution::Shift
             )]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id IS JSON VALUE"),
-            [
-                "E -> id",
-                "IsJson -> IS JSON VALUE",
-                "E -> E IsJson",
-                "T -> E"
-            ]
+            ["E -> id", "E -> E IS JSON VALUE", "T -> E"]
         );
         assert_eq!(
             reductions(&grammar, &automaton, "id IS JSON id"),
-            [
-                "E -> id",
-                "IsJson -> IS JSON",
-                "E -> E IsJson",
-                "Label -> id",
-                "T -> E Label"
-            ]
+            ["E -> id", "E -> E IS JSON", "Label -> id", "T -> E Label"]
         );
     }
 
@@ -389,7 +357,7 @@ mod tests {
 
     /// `ROWS BETWEEN . - 1 PRECEDING`: `BETWEEN` opens a frame extent or names a column, and
     /// the token that decides is an operator whose precedence the `precedence` declaration
-    /// carries for the non-Pratt rule `Col -> BETWEEN` while the Pratt rules keep theirs.
+    /// carries for `Col -> BETWEEN` and for the arithmetic rules alike.
     /// gram.y: `%nonassoc BETWEEN ...` below `%left '+' '-'`.
     #[test]
     fn a_keyword_column_before_a_window_frame_shifts_the_frame_operator() {
@@ -411,10 +379,13 @@ mod tests {
         grammar.rule("E", "Col");
         grammar.rule("Col", "id");
         grammar.rule("Col", "BETWEEN");
-        grammar.pratt_rule("E", "- E", PrattPosition::Prefix { bp: 12 });
-        grammar.pratt_rule("E", "E - E", PrattPosition::Infix { lbp: 10, rbp: 11 });
+        let negate = grammar.rule("E", "- E");
+        grammar.rule("E", "E - E");
         grammar.precedence_level(Associativity::NonAssociative, 5, &["BETWEEN"]);
         grammar.precedence_level(Associativity::Left, 10, &["-"]);
+        grammar.precedence_level(Associativity::Right, 12, &["UMINUS"]);
+        // `a_expr: '-' a_expr %prec UMINUS`.
+        grammar.rule_precedence(negate, "UMINUS");
         let (grammar, automaton) = build(grammar, "Frame");
         assert!(
             automaton.conflicts().is_empty(),
@@ -456,8 +427,8 @@ mod tests {
                 "Frame -> ROWS Extent"
             ]
         );
-        // A Pratt rule against a Pratt operator of its own nonterminal is decided by binding
-        // powers alone: `- id - id` is `(- id) - id` because the prefix binds at 12.
+        // `- id - id` is `(- id) - id` because `%prec UMINUS` binds the prefix at 12, above
+        // the infix `-` at 10.
         assert_eq!(
             reductions(&grammar, &automaton, "ROWS - id - id PRECEDING"),
             [
@@ -484,7 +455,7 @@ mod tests {
         grammar.rule("Sub", "( SELECT id )");
         let parenthesised = grammar.rule("E", "Sub");
         grammar.rule("E", "Sub . id");
-        grammar.pratt_rule("E", "E . id", PrattPosition::Postfix { bp: 20 });
+        grammar.rule("E", "E . id");
         grammar.precedence_level(Associativity::Right, 18, &["UMINUS"]);
         grammar.precedence_level(Associativity::Left, 20, &["."]);
         grammar.rule_precedence(parenthesised, "UMINUS");
@@ -502,7 +473,6 @@ mod tests {
         let precedence = rule
             .precedence
             .expect("the override gives the rule a precedence");
-        assert_eq!(precedence.origin, PrecedenceOrigin::Declared);
         assert_eq!(precedence.level, 18);
         assert_eq!(precedence.associativity, Associativity::Right);
         assert_eq!(
@@ -522,7 +492,7 @@ mod tests {
         grammar.rule("Sub", "( SELECT id )");
         grammar.rule("E", "Sub");
         grammar.rule("E", "Sub . id");
-        grammar.pratt_rule("E", "E . id", PrattPosition::Postfix { bp: 20 });
+        grammar.rule("E", "E . id");
         grammar.precedence_level(Associativity::Left, 20, &["."]);
         let (grammar, automaton) = build(grammar, "E");
         assert_eq!(automaton.conflicts().len(), 1);
@@ -644,64 +614,27 @@ mod tests {
         let both = grammar.rule("X", "a b Y c d");
         let none = grammar.rule("X", "Y a");
         let epsilon = grammar.rule("Y", "");
-        let pratt = grammar.pratt_rule("X", "X b X", PrattPosition::Infix { lbp: 40, rbp: 41 });
+        let overridden = grammar.rule("X", "X b X");
         grammar.precedence_level(Associativity::Left, 1, &["b"]);
         grammar.precedence_level(Associativity::Right, 2, &["c"]);
+        grammar.precedence_level(Associativity::Left, 40, &["HIGH"]);
+        grammar.rule_precedence(overridden, "HIGH");
         grammar.assign_declared_precedence();
         grammar.start("X");
         let grammar = grammar.finish();
         let level = |rule: RuleId| {
-            grammar.rule(rule).precedence.map(|precedence| {
-                (
-                    precedence.origin,
-                    precedence.level,
-                    precedence.associativity,
-                )
-            })
+            grammar
+                .rule(rule)
+                .precedence
+                .map(|precedence| (precedence.level, precedence.associativity))
         };
         // `d` has no declared precedence, so the last declared terminal is `c`.
-        assert_eq!(
-            level(both),
-            Some((PrecedenceOrigin::Declared, 2, Associativity::Right))
-        );
+        assert_eq!(level(both), Some((2, Associativity::Right)));
         assert_eq!(level(none), None);
         assert_eq!(level(epsilon), None);
-        assert_eq!(
-            level(pratt),
-            Some((
-                PrecedenceOrigin::Pratt {
-                    position: PrattPosition::Infix { lbp: 40, rbp: 41 }
-                },
-                40,
-                Associativity::Left
-            ))
-        );
-        assert!(grammar.rules().iter().all(|rule| {
-            rule.precedence
-                .is_none_or(|precedence| precedence.owner == rule.lhs)
-        }));
+        // The override wins over the rule's own last declared terminal `b`.
+        assert_eq!(level(overridden), Some((40, Associativity::Left)));
         assert_eq!(grammar.declared_precedence(terminal(&grammar, "d")), None);
-    }
-
-    #[test]
-    fn a_pratt_operator_of_the_owner_is_decided_by_binding_powers_not_the_declaration() {
-        // `+` is declared at 30, above `*`'s Pratt level 20, but `E -> E * E . +` is decided
-        // by the Pratt levels (`*` at 20 reduces against `+` at 10) exactly as before.
-        let mut grammar = TextbookGrammar::new(&["id", "+", "*"]);
-        grammar.rule("E", "id");
-        grammar.pratt_rule("E", "E + E", PrattPosition::Infix { lbp: 10, rbp: 11 });
-        grammar.pratt_rule("E", "E * E", PrattPosition::Infix { lbp: 20, rbp: 21 });
-        grammar.precedence_level(Associativity::Left, 30, &["+"]);
-        let (grammar, automaton) = build(grammar, "E");
-        assert!(
-            automaton.conflicts().is_empty(),
-            "{:?}",
-            automaton.conflicts()
-        );
-        assert_eq!(
-            reductions(&grammar, &automaton, "id * id + id"),
-            ["E -> id", "E -> id", "E -> E * E", "E -> id", "E -> E + E"]
-        );
     }
 
     #[test]
