@@ -47,8 +47,8 @@ pub struct GrammarDescription {
     pub types: Vec<TypeDescription>,
     /// Lookahead filters in declaration order; a merged kind is a kind no lexer produces.
     pub lookahead_filters: Vec<LookaheadFilter>,
-    /// The `precedence { ... }` declaration: levels from lowest to highest binding power,
-    /// indexed by [`PrecedenceLevelId`]; empty without one.
+    /// The `precedence { ... }` declaration: levels from loosest to tightest, indexed by
+    /// [`PrecedenceLevelId`]; empty without one.
     pub precedence: Vec<PrecedenceLevel>,
     /// Authored resolutions for specific unresolved LR conflict cells, validated after precedence
     /// resolution.
@@ -130,13 +130,14 @@ pub enum PrecedenceAssociativity {
 /// One level of the `precedence { ... }` declaration over token kinds.
 ///
 /// Only the table-driven lowering reads it: every kind at the level, as a lookahead, has the
-/// level's binding power and associativity, and a rule takes the level of its last such
+/// level's `bp` and associativity, and a rule takes the level of its last such
 /// terminal, or of the level its declaration's [`precedence`](Declaration::precedence)
 /// override names.
 pub struct PrecedenceLevel {
     /// The level's associativity.
     pub associativity: PrecedenceAssociativity,
-    /// The level's binding power, strictly above the previous level's; it orders the levels.
+    /// The level's `bp`, strictly above the previous level's. It orders the levels against
+    /// one another and has no other meaning.
     pub binding_power: u8,
     /// The token kinds at this level, in authored order without duplicates; empty for a level
     /// of precedence-only names, which only an override can name.

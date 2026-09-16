@@ -214,13 +214,13 @@ pub(crate) enum LrLookaheadReference {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One level of the `precedence { ... }` declaration, bison's `%left`, `%right` or
-/// `%nonassoc` line with the binding power that orders it against the other levels.
+/// `%nonassoc` line with the `bp` that orders it against the other levels.
 ///
 /// LR lowering reads this declaration when resolving shift/reduce conflicts.
 pub(crate) struct PrecedenceLevel {
     /// The level's associativity.
     pub(crate) associativity: crate::PrecedenceAssociativity,
-    /// The level's binding power, strictly above the previous level's.
+    /// The level's `bp`, strictly above the previous level's.
     pub(crate) binding_power: u8,
     /// Locates the level's declaration.
     pub(crate) site: SourceSite,
@@ -5799,7 +5799,7 @@ struct TokenCatalog {
 struct PendingPrecedenceDeclaration {
     /// Locates the block's `precedence` keyword.
     site: SourceSite,
-    /// The levels from lowest to highest binding power.
+    /// The levels from loosest to tightest.
     levels: Vec<PendingPrecedenceLevel>,
 }
 
@@ -5808,7 +5808,7 @@ struct PendingPrecedenceDeclaration {
 struct PendingPrecedenceLevel {
     /// The level's associativity.
     associativity: crate::PrecedenceAssociativity,
-    /// The level's binding power.
+    /// The level's `bp`.
     binding_power: u8,
     /// Locates the level's associativity keyword.
     site: SourceSite,
@@ -8191,7 +8191,7 @@ struct CentralPrecedenceSyntax {
 struct CentralPrecedenceLevelSyntax {
     /// The parsed associativity keyword.
     associativity: crate::PrecedenceAssociativity,
-    /// The parsed binding power.
+    /// The parsed `bp`.
     binding_power: u8,
     /// Locates the level, from its associativity keyword.
     span: proc_macro2::Span,
@@ -8825,9 +8825,9 @@ impl Parse for CentralTokensSyntax {
 }
 
 /// Parses the body of one `precedence { ... }` block: levels `left(bp = N) { A, B }`,
-/// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from lowest to highest binding power,
+/// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from loosest to tightest,
 /// comma-separated. The shape checks that need no token catalog are made here: the
-/// associativity keyword, `bp` as a `u8`, strictly ascending binding powers, at least one name
+/// associativity keyword, `bp` as a `u8`, strictly ascending `bp` values, at least one name
 /// per level, and a name listed at most once in the block.
 fn parse_precedence_block(
     keyword: syn::Ident,
@@ -8854,7 +8854,7 @@ fn parse_precedence_block(
         if key != "bp" {
             return Err(syn::Error::new(
                 key.span(),
-                "a precedence level takes exactly `bp = N`, its binding power",
+                "a precedence level takes exactly `bp = N`, which orders it against the other levels",
             ));
         }
         options.parse::<Token![=]>()?;
@@ -8862,7 +8862,7 @@ fn parse_precedence_block(
         let binding_power = literal.base10_parse::<u8>().map_err(|_| {
             syn::Error::new(
                 literal.span(),
-                "a precedence level's binding power must be a u8 from 0 to 255",
+                "a precedence level's `bp` must be a u8 from 0 to 255",
             )
         })?;
         if !options.is_empty() {
@@ -8874,7 +8874,7 @@ fn parse_precedence_block(
             return Err(syn::Error::new(
                 literal.span(),
                 format!(
-                    "precedence levels are declared from lowest to highest binding power; \
+                    "precedence levels are declared from loosest to tightest; \
                      bp = {binding_power} does not exceed the previous level's bp = {}",
                     previous.binding_power
                 ),
@@ -10100,7 +10100,7 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn non_pratt_variants_keep_independent_positional_token_sequences() {
+    fn enum_variants_keep_independent_positional_token_sequences() {
         let report = model(
             r#"recursa::grammar! { module = crate }
 
@@ -11561,15 +11561,15 @@ recursa::tokens! {
             ("precedence { left { A } }", "expected parentheses"),
             (
                 "precedence { left(lbp = 1) { A } }",
-                "a precedence level takes exactly `bp = N`, its binding power",
+                "a precedence level takes exactly `bp = N`, which orders it against the other levels",
             ),
             (
                 "precedence { left(bp = 300) { A } }",
-                "a precedence level's binding power must be a u8 from 0 to 255",
+                "a precedence level's `bp` must be a u8 from 0 to 255",
             ),
             (
                 "precedence { left(bp = 2) { A }, left(bp = 2) { B } }",
-                "precedence levels are declared from lowest to highest binding power; bp = 2 \
+                "precedence levels are declared from loosest to tightest; bp = 2 \
                  does not exceed the previous level's bp = 2",
             ),
             (

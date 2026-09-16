@@ -5,7 +5,7 @@
 //! An [`LrGrammar`] is a plain context-free grammar over dense symbol identities: terminals are
 //! token kinds plus one synthetic end marker, nonterminals are grammar types plus the helper
 //! nonterminals the lowering invents, and rules carry the facts the later tickets need (value
-//! pops for the reduce action, binding powers for precedence). It is source-independent and
+//! pops for the reduce action, the declared level for precedence). It is source-independent and
 //! knows nothing about how a rule came to exist beyond its [`RuleAction`].
 
 use std::collections::BTreeMap;
@@ -72,11 +72,11 @@ pub enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Associativity a binding-power pair lowers to; the precedence resolver consults it on a tie.
+/// One declared level's associativity; the precedence resolver consults it on a tie.
 pub enum Associativity {
-    /// `rbp = lbp + 1`: the left operand binds first.
+    /// A `left` level of the `precedence` declaration: on a tie the rule reduces, as in bison.
     Left,
-    /// `rbp = lbp` or `rbp = lbp - 1`: the right operand binds first.
+    /// A `right` level of the `precedence` declaration: on a tie the lookahead shifts.
     Right,
     /// A `nonassoc` level of the `precedence` declaration: a tie is a syntax error, as in
     /// bison.
@@ -84,11 +84,11 @@ pub enum Associativity {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// One terminal's entry in the `precedence` declaration: its level's binding power and
-/// associativity. Levels are declared with strictly ascending binding powers, so the binding
-/// power orders the levels and identifies one.
+/// One terminal's entry in the `precedence` declaration: its level's `bp` and associativity.
+/// Levels are declared with strictly ascending `bp`, so the `bp` orders the levels and
+/// identifies one.
 pub struct DeclaredPrecedence {
-    /// The level's binding power: it orders the levels and identifies one.
+    /// The level's `bp`: it orders the levels and identifies one.
     pub binding_power: u8,
     /// The associativity of the level: `left`, `right` or `nonassoc`.
     pub associativity: Associativity,
@@ -994,7 +994,7 @@ impl TextbookGrammar {
     /// Declares one level of the `precedence` declaration over terminal spellings, the way
     /// `left(bp = N) { ... }` does; a spelling that is no terminal is a precedence-only name
     /// such as bison's `UMINUS`, usable by [`Self::rule_precedence`] alone. Levels must be
-    /// declared from lowest to highest binding power.
+    /// declared from loosest to tightest.
     pub fn precedence_level(
         &mut self,
         associativity: Associativity,

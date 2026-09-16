@@ -2451,7 +2451,7 @@ pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     path.path.segments.last().map(|segment| &segment.ident)
 }
 
-/// Renders one non-Pratt element from its frozen value and formatting projections.
+/// Renders one element from its frozen value and formatting projections.
 fn render_pretty_element(
     plan: &EmissionPlan,
     index: usize,
@@ -2545,19 +2545,19 @@ fn render_pretty_element(
                     let reference = if borrowed { value } else { quote!(&#value) };
                     render_pretty_presence(pretty, *presence, wrappers, reference, rendered)
                 }
-                _ => unreachable!("validated non-Pratt Pretty semantic projection"),
+                _ => unreachable!("validated Pretty semantic projection"),
             }
         }
         (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
         | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. })
         | (ElementParseKind::OptionalFixedTokenGroup { .. }, _)
         | (_, PrettyElementBehavior::OptionalFixedTokenGroup { .. }) => {
-            unreachable!("validated non-Pratt Pretty element behavior")
+            unreachable!("validated Pretty element behavior")
         }
     }
 }
 
-/// Renders structured Pretty and source-map behavior for a non-Pratt Node.
+/// Renders structured Pretty and source-map behavior for a Node with no declared precedence.
 ///
 /// # Long-function contract
 ///
