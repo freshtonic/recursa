@@ -1,28 +1,37 @@
-//! Flat AST generation: one lifetime-free `Copy` flat type per Node declaration, one `FlatAst`
-//! owner at the grammar root, and the layout assertions the design requires.
+//! Flat AST generation. This module renders one lifetime-free `Copy` flat type per Node
+//! declaration, one `FlatAst` owner at the grammar root, and the layout assertions the design
+//! requires.
 //!
-//! The nested AST owns its children; a Flat AST stores every child as a four-byte typed handle
-//! into one of the grammar's stores. This module renders the second representation from the same
-//! frozen [`NodeParsePlan`] the nested renderers read, exactly as
-//! [`super::arbitrary_seed`] renders its mirror types: field cardinality comes from the plan's
-//! [`FieldWrapper`] list and the terminal identity comes from the plan's projection, so the two
-//! representations cannot drift apart.
+//! A nested Node owns its children. A flat Node holds each child as a four-byte typed handle into
+//! one of the grammar's stores. This module renders the second representation from the same frozen
+//! [`NodeParsePlan`] the nested renderers read. [`super::arbitrary_seed`] renders its mirror types
+//! the same way. Field cardinality comes from the plan's [`FieldWrapper`] list. The terminal
+//! identity comes from the plan's projection. The two representations therefore cannot drift
+//! apart.
 //!
-//! What is emitted where:
+//! The module emits these items beside the authored declaration. They go in the declaration's own
+//! module, at the declaration's own visibility, because the grammar root cannot name a Node
+//! declared without `pub`:
 //!
-//! - `Flat{Ident}` and its `FlatNode` implementation go beside the authored declaration, in the
-//!   declaration's own module and at the declaration's own visibility, because a Node declared
-//!   without `pub` cannot be named from the grammar root.
-//! - One layout assertion per materialized application goes in the same module: alignment at most
-//!   four for a shared-pool Node (invariant I6) and the authored `max_size` bound for a pooled one
-//!   (invariant I7).
-//! - `FlatAst`, its builder, and the generic index implementations go at the grammar root.
-//! - A `FlatStorage` implementation goes at the root when the flat type is publicly reachable and
-//!   in the declaration's own module otherwise. A non-public Node always lives in the shared pool,
-//!   which never names its element type, so the module-local implementation only needs the
-//!   `pub(crate)` shared-pool accessor the root emits.
+//! - `Flat{Ident}` and its `FlatNode` implementation.
+//! - One layout assertion per materialized application. A shared-pool Node asserts an alignment
+//!   of at most four bytes, which is invariant I6. A pooled Node asserts its authored `max_size`
+//!   bound, which is invariant I7.
+//! - The recorded size of each application, but only for a Node the root cannot name. The root
+//!   reads that constant for its own size table.
+//! - The opaque traversal items of a Node the root cannot name. [`super::flat_traversal`] renders
+//!   them.
 //!
-//! `docs/flat-ast-design.md` settles the storage tiering, the field mapping, and the owner API;
+//! The module emits these items at the grammar root:
+//!
+//! - `FlatAst`, its builder, and the generic index implementations.
+//! - `FLAT_NODE_SIZES`, which records the size of every flat Node type in parse-index order.
+//! - One `FlatStorage` implementation per application whose flat type is publicly reachable. Every
+//!   other application gets that implementation in the declaration's own module. A non-public Node
+//!   always lives in the shared pool. The shared pool never names its element type, so the
+//!   module-local implementation needs only the `pub(crate)` shared-pool accessor the root emits.
+//!
+//! `docs/flat-ast-design.md` settles the storage tiering, the field mapping, and the owner API.
 //! `docs/adr/0012-tiered-flat-storage.md` records the decision.
 
 use super::*;
@@ -180,8 +189,8 @@ pub(super) fn flat_application_type(
 
 /// Returns the canonical generated type of one content token at `'static`.
 ///
-/// A flat Node holds a `Text<K>` handle rather than the text itself, and `Text<K>` places no bound
-/// on `K`, so the token type is named at `'static` to keep the flat Node lifetime-free.
+/// A flat Node holds a `Text<K>` handle rather than the text itself. `Text<K>` places no bound on
+/// `K`. The token type is therefore named at `'static`, which keeps the flat Node lifetime-free.
 pub(super) fn content_token_static_type(
     plan: &EmissionPlan,
     token: ContentTokenId,
@@ -347,8 +356,8 @@ fn render_flat_fields(style: ResolvedFieldStyle, fields: &[FlatField]) -> proc_m
 
 /// Authored declaration visibility and per-position struct-field visibility.
 ///
-/// The concrete declaration item is the one place that records what the author wrote after
-/// `ast_node!` applied its `pub` default, so both the flat type and its fields read it from there.
+/// The concrete declaration item records what the author wrote after `ast_node!` applied its `pub`
+/// default. It is the only place that records it. The flat type and its fields both read it there.
 fn authored_visibility(node: &NodeParsePlan) -> (Visibility, Vec<Visibility>) {
     match &node.concrete_item {
         Some(Item::Struct(item)) => (
@@ -380,10 +389,11 @@ fn flat_type_tag(semantic_key: &str) -> u32 {
 ///
 /// # Long-function contract
 ///
-/// Rationale: keeps the flat declaration, its tag, and the assertions that guard its layout in one
-/// place, because all three are derived from the same body plan and would drift apart if split.
-/// Invariants: the flat type preserves the authored struct style, enum variant shapes, field order
-/// and field visibility; it carries the declaration's type parameters and none of its lifetimes.
+/// Rationale: the flat declaration, its tag, and the assertions that guard its layout stay in one
+/// place. All three come from the same body plan. A split would let them drift apart.
+/// Invariants: the flat type preserves the authored struct style, the enum variant shapes, the
+/// field order and the field visibility. It carries the declaration's type parameters. It carries
+/// none of its lifetimes.
 /// Phases: reads authored visibility, renders the declaration body, then renders the tag
 /// implementation and one assertion per materialized application.
 pub(super) fn render_node_flat_items(
@@ -461,12 +471,18 @@ pub(super) fn render_node_flat_items(
     let storage = (!node.publicly_materialized)
         .then(|| render_shared_storage_impls(plan, node))
         .transpose()?;
+    let sizes = (!node.publicly_materialized)
+        .then(|| render_size_constants(plan, node))
+        .transpose()?;
+    let opaque = render_node_flat_opaque_items(plan, node)?;
     let pretty = render_node_flat_pretty(plan, node);
     Ok(quote! {
         #declaration
         #tag_implementation
         #(#assertions)*
         #storage
+        #sizes
+        #opaque
         #pretty
     })
 }
@@ -515,12 +531,62 @@ fn render_application_assertions(
     })
 }
 
+/// Names the recorded size of one application's flat type.
+fn flat_size_ident(application: &NodeApplicationParsePlan) -> Ident {
+    format_ident!("__RECURSA_FLAT_SIZE_{}", application.parse_index)
+}
+
+/// Returns the path of one application's recorded size, as any module of the crate names it.
+fn flat_size_path(
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+) -> Result<syn::Path, String> {
+    let mut path = emitted_semantic_path(&node.semantic_key)?;
+    let segment = path
+        .segments
+        .last_mut()
+        .ok_or_else(|| "a resolved semantic key has at least one segment".to_owned())?;
+    segment.ident = flat_size_ident(application);
+    segment.arguments = syn::PathArguments::None;
+    Ok(path)
+}
+
+/// Renders the recorded size of every application of one non-public Node, in its own module.
+///
+/// The grammar's `FLAT_NODE_SIZES` records one size per flat Node application. The grammar root
+/// cannot name a Node whose declaration is not public, so it cannot call `size_of` on it either.
+/// This constant makes the measurement in the module that can name the Node, and the table at the
+/// root reads it.
+fn render_size_constants(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+) -> Result<proc_macro2::TokenStream, String> {
+    let constants = node
+        .parse_applications
+        .iter()
+        .map(|application| -> Result<proc_macro2::TokenStream, String> {
+            let ty = flat_application_type(plan, node, application)?;
+            let ident = flat_size_ident(application);
+            let doc = format!(
+                " Size in bytes of `Flat{}`, which this grammar's `FLAT_NODE_SIZES` records.",
+                application_name(node, application),
+            );
+            Ok(quote! {
+                #[doc = #doc]
+                #[doc(hidden)]
+                pub const #ident: usize = ::core::mem::size_of::<#ty>();
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(quote!(#(#constants)*))
+}
+
 /// Renders the shared-pool `FlatStorage` implementations a non-public Node needs in its own module.
 ///
-/// The grammar root cannot name a Node declared without `pub`, so its owner implementations are
-/// emitted here and reach the store through the root's `pub(crate)` shared-pool accessor. A
-/// non-public Node always lives in the shared pool, because `#[flat(pool)]` on an unreachable
-/// declaration is rejected during source modeling.
+/// The grammar root cannot name a Node declared without `pub`. That Node's owner implementations
+/// are therefore emitted here. They reach the store through the root's `pub(crate)` shared-pool
+/// accessor. A non-public Node always lives in the shared pool, because source modeling rejects
+/// `#[flat(pool)]` on a declaration that is not publicly reachable.
 fn render_shared_storage_impls(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -585,6 +651,43 @@ fn pooled_applications(plan: &EmissionPlan) -> Result<Vec<PooledApplication>, St
     Ok(pooled)
 }
 
+/// One entry of the grammar's `FLAT_NODE_SIZES` table.
+struct FlatNodeSize {
+    /// Canonical parse index of the application, which orders the table.
+    parse_index: usize,
+    /// Display name of the flat type: `Flat` and then the application's own name.
+    name: String,
+    /// The expression that reports the size in bytes.
+    size: proc_macro2::TokenStream,
+}
+
+/// Collects the recorded size of every flat Node application, in parse-index order.
+///
+/// The root measures a publicly reachable application itself. Every other application records its
+/// own size beside its declaration, because the root cannot name the type, and the root reads that
+/// constant. [`render_size_constants`] emits it.
+fn flat_node_sizes(plan: &EmissionPlan) -> Result<Vec<FlatNodeSize>, String> {
+    let mut sizes = Vec::new();
+    for node in &plan.nodes {
+        for application in &node.parse_applications {
+            let size = if node.publicly_materialized {
+                let ty = flat_application_type(plan, node, application)?;
+                quote!(::core::mem::size_of::<#ty>())
+            } else {
+                let path = flat_size_path(node, application)?;
+                quote!(#path)
+            };
+            sizes.push(FlatNodeSize {
+                parse_index: application.parse_index,
+                name: format!("Flat{}", application_name(node, application)),
+                size,
+            });
+        }
+    }
+    sizes.sort_by_key(|entry| entry.parse_index);
+    Ok(sizes)
+}
+
 /// Renders the grammar's `FlatAst` owner, its construction builder, and its index surface.
 ///
 /// # Long-function contract
@@ -592,8 +695,8 @@ fn pooled_applications(plan: &EmissionPlan) -> Result<Vec<PooledApplication>, St
 /// Rationale: the owner's fields, its builder, its index implementations, and the compile-time
 /// checks over its handles are one contract; splitting them would let a pool exist without the
 /// accessor that fills it or the index that reads it.
-/// Invariants: one typed pool field per pooled application in canonical plan order, no public
-/// mutable access to any store, and one shared root handle type parameter.
+/// Invariants: one typed pool field per pooled application, in canonical plan order. No public
+/// mutable access to any store. One shared root handle type parameter.
 /// Phases: collects pooled applications, renders the owner and builder, then renders the index
 /// surface, the per-application storage implementations, and the layout and thread-safety checks.
 pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::TokenStream, String> {
@@ -642,6 +745,10 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         .map(|(node, application)| render_public_storage_impl(plan, node, application))
         .collect::<Result<Vec<_>, String>>()?;
     let pretty_support = render_flat_pretty_support(plan);
+    let node_sizes = flat_node_sizes(plan)?.into_iter().map(|entry| {
+        let (name, size) = (entry.name, entry.size);
+        quote!((#name, #size),)
+    });
     let layout_checks = plan
         .nodes
         .iter()
@@ -762,9 +869,10 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
 
             /// Borrows the shared pool for the Node modules' own storage implementations.
             ///
-            /// A Node declared without `pub` cannot be named from this module, so its
-            /// `FlatStorage` implementation is emitted beside the declaration and reaches the
-            /// store through this accessor. It stays crate-private and exposes no mutation.
+            /// This module cannot name a Node declared without `pub`. That Node's `FlatStorage`
+            /// implementation is therefore emitted beside the declaration, and it reaches the
+            /// store through this accessor. The accessor stays crate-private. It exposes no
+            /// mutation.
             #[doc(hidden)]
             pub(crate) fn __recursa_flat_shared(&self) -> &#facade::__private::SharedPool {
                 &self.shared
@@ -929,6 +1037,18 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         }
 
         #layout_checks
+
+        /// The size in bytes of every flat Node type of this grammar, in parse-index order.
+        ///
+        /// One entry holds the flat type's name and the type's `size_of`. The table records the
+        /// sizes; it asserts nothing about them. A declaration that wants a bound declares
+        /// `#[flat(pool, max_size = N)]`, which generates the assertion.
+        ///
+        /// A size is a compile-time fact, so a test can pin the whole table. A Node whose
+        /// declaration is not public appears here too, under its own name.
+        pub const FLAT_NODE_SIZES: &[(&str, usize)] = &[
+            #(#node_sizes)*
+        ];
 
         #pretty_support
 

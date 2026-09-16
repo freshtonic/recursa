@@ -1,27 +1,31 @@
-//! Flat AST construction: the reduce actions that build a Flat AST on the LR automaton, and the
-//! `parse_flat` entry points that run them.
+//! Flat AST construction. This module renders the reduce actions that build a Flat AST on the LR
+//! automaton, and the `parse_flat` entry points that run them.
 //!
-//! [`super::table_driven`] renders the nested reduce actions; this module renders a second set of
+//! [`super::table_driven`] renders the nested reduce actions. This module renders a second set of
 //! actions over the same tables, the same rules and the same value stack. Nothing about the
-//! automaton changes: a flat action pops and pushes exactly as many values as the nested action
-//! for the same rule, so the packed `value_pops` table stays valid for both, and the two
+//! automaton changes. A flat action pops and pushes exactly as many values as the nested action
+//! for the same rule. The packed `value_pops` table therefore stays valid for both, and the two
 //! dispatchers cover exactly the same rules.
 //!
-//! What the value stack holds differs. A Node's Construct action allocates the Node in its pool
-//! and pushes the four-byte `Handle`; a content token's action appends its text to the text pool
-//! and pushes a text handle; a list step pushes the `OpenList` it is building on the parse's one
-//! scratch stack, and the rule that consumes the list closes it into the list store. `boxed!`
-//! disappears, because every child is already a handle. A fixed-token unit Node carries no value
-//! on the stack at all, exactly as in the nested path, so the parent allocates it and keeps the
-//! handle. The runtime types are `recursa-core`'s `flat` module.
+//! What the value stack holds differs:
 //!
-//! A parent reduces after its children, so every typed pool comes out in post-order: invariant I1
-//! of `docs/flat-ast-design.md` holds by construction, with no ordering work here.
+//! - A Node's Construct action puts the Node in its pool and pushes the four-byte `Handle`.
+//! - A content token's action appends its text to the text pool and pushes a text handle.
+//! - A list step pushes the `OpenList` it builds on the parse's one scratch stack. The rule that
+//!   consumes the list closes it into the list store.
+//! - `boxed!` disappears, because every child is already a handle.
+//! - A fixed-token unit Node carries no value on the stack at all, exactly as in the nested path.
+//!   Its parent allocates it and keeps the handle.
 //!
-//! Spans come from the LR extent stack (`recursa-core/src/lr.rs`), which exists only while a
-//! parse tracks extents. A Node's span is its own rule's extent, a text handle's span is its
-//! token record's, and a Node the parent allocates takes the extent of the site it occupies.
-//! Flat parsing never builds the occurrence tree, as
+//! The runtime types are `recursa-core`'s `flat` module.
+//!
+//! A parent reduces after its children, so every typed pool comes out in post-order. Invariant I1
+//! of `docs/flat-ast-design.md` therefore holds by construction, with no ordering work here.
+//!
+//! Spans come from the LR extent stack in `recursa-core/src/lr.rs`, which exists only while a
+//! parse tracks extents. A Node's span is its own rule's extent. A text handle's span is its token
+//! record's span. A Node the parent allocates takes the extent of the site it occupies. Flat
+//! parsing never builds the occurrence tree, as
 //! `docs/adr/0008-keep-flat-asts-semantic-only.md` requires.
 
 use std::borrow::Cow;
@@ -32,8 +36,7 @@ use super::parsing::{
     NodeBodyPlan, NodeParsePlan, SemanticParseProjection, render_construction,
 };
 use super::table_driven::{
-    DispatchTarget, StartTables, TableDrivenRendering, application_reduce_actions, input_lifetime,
-    plan_variant,
+    StartTables, TableDrivenRendering, application_reduce_actions, input_lifetime, plan_variant,
 };
 use super::*;
 use crate::lr::{ElementValue, OptionalContent, Rule, RuleAction, SiteForm, Symbol};
@@ -65,10 +68,10 @@ fn flat_method_ident(application: &NodeApplicationParsePlan, action: usize) -> I
 
 /// Resolves the declaration-local flat shim without naming the flat type at the grammar root.
 ///
-/// A Node declared without `pub` cannot be named from the root, and neither can its flat type, so
-/// the root dispatcher calls a free shim in the declaration's own module, exactly as the nested
-/// dispatcher does.
-fn flat_reducer_path(
+/// The root can name neither a Node declared without `pub` nor that Node's flat type. The root
+/// dispatcher therefore calls a free shim in the declaration's own module. The nested dispatcher
+/// does exactly the same.
+pub(super) fn flat_reducer_path(
     application: &NodeApplicationParsePlan,
     action: usize,
 ) -> Result<syn::Path, String> {
@@ -218,8 +221,8 @@ struct FlatFieldSite<'a> {
 /// Renders the expression that closes the scratch list one symbol pushed, into the list store.
 ///
 /// The open list is popped from the value stack exactly where the nested action pops its `Vec1`.
-/// Closing at the consumer is correct because LR completes an inner list before the outer list
-/// receives its next item, which the runtime's `ListScratch::push` asserts in debug builds.
+/// A close at the consumer is correct: LR completes an inner list before the outer list receives
+/// its next item. The runtime's `ListScratch::push` asserts that in debug builds.
 fn close_list(plan: &EmissionPlan, item: &Type, non_empty: bool) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let close = if non_empty {
@@ -442,9 +445,9 @@ struct FlatElement {
 
 /// Spells one helper rule's element from the grammar root.
 ///
-/// A helper nonterminal is shared, so its action names the element through the flat type of the
-/// Node application or the content token it stands for, exactly as the nested helper names the
-/// nested type. `span` is the extent an allocated unit Node takes.
+/// A helper nonterminal is shared. Its action therefore names the element through the flat type
+/// of the Node application, or through the content token it stands for. The nested helper names
+/// the nested type the same way. `span` is the extent an allocated unit Node takes.
 fn flat_element(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
@@ -490,9 +493,9 @@ fn flat_element(
 /// # Long-function contract
 ///
 /// Rationale: one match over [`RuleAction`] keeps every helper's flat value beside the nested
-/// value it replaces, which is the only way to see that both pop the same stack entries.
-/// Invariants: a presence pushes a `bool`, an optional pushes an `Option`, a list step pushes the
-/// open scratch list, and the rule that consumes a list closes it into the list store.
+/// value it replaces. That is the only way to see that both pop the same stack entries.
+/// Invariants: a presence pushes a `bool`. An optional pushes an `Option`. A list step pushes the
+/// open scratch list. The rule that consumes a list closes it into the list store.
 /// Phases: one arm per helper action; an erased optional group renders nothing at all.
 fn render_flat_root_action(
     plan: &EmissionPlan,
@@ -658,9 +661,9 @@ pub(super) fn render_node_application_flat(
 
 /// Renders `parse_flat` and `parse_flat_without_spans` beside one application's `parse`.
 ///
-/// The entry point lives on the nested application type, because that is the type a caller names,
-/// and it returns the grammar's own `FlatAst` rooted at this application's flat type. The runtime
-/// owns the grammar check, the cursor checkpoint and the restore on failure; this closure owns the
+/// The entry point lives on the nested application type, because a caller names that type. It
+/// returns the grammar's own `FlatAst`, rooted at this application's flat type. The runtime owns
+/// the grammar check, the cursor checkpoint and the restore on failure. This closure owns the
 /// stores, the automaton call and the sealed result.
 fn render_flat_entry_points(
     plan: &EmissionPlan,
@@ -747,9 +750,9 @@ fn render_flat_entry_points(
 
 /// Renders one content token's flat reduce action.
 ///
-/// The text goes into the result's text pool, which owns it, and the Node holds only the returned
+/// The text goes into the result's text pool, which owns it. The Node holds only the returned
 /// four-byte handle. The pool keeps the record's lexical kind beside the text, so a token that
-/// admits several kinds stays distinguishable, and the record's own span is the text's span.
+/// admits several kinds stays distinguishable. The record's own span is the text's span.
 pub(super) fn render_token_flat_items(
     plan: &EmissionPlan,
     token: &super::lexing::TokenParsePlan,
@@ -795,45 +798,11 @@ pub(super) fn render_flat_dispatcher(
         return Ok(proc_macro2::TokenStream::new());
     }
     let facade = &plan.facade;
-    let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
     let builder_ty = builder_type(plan);
     let reduction = reduction_parameter(plan);
-    let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
-        .tokens
-        .iter()
-        .map(|token| (token.semantic, &token.ident))
-        .collect();
-    let token_arms = lr.dispatch_arms().iter().filter_map(|arm| {
-        let (first, last) = (arm.first, arm.last);
-        match arm.target {
-            DispatchTarget::Application(_) => None,
-            DispatchTarget::Token(token) => {
-                let ident = token_idents[&token];
-                let path = quote!(#module_anchor::__recursa_content_tokens::#ident<'static>);
-                Some(quote! {
-                    #first..=#last => <#path>::__recursa_reduce_flat(reduction, builder),
-                })
-            }
-        }
-    });
-    let mut application_arms = Vec::new();
-    for application in plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.parse_applications.iter())
-    {
-        for (index, action) in application_reduce_actions(lr.application(application.application))
-            .iter()
-            .enumerate()
-        {
-            let reducer = flat_reducer_path(application, index)?;
-            let rules = &action.rules;
-            application_arms.push(quote! {
-                #(#rules)|* => #reducer(reduction, builder),
-            });
-        }
-    }
+    let dispatch = render_dispatch_arms(plan, lr, &ReduceDispatch::Flat)?;
+    let (token_arms, application_arms) = (dispatch.token, dispatch.application);
     let root_actions = lr
         .root_rules()
         .iter()

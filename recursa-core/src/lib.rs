@@ -102,7 +102,8 @@ pub mod __private {
     };
     pub use crate::flat_owner::{FlatPool, FlatStorage};
     pub use crate::flat_visit::{
-        FlatChildren, FlatVisitor, PostOrderViolation, check_post_order_pair, walk,
+        FlatChildren, FlatVisitor, OpaqueRef, OpaqueTable, PostOrderViolation,
+        check_post_order_pair, walk,
     };
     #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
@@ -196,7 +197,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        32,
+        33,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -239,6 +240,21 @@ pub mod __private {
         }
         assert!(output_index == N);
         output
+    }
+
+    /// Rebuilds the shared-pool handle of one Node an opaque traversal reference names.
+    ///
+    /// Raw handle construction is private to this crate, because a forged handle would break
+    /// invariant I2 of `docs/flat-ast-design.md`. This function is the one door through it, and
+    /// generated traversal code is the only caller that needs it. A Node the grammar root cannot
+    /// name has no `NodeRef` variant, so an [`OpaqueRef`] carries the raw handle value instead of
+    /// a typed handle. The children function beside that Node's declaration receives the raw
+    /// value and must rebuild the handle to read the shared pool.
+    ///
+    /// The door cannot reach a typed pool: a pooled declaration is always publicly reachable, so
+    /// a Node the root cannot name is always in the shared pool.
+    pub const fn opaque_handle<T>(raw: ::core::num::NonZeroU32) -> Handle<T> {
+        Handle::from_raw(raw)
     }
 
     /// Returns the source retained by a grammar-local generated lexing result.
@@ -289,7 +305,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            32,
+            33,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

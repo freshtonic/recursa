@@ -10,7 +10,8 @@ pub use recursa_core::explorer;
 pub use recursa_core::flat_owner::{FlatPool, FlatStorage};
 pub use recursa_core::flat_pretty::FlatPretty;
 pub use recursa_core::flat_visit::{
-    FlatChildren, FlatVisitor, PostOrderViolation, check_post_order_pair, walk,
+    FlatChildren, FlatVisitor, OpaqueRef, OpaqueTable, PostOrderViolation, check_post_order_pair,
+    walk,
 };
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub use recursa_core::framing;
@@ -46,7 +47,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            32,
+            33,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

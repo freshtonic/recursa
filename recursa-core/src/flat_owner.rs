@@ -1,11 +1,12 @@
-//! The storage-selection contracts a generated Flat AST owner implements once per Node
+//! The storage-selection contracts a generated Flat AST owner implements, once per Node
 //! application.
 //!
-//! [`crate::flat`] supplies the stores; this module supplies the traits that let a generated
-//! owner answer `get`, `span` and `pool` for any Node type without naming every pool at the call
-//! site. A Node's declaration decides whether its handle resolves into a
-//! [`crate::flat::TypedPool`] or the [`crate::flat::SharedPool`], so the choice belongs to
-//! generated code, not to a runtime branch.
+//! [`crate::flat`] supplies the stores. This module supplies the traits that let a generated owner
+//! answer `get`, `span` and `pool` for any Node type. The call site therefore names no pool of its
+//! own. A Node's declaration decides whether its handle resolves into a [`crate::flat::TypedPool`]
+//! or the [`crate::flat::SharedPool`], so the choice belongs to generated code rather than to a
+//! runtime branch.
+//!
 //! `docs/flat-ast-design.md` settles the owner API and
 //! `docs/adr/0012-tiered-flat-storage.md` records the decision.
 

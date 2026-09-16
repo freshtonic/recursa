@@ -235,6 +235,15 @@ fn print_sizes() {
         std::mem::size_of::<Option<Handle<grammar::FlatValue>>>(),
         std::mem::size_of::<Option<List<Handle<grammar::FlatValue>>>>(),
     );
+
+    // The generator's own size record, which the design promises for every flat Node
+    // application. Every size above appears here, under the application's own name and in
+    // parse-index order.
+    let sizes = grammar::FLAT_NODE_SIZES
+        .iter()
+        .map(|(name, size)| format!("{name}={size}"))
+        .collect::<Vec<_>>();
+    println!("lr flat-sizes => {}", sizes.join(" "));
 }
 
 /// Parses one positive input through both backends and prints what each built.

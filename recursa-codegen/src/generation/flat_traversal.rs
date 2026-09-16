@@ -1,46 +1,46 @@
-//! Flat AST traversal generation: the grammar's `NodeRef`, its `children` function, the pool and
-//! store accessors a traversal needs, and the post-order checker that is invariant I1's evidence.
+//! Flat AST traversal generation. This module renders the grammar's `NodeRef`, its `children`
+//! function, the store accessors a traversal needs, and the post-order checker.
 //!
-//! [`super::flat`] renders the flat types and the `FlatAst` owner, and
-//! [`super::table_driven_flat`] fills them during a parse. This module renders the layer above
-//! both: one traversal value per Node application, the direct children of one Node in source
-//! order, and the bridge to `recursa-core`'s grammar-erased walk.
+//! [`super::flat`] renders the flat types and the `FlatAst` owner. [`super::table_driven_flat`]
+//! fills them during a parse. This module renders the layer above both. It reports one traversal
+//! value per Node application, the direct children of one Node in source order, and the bridge to
+//! `recursa-core`'s grammar-erased walk.
 //!
-//! What is emitted, all of it at the grammar root beside the owner:
+//! The module emits this at the grammar root, beside the owner:
 //!
-//! - `NodeRef`, an enum with one variant per publicly materialized Node application, each holding
-//!   that application's Node handle. A non-public Node cannot be named here, so a child of one
-//!   reaches `children` as `NodeRef::Opaque`, and that variant exists only when the grammar has
-//!   such a child.
+//! - `NodeRef`, an enum with one variant per publicly materialized Node application. Each variant
+//!   holds that application's Node handle.
+//! - One `Opaque` variant, which holds an `OpaqueRef`. The root cannot name a Node whose
+//!   declaration is not public, so it cannot give that Node a variant of its own. An opaque
+//!   reference names such a Node instead. It reports the Node's name, and it continues the
+//!   traversal into the Node's children. The variant exists only when the grammar has such a
+//!   Node.
 //! - `children(ast, node, f)`, which calls `f` once per direct child in source order. A text
-//!   handle and a presence flag are data, not children, exactly as the design says, so neither
-//!   reaches `f`.
-//! - `FlatNodeRef`, which turns a handle of one application into a `NodeRef`, and the owner's
-//!   `root_ref` built on it. The owner's root type is a type parameter, so only a trait can name
-//!   the right variant for it.
+//!   handle and a presence flag are data, not children. Neither one reaches `f`.
+//! - `FlatNodeRef`, which turns a handle of one application into a `NodeRef`. The owner's
+//!   `root_ref` is built on it. The owner's root type is a type parameter, so only a trait can
+//!   name the right variant for it.
 //! - The owner's `pool`, `lists` and `texts` accessors, and one `FlatPool` implementation per
 //!   pooled application.
-//! - `check_post_order`, which walks `children` over every pooled Node and reports the first
-//!   same-pool child that does not precede its parent. One comparison decides each pair, and it
-//!   lives in `recursa-core` so a unit test can hand it a violation of its own.
+//! - `check_post_order`, which walks `children` over every pooled Node. It reports the first
+//!   same-pool child that does not precede its parent. One comparison decides each pair. That
+//!   comparison lives in `recursa-core`, so a unit test can give it a violation of its own.
 //!
-//! A wide match is split into bounded helpers, as [`super::visit`] splits a wide Visit match: one
-//! helper per [`FLAT_CHILDREN_LEAF_WIDTH`] arms, each reporting whether it matched. A grammar with
-//! a thousand Node applications, or one enum with a hundred variants, therefore typechecks as a
-//! series of small functions rather than one enormous match.
+//! The module also emits items in each non-public Node's own module, through
+//! [`render_node_flat_opaque_items`]. That module can name the Node, so it can also read the
+//! Node. It holds the children function and the `OpaqueTable` static that make an opaque
+//! reference work.
+//!
+//! A wide match becomes bounded helpers, as [`super::visit`] splits a wide Visit match. Each
+//! helper holds at most [`VISIT_DISPATCH_LEAF_WIDTH`] arms, and each one reports whether it
+//! matched. A grammar with a thousand Node applications therefore typechecks as a series of small
+//! functions rather than as one enormous match.
 //!
 //! `docs/flat-ast-design.md` settles the traversal API, the owner API and invariant I1.
 
 use std::collections::BTreeMap;
 
 use super::*;
-
-/// Maximum match arms one generated traversal helper holds.
-///
-/// The value is [`super::visit`]'s leaf width, because the two splits answer the same problem: a
-/// pg-sql-scale grammar has enum declarations with more than a hundred variants and more than a
-/// thousand Node applications in one dispatch.
-const FLAT_CHILDREN_LEAF_WIDTH: usize = 32;
 
 /// One `NodeRef` variant and the publicly materialized Node application it names.
 struct NodeRefVariant<'plan> {
@@ -75,13 +75,31 @@ fn append_type_name(ty: &Type, name: &mut String) {
     }
 }
 
-/// Collects one variant per publicly materialized Node application, in canonical plan order.
+/// Returns the readable name of one materialized Node application.
 ///
-/// The variant name is the declaration's identifier followed by the identifier of each of the
-/// application's type arguments. Two applications that would share a name both take their own
-/// canonical parse index as a suffix, which is unique across the grammar. A Node the grammar root
-/// cannot name gets no variant at all, because the enum could not hold its handle.
-fn node_ref_variants(plan: &EmissionPlan) -> Result<Vec<NodeRefVariant<'_>>, String> {
+/// The name is the declaration's identifier, followed by the identifier of each type argument of
+/// a generic application. A `NodeRef` variant carries this name, and so does the opaque table of
+/// a Node the grammar root cannot name.
+pub(super) fn application_name(
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+) -> String {
+    let mut name = node.ident.unraw().to_string();
+    for argument in flat_type_argument_types(&application.static_ty) {
+        append_type_name(&argument, &mut name);
+    }
+    name
+}
+
+/// Collects the `NodeRef` variant identifier of every publicly materialized Node application.
+///
+/// The variant name is [`application_name`]. Two applications that would share a name both take
+/// their own canonical parse index as a suffix, which is unique across the grammar. A Node the
+/// grammar root cannot name gets no variant at all, because the enum could not hold its handle.
+///
+/// This map costs no type construction, so a caller that needs only the names does not pay for
+/// [`node_ref_variants`].
+fn node_ref_variant_idents(plan: &EmissionPlan) -> BTreeMap<MaterializedApplicationId, Ident> {
     let mut names = BTreeMap::new();
     let public = plan
         .nodes
@@ -93,23 +111,49 @@ fn node_ref_variants(plan: &EmissionPlan) -> Result<Vec<NodeRefVariant<'_>>, Str
                 .map(move |application| (node, application))
         })
         .map(|(node, application)| {
-            let mut name = node.ident.unraw().to_string();
-            for argument in flat_type_argument_types(&application.static_ty) {
-                append_type_name(&argument, &mut name);
-            }
+            let name = application_name(node, application);
             *names.entry(name.clone()).or_insert(0_usize) += 1;
-            (node, application, name)
+            (application, name)
         })
         .collect::<Vec<_>>();
     public
         .into_iter()
-        .map(|(node, application, name)| {
+        .map(|(application, name)| {
             let shared = names.get(&name).copied().unwrap_or_default() > 1;
             let variant = if shared {
                 format_ident!("{name}{}", application.parse_index)
             } else {
                 format_ident!("{name}")
             };
+            (application.application, variant)
+        })
+        .collect()
+}
+
+/// Collects one variant per publicly materialized Node application, in canonical plan order.
+///
+/// [`node_ref_variant_idents`] decides the variant names. This function adds the concrete flat
+/// type of each application, which the enum's own declaration needs.
+fn node_ref_variants(plan: &EmissionPlan) -> Result<Vec<NodeRefVariant<'_>>, String> {
+    let variants = node_ref_variant_idents(plan);
+    plan.nodes
+        .iter()
+        .filter(|node| node.publicly_materialized)
+        .flat_map(|node| {
+            node.parse_applications
+                .iter()
+                .map(move |application| (node, application))
+        })
+        .map(|(node, application)| {
+            let variant = variants
+                .get(&application.application)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "publicly materialized Node `{}` has no `NodeRef` variant name",
+                        node.ident,
+                    )
+                })?;
             Ok(NodeRefVariant {
                 node,
                 application,
@@ -118,6 +162,54 @@ fn node_ref_variants(plan: &EmissionPlan) -> Result<Vec<NodeRefVariant<'_>>, Str
             })
         })
         .collect()
+}
+
+/// Names the `static` opaque table of one Node application.
+pub(super) fn opaque_table_ident(application: &NodeApplicationParsePlan) -> Ident {
+    format_ident!("__RECURSA_FLAT_OPAQUE_{}", application.parse_index)
+}
+
+/// Names the children function one opaque table holds.
+fn opaque_children_ident(application: &NodeApplicationParsePlan) -> Ident {
+    format_ident!("__recursa_flat_opaque_children_{}", application.parse_index)
+}
+
+/// Returns the path of one application's opaque table, as any module of the crate names it.
+///
+/// The table is emitted beside the declaration, so its path is the declaration's own semantic
+/// path with the last segment replaced.
+fn opaque_table_path(
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+) -> Result<syn::Path, String> {
+    let mut path = emitted_semantic_path(&node.semantic_key)?;
+    let segment = path
+        .segments
+        .last_mut()
+        .ok_or_else(|| "a resolved semantic key has at least one segment".to_owned())?;
+    segment.ident = opaque_table_ident(application);
+    segment.arguments = syn::PathArguments::None;
+    Ok(path)
+}
+
+/// Collects the opaque table of every Node application the grammar root cannot name.
+///
+/// Such a Node is always in the shared pool, because `#[flat(pool)]` on a declaration that is not
+/// publicly reachable is rejected during source modeling. Its table therefore needs the shared
+/// pool and the list store, and nothing that names the owner's root type.
+fn opaque_tables(
+    plan: &EmissionPlan,
+) -> Result<BTreeMap<MaterializedApplicationId, syn::Path>, String> {
+    let mut tables = BTreeMap::new();
+    for node in plan.nodes.iter().filter(|node| !node.publicly_materialized) {
+        for application in &node.parse_applications {
+            tables.insert(
+                application.application,
+                opaque_table_path(node, application)?,
+            );
+        }
+    }
+    Ok(tables)
 }
 
 /// Returns the angle-bracketed type arguments of a type's last path segment, in authored order.
@@ -165,6 +257,66 @@ struct ChildSite {
     wrappers: Vec<FieldWrapper>,
     /// The `NodeRef` variant of the child application; `None` for a Node the root cannot name.
     variant: Option<Ident>,
+    /// The opaque table of the child application; `Some` exactly when `variant` is `None`.
+    table: Option<syn::Path>,
+}
+
+/// What a rendered child site calls each child application.
+struct ChildNaming<'plan> {
+    /// The `NodeRef` variant of each publicly materialized application.
+    variants: &'plan BTreeMap<MaterializedApplicationId, Ident>,
+    /// The opaque table of each application the grammar root cannot name.
+    tables: &'plan BTreeMap<MaterializedApplicationId, syn::Path>,
+}
+
+/// Where one rendered children body lives, which decides how it reaches the stores.
+enum ChildrenScope<'plan> {
+    /// The grammar root, which declares `NodeRef` and indexes the owner directly.
+    Root,
+    /// One Node's own module, which names `NodeRef` through the grammar anchor.
+    ///
+    /// The body there takes the list store as a parameter, because it never sees the owner: the
+    /// owner's type names its root Node, and a Node the root cannot name must not depend on it.
+    Module {
+        /// The grammar root module, which declares `NodeRef`.
+        anchor: &'plan syn::Path,
+    },
+}
+
+impl ChildrenScope<'_> {
+    /// Returns the path of the grammar's `NodeRef` from this scope.
+    fn node_ref(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Root => quote!(NodeRef),
+            Self::Module { anchor } => quote!(#anchor::NodeRef),
+        }
+    }
+
+    /// Returns the run of one list field, ready to iterate.
+    ///
+    /// The root indexes the owner, which resolves both list shapes through one trait. A Node's own
+    /// module holds the list store itself, which resolves each shape by its own method.
+    fn run(
+        &self,
+        access: &proc_macro2::TokenStream,
+        one_or_more: bool,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Root => quote!(&ast[#access]),
+            Self::Module { .. } if one_or_more => quote!(__recursa_lists.get1(#access)),
+            Self::Module { .. } => quote!(__recursa_lists.get(#access)),
+        }
+    }
+}
+
+/// Everything one rendered children body needs beyond the application it reports.
+struct ChildrenContext<'plan> {
+    /// The identifier generated code names the Recursa facade through.
+    facade: &'plan Ident,
+    /// What each child application is called from this body.
+    naming: ChildNaming<'plan>,
+    /// Where the body lives.
+    scope: ChildrenScope<'plan>,
 }
 
 /// Collects the direct child sites of one struct body or one enum variant, in source order.
@@ -173,7 +325,7 @@ struct ChildSite {
 /// `Direct` semantic projection of a Node terminal is a child: a content token becomes a text
 /// handle and a presence field becomes a `bool`, and the design calls both of them data.
 fn child_sites(
-    variants: &BTreeMap<MaterializedApplicationId, Ident>,
+    naming: &ChildNaming<'_>,
     elements: &[ElementParsePlan],
     access: &impl Fn(&FieldPlan) -> proc_macro2::TokenStream,
 ) -> Vec<ChildSite> {
@@ -193,6 +345,11 @@ fn child_sites(
         let ExplorerTerminalPlan::Node(child) = explorer_terminal else {
             continue;
         };
+        let variant = naming.variants.get(child).cloned();
+        let table = match &variant {
+            Some(_) => None,
+            None => naming.tables.get(child).cloned(),
+        };
         sites.push(ChildSite {
             index: field.index,
             access: access(field),
@@ -201,7 +358,8 @@ fn child_sites(
                 .copied()
                 .filter(|wrapper| !matches!(wrapper, FieldWrapper::Boxed))
                 .collect(),
-            variant: variants.get(child).cloned(),
+            variant,
+            table,
         });
     }
     sites
@@ -212,38 +370,57 @@ fn child_sites(
 /// The authored cardinality decides the shape: a required child is one call, an optional child is
 /// none or one, and a list is one call per item of its run. `Option<zero_or_many!>` does not
 /// exist, so the remaining shapes are an error rather than a silent omission.
+///
+/// A child the grammar root can name arrives as its own `NodeRef` variant. Every other child
+/// arrives as an opaque reference, which carries the child's raw handle and the child's own
+/// traversal behavior, so the walk continues into it.
 fn render_child_site(
+    context: &ChildrenContext<'_>,
     node: &NodeParsePlan,
     site: &ChildSite,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let emit = |item: proc_macro2::TokenStream| match &site.variant {
-        Some(variant) => quote!(f(NodeRef::#variant(#item));),
-        None => quote!({ let _ = #item; f(NodeRef::Opaque); }),
+    let facade = context.facade;
+    let node_ref = context.scope.node_ref();
+    let emit = |item: proc_macro2::TokenStream| match (&site.variant, &site.table) {
+        (Some(variant), _) => Ok(quote!(f(#node_ref::#variant(#item));)),
+        (None, Some(table)) => Ok(quote! {
+            f(#node_ref::Opaque(
+                #facade::__private::OpaqueRef::new((#item).raw(), &#table),
+            ));
+        }),
+        (None, None) => Err(format!(
+            "`{}`: a child the grammar root cannot name has no opaque table of its own",
+            node.ident,
+        )),
     };
     let access = &site.access;
     Ok(match site.wrappers.as_slice() {
-        [] => emit(quote!(#access)),
+        [] => emit(quote!(#access))?,
         [FieldWrapper::Optional] => {
-            let visit = emit(quote!(__recursa_child));
+            let visit = emit(quote!(__recursa_child))?;
             quote! {
                 if let Some(__recursa_child) = #access {
                     #visit
                 }
             }
         }
-        [FieldWrapper::ZeroOrMore] | [FieldWrapper::OneOrMore] => {
-            let visit = emit(quote!(*__recursa_child));
+        [wrapper @ (FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)] => {
+            let visit = emit(quote!(*__recursa_child))?;
+            let run = context
+                .scope
+                .run(access, matches!(wrapper, FieldWrapper::OneOrMore));
             quote! {
-                for __recursa_child in &ast[#access] {
+                for __recursa_child in #run {
                     #visit
                 }
             }
         }
         [FieldWrapper::Optional, FieldWrapper::OneOrMore] => {
-            let visit = emit(quote!(*__recursa_child));
+            let visit = emit(quote!(*__recursa_child))?;
+            let run = context.scope.run(&quote!(__recursa_list), true);
             quote! {
                 if let Some(__recursa_list) = #access {
-                    for __recursa_child in &ast[__recursa_list] {
+                    for __recursa_child in #run {
                         #visit
                     }
                 }
@@ -267,7 +444,7 @@ struct SplitMatch {
     body: proc_macro2::TokenStream,
 }
 
-/// Splits a wide match into helpers that each hold at most [`FLAT_CHILDREN_LEAF_WIDTH`] arms.
+/// Splits a wide match into helpers that each hold at most [`VISIT_DISPATCH_LEAF_WIDTH`] arms.
 ///
 /// A narrow match stays one match and needs no helper. A wide one becomes one helper per chunk of
 /// arms; each helper reports whether it matched, and the caller calls them in order until one
@@ -282,7 +459,7 @@ fn split_match(
     subject: &proc_macro2::TokenStream,
     arms: &[(proc_macro2::TokenStream, proc_macro2::TokenStream)],
 ) -> SplitMatch {
-    if arms.len() <= FLAT_CHILDREN_LEAF_WIDTH {
+    if arms.len() <= VISIT_DISPATCH_LEAF_WIDTH {
         let arms = arms
             .iter()
             .map(|(pattern, body)| quote!(#pattern => { #body }));
@@ -293,7 +470,7 @@ fn split_match(
     }
     let mut helpers = Vec::new();
     let mut calls = Vec::new();
-    for (index, chunk) in arms.chunks(FLAT_CHILDREN_LEAF_WIDTH).enumerate() {
+    for (index, chunk) in arms.chunks(VISIT_DISPATCH_LEAF_WIDTH).enumerate() {
         let leaf = format_ident!("{prefix}_leaf_{index}");
         let arms = chunk
             .iter()
@@ -331,36 +508,57 @@ struct RenderedChildren {
     opaque: bool,
 }
 
-/// Renders one application's children helper, or nothing when the application has no child.
+/// The signature every split helper of one children body repeats.
+struct ChildrenFrame {
+    /// Generics of each split helper, and of the body's own function.
+    generics: proc_macro2::TokenStream,
+    /// Parameters of each split helper, and of the body's own function.
+    parameters: proc_macro2::TokenStream,
+    /// Arguments each split helper call passes.
+    arguments: proc_macro2::TokenStream,
+}
+
+/// One application's children body: the split helpers it needs, and the body that calls them.
+struct ChildrenBody {
+    /// Split helpers emitted beside the body's own function.
+    helpers: proc_macro2::TokenStream,
+    /// The body itself.
+    body: proc_macro2::TokenStream,
+    /// Whether the application has one child at all.
+    any: bool,
+    /// Whether one child is a Node the grammar root cannot name.
+    opaque: bool,
+}
+
+/// Renders the body that reports one application's direct children.
 ///
 /// # Long-function contract
 ///
-/// Rationale: the struct and the enum case build the same body out of the same child sites, and
-/// the enum case needs the struct case's site rendering for every one of its variants, so
-/// splitting them would separate a pattern from the body it binds.
-/// Invariants: children are reported in authored element order; a variant pattern binds only the
-/// fields that are children and ignores the rest; a wide variant match is split into bounded
+/// Rationale: the struct case and the enum case build the same body out of the same child sites.
+/// The enum case needs the struct case's site rendering for every one of its variants. A split
+/// would separate a pattern from the body it binds.
+/// Invariants: children are reported in authored element order. A variant pattern binds only the
+/// fields that are children, and it ignores the rest. A wide variant match becomes bounded
 /// helpers.
-/// Phases: collects the child sites of the body, renders one visit per site, then wraps the
-/// result in the helper the dispatch calls.
-fn render_application_children(
-    plan: &EmissionPlan,
-    variants: &BTreeMap<MaterializedApplicationId, Ident>,
-    entry: &NodeRefVariant<'_>,
-) -> Result<RenderedChildren, String> {
-    let facade = &plan.facade;
-    let (node, application, ty) = (entry.node, entry.application, &entry.ty);
-    let helper = children_helper_ident(application);
-    let signature = quote! {
-        ast: &FlatAst<'_, __RecursaRoot>,
-        __recursa_node: #ty,
-        f: &mut impl FnMut(NodeRef)
+/// Phases: collects the child sites of the body, then renders one visit per site. It then reports
+/// whether the application has a child, and whether one child is opaque.
+fn render_children_body(
+    context: &ChildrenContext<'_>,
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+    ty: &Type,
+    frame: &ChildrenFrame,
+    prefix: &str,
+) -> Result<ChildrenBody, String> {
+    let empty = ChildrenBody {
+        helpers: proc_macro2::TokenStream::new(),
+        body: proc_macro2::TokenStream::new(),
+        any: false,
+        opaque: false,
     };
-    let generics = quote!(<__RecursaRoot: #facade::__private::FlatNode>);
-    let mut opaque = false;
-    let (helpers, body) = match &application.body {
+    match &application.body {
         NodeBodyPlan::Struct { elements, .. } => {
-            let sites = child_sites(variants, elements, &|field| {
+            let sites = child_sites(&context.naming, elements, &|field| {
                 field.ident.as_ref().map_or_else(
                     || {
                         let index = syn::Index::from(field.index);
@@ -370,24 +568,27 @@ fn render_application_children(
                 )
             });
             if sites.is_empty() {
-                return Ok(RenderedChildren {
-                    tokens: None,
-                    opaque: false,
-                });
+                return Ok(empty);
             }
-            opaque = sites.iter().any(|site| site.variant.is_none());
+            let opaque = sites.iter().any(|site| site.variant.is_none());
             let visits = sites
                 .iter()
-                .map(|site| render_child_site(node, site))
+                .map(|site| render_child_site(context, node, site))
                 .collect::<Result<Vec<_>, String>>()?;
-            (proc_macro2::TokenStream::new(), quote!(#(#visits)*))
+            Ok(ChildrenBody {
+                helpers: proc_macro2::TokenStream::new(),
+                body: quote!(#(#visits)*),
+                any: true,
+                opaque,
+            })
         }
         NodeBodyPlan::Enum { variants: bodies } => {
             let path = flat_pattern_path(ty)?;
             let mut arms = Vec::new();
             let mut any = false;
+            let mut opaque = false;
             for body in bodies {
-                let sites = child_sites(variants, &body.elements, &|field| {
+                let sites = child_sites(&context.naming, &body.elements, &|field| {
                     let binding = format_ident!("__recursa_field_{}", field.index);
                     quote!(#binding)
                 });
@@ -395,7 +596,7 @@ fn render_application_children(
                 opaque |= sites.iter().any(|site| site.variant.is_none());
                 let visits = sites
                     .iter()
-                    .map(|site| render_child_site(node, site))
+                    .map(|site| render_child_site(context, node, site))
                     .collect::<Result<Vec<_>, String>>()?;
                 arms.push((
                     render_variant_pattern(&path, body, &sites),
@@ -403,32 +604,155 @@ fn render_application_children(
                 ));
             }
             if !any {
-                return Ok(RenderedChildren {
-                    tokens: None,
-                    opaque: false,
-                });
+                return Ok(empty);
             }
             let split = split_match(
-                &helper.to_string(),
-                &generics,
-                &signature,
-                &quote!(ast, __recursa_node, &mut *f),
+                prefix,
+                &frame.generics,
+                &frame.parameters,
+                &frame.arguments,
                 &quote!(__recursa_node),
                 &arms,
             );
-            (split.helpers, split.body)
+            Ok(ChildrenBody {
+                helpers: split.helpers,
+                body: split.body,
+                any: true,
+                opaque,
+            })
         }
+    }
+}
+
+/// Renders one application's children helper at the grammar root, or nothing when it has no child.
+///
+/// The helper takes the owner itself, which resolves every handle and every list run of the
+/// application's own children.
+fn render_application_children(
+    context: &ChildrenContext<'_>,
+    entry: &NodeRefVariant<'_>,
+) -> Result<RenderedChildren, String> {
+    let facade = context.facade;
+    let (node, application, ty) = (entry.node, entry.application, &entry.ty);
+    let helper = children_helper_ident(application);
+    let frame = ChildrenFrame {
+        generics: quote!(<__RecursaRoot: #facade::__private::FlatNode>),
+        parameters: quote! {
+            ast: &FlatAst<'_, __RecursaRoot>,
+            __recursa_node: #ty,
+            f: &mut impl FnMut(NodeRef)
+        },
+        arguments: quote!(ast, __recursa_node, &mut *f),
     };
+    let rendered =
+        render_children_body(context, node, application, ty, &frame, &helper.to_string())?;
+    if !rendered.any {
+        return Ok(RenderedChildren {
+            tokens: None,
+            opaque: false,
+        });
+    }
+    let (helpers, body) = (rendered.helpers, rendered.body);
+    let (generics, parameters) = (&frame.generics, &frame.parameters);
     Ok(RenderedChildren {
         tokens: Some(quote! {
             #helpers
 
-            fn #helper #generics (#signature) {
+            fn #helper #generics (#parameters) {
                 #body
             }
         }),
-        opaque,
+        opaque: rendered.opaque,
     })
+}
+
+/// Renders the opaque-traversal items one non-public Node needs in its own module.
+///
+/// A Node whose declaration is not public has no `NodeRef` variant, because the grammar root
+/// cannot name it. Its parent reports it as an opaque reference, which carries the raw handle and
+/// one `OpaqueTable` this function emits. The table's children function lives here, beside the
+/// declaration, because only this module can name the Node.
+///
+/// The function reads the Node out of the shared pool and takes the list store as a parameter, so
+/// its signature names no type of the owner. That is what lets one function pointer serve every
+/// `FlatAst` of the grammar, whatever its root Node type is. One signature serves every Node, so
+/// a Node without a list leaves the list store unused; the generated-code lint policy allows
+/// that, as it does for the root's own children helpers.
+pub(super) fn render_node_flat_opaque_items(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+) -> Result<proc_macro2::TokenStream, String> {
+    if !plan.flat || node.publicly_materialized {
+        return Ok(proc_macro2::TokenStream::new());
+    }
+    let facade = &plan.facade;
+    let anchor = &plan.module_anchor;
+    let variants = node_ref_variant_idents(plan);
+    if variants.is_empty() {
+        return Ok(proc_macro2::TokenStream::new());
+    }
+    let tables = opaque_tables(plan)?;
+    let context = ChildrenContext {
+        facade,
+        naming: ChildNaming {
+            variants: &variants,
+            tables: &tables,
+        },
+        scope: ChildrenScope::Module { anchor },
+    };
+    let mut items = Vec::new();
+    for application in &node.parse_applications {
+        let ty = flat_application_type(plan, node, application)?;
+        let children = opaque_children_ident(application);
+        let frame = ChildrenFrame {
+            generics: proc_macro2::TokenStream::new(),
+            parameters: quote! {
+                __recursa_node: #ty,
+                __recursa_lists: &#facade::__private::ListStore,
+                f: &mut dyn FnMut(#anchor::NodeRef)
+            },
+            arguments: quote!(__recursa_node, __recursa_lists, &mut *f),
+        };
+        let rendered = render_children_body(
+            &context,
+            node,
+            application,
+            &ty,
+            &frame,
+            &children.to_string(),
+        )?;
+        let read = rendered.any.then(|| {
+            quote! {
+                let __recursa_node = *__recursa_shared
+                    .get(#facade::__private::opaque_handle::<#ty>(__recursa_raw));
+            }
+        });
+        let (helpers, body) = (rendered.helpers, rendered.body);
+        let name = application_name(node, application);
+        let table = opaque_table_ident(application);
+        let doc = format!(
+            " Traversal behavior of `{name}`, whose declaration the grammar root cannot name.",
+        );
+        items.push(quote! {
+            #helpers
+
+            fn #children(
+                __recursa_shared: &#facade::__private::SharedPool,
+                __recursa_lists: &#facade::__private::ListStore,
+                __recursa_raw: ::core::num::NonZeroU32,
+                f: &mut dyn FnMut(#anchor::NodeRef),
+            ) {
+                #read
+                #body
+            }
+
+            #[doc = #doc]
+            #[doc(hidden)]
+            pub static #table: #facade::__private::OpaqueTable<#anchor::NodeRef> =
+                #facade::__private::OpaqueTable::new(#name, #children);
+        });
+    }
+    Ok(quote!(#(#items)*))
 }
 
 /// Renders one enum variant's pattern, binding the fields that are children.
@@ -496,9 +820,9 @@ struct PooledPool {
 
 /// Collects every pooled Node application in canonical plan order.
 ///
-/// A pooled declaration is always publicly reachable, because `#[flat(pool)]` on an unreachable
-/// declaration is rejected during source modeling, so the grammar root can always name the
-/// element type of a pool.
+/// A pooled declaration is always publicly reachable: source modeling rejects `#[flat(pool)]` on
+/// a declaration that is not reachable. The grammar root can therefore always name the element
+/// type of a pool.
 fn pooled_pools(plan: &EmissionPlan) -> Result<Vec<PooledPool>, String> {
     let mut pooled = Vec::new();
     for node in plan.nodes.iter().filter(|node| node.flat.pool) {
@@ -519,12 +843,12 @@ fn pooled_pools(plan: &EmissionPlan) -> Result<Vec<PooledPool>, String> {
 /// # Long-function contract
 ///
 /// Rationale: `NodeRef`, `children`, `root_ref` and the checker are one contract. The variant set
-/// decides what `children` can report, `children` decides what the checker can see, and the
-/// `Opaque` variant exists only when a rendered child needs it, so the parts are rendered
-/// together or not at all.
+/// decides what `children` can report. `children` decides what the checker can see. The `Opaque`
+/// variant exists only when a rendered child needs it. The parts are therefore rendered together
+/// or not at all.
 /// Invariants: one variant per publicly materialized application; children in source order; no
 /// public mutable access to any store; `Opaque` present only when a public Node has a child the
-/// root cannot name.
+/// root cannot name; every Node of the result is reachable from the root.
 /// Phases: collects the variants, renders each application's children helper, then renders the
 /// enum, the dispatch, the traversal bridge, the store accessors, and the post-order checker.
 pub(super) fn render_flat_traversal(
@@ -542,13 +866,22 @@ pub(super) fn render_flat_traversal(
         .iter()
         .map(|entry| (entry.application.application, entry.variant.clone()))
         .collect::<BTreeMap<_, _>>();
+    let tables = opaque_tables(plan)?;
+    let context = ChildrenContext {
+        facade,
+        naming: ChildNaming {
+            variants: &variants,
+            tables: &tables,
+        },
+        scope: ChildrenScope::Root,
+    };
 
     let mut helpers = Vec::new();
     let mut arms = Vec::new();
     let mut opaque = false;
     for entry in &entries {
         let variant = &entry.variant;
-        let rendered = render_application_children(plan, &variants, entry)?;
+        let rendered = render_application_children(&context, entry)?;
         opaque |= rendered.opaque;
         match rendered.tokens {
             None => arms.push((
@@ -569,16 +902,27 @@ pub(super) fn render_flat_traversal(
         quote! {
             /// A child Node this module cannot name, because its declaration is not public.
             ///
-            /// A non-public Node has no variant of its own, so `children` reports its site and
-            /// stops there. The Node is still stored, and the declaration's own module can read
-            /// it.
-            Opaque,
+            /// A non-public Node has no variant of its own, because a public enum cannot hold a
+            /// private type. The reference carries the Node's raw handle and the Node's own
+            /// traversal behavior instead. `children` therefore reports the children of the Node
+            /// too, and `name` reports the Node's name.
+            Opaque(#facade::__private::OpaqueRef<NodeRef>),
         }
     });
     if opaque {
-        arms.push((quote!(NodeRef::Opaque), proc_macro2::TokenStream::new()));
+        arms.push((
+            quote!(NodeRef::Opaque(__recursa_opaque)),
+            quote! {
+                __recursa_opaque.children(
+                    ast.__recursa_flat_shared(),
+                    ast.lists(),
+                    &mut *f,
+                );
+            },
+        ));
     }
-    let opaque_name = opaque.then(|| quote!(NodeRef::Opaque => "Opaque",));
+    let opaque_name =
+        opaque.then(|| quote!(NodeRef::Opaque(__recursa_opaque) => __recursa_opaque.name(),));
 
     let declared = entries.iter().map(|entry| {
         let (variant, ty) = (&entry.variant, &entry.ty);
@@ -707,8 +1051,9 @@ pub(super) fn render_flat_traversal(
         /// Calls `f` once per direct child of `node`, in source order.
         ///
         /// Source order is the order the parse read the children. A text handle and a presence
-        /// flag are data, not children, so neither reaches `f`. A child of a Node this module
-        /// cannot name arrives as `NodeRef::Opaque`.
+        /// flag are data, not children, so neither one reaches `f`. A child this module cannot
+        /// name arrives as `NodeRef::Opaque`. The children of that Node reach `f` too, because the
+        /// opaque reference carries the Node's own traversal behavior.
         ///
         /// The traversal reads the stores only, so it never panics for a handle this result
         /// produced.
@@ -744,9 +1089,9 @@ pub(super) fn render_flat_traversal(
         {
             /// Borrows the typed pool of one pooled Node type.
             ///
-            /// The pool iterates its handles in post-order and reports its length, which is what
-            /// a consumer needs to visit every Node of the type or to size a side table. Only a
-            /// pooled Node type has a pool; every other Node lives in the shared pool.
+            /// The pool iterates its handles in post-order and reports its length. A consumer
+            /// needs both to visit every Node of the type, or to size a side table. Only a pooled
+            /// Node type has a pool. Every other Node lives in the shared pool.
             pub fn pool<__RecursaNode>(
                 &self,
             ) -> &#facade::__private::TypedPool<__RecursaNode>
