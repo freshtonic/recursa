@@ -22,19 +22,25 @@
 //!
 //! The token precedences are read per nonterminal, so an exclusion clone (`Expr[excl In]`) and
 //! a second Pratt type that reuses a token keep their own levels. A fixed-token attachment
-//! around an operand (`Plus -> + Expr` for `Expr -> Expr Plus`) carries its variant's
-//! precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s tokens;
-//! that is what gives an interleaved shape's middle operand its minimum binding power. The
-//! attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`) also
+//! around a Pratt variant's operand (`Plus -> + Expr` for `Expr -> Expr Plus`) carries its
+//! variant's precedence and names `Expr` as its owner, so its reduce is decided against `Expr`'s
+//! tokens; that is what gives an interleaved shape's middle operand its minimum binding power.
+//! The attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`) also
 //! introduces its leading token, at the level the lowering recorded on it (the variant's level
 //! plus one), so that the token shifts against the variant's own reduce as gram.y's
 //! `%nonassoc ESCAPE` just above `LIKE` does.
 //!
+//! Every rule this module reads is a Pratt rule, so every attachment it describes is one of a
+//! Pratt variant. A plain variant's cardinality-one attachment has no rule and no precedence of
+//! its own: the lowering inlines it into the variant's own rule (`docs/declared-precedence.md`,
+//! "Attachment units inline"), so the operator token is a terminal of the rule that reduces and
+//! the whole decision belongs to the `precedence` declaration.
+//!
 //! The `precedence` declaration ([`declared_precedence`](crate::lr::declared_precedence)) is the
 //! second source, consulted only where the Pratt levels say nothing: a Pratt rule against a
 //! lookahead that introduces no operator of its owner (`a LIKE b . ESCAPE`), and a rule whose
-//! own precedence is declared (`ColId -> BETWEEN .` before a window frame, or an alternative
-//! with `#[parse(prec = UMINUS)]`). Both compare the rule's level with the lookahead's declared
+//! own precedence is declared (`ColId -> BETWEEN .` before a window frame, or a plain variant
+//! with `#[parse(prec = UMINUS)]`, whose override now lands on the variant's own inlined rule). Both compare the rule's level with the lookahead's declared
 //! binding power on the one scale: higher rule reduces, higher token shifts, and a tie goes to
 //! the reducing rule's associativity as bison's `%left`, `%right` and `%nonassoc` do, the last
 //! as an error action. A Pratt rule against a Pratt operator of its owner is decided as before;
