@@ -15,7 +15,7 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
-    derives(Pretty),
+    derives(Pretty, Visit, Arbitrary),
 }
 
 recursa::tokens! {
@@ -25,6 +25,7 @@ recursa::tokens! {
         BETWEEN => "between",
         LIKE => "like",
         ESCAPE => "escape",
+        NULL => "null",
     }
     punctuation {
         EQ => "=",
@@ -70,6 +71,10 @@ recursa::ast_node! {
     pub enum Expr {
         Integer(Integer),
         Name(Name),
+        /// `a_expr: NULL_P`: a keyword atom, whose token is an element of the rule rather than
+        /// syntax attached to an operand.
+        #[tok(NULL)]
+        Null,
         Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
         /// `a_expr: '-' a_expr %prec UMINUS`.
         #[parse(prec = UMINUS)]
@@ -109,6 +114,7 @@ recursa::ast_node! {
     pub enum BExpr {
         Integer,
         Name,
+        Null,
         Parenthesized,
         Negate,
         Factorial,

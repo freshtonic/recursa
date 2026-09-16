@@ -46,7 +46,7 @@ fn six_rust_2024_fixtures_match_location_and_id_free_semantic_projections() {
 }
 
 #[test]
-fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
+fn projection_exposes_parse_site_swaps_and_field_correlation_loss() {
     use crate::materialization::MaterializedFieldLowering;
 
     let mut success = analyzed("arith");

@@ -33,6 +33,8 @@ const ACCEPTED: &[&str] = &[
     "a like b",
     "a like b and c",
     "a like b + c escape d",
+    // A keyword atom: its token is an element of the rule, not syntax attached to an operand.
+    "null + a",
     // The runtime `tail` flag: an operator rule is a left-recursive continuation of its own
     // Node, so its reduce leaves the following token to whatever encloses the expression and
     // the parsed prefix stays acceptable. `a + b` is accepted with input left over.
@@ -60,6 +62,7 @@ fn shape(expression: &grammar::Expr<'_>) -> String {
     match expression {
         grammar::Expr::Integer(integer) => integer.text.text().to_owned(),
         grammar::Expr::Name(name) => name.text.text().to_owned(),
+        grammar::Expr::Null => "null".to_owned(),
         grammar::Expr::Parenthesized(inner) => format!("paren({})", shape(inner)),
         grammar::Expr::Negate(operand) => format!("neg({})", shape(operand)),
         grammar::Expr::Factorial(operand) => format!("fac({})", shape(operand)),

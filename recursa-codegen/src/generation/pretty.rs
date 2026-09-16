@@ -881,7 +881,7 @@ pub(super) fn emitted_pretty_plan(
 fn emitted_pretty_grouping_syntax(nodes: &[NodeParsePlan]) -> PrettyGroupingSyntax {
     let nodes = nodes
         .iter()
-        .filter_map(|node| {
+        .map(|node| {
             let variants = match &node.body {
                 NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
                 NodeBodyPlan::Enum { variants, .. } => variants
@@ -902,7 +902,7 @@ fn emitted_pretty_grouping_syntax(nodes: &[NodeParsePlan]) -> PrettyGroupingSynt
                         .collect()
                 })
                 .collect();
-            Some((node.node, variants))
+            (node.node, variants)
         })
         .collect();
     PrettyGroupingSyntax { nodes }

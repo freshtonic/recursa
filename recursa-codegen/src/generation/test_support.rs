@@ -338,7 +338,6 @@ pub(super) fn semantic_diagrams_cover_expression_nodes_content_tokens_and_local_
     let diagrams = plan.diagrams.as_ref().expect("diagram plan");
     assert_eq!(diagrams.nodes.len(), plan.nodes.len());
     assert_eq!(diagrams.tokens.len(), plan.tokens.len());
-    assert_eq!(diagrams.tokens.len(), 3);
     assert!(
         diagrams
             .tokens
@@ -352,10 +351,10 @@ pub(super) fn semantic_diagrams_cover_expression_nodes_content_tokens_and_local_
         .expect("the expression diagram");
     let topology = format!("{:?}", expression.production);
     assert!(topology.contains("Choice"));
-    assert!(topology.contains("prefix bp=35 Neg"));
-    assert!(topology.contains("infix lbp=10 rbp=11 Add"));
-    assert!(topology.contains("infix lbp=15 rbp=16 Custom"));
-    assert!(topology.contains("postfix bp=40 Factorial"));
+    // Each variant renders as the rule its author wrote, under its own name.
+    for variant in ["Negate", "Factorial", "Power", "Add", "Between"] {
+        assert!(topology.contains(variant), "{variant}\n{topology}");
+    }
     let aggregate = recursa_diagrams::render_aggregate_document(diagrams);
     assert!(aggregate.contains("## Content tokens"));
     for binding in &plan.token_bindings {

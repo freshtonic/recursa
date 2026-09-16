@@ -307,7 +307,7 @@ fn failure(selected_root: &Path, detail: &str) -> GenerateError {
 
 /// Converts every unresolved LR conflict or lowering diagnostic into a stable-coded build
 /// report: an ordinary authoring error (`RCA0400`/`RCA0401` for an unresolved shift/reduce or
-/// reduce/reduce conflict, `RCA0402`/`RCA0403` for a Pratt binding power or text predicate the
+/// reduce/reduce conflict, `RCA0403` for a text predicate the
 /// table-driven style cannot lower) whose evidence carries the automaton dump's content for
 /// that state — its shortest path, items and competing actions — so an unresolved conflict in
 /// an authored grammar is never wrapped as the internal-invariant `RCA9105`. A shift/reduce

@@ -1,4 +1,4 @@
-//! Pretty-golden fixture proving declared-precedence parenthesization for a plain (non-Pratt)
+//! Pretty-golden fixture proving declared-precedence parenthesization for a plain
 //! expression enum, per `docs/declared-precedence.md`'s "Consumers -> Pretty" paragraph.
 //!
 //! Every operator variant of `Expr` takes its level from the
