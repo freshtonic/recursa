@@ -1241,6 +1241,7 @@ pub(super) fn render_root(
     } = render_trivia_root_fragments(plan, facade);
     let visit_events = render_visit_events(plan);
     let flat_owner = render_flat_owner(plan)?;
+    let flat_traversal = render_flat_traversal(plan)?;
     let explorer_schema = plan
         .explorer
         .as_ref()
@@ -1864,6 +1865,7 @@ pub(super) fn render_root(
         #arbitrary_seed_module
         #visit_events
         #flat_owner
+        #flat_traversal
         #explorer_schema
         #explorer_lex
 

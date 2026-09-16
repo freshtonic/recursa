@@ -18,6 +18,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "expressions/Cargo.core.lock",
         "expressions/Cargo.lock",
         "flat-containers/Cargo.core.lock",
+        "flat-pretty/Cargo.core.lock",
         "follow-pollution/Cargo.core.lock",
         "lexing/Cargo.lock",
         "lookahead/Cargo.core.lock",

@@ -196,6 +196,118 @@ fn parse_flat_builds_every_container_shape_out_of_pools_lists_and_text_handles()
 }
 
 #[test]
+fn the_generated_traversal_reports_every_child_in_source_order_and_proves_post_order() {
+    // Step four's surface: `NodeRef`, `children`, `root_ref`, `walk`, `check_post_order`, and the
+    // owner's `pool`, `lists` and `texts` accessors. The driver prints one walk line per positive
+    // input, built only out of `NodeRef` names, so each line is the same tree the structural line
+    // above renders and names it by Node application instead of by field.
+    let package = scaffold(FIXTURE, None);
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("flat-containers-ok\n"), "{stdout}");
+    let lines = parser_lines(&stdout);
+
+    // One line per container shape, for the inputs the structural test pins.
+    for expected in [
+        // An empty list, an empty run and an absent optional list all report no child at all.
+        "flat-walk \"f();\" => Statement(Call(Callee Args))\n",
+        "flat-walk \"boxes;\" => Statement(Boxes)\n",
+        "flat-walk \"print [];\" => Statement(Print(Value(List)))\n",
+        // A list reports one child per item, however the separator is written.
+        "flat-walk \"with a | b;\" => Statement(With(Name Name))\n",
+        "flat-walk \"with recursive a | b |;\" => Statement(With(Name Name))\n",
+        "flat-walk \"trail a, b,;\" => Statement(Trail(Name Name))\n",
+        "flat-walk \"f(1, 2,);\" => Statement(Call(Callee Args(Value(Number) Value(Number))))\n",
+        // An absent `Option<one_or_many!>` reports nothing and a present one reports each item.
+        "flat-walk \"marks :;\" => Statement(Marks)\n",
+        "flat-walk \"marks : !!!;\" => Statement(Marks(Bang Bang Bang))\n",
+        // A presence is data, not a child, so a true one adds nothing to the walk.
+        "flat-walk \"mods one three four six x;\" => Statement(Modifiers(Name))\n",
+        "flat-walk \"mods two five x;\" => Statement(Modifiers(Name))\n",
+        // A `boxed!` child is one handle, and an inlined optional Node is one child.
+        "flat-walk \"let one if not exists x = 2 as y;\" \
+         => Statement(Let(Name Value(Number) Alias(Name)))\n",
+        // An erased optional group leaves no Node, so it leaves no child either.
+        "flat-walk \"erased x;\" => Statement(Erased(Name))\n",
+        "flat-walk \"erased one two three four five x;\" => Statement(Erased(Name))\n",
+        // A fixed-token unit Node the parent allocated is still a child.
+        "flat-walk \"options as out temp;\" => Statement(Options(KwAs KwOut KwTemp))\n",
+        "flat-walk \"options as in out only temp;\" \
+         => Statement(Options(KwAs KwIn KwOut KwOnly KwTemp))\n",
+        "flat-walk \"filter !;\" => Statement(Filter(Bang))\n",
+        // A list inside a list item nests exactly as the store holds it.
+        "flat-walk \"print [[], [1, [2]]];\" \
+         => Statement(Print(Value(List(Value(List) Value(List(Value(Number) \
+         Value(List(Value(Number)))))))))\n",
+        // A content token is data: `Name` is a child of `Let`, its text is not a child of `Name`.
+        "flat-walk \"let if exists as = only as temp;\" \
+         => Statement(Let(Name Value(Name) Alias(Name)))\n",
+        // A recursive Node through a nested statement list.
+        "flat-walk \"{ print 1; { let if exists x = 2; } f(); }\" \
+         => Statement(Block(Statement(Print(Value(Number))) \
+         Statement(Block(Statement(Let(Name Value(Number))))) Statement(Call(Callee Args))))\n",
+    ] {
+        assert!(
+            lines.contains(expected),
+            "the walk must report\n{expected}\n{lines}"
+        );
+    }
+
+    // Invariant I1 holds for every fresh parse, which the generated checker confirms per input.
+    let checked = lines
+        .lines()
+        .filter(|line| line.starts_with("flat-post-order "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        checked.len(),
+        48,
+        "every positive input runs the post-order checker\n{lines}"
+    );
+    assert!(
+        checked.iter().all(|line| line.ends_with("=> ok")),
+        "a fresh parse leaves every typed pool in post-order\n{lines}"
+    );
+
+    // The pool census, this time from `pool::<T>()` rather than from a reachability walk. The
+    // driver asserts the two agree for every input; these lines record what the pools hold.
+    for expected in [
+        "flat-pool-len \"print [[1, [2, [3]]], []];\" => values=8 names=0\n",
+        "flat-pool-len \"let if exists as = only as temp;\" => values=1 names=3\n",
+        "flat-pool-len \"options as in out only temp;\" => values=0 names=0\n",
+    ] {
+        assert!(lines.contains(expected), "{expected}\n{lines}");
+    }
+
+    // `children` without a walk reports only the direct children of one Node.
+    assert!(
+        lines.contains("flat-children \"print [1, [2]];\" => [Print]\n"),
+        "{lines}"
+    );
+
+    // The list store and the text pool through the owner's read-only accessors: two numbers, and
+    // one reserved slot plus a run of two and a run of one.
+    assert!(
+        lines.contains("flat-stores \"print [1, [2]];\" => texts=2 lists=4\n"),
+        "{lines}"
+    );
+
+    // `enter` returns `false` at the first `Value`, so the walk stops there and still leaves it.
+    assert!(
+        lines.contains("flat-walk-skip \"print [1, [2]];\" => Statement(Print(Value))\n"),
+        "{lines}"
+    );
+
+    // A result rooted at a Node other than the grammar root names its own root variant.
+    assert!(
+        lines.contains(
+            "entry value-walk Value(List(Value(Number) Value(List(Value(Name) Value(Name)))))\n"
+        ),
+        "{lines}"
+    );
+}
+
+#[test]
 fn a_grammar_with_both_arena_ast_and_flat_builds_either_representation() {
     // The two backends own separate stores: an arena AST allocates in the bump arena and a Flat
     // AST in its own pools, list store and text pool. This grammar selects both, so the generated
@@ -315,6 +427,97 @@ fn main() {
         flat.span(flat.root()),
     );
     println!("arena-flat-ok");
+}
+"#;
+
+#[test]
+fn a_child_the_grammar_root_cannot_name_reaches_the_traversal_as_an_opaque_reference() {
+    // `NodeRef` holds a handle per variant, so it cannot hold the handle of a Node the grammar
+    // root cannot name. A Node in a private module is exactly that case: `children` reports its
+    // site as `NodeRef::Opaque` and stops there, and the variant exists only for a grammar that
+    // has such a child. Every other grammar of this file omits it.
+    let package = scaffold(FIXTURE, Some(OPAQUE_FLAT_GRAMMAR));
+    fs::write(package.path().join("src/main.rs"), OPAQUE_FLAT_DRIVER)
+        .expect("write the opaque consumer");
+    let output = run_fixture(&package);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("opaque-flat-ok\n"), "{stdout}");
+    assert!(
+        stdout.contains("opaque children=[\"Name\", \"Opaque\", \"Opaque\"] below=0\n"),
+        "a non-public child reports one opaque reference per site and no child of its own\n\
+         {stdout}"
+    );
+}
+
+/// A grammar whose helper Node lives in a private module, so the grammar root cannot name it.
+const OPAQUE_FLAT_GRAMMAR: &str = r#"//! A Node in a private module, with `flat` on.
+
+recursa::grammar! {
+    module = crate::grammar,
+    flat,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords { LET => "let" }
+    punctuation { SEMI => ";", COMMA => "," }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    #[tok(LET, this, SEMI)]
+    pub struct Root {
+        pub name: Name,
+        #[sep(COMMA)]
+        pub hidden: zero_or_many!(hidden::Hidden),
+    }
+}
+
+pub mod visible {
+    recursa::ast_node! {
+        #[derive(Debug)]
+        pub struct Seen {
+            #[lex(pattern = r"[0-9]+")]
+            pub text: SeenText,
+        }
+    }
+}
+
+mod hidden {
+    recursa::ast_node! {
+        #[derive(Debug)]
+        pub struct Hidden {
+            pub seen: super::visible::Seen,
+        }
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug)]
+    pub struct Name {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+        pub text: NameText,
+    }
+}
+"#;
+
+/// The consumer that traverses a result whose second child is a Node in a private module.
+const OPAQUE_FLAT_DRIVER: &str = r#"//! Proves a non-public child reaches the traversal as `NodeRef::Opaque`.
+
+use recursa_generated_flat_containers::grammar;
+
+fn main() {
+    let source = "let x 1, 2;";
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let flat = grammar::Root::parse_flat(&mut input).expect("the flat parse succeeds");
+    let mut names = Vec::new();
+    grammar::children(&flat, flat.root_ref(), &mut |child| names.push(child.name()));
+    let mut below = 0;
+    grammar::children(&flat, grammar::NodeRef::Opaque, &mut |_| below += 1);
+    println!("opaque children={names:?} below={below}");
+    println!("opaque-flat-ok");
 }
 "#;
 
