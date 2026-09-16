@@ -3,7 +3,7 @@
 //! Mirrors PostgreSQL `gram.y`'s `select_with_parens: '(' select_no_parens ')'
 //! | '(' select_with_parens ')'` (gram.y:12682-12685) held behind one
 //! parenthesized-content nonterminal, which is the shape pg-sql needs in order
-//! to unify `select_clause`. The Pratt atom `Expr::Paren` holds `ParenContent`,
+//! to unify `select_clause`. The grouping atom `Expr::Paren` holds `ParenContent`,
 //! whose `Exprs` variant supplies the only grouping witness while its `Query`
 //! variant re-enters `Query` through `QueryParens`. That cycle owns no `Expr`,
 //! so Pretty's grouping proof must keep the sibling's witness rather than
@@ -33,6 +33,10 @@ recursa::tokens! {
         LBRACKET => "[",
         RBRACKET => "]",
         COMMA => ",",
+    }
+    precedence {
+        left(bp = 10) { PLUS },
+        left(bp = 20) { STAR },
     }
 }
 
@@ -84,7 +88,7 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The Pratt grouping atom: the only enclosure Pretty can repair precedence with.
+    /// The grouping atom: the only enclosure Pretty can repair precedence with.
 
     pub struct ParenExpr {
         #[tok(LPAREN, this, RPAREN)]
@@ -95,17 +99,12 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// Expressions with the grouping atom reached through the cyclic content enum.
 
-    #[pratt]
     pub enum Expr {
         IntLit(IntAtom),
         Paren(ParenExpr),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(STAR)]
-        Mul(boxed!(Self), boxed!(Self)),
+        Mul(boxed!(Self), #[tok(STAR, this)] boxed!(Self)),
     }
 }

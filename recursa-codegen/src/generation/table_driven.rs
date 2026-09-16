@@ -17,8 +17,8 @@
 //! constructed field, so a mismatch cannot be written by hand. Fixed tokens never reach the
 //! value stack: a field whose type is a fixed token is constructed as a unit value.
 //!
-//! Sequences, enum alternatives, Pratt variants, fixed tokens and content tokens are rendered.
-//! A Pratt variant's reduce pops its operands like any other children and boxes them at
+//! Sequences, enum alternatives, fixed tokens and content tokens are rendered.
+//! An alternative's reduce pops its children and boxes them at
 //! construction; the implicit left operand of an infix or postfix variant is the first pop.
 //! Textually identical node-local reductions share one match arm so rustc optimizes their
 //! construction once while the LR table retains every distinct rule number.
@@ -152,7 +152,7 @@ pub(super) struct TableDrivenRendering {
 /// Why the table-driven parser's LALR(1) construction failed to produce tables.
 ///
 /// An unresolved conflict in an authored grammar (or a lowering-stage diagnostic to which no
-/// rule or token binds, such as a Pratt binding power with no precedence equivalent) is an
+/// rule or token binds) is an
 /// ordinary authoring error, carried structured so the render-stage caller reports it as its
 /// registered code (`RCA0400`, `RCA0401`, `RCA0402` or `RCA0403`) instead of the internal-
 /// invariant `RCA9105`. Every other failure in this boundary is genuinely unexpected, so it
@@ -1080,7 +1080,6 @@ fn render_reduce_body(
     let RuleAction::Construct { variant, sites, .. } = &rule.action else {
         return Ok(quote!({}));
     };
-    let mut implicit_lhs = false;
     let (variant_ident, style, elements): (
         Option<&Ident>,
         ResolvedFieldStyle,
@@ -1103,41 +1102,6 @@ fn render_reduce_body(
                 Cow::Borrowed(variant.elements.as_slice()),
             )
         }
-        (NodeBodyPlan::Pratt(pratt), Some(declaration)) => {
-            let resolved = plan_variant(lr, application, *declaration)?;
-            if let Some(nud) = pratt
-                .nud
-                .iter()
-                .find(|nud| nud.variant.resolved_variant == resolved)
-            {
-                (
-                    Some(&nud.variant.ident),
-                    nud.variant.style,
-                    Cow::Borrowed(nud.variant.elements.as_slice()),
-                )
-            } else if let Some(led) = pratt
-                .led
-                .iter()
-                .find(|led| led.variant.resolved_variant == resolved)
-            {
-                // The lowered rule starts with the implicit left operand, which the plan
-                // keeps apart from the tail; put it back in front so that pops line up.
-                let mut elements = Vec::with_capacity(led.variant.elements.len() + 1);
-                elements.push(led.lhs.clone());
-                elements.extend(led.variant.elements.iter().cloned());
-                implicit_lhs = true;
-                (
-                    Some(&led.variant.ident),
-                    led.variant.style,
-                    Cow::Owned(elements),
-                )
-            } else {
-                return Err(format!(
-                    "`{}` has no Pratt plan for one of its variants",
-                    node.ident
-                ));
-            }
-        }
         _ => {
             return Err(format!(
                 "`{}`: the lowered rule and the node plan disagree on the node's shape",
@@ -1145,16 +1109,7 @@ fn render_reduce_body(
             ));
         }
     };
-    // The implicit left operand has no site form; give it a required one so that the forms
-    // line up with the elements.
-    let forms: Cow<'_, [SiteForm]> = if implicit_lhs {
-        let mut forms = Vec::with_capacity(sites.len() + 1);
-        forms.push(SiteForm::required(0));
-        forms.extend_from_slice(sites);
-        Cow::Owned(forms)
-    } else {
-        Cow::Borrowed(sites.as_slice())
-    };
+    let forms: Cow<'_, [SiteForm]> = Cow::Borrowed(sites.as_slice());
     if elements.len() != forms.len() {
         return Err(format!(
             "`{}`: rule has {} sites but the node plan has {} elements",

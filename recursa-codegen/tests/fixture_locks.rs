@@ -22,13 +22,9 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "lookahead-precedence/Cargo.core.lock",
         "one-node/Cargo.core.lock",
         "one-node/Cargo.lock",
-        "pratt/Cargo.core.lock",
-        "pratt/Cargo.lock",
-        "pratt-shapes/Cargo.core.lock",
         "repetitions/Cargo.core.lock",
         "repetitions/Cargo.lock",
         "table-driven/Cargo.core.lock",
-        "table-driven-pratt/Cargo.core.lock",
     ] {
         let lock = fs::read_to_string(
             manifest_dir
@@ -51,7 +47,6 @@ fn diagram_fixture_locks_cover_the_mutated_optional_dependency_graph() {
     for relative in [
         "compound-nodes/Cargo.lock",
         "one-node/Cargo.lock",
-        "pratt/Cargo.lock",
         "repetitions/Cargo.lock",
     ] {
         let lock = fs::read_to_string(

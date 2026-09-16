@@ -131,18 +131,9 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
     rendered.push_str("\n[lowering-correlations]\n");
     for correlation in &lowered.lowering_map.fields {
         let source = source_field_name(lowered, correlation.application, correlation.field);
-        let target = match correlation.lowered {
-            MaterializedFieldLowering::ParseSite(site) => {
-                let site =
-                    projected_field_site(lowered, correlation.application, correlation.field, site);
-                format!("parse-site({})", projected_site_name(site, lowered))
-            }
-            MaterializedFieldLowering::PrattLhs { owner, variant } => format!(
-                "pratt-lhs(owner={}, variant={})",
-                grammar.types[owner.index()].name,
-                grammar.declarations[variant.index()].name,
-            ),
-        };
+        let MaterializedFieldLowering::ParseSite(site) = correlation.lowered;
+        let site = projected_field_site(lowered, correlation.application, correlation.field, site);
+        let target = format!("parse-site({})", projected_site_name(site, lowered));
         writeln!(rendered, "field {source} -> {target}").expect("writing to a String cannot fail");
     }
 
@@ -248,7 +239,7 @@ fn source_field_name(
 /// Renders fixture projection in canonical order.
 pub(crate) fn canonical_fixture_projection(name: &str, analyzed: &AnalyzedGrammar) -> String {
     let mut rendered = format!(
-        "provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/{name}.rs description=src/descriptions/{name}.rs\ntransform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality\n",
+        "provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/{name}.rs description=src/descriptions/{name}.rs\ntransform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality\n",
     );
     rendered.push_str(&canonical_semantic_projection(analyzed));
     rendered
@@ -288,24 +279,6 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGramma
                     "{} => [{}]",
                     declaration_name(alternative.declaration, grammar),
                     alternative
-                        .sites
-                        .iter()
-                        .flat_map(|site| render_projected_sites(*site, lowered))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
-        TypeShape::Pratt { variants } => format!(
-            "pratt({})",
-            variants
-                .iter()
-                .map(|variant| format!(
-                    "{} {:?} => [{}]",
-                    declaration_name(variant.declaration, grammar),
-                    variant.position,
-                    variant
                         .sites
                         .iter()
                         .flat_map(|site| render_projected_sites(*site, lowered))
@@ -369,19 +342,8 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     } else {
         target.name.clone()
     };
-    let excluded = if site.pratt_excluded.is_empty() {
-        String::new()
-    } else {
-        let mut names = site
-            .pratt_excluded
-            .iter()
-            .map(|declaration| grammar.declarations[declaration.index()].name.as_str())
-            .collect::<Vec<_>>();
-        names.sort_unstable();
-        format!(" excluded={}", names.join(","))
-    };
     format!(
-        "{}:{} target={} cardinality={} separator={} min_bp={}{excluded}",
+        "{}:{} target={} cardinality={} separator={}",
         projected_site_name(site_id, lowered),
         projected_owner_name(site.owner, lowered),
         target_name,
@@ -389,7 +351,6 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
         semantics.separator.map_or("-", |separator| {
             grammar.types[separator.type_id.index()].name.as_str()
         }),
-        site.min_bp,
     )
 }
 
@@ -487,17 +448,6 @@ fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
                     }
                 }
             }
-            TypeShape::Pratt { variants } => {
-                for variant in variants {
-                    if let Some(index) = expanded_site_index(&variant.sites, authored, lowered) {
-                        return format!(
-                            "{}::element{}",
-                            declaration_name(variant.declaration, grammar),
-                            index + inner_offset,
-                        );
-                    }
-                }
-            }
             TypeShape::Token { .. } | TypeShape::Alias { .. } => {}
         }
     }
@@ -550,20 +500,6 @@ fn semantic_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
                         return format!(
                             "{}::element{index}",
                             declaration_name(alternative.declaration, grammar),
-                        );
-                    }
-                }
-            }
-            TypeShape::Pratt { variants } => {
-                for variant in variants {
-                    if let Some(index) = variant
-                        .sites
-                        .iter()
-                        .position(|candidate| *candidate == site)
-                    {
-                        return format!(
-                            "{}::element{index}",
-                            declaration_name(variant.declaration, grammar),
                         );
                     }
                 }

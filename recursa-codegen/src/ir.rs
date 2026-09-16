@@ -91,7 +91,7 @@ pub enum LrConflictAction {
 pub enum LrRuleOwner {
     /// Every construction rule lowered from one concrete Node application.
     Type(TypeId),
-    /// Every rule lowered from one enum or Pratt variant declaration.
+    /// Every rule lowered from one enum variant declaration.
     Variant(DeclId),
 }
 
@@ -130,13 +130,13 @@ pub enum PrecedenceAssociativity {
 /// One level of the `precedence { ... }` declaration over token kinds.
 ///
 /// Only the table-driven lowering reads it: every kind at the level, as a lookahead, has the
-/// level's binding power and associativity, and a rule outside the Pratt hierarchy takes the
-/// level of its last such terminal, or of the level its declaration's
-/// [`precedence`](Declaration::precedence) override names.
+/// level's binding power and associativity, and a rule takes the level of its last such
+/// terminal, or of the level its declaration's [`precedence`](Declaration::precedence)
+/// override names.
 pub struct PrecedenceLevel {
     /// The level's associativity.
     pub associativity: PrecedenceAssociativity,
-    /// The level's binding power on the Pratt scale, strictly above the previous level's.
+    /// The level's binding power, strictly above the previous level's; it orders the levels.
     pub binding_power: u8,
     /// The token kinds at this level, in authored order without duplicates; empty for a level
     /// of precedence-only names, which only an override can name.
@@ -316,7 +316,7 @@ impl Declaration {
 pub struct AuthoredSite {
     /// Authored Node identifier.
     pub node: String,
-    /// Authored variant identifier when the site belongs to an enum or Pratt variant.
+    /// Authored variant identifier when the site belongs to an enum variant.
     pub variant: Option<String>,
     /// Authored field identifier when the field is named.
     pub field: Option<String>,
@@ -500,24 +500,12 @@ pub struct ParseSite {
     pub declaration: DeclId,
     /// Cardinality and boxing around the target.
     pub container: ContainerShape,
-    /// Minimum Pratt binding power required at this site.
-    pub min_bp: u8,
     /// The restricted expression this site parses its target through
     /// (`docs/declared-precedence.md`, "Restricted expressions"): the site's `target` stays the
     /// base type, because every rule of a restriction constructs the base type and the site's
     /// value has the base's Rust type, but the grammar symbol is the restriction's own
     /// nonterminal. `None` at every ordinary site.
     pub restriction: Option<RestrictionId>,
-    /// The variants of the target Pratt type this site excludes
-    /// (`#[parse(pratt(exclude(...)))]`), in ascending order without duplicates: an atom or
-    /// prefix variant leaves the operand's nud selection and its FIRST set, an infix or
-    /// postfix one its extenders. Empty at every other site, including one that targets the
-    /// attachment unit around such an operand only through the unit's own semantic site.
-    ///
-    /// The generated loop never selects an excluded variant at this site or in the
-    /// recursive operands it parses, so analysis leaves an excluded extender's starters out
-    /// of the site's active extenders instead of reporting them as a caller-FOLLOW overlap.
-    pub pratt_excluded: Vec<DeclId>,
 }
 
 impl ParseSite {
@@ -533,27 +521,13 @@ impl ParseSite {
             target,
             declaration,
             container,
-            min_bp: 0,
             restriction: None,
-            pratt_excluded: Vec::new(),
         }
     }
 
     /// Parses this site's target through one restricted expression.
     pub const fn with_restriction(mut self, restriction: Option<RestrictionId>) -> Self {
         self.restriction = restriction;
-        self
-    }
-
-    /// Sets the minimum Pratt binding power for this site.
-    pub const fn with_min_bp(mut self, min_bp: u8) -> Self {
-        self.min_bp = min_bp;
-        self
-    }
-
-    /// Records the target's Pratt led variants that this site excludes.
-    pub fn with_pratt_excluded(mut self, excluded: Vec<DeclId>) -> Self {
-        self.pratt_excluded = excluded;
         self
     }
 }
@@ -849,11 +823,6 @@ pub enum TypeShape {
         /// Supplies the alternatives to normalized grammar consumers.
         alternatives: Vec<Alternative>,
     },
-    /// Identifies the pratt normalized grammar form.
-    Pratt {
-        /// Supplies the variants to normalized grammar consumers.
-        variants: Vec<PrattVariant>,
-    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -863,39 +832,4 @@ pub struct Alternative {
     pub declaration: DeclId,
     /// Supplies the sites to normalized grammar consumers.
     pub sites: Vec<SiteId>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// One Pratt variant, role, binding power, and ordered parse sites.
-pub struct PrattVariant {
-    /// Supplies the declaration to normalized grammar consumers.
-    pub declaration: DeclId,
-    /// Supplies the position to normalized grammar consumers.
-    pub position: PrattPosition,
-    /// Supplies the sites to normalized grammar consumers.
-    pub sites: Vec<SiteId>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-/// Structural role and binding powers of a Pratt variant.
-pub enum PrattPosition {
-    /// Identifies the atom normalized grammar form.
-    Atom,
-    /// Identifies the prefix normalized grammar form.
-    Prefix {
-        #[doc = "Right binding power of the prefix operand."]
-        bp: u8,
-    },
-    /// Identifies the infix normalized grammar form.
-    Infix {
-        #[doc = "Left binding power required to select the operator."]
-        lbp: u8,
-        #[doc = "Right binding power used to parse the operand."]
-        rbp: u8,
-    },
-    /// Identifies the postfix normalized grammar form.
-    Postfix {
-        #[doc = "Left binding power required to select the operator."]
-        bp: u8,
-    },
 }

@@ -253,12 +253,12 @@ mod tests {
     //! The lookahead-filter tests: the normalized grammar carries the declaration, the
     //! PostgreSQL `NOT BETWEEN` shape conflicts without the filter and not with it, a token
     //! inside a rule and at its end is twinned when what follows it mixes triggers and others
-    //! (gram.y's `NOT a_expr | NOT_LA a_expr`, as a Pratt prefix and as a plain field), several
+    //! (gram.y's `NOT a_expr | NOT_LA a_expr`, as a prefix operator and as a plain field), several
     //! twinned positions multiply out, and the packed tables carry the filter.
 
     use super::super::automaton::{Automaton, AutomatonOptions, ConflictKind, NoPrecedence};
     use super::super::lowering::{TypeRoles, lower};
-    use super::super::precedence::BindingPowerPrecedence;
+    use super::super::precedence::PrecedenceResolver;
     use super::super::report::LrDiagnostic;
     use super::super::tables::{LrTables, simulate};
     use super::super::{LrGrammar, RuleId, TerminalId};
@@ -441,7 +441,6 @@ recursa::ast_node! {{
 
 recursa::ast_node! {
 
-    #[pratt]
     pub enum Expr {
         Unicode(UnicodeString),
     }
@@ -564,8 +563,7 @@ recursa::ast_node! {
 
         let (_, with) = lr(&not_between_grammar(true));
         let with = with.expect("the fixture lowers with the filter");
-        let precedence = BindingPowerPrecedence::new(&with)
-            .expect("the fixture's binding powers have precedence equivalents");
+        let precedence = PrecedenceResolver::new(&with).expect("the resolver is infallible");
         let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
         assert!(
             automaton.conflicts().is_empty(),
@@ -658,7 +656,7 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn a_pratt_prefix_whose_operand_can_begin_with_a_trigger_is_twinned() {
+    fn a_prefix_operator_whose_operand_can_begin_with_a_trigger_is_twinned() {
         // gram.y's `NOT a_expr | NOT_LA a_expr`: the operand of prefix `NOT` can begin with
         // `like` or `between` as a name, so the prefix rule is emitted with both kinds, and the
         // tests keep the merged kind alone.
@@ -708,8 +706,7 @@ recursa::ast_node! {
 
         // The automaton is conflict-free under binding-power precedence, and the tables parse
         // every reading of `NOT`: `not a not like b;`, `not like like b;`, `not between;`.
-        let precedence = BindingPowerPrecedence::new(&with)
-            .expect("the fixture's binding powers have precedence equivalents");
+        let precedence = PrecedenceResolver::new(&with).expect("the resolver is infallible");
         let automaton = Automaton::build(&with, &precedence, AutomatonOptions::default());
         assert!(
             automaton.conflicts().is_empty(),
@@ -1273,16 +1270,11 @@ recursa::ast_node! {{
 
 recursa::ast_node! {{
     #[derive(Debug, Clone)]
-    #[pratt]
     pub enum Expr {{
         Column(Ident),
-        #[parse(prefix, bp = 10)]
         Not(#[tok(NOT, this)] boxed!(Self)),
-        #[parse(postfix, bp = 20)]
         NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(LIKE)]
-        Like(boxed!(Self), boxed!(Self)),
+        Like(boxed!(Self), #[tok(LIKE, this)] boxed!(Self)),
     }}
 }}
 
@@ -1300,8 +1292,7 @@ recursa::ast_node! {{
     /// The conflicts of `frame_grammar` whose lookahead is the merged kind, each as its kind
     /// and the rule that wants to reduce, which is stable across state numbering.
     fn merged_conflicts(grammar: &LrGrammar) -> Vec<String> {
-        let precedence =
-            BindingPowerPrecedence::new(grammar).expect("the fixture has a precedence equivalent");
+        let precedence = PrecedenceResolver::new(grammar).expect("the resolver is infallible");
         let automaton = Automaton::build(grammar, &precedence, AutomatonOptions::default());
         let merged = terminal(grammar, "NOT_LA");
         automaton
