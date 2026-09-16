@@ -125,6 +125,10 @@ pub enum SiteKind {
     /// An inlined repetition, present or absent: the repetition group over the list entry and
     /// any trailing separator.
     Repetition,
+    /// An inlined cardinality-one attachment unit: the group over the entries, exactly as
+    /// [`SiteKind::Group`] builds it, around one node over this site's own nested sites, which
+    /// reproduces the `Node` fold the attachment's own removed private rule built.
+    Attachment,
 }
 
 impl SiteKind {
@@ -137,18 +141,30 @@ impl SiteKind {
             3 => Self::Absent,
             4 => Self::Presence,
             5 => Self::Repetition,
+            6 => Self::Attachment,
             other => panic!("site kind {other} is not a packed kind"),
         }
     }
 }
 
 /// One site of a node fold: the entries it occupies and the shape it builds from them.
+///
+/// `start`/`len` index the rule's popped entries for every kind, [`SiteKind::Attachment`]
+/// included: an inlined attachment unit's fixed tokens and operand are popped entries of the
+/// owner's own rule. An `Attachment` site additionally names, in `nested_start`/`nested_len`,
+/// the sites of the node it builds inside its group; those index [`FoldTable::sites`], and each
+/// of them indexes the popped entries exactly as a top-level site does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SiteFold {
     /// Index of the site's first entry among the rule's popped entries.
     pub start: u32,
     /// Number of entries the site occupies; zero for an absent choice.
     pub len: u32,
+    /// Index of the site's first nested site in [`FoldTable::sites`]; zero unless the kind is
+    /// [`SiteKind::Attachment`].
+    pub nested_start: u32,
+    /// Number of nested sites; zero unless the kind is [`SiteKind::Attachment`].
+    pub nested_len: u32,
     /// The shape built.
     pub kind: SiteKind,
     /// The policy applied to the site's group and its leaves.
@@ -178,36 +194,76 @@ pub struct FoldTable {
     pub mandatory: bool,
 }
 
+/// Decodes one packed site: `start, len, kind, policy`, then, for a [`SiteKind::Attachment`]
+/// site, its own nested site count followed by each nested site's own packed form (recursively,
+/// though inlining only ever produces one level). Nested sites are pushed into `sites` (the
+/// shared pool every rule's own top-level sites live in too) before the `Attachment` site itself
+/// is returned, so its `nested_start`/`nested_len` index them there once its caller pushes it.
+fn decode_site(values: &mut impl Iterator<Item = u32>, sites: &mut Vec<SiteFold>) -> SiteFold {
+    let mut next = || values.next().expect("a packed fold site is complete");
+    let start = next();
+    let len = next();
+    let kind = SiteKind::decode(next());
+    let policy = FoldPolicy::decode(next());
+    let (nested_start, nested_len) = if kind == SiteKind::Attachment {
+        let count = next() as usize;
+        let first = sites.len();
+        for _ in 0..count {
+            let nested = decode_site(values, sites);
+            sites.push(nested);
+        }
+        (first as u32, count as u32)
+    } else {
+        (0, 0)
+    };
+    SiteFold {
+        start,
+        len,
+        nested_start,
+        nested_len,
+        kind,
+        policy,
+    }
+}
+
 impl FoldTable {
-    /// Decodes the flat packed values: per rule `kind, policy, site count`, then per site
-    /// `start, len, kind, policy`.
+    /// Decodes the flat packed values: per rule `kind, policy, site count`, then per site its
+    /// own packed form (see [`decode_site`]).
     pub fn decode(values: &[u32]) -> Self {
         let mut rules = Vec::new();
         let mut sites = Vec::new();
-        let mut mandatory = false;
+        let mut top_level = Vec::new();
         let mut values = values.iter().copied();
         while let Some(kind) = values.next() {
             let mut next = || values.next().expect("a packed fold is complete");
             let policy = FoldPolicy::decode(next());
             let count = next() as usize;
-            let first = sites.len();
+            // `decode_site` appends an attachment site's nested sites to the shared pool as it
+            // goes, so the rule's own sites are gathered aside and appended after them: a rule's
+            // `sites` range must name its top-level sites alone, never the nested ones, and a
+            // nested index already recorded stays valid because the pool is only appended to.
+            top_level.clear();
             for _ in 0..count {
-                let site = SiteFold {
-                    start: next(),
-                    len: next(),
-                    kind: SiteKind::decode(next()),
-                    policy: FoldPolicy::decode(next()),
-                };
-                mandatory |= site.policy == FoldPolicy::Mandatory;
-                sites.push(site);
+                let site = decode_site(&mut values, &mut sites);
+                top_level.push(site);
             }
-            mandatory |= policy == FoldPolicy::Mandatory;
+            let first = sites.len();
+            sites.append(&mut top_level);
             rules.push(RuleFold {
                 kind: FoldKind::decode(kind),
                 policy,
                 sites: first..sites.len(),
             });
         }
+        // Nested sites reach the pool inside `decode_site` rather than through a rule's own
+        // range, so a mandatory policy is found by scanning the whole pool once decoding is
+        // complete rather than folding it in rule by rule above.
+        let mandatory = rules
+            .iter()
+            .any(|rule| rule.policy == FoldPolicy::Mandatory)
+            || sites
+                .iter()
+                .any(|site| site.policy == FoldPolicy::Mandatory);
         Self {
             rules,
             sites,
@@ -307,7 +363,7 @@ impl<'arena> OccurrenceStack<'arena> {
                 let mut children =
                     Occurrences::with_capacity_in(self.arena, sites.len(), captures_span);
                 for site in sites {
-                    children.push(fold_site(context, popped, end, site));
+                    children.push(fold_site(context, popped, end, folds, site));
                 }
                 Payload::Folded(
                     context.collect_occurrence(
@@ -324,6 +380,8 @@ impl<'arena> OccurrenceStack<'arena> {
                 let site = SiteFold {
                     start: 0,
                     len: pops as u32,
+                    nested_start: 0,
+                    nested_len: 0,
                     kind: if fold.kind == FoldKind::Group {
                         SiteKind::Group
                     } else {
@@ -331,7 +389,7 @@ impl<'arena> OccurrenceStack<'arena> {
                     },
                     policy: fold.policy,
                 };
-                Payload::Folded(fold_site(context, popped, end, &site))
+                Payload::Folded(fold_site(context, popped, end, folds, &site))
             }
             FoldKind::ListStart => {
                 let [item] = popped else {
@@ -493,26 +551,72 @@ fn consumed_span<A>(context: &ParseContext<'_, '_, '_, A>, first: u32, end: u32)
     Span::new(first.span.start() as usize, last.span.end() as usize).ok()
 }
 
+/// The source extent of one raw popped-entry range, in absolute token positions; `rule_end`
+/// locates an empty range positioned after the rule's last entry.
+fn entry_extent(popped: &[Entry<'_>], rule_end: u32, range: Range<usize>) -> (u32, u32) {
+    if range.is_empty() {
+        let position = popped
+            .get(range.start)
+            .map_or(rule_end, |entry| entry.first);
+        (position, position)
+    } else {
+        (popped[range.start].first, popped[range.end - 1].end)
+    }
+}
+
 /// Builds one site's occurrence from the entries it occupies; `rule_end` locates an empty site
-/// after the rule's last entry.
+/// after the rule's last entry. `folds` is consulted only by a [`SiteKind::Attachment`] site,
+/// which reads its own nested sites there.
 fn fold_site<'arena, A>(
     context: &ParseContext<'_, '_, 'arena, A>,
     popped: &mut [Entry<'arena>],
     rule_end: u32,
+    folds: &FoldTable,
     site: &SiteFold,
 ) -> Occurrence<'arena> {
     let start = site.start as usize;
     let range = start..start + site.len as usize;
-    let extent = |popped: &[Entry<'_>]| -> (u32, u32) {
-        if range.is_empty() {
-            let position = popped.get(start).map_or(rule_end, |entry| entry.first);
-            (position, position)
-        } else {
-            (popped[range.start].first, popped[range.end - 1].end)
-        }
-    };
+    let extent = |popped: &[Entry<'_>]| entry_extent(popped, rule_end, range.clone());
     match site.kind {
         SiteKind::Absent => Occurrence::absent(),
+        SiteKind::Attachment => {
+            // An inlined cardinality-one attachment unit. Un-inlined, the owner's semantic site
+            // was a `Group` over the one entry the attachment nonterminal left, and that entry
+            // held the node the attachment rule's own `Node` fold built. Both survive inlining:
+            // the group over the entries the attachment now occupies directly, and, inside it,
+            // the node over this site's nested sites, which are the removed rule's own sites.
+            let nested_start = site.nested_start as usize;
+            let nested = &folds.sites[nested_start..nested_start + site.nested_len as usize];
+            let policy = site.policy.resolve(context);
+            let captures_span = context.captures_policy(policy);
+            let (first, end) = extent(popped);
+            let span = captures_span
+                .then(|| consumed_span(context, first, end))
+                .flatten();
+            let mut node_children = Occurrences::with_capacity_in(
+                context.provenance_arena(),
+                nested.len(),
+                captures_span,
+            );
+            for nested_site in nested {
+                node_children.push(fold_site(context, popped, rule_end, folds, nested_site));
+            }
+            let node = context.collect_occurrence(
+                policy,
+                span,
+                node_children.into_retained(),
+                BumpVec::new_in(context.provenance_arena()),
+            );
+            let mut children =
+                Occurrences::with_capacity_in(context.provenance_arena(), 1, captures_span);
+            children.push(node);
+            context.collect_occurrence(
+                policy,
+                span,
+                children.into_retained(),
+                BumpVec::new_in(context.provenance_arena()),
+            )
+        }
         SiteKind::Leaf | SiteKind::Through => {
             debug_assert_eq!(site.len, 1, "a leaf or pass-through site has one entry");
             item_occurrence(context, site.policy, take(&mut popped[start]))
