@@ -12,36 +12,25 @@ fn main() {
     let parsed = grammar::Expr::parse_spanned(&mut input).expect("generic applications parse");
     assert!(input.is_eof());
     assert_eq!(parsed.render(), "-12 - name");
-    assert_eq!(
-        parsed.root().sub_minus_span(),
-        Some(recursa::Span::new(4, 5).unwrap())
-    );
 
+    // An operator token attached to its operand field has no standalone element accessor; the
+    // spans it contributes are covered by the enclosing value's own span.
     let negated = grammar::lex("-12");
     let mut negated_input = negated.input();
     let negated = grammar::Expr::parse_spanned(&mut negated_input).expect("prefix parses");
-    assert_eq!(
-        negated.root().neg_minus_span(),
-        Some(recursa::Span::new(0, 1).unwrap())
-    );
+    assert_eq!(negated.render(), "-12");
 
     let not_exists = grammar::lex("not exists alpha");
     let mut not_exists_input = not_exists.input();
     let not_exists = grammar::Expr::parse_spanned(&mut not_exists_input)
         .expect("multi-token prefix with a shared fixed token parses");
-    assert_eq!(
-        not_exists.root().not_exists_not_span(),
-        Some(recursa::Span::new(0, 3).unwrap())
-    );
+    assert_eq!(not_exists.render(), "not exists alpha");
 
     let is_not = grammar::lex("alpha is not beta");
     let mut is_not_input = is_not.input();
     let is_not = grammar::Expr::parse_spanned(&mut is_not_input)
         .expect("multi-token infix with a shared fixed token parses");
-    assert_eq!(
-        is_not.root().is_not_not_span(),
-        Some(recursa::Span::new(9, 12).unwrap())
-    );
+    assert_eq!(is_not.render(), "alpha is not beta");
 
     let detached = parsed.into_ast();
     match detached {

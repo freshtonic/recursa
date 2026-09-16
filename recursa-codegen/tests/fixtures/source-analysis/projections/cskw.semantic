@@ -1,5 +1,5 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/cskw.rs description=src/descriptions/cskw.rs
-transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality
 recursa-semantic-projection-v1
 grammar edition=Rust2024 anchor=cskw equivalence=AsciiInsensitive
 
@@ -40,10 +40,10 @@ type fixed:, = token(atom=fixed:,, text=any)
 type fixed:AS = token(atom=fixed:AS, text=any)
 type fixed:FROM = token(atom=fixed:FROM, text=any)
 type fixed:SELECT = token(atom=fixed:SELECT, text=any)
-type cskw::Stmt = enum(cskw::Stmt::Select => [cskw::Stmt::Select::element0:cskw::Stmt target=cskw::SelectStmt cardinality=one separator=- min_bp=0])
-type cskw::SelectStmt = sequence(cskw::SelectStmt::element0:cskw::SelectStmt target=fixed:SELECT cardinality=one separator=- min_bp=0, cskw::SelectStmt::element1:cskw::SelectStmt target=cskw::Col cardinality=one-or-more separator=fixed:, min_bp=0, cskw::SelectStmt::element2:cskw::SelectStmt target=fixed:FROM cardinality=one separator=- min_bp=0, cskw::SelectStmt::element3:cskw::SelectStmt target=TableName cardinality=one separator=- min_bp=0)
-type cskw::Col = sequence(cskw::Col::element0:cskw::Col target=ColumnName cardinality=one separator=- min_bp=0, cskw::Col::element1:cskw::Col target=cskw::AsAlias cardinality=optional separator=- min_bp=0)
-type cskw::AsAlias = sequence(cskw::AsAlias::element0:cskw::AsAlias target=fixed:AS cardinality=one separator=- min_bp=0, cskw::AsAlias::element1:cskw::AsAlias target=Alias cardinality=one separator=- min_bp=0)
+type cskw::Stmt = enum(cskw::Stmt::Select => [cskw::Stmt::Select::element0:cskw::Stmt target=cskw::SelectStmt cardinality=one separator=-])
+type cskw::SelectStmt = sequence(cskw::SelectStmt::element0:cskw::SelectStmt target=fixed:SELECT cardinality=one separator=-, cskw::SelectStmt::element1:cskw::SelectStmt target=cskw::Col cardinality=one-or-more separator=fixed:,, cskw::SelectStmt::element2:cskw::SelectStmt target=fixed:FROM cardinality=one separator=-, cskw::SelectStmt::element3:cskw::SelectStmt target=TableName cardinality=one separator=-)
+type cskw::Col = sequence(cskw::Col::element0:cskw::Col target=ColumnName cardinality=one separator=-, cskw::Col::element1:cskw::Col target=cskw::AsAlias cardinality=optional separator=-)
+type cskw::AsAlias = sequence(cskw::AsAlias::element0:cskw::AsAlias target=fixed:AS cardinality=one separator=-, cskw::AsAlias::element1:cskw::AsAlias target=Alias cardinality=one separator=-)
 
 [lowering-correlations]
 field cskw::Stmt::Select::field0 -> parse-site(cskw::Stmt::Select::element0)

@@ -1,5 +1,5 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/json.rs description=src/descriptions/json.rs
-transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality
 recursa-semantic-projection-v1
 grammar edition=Rust2024 anchor=json equivalence=Sensitive
 
@@ -62,11 +62,11 @@ type fixed:null = token(atom=fixed:null, text=any)
 type fixed:true = token(atom=fixed:true, text=any)
 type fixed:{ = token(atom=fixed:{, text=any)
 type fixed:} = token(atom=fixed:}, text=any)
-type json::Value = enum(json::Value::Object => [json::Value::Object::element0:json::Value target=json::Object cardinality=one separator=- min_bp=0]; json::Value::Array => [json::Value::Array::element0:json::Value target=json::Array cardinality=one separator=- min_bp=0]; json::Value::String => [json::Value::String::element0:json::Value target=String cardinality=one separator=- min_bp=0]; json::Value::Number => [json::Value::Number::element0:json::Value target=Number cardinality=one separator=- min_bp=0]; json::Value::Bool => [json::Value::Bool::element0:json::Value target=json::Bool cardinality=one separator=- min_bp=0]; json::Value::Null => [json::Value::Null::element0:json::Value target=fixed:null cardinality=one separator=- min_bp=0])
-type json::Object = sequence(json::Object::element0:json::Object target=fixed:{ cardinality=one separator=- min_bp=0, json::Object::element1:json::Object target=json::Member cardinality=zero-or-more separator=fixed:, min_bp=0, json::Object::element2:json::Object target=fixed:} cardinality=one separator=- min_bp=0)
-type json::Member = sequence(json::Member::element0:json::Member target=String cardinality=one separator=- min_bp=0, json::Member::element1:json::Member target=fixed:: cardinality=one separator=- min_bp=0, json::Member::element2:json::Member target=json::Value cardinality=one separator=- min_bp=0)
-type json::Array = sequence(json::Array::element0:json::Array target=fixed:[ cardinality=one separator=- min_bp=0, json::Array::element1:json::Array target=json::Value cardinality=zero-or-more separator=fixed:, min_bp=0, json::Array::element2:json::Array target=fixed:] cardinality=one separator=- min_bp=0)
-type json::Bool = enum(json::Bool::True => [json::Bool::True::element0:json::Bool target=fixed:true cardinality=one separator=- min_bp=0]; json::Bool::False => [json::Bool::False::element0:json::Bool target=fixed:false cardinality=one separator=- min_bp=0])
+type json::Value = enum(json::Value::Object => [json::Value::Object::element0:json::Value target=json::Object cardinality=one separator=-]; json::Value::Array => [json::Value::Array::element0:json::Value target=json::Array cardinality=one separator=-]; json::Value::String => [json::Value::String::element0:json::Value target=String cardinality=one separator=-]; json::Value::Number => [json::Value::Number::element0:json::Value target=Number cardinality=one separator=-]; json::Value::Bool => [json::Value::Bool::element0:json::Value target=json::Bool cardinality=one separator=-]; json::Value::Null => [json::Value::Null::element0:json::Value target=fixed:null cardinality=one separator=-])
+type json::Object = sequence(json::Object::element0:json::Object target=fixed:{ cardinality=one separator=-, json::Object::element1:json::Object target=json::Member cardinality=zero-or-more separator=fixed:,, json::Object::element2:json::Object target=fixed:} cardinality=one separator=-)
+type json::Member = sequence(json::Member::element0:json::Member target=String cardinality=one separator=-, json::Member::element1:json::Member target=fixed:: cardinality=one separator=-, json::Member::element2:json::Member target=json::Value cardinality=one separator=-)
+type json::Array = sequence(json::Array::element0:json::Array target=fixed:[ cardinality=one separator=-, json::Array::element1:json::Array target=json::Value cardinality=zero-or-more separator=fixed:,, json::Array::element2:json::Array target=fixed:] cardinality=one separator=-)
+type json::Bool = enum(json::Bool::True => [json::Bool::True::element0:json::Bool target=fixed:true cardinality=one separator=-]; json::Bool::False => [json::Bool::False::element0:json::Bool target=fixed:false cardinality=one separator=-])
 
 [lowering-correlations]
 field json::Value::Object::field0 -> parse-site(json::Value::Object::element0)
