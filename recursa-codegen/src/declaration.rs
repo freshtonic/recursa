@@ -192,7 +192,9 @@ fn prepare_emitted_item(item: &mut Item, cfg: &CargoCfgSnapshot) {
 ///
 /// `pratt` and `greedy` are removed authoring surfaces the list still consumes, so that the
 /// source-aware migration diagnostic reaches the author instead of Rust's unknown-attribute
-/// error (`docs/declared-precedence.md`).
+/// error (`docs/declared-precedence.md`). `flat` selects Flat AST storage for the declaration and
+/// is likewise consumed here, because it never reaches rustc
+/// (`docs/flat-ast-design.md`).
 fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapshot) -> bool {
     let Ok(Some(metas)) = configured_attribute_metas(attrs, cfg) else {
         attrs.clear();
@@ -213,6 +215,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "pratt"
                         | "spanned"
                         | "pretty"
+                        | "flat"
                         | "greedy"
                         | "omit"
                         | "restricts"

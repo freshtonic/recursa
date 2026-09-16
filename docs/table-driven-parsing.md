@@ -16,6 +16,12 @@ semantic value and, when requested, folds exact occurrence provenance in
 parallel. Fixed tokens carry no semantic value. Document framing and Explorer
 invoke this sole parser for each strict island.
 
+A grammar that selects `flat` gets a second set of reduce actions over the same
+automaton, tables and value stack, which builds a Flat AST instead of the nested
+one and never folds provenance. Each flat action pops and pushes the same counts
+as the nested action of its rule, so both share every packed table; see the
+[flat AST design](flat-ast-design.md).
+
 LALR conflicts are hard generation errors. The `precedence { ... }`
 declaration of the token grammar is the sole source of rule and token
 precedence, in bison's exact terms; see

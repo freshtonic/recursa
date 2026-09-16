@@ -77,7 +77,7 @@ pub(super) const LR_TABLE_ASSET_NAMES: [&str; 14] = [
 
 /// What a block of contiguous rules reduces to.
 #[derive(Clone, Copy, Debug)]
-enum DispatchTarget {
+pub(super) enum DispatchTarget {
     /// A node application's reduce function.
     Application(MaterializedApplicationId),
     /// A content token's reduce function.
@@ -85,14 +85,17 @@ enum DispatchTarget {
 }
 
 /// One arm of the root dispatcher: an inclusive rule range and its target.
+///
+/// [`super::table_driven_flat`] renders the flat dispatcher from the same arms, so both
+/// dispatchers cover exactly the same rules.
 #[derive(Clone, Copy, Debug)]
-struct DispatchArm {
+pub(super) struct DispatchArm {
     /// First rule of the block.
-    first: u32,
+    pub(super) first: u32,
     /// Last rule of the block.
-    last: u32,
+    pub(super) last: u32,
     /// Where the block's rules are reduced.
-    target: DispatchTarget,
+    pub(super) target: DispatchTarget,
 }
 
 /// The table facts one grammar type's parse impl needs.
@@ -374,24 +377,58 @@ impl TableDrivenRendering {
     }
 
     /// Reports whether a right-hand-side symbol pushes a value.
-    fn symbol_carries_value(&self, symbol: Symbol) -> bool {
+    pub(super) fn symbol_carries_value(&self, symbol: Symbol) -> bool {
         match symbol {
             Symbol::Terminal(_) => false,
             Symbol::Nonterminal(id) => self.carries_value[id.index()],
         }
     }
+
+    /// Reports whether one grammar type's own symbol pushes a value; a type inlined as a
+    /// terminal does not, so its parent names or allocates the value itself.
+    pub(super) fn type_carries_value(&self, type_id: TypeId) -> bool {
+        self.type_carries_value
+            .get(&type_id)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Returns the node application one normalized grammar type stands for.
+    pub(super) fn application_of_type(&self, type_id: TypeId) -> Option<MaterializedApplicationId> {
+        self.application_by_type.get(&type_id).copied()
+    }
+
+    /// Returns the content token one normalized grammar type stands for.
+    pub(super) fn token_of_type(&self, type_id: TypeId) -> Option<ContentTokenId> {
+        self.token_by_type.get(&type_id).copied()
+    }
+
+    /// Returns the helper and envelope rules the root dispatcher reduces itself.
+    pub(super) fn root_rules(&self) -> &[(u32, Rule)] {
+        &self.root_rules
+    }
+
+    /// Returns the dispatcher arms in ascending rule order.
+    pub(super) fn dispatch_arms(&self) -> &[DispatchArm] {
+        &self.arms
+    }
 }
 
 /// One semantically distinct action of a node application and all grammar-wide rules using it.
-struct ApplicationReduceAction<'a> {
+pub(super) struct ApplicationReduceAction<'a> {
     /// Grammar-wide rule identities routed to this action.
-    rules: Vec<u32>,
+    pub(super) rules: Vec<u32>,
     /// One representative rule from which the action body is rendered.
-    rule: &'a Rule,
+    pub(super) rule: &'a Rule,
 }
 
 /// Coalesces context-cloned rules that execute the same node construction.
-fn application_reduce_actions(tables: &ApplicationTables) -> Vec<ApplicationReduceAction<'_>> {
+///
+/// The flat renderer coalesces the same way, so a flat action index always names the same rules
+/// as the nested action index beside it.
+pub(super) fn application_reduce_actions(
+    tables: &ApplicationTables,
+) -> Vec<ApplicationReduceAction<'_>> {
     let mut positions = HashMap::<&RuleAction, usize>::new();
     let mut actions = Vec::<ApplicationReduceAction<'_>>::new();
     for (global_rule, rule) in &tables.rules {
@@ -458,7 +495,7 @@ fn rule_has_reduce_action(
 }
 
 /// The lifetime name every generated parse impl uses for the input.
-fn input_lifetime() -> syn::Lifetime {
+pub(super) fn input_lifetime() -> syn::Lifetime {
     syn::parse_quote!('__recursa_input)
 }
 
@@ -686,7 +723,6 @@ pub(super) fn render_root_items(
     lr: &TableDrivenRendering,
 ) -> Result<proc_macro2::TokenStream, String> {
     let facade = &plan.facade;
-    let module_anchor = &plan.module_anchor;
     let input_lifetime = input_lifetime();
     let semantic_lifetime = semantic_lifetime(plan);
     let reducer_generics = if plan.arena_ast {
@@ -721,41 +757,14 @@ pub(super) fn render_root_items(
         tail,
     ] = LR_TABLE_ASSET_NAMES.map(asset);
     let mandatory = lr.mandatory_provenance;
-    let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
-        .tokens
-        .iter()
-        .map(|token| (token.semantic, &token.ident))
-        .collect();
-    let arms = lr.arms.iter().filter_map(|arm| {
-        let (first, last) = (arm.first, arm.last);
-        match arm.target {
-            DispatchTarget::Application(_) => None,
-            DispatchTarget::Token(token) => {
-                let ident = token_idents[&token];
-                Some(quote! {
-                    #first..=#last => <#module_anchor::__recursa_content_tokens::#ident<#semantic_lifetime>>::__recursa_reduce_lr(reduction),
-                })
-            }
-        }
-    });
-    let mut application_arms = Vec::new();
-    for application in plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.parse_applications.iter())
-    {
-        for (action_index, action) in
-            application_reduce_actions(lr.application(application.application))
-                .iter()
-                .enumerate()
-        {
-            let reducer = application_action_reducer_path(application, action_index)?;
-            let rules = &action.rules;
-            application_arms.push(quote! {
-                #(#rules)|* => #reducer(reduction),
-            });
-        }
-    }
+    let dispatch = render_dispatch_arms(
+        plan,
+        lr,
+        &ReduceDispatch::Nested {
+            semantic_lifetime: &semantic_lifetime,
+        },
+    )?;
+    let (arms, application_arms) = (dispatch.token, dispatch.application);
     let root_actions = lr
         .root_rules
         .iter()
@@ -788,6 +797,7 @@ pub(super) fn render_root_items(
     let safety = "Reduce actions of the helper nonterminals and presence envelopes. SAFETY: each \
                   `pop` names the type the child rule's action pushed for the same grammar \
                   symbol, spelled through the element's node type or content-token path.";
+    let flat_dispatcher = super::table_driven_flat::render_flat_dispatcher(plan, lr)?;
     Ok(quote! {
         #[doc(hidden)]
         pub(crate) mod __recursa_lr {
@@ -812,6 +822,8 @@ pub(super) fn render_root_items(
             }
 
             #(#root_functions)*
+
+            #flat_dispatcher
         }
     })
 }
@@ -822,6 +834,126 @@ fn application_action_reducer_ident(
     action: usize,
 ) -> Ident {
     format_ident!("__recursa_reduce_lr_{}_{}", application.parse_index, action)
+}
+
+/// Which reduce backend one dispatcher's arms call.
+///
+/// The nested and the flat dispatcher cover exactly the same rules, because a flat action pops
+/// and pushes the same counts as the nested action of the same rule. The two therefore build the
+/// same arms. They differ only in what each arm calls.
+pub(super) enum ReduceDispatch<'plan> {
+    /// The nested actions. Their content-token type carries the grammar's semantic lifetime.
+    Nested {
+        /// The semantic lifetime of the grammar's generated types.
+        semantic_lifetime: &'plan syn::Lifetime,
+    },
+    /// The flat actions. Each one takes the Flat AST builder beside the reduction.
+    Flat,
+}
+
+impl ReduceDispatch<'_> {
+    /// Returns the lifetime argument of one content token's generated type.
+    ///
+    /// A flat action pushes a text handle, which borrows nothing, so it names the token type at
+    /// `'static`.
+    fn token_lifetime(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested { semantic_lifetime } => quote!(#semantic_lifetime),
+            Self::Flat => quote!('static),
+        }
+    }
+
+    /// Returns the reduce method one content token's generated type supplies.
+    fn token_method(&self) -> Ident {
+        match self {
+            Self::Nested { .. } => format_ident!("__recursa_reduce_lr"),
+            Self::Flat => format_ident!("__recursa_reduce_flat"),
+        }
+    }
+
+    /// Returns the arguments every arm of this dispatcher passes.
+    fn arguments(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested { .. } => quote!(reduction),
+            Self::Flat => quote!(reduction, builder),
+        }
+    }
+
+    /// Returns the path of one node application's reduce action of this backend.
+    ///
+    /// Both backends emit the action as a free shim in the declaration's own module, because the
+    /// grammar root cannot name a Node declared without `pub`.
+    fn reducer_path(
+        &self,
+        application: &NodeApplicationParsePlan,
+        action: usize,
+    ) -> Result<syn::Path, String> {
+        match self {
+            Self::Nested { .. } => application_action_reducer_path(application, action),
+            Self::Flat => super::table_driven_flat::flat_reducer_path(application, action),
+        }
+    }
+}
+
+/// The arms one reduce dispatcher matches, before its own root-rule arms.
+pub(super) struct DispatchArms {
+    /// One arm per content-token dispatch block, in block order.
+    pub(super) token: Vec<proc_macro2::TokenStream>,
+    /// One arm per node application reduce action, in canonical plan order.
+    pub(super) application: Vec<proc_macro2::TokenStream>,
+}
+
+/// Renders the content-token arms and the node application arms of one reduce dispatcher.
+///
+/// Both dispatchers cover the same rules, so this function builds both sets of arms and
+/// `dispatch` decides only what each arm calls. A root-rule arm is not built here: its body
+/// differs between the backends, not only its callee.
+pub(super) fn render_dispatch_arms(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+    dispatch: &ReduceDispatch<'_>,
+) -> Result<DispatchArms, String> {
+    let module_anchor = &plan.module_anchor;
+    let lifetime = dispatch.token_lifetime();
+    let method = dispatch.token_method();
+    let arguments = dispatch.arguments();
+    let token_idents: BTreeMap<ContentTokenId, &Ident> = plan
+        .tokens
+        .iter()
+        .map(|token| (token.semantic, &token.ident))
+        .collect();
+    let token = lr
+        .dispatch_arms()
+        .iter()
+        .filter_map(|arm| {
+            let (first, last) = (arm.first, arm.last);
+            match arm.target {
+                DispatchTarget::Application(_) => None,
+                DispatchTarget::Token(token) => {
+                    let ident = token_idents[&token];
+                    let path = quote!(#module_anchor::__recursa_content_tokens::#ident<#lifetime>);
+                    Some(quote!(#first..=#last => <#path>::#method(#arguments),))
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut application = Vec::new();
+    for node_application in plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.parse_applications.iter())
+    {
+        for (index, action) in
+            application_reduce_actions(lr.application(node_application.application))
+                .iter()
+                .enumerate()
+        {
+            let reducer = dispatch.reducer_path(node_application, index)?;
+            let rules = &action.rules;
+            application.push(quote!(#(#rules)|* => #reducer(#arguments),));
+        }
+    }
+    Ok(DispatchArms { token, application })
 }
 
 /// Resolves the declaration-local reducer shim without exposing the node type to its ancestors.
@@ -1055,6 +1187,13 @@ pub(super) fn render_node_application(
         .collect::<Result<Vec<_>, _>>()?;
     let shims = actions.iter().map(|(shim, _)| shim);
     let methods = actions.iter().map(|(_, method)| method);
+    let flat_items = super::table_driven_flat::render_node_application_flat(
+        plan,
+        node,
+        application,
+        lr,
+        parser,
+    )?;
     Ok(quote! {
         #parse_impl
 
@@ -1063,6 +1202,8 @@ pub(super) fn render_node_application(
         impl #helper_impl_generics #ty #helper_where_clause {
             #(#methods)*
         }
+
+        #flat_items
     })
 }
 
@@ -1286,7 +1427,7 @@ fn render_field_value(
 }
 
 /// Finds the resolved variant a lowered alternative declaration stands for.
-fn plan_variant(
+pub(super) fn plan_variant(
     lr: &TableDrivenRendering,
     application: &NodeApplicationParsePlan,
     declaration: crate::DeclId,
@@ -1392,9 +1533,11 @@ pub(super) fn render_token_items(
             }
         }
     };
+    let flat_items = super::table_driven_flat::render_token_flat_items(plan, token);
     quote! {
         #parse_impl
         #reducer
+        #flat_items
     }
 }
 

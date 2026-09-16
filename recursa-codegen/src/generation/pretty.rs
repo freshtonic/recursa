@@ -2033,11 +2033,10 @@ pub(super) fn render_declared_enum_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     node_index: usize,
+    access: PrettyAccess,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
-    let node_ident = &node.ident;
-    let max_width = plan.pretty_max_width;
-    let indent = plan.pretty_indent;
+    let node_ident = &access.target_ident(node);
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Node behavior");
@@ -2045,7 +2044,16 @@ pub(super) fn render_declared_enum_pretty(
         .declared
         .as_ref()
         .expect("validated declared-precedence Pretty behavior");
-    let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
+    let frame = access.frame(plan, node);
+    let PrettyFrame {
+        inherent_generics,
+        type_generics,
+        inherent_where,
+        method_generics,
+        method_where,
+        method_parameters,
+        method_arguments,
+    } = &frame;
     let variants = trait_variants(&node.body);
     let variant_count = variants.len();
     let rendered_variants = variants
@@ -2057,7 +2065,7 @@ pub(super) fn render_declared_enum_pretty(
         .enumerate()
         .map(
             |(variant_index, ((((variant, layout), behavior), variant_pretty), declared_variant))| {
-            let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty_declared");
+            let (pattern, bindings) = variant_bound_pattern(node_ident, variant, "pretty_declared");
             let mut binding_index = 0_usize;
             let mut semantic_index = 0_usize;
             let rendered = variant
@@ -2131,6 +2139,7 @@ pub(super) fn render_declared_enum_pretty(
                                     element,
                                     behavior,
                                     Some((quote!(#binding), true)),
+                                    access,
                                 )
                             }
                             PrettyDeclaredOperandBehavior::Recursive { minimum, next, .. } => {
@@ -2154,6 +2163,7 @@ pub(super) fn render_declared_enum_pretty(
                                         }),
                                     "validated recursive declared-precedence operands are direct or attached optionals and may only use Box storage wrappers",
                                 );
+                                let wrappers = &access.value_wrappers(wrappers);
                                 let minimum = render_pretty_declared_minimum(*minimum);
                                 let next = render_pretty_declared_next(*next);
                                 let operand = if optional {
@@ -2161,9 +2171,8 @@ pub(super) fn render_declared_enum_pretty(
                                 } else {
                                     quote!(#binding)
                                 };
-                                let semantic = quote!(
-                                    (#operand).__recursa_pretty_declared(context, #minimum, #next)
-                                );
+                                let semantic =
+                                    access.declared_recursion(operand, &minimum, &next);
                                 let rendered = if let Some(attachment) = attachment {
                                     // An attached operator token has no fixed neighbor in the
                                     // enclosing document group the way a standalone
@@ -2365,15 +2374,16 @@ pub(super) fn render_declared_enum_pretty(
             let variant_pattern = variant_pattern(node_ident, &variant.ident, variant.style);
             (
                 quote! {
-                    #variant_pattern => self.#helper(context, min, next)
+                    #variant_pattern => self.#helper(#method_arguments context, min, next)
                 },
                 quote! {
-                    fn #helper(
+                    fn #helper #method_generics(
                         &self,
+                        #method_parameters
                         context: &mut #facade::PrettyContext,
                         min: ::core::option::Option<(u32, bool)>,
                         next: ::core::option::Option<(u32, bool)>,
-                    ) -> ::core::fmt::Result {
+                    ) -> ::core::fmt::Result #method_where {
                         #helper_body
                     }
                 },
@@ -2385,31 +2395,30 @@ pub(super) fn render_declared_enum_pretty(
     let helper_methods = rendered_variants.iter().map(|(_, helper)| helper);
     let rendered_node = render_pretty_hints(
         &behavior.pretty,
-        quote!(self.__recursa_pretty_declared(context, ::core::option::Option::None, ::core::option::Option::None)?;),
+        quote!(self.__recursa_pretty_declared(
+            #method_arguments
+            context,
+            ::core::option::Option::None,
+            ::core::option::Option::None,
+        )?;),
     );
+    let trait_impl = render_pretty_trait_impl(plan, node, access, rendered_node);
     quote! {
-        impl #impl_generics #node_ident #type_generics #where_clause {
-            fn __recursa_pretty_declared(
+        impl #inherent_generics #node_ident #type_generics #inherent_where {
+            fn __recursa_pretty_declared #method_generics(
                 &self,
+                #method_parameters
                 context: &mut #facade::PrettyContext,
                 min: ::core::option::Option<(u32, bool)>,
                 next: ::core::option::Option<(u32, bool)>,
-            ) -> ::core::fmt::Result {
+            ) -> ::core::fmt::Result #method_where {
                 match self { #(#arms),* }
             }
 
             #(#helper_methods)*
         }
 
-        impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
-            fn pretty(
-                &self,
-                context: &mut #facade::PrettyContext,
-            ) -> ::core::fmt::Result {
-                context.configure_defaults(#max_width, #indent);
-                context.baseline_group(|context| { #rendered_node Ok(()) })
-            }
-        }
+        #trait_impl
     }
 }
 
@@ -2443,6 +2452,192 @@ pub(super) fn render_pretty_declared_next(next: PrettyDeclaredNext) -> proc_macr
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Which representation one generated Pretty body reads its values out of.
+///
+/// Every layout decision — spacing, breaks, groups, separators, presence and declared-precedence
+/// parenthesization — is shared, because both representations render the same
+/// [`PrettyNodeBehavior`]. Only two things differ: a nested field owns its child and renders it
+/// through the `Pretty` trait, while a flat field holds a four-byte handle that only the result's
+/// stores can resolve.
+pub(super) enum PrettyAccess {
+    /// The nested AST: a field owns its child and renders through `Pretty`.
+    Nested,
+    /// A Flat AST: a field holds a handle and renders through the result's stores.
+    Flat,
+}
+
+impl PrettyAccess {
+    /// Returns the type one rendered implementation and its patterns name.
+    pub(super) fn target_ident(self, node: &NodeParsePlan) -> Ident {
+        match self {
+            Self::Nested => node.ident.clone(),
+            Self::Flat => flat_type_ident(&node.ident),
+        }
+    }
+
+    /// Returns the storage wrappers a value access of this representation actually spells.
+    ///
+    /// A flat field has no `Box` layer: the design's field-mapping table maps `boxed!(T)` and `T`
+    /// to the same handle, so a flat access never dereferences one.
+    fn value_wrappers(self, wrappers: &[FieldWrapper]) -> Vec<FieldWrapper> {
+        match self {
+            Self::Nested => wrappers.to_vec(),
+            Self::Flat => wrappers
+                .iter()
+                .copied()
+                .filter(|wrapper| !matches!(wrapper, FieldWrapper::Boxed))
+                .collect(),
+        }
+    }
+
+    /// Renders the child dispatch of one semantic value.
+    fn dispatch(
+        self,
+        plan: &EmissionPlan,
+        value: proc_macro2::TokenStream,
+        content_token: bool,
+    ) -> proc_macro2::TokenStream {
+        let facade = &plan.facade;
+        let module_anchor = &plan.module_anchor;
+        match (self, content_token) {
+            (Self::Nested, true) => quote! {
+                <_ as #module_anchor::__RecursaPrettyWith>
+                    ::__recursa_pretty_with(#value, context)
+            },
+            (Self::Nested, false) => quote!(#facade::Pretty::pretty(#value, context)),
+            // A flat child is a handle, an optional handle, a list handle or a text handle, and
+            // one generated container trait resolves every one of them against the store.
+            (Self::Flat, _) => flat_pretty_dispatch(plan, value),
+        }
+    }
+
+    /// Renders the item iteration of one repeated field's container.
+    fn iterate(self, collection: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => quote!((#collection).iter()),
+            Self::Flat => flat_pretty_iterate(collection),
+        }
+    }
+
+    /// Renders the container of one repeated field, ready to iterate.
+    ///
+    /// A nested container is borrowed in place. A flat one is a `Copy` list handle, which the
+    /// store resolves into a run, so it is taken by value instead.
+    fn collection(
+        self,
+        value: proc_macro2::TokenStream,
+        wrappers: &[FieldWrapper],
+        value_is_reference: bool,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => render_terminal_reference(value, wrappers, value_is_reference),
+            Self::Flat => flat_pretty_collection(value, value_is_reference),
+        }
+    }
+
+    /// Renders the optional container of one repeated field, ready to test and iterate.
+    fn optional_collection(
+        self,
+        value: proc_macro2::TokenStream,
+        wrappers: &[FieldWrapper],
+        value_is_reference: bool,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => render_optional_view_reference(value, wrappers, value_is_reference),
+            Self::Flat => flat_pretty_collection(value, value_is_reference),
+        }
+    }
+
+    /// Renders the recursive call one declared-precedence operand makes on its own family.
+    fn declared_recursion(
+        self,
+        operand: proc_macro2::TokenStream,
+        minimum: &proc_macro2::TokenStream,
+        next: &proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => {
+                quote!((#operand).__recursa_pretty_declared(context, #minimum, #next))
+            }
+            Self::Flat => flat_pretty_declared_recursion(operand, minimum, next),
+        }
+    }
+
+    /// Returns the frame the private declared-precedence helpers are assembled into.
+    fn frame(self, plan: &EmissionPlan, node: &NodeParsePlan) -> PrettyFrame {
+        match self {
+            Self::Nested => {
+                let (inherent_generics, type_generics, inherent_where) =
+                    pretty_impl_parts(&plan.facade, node);
+                PrettyFrame {
+                    inherent_generics,
+                    type_generics,
+                    inherent_where,
+                    method_generics: proc_macro2::TokenStream::new(),
+                    method_where: proc_macro2::TokenStream::new(),
+                    method_parameters: proc_macro2::TokenStream::new(),
+                    method_arguments: proc_macro2::TokenStream::new(),
+                }
+            }
+            Self::Flat => flat_pretty_frame(plan, node),
+        }
+    }
+}
+
+/// The representation-specific frame one Node's private Pretty helpers are assembled into.
+///
+/// A nested helper needs nothing but the value, so every method-level field is empty and the
+/// implementation block carries the Node's `Pretty` bounds. A flat helper threads the result's
+/// stores through each generated method, because only they can resolve a handle, and an inherent
+/// implementation block cannot bind the store's own parameters.
+pub(super) struct PrettyFrame {
+    /// Generics of the private helper implementation block.
+    pub(super) inherent_generics: proc_macro2::TokenStream,
+    /// Type generics of the implemented type.
+    pub(super) type_generics: proc_macro2::TokenStream,
+    /// Where clause of the private helper implementation block.
+    pub(super) inherent_where: proc_macro2::TokenStream,
+    /// Generics every private helper method declares.
+    pub(super) method_generics: proc_macro2::TokenStream,
+    /// Where clause every private helper method declares.
+    pub(super) method_where: proc_macro2::TokenStream,
+    /// Parameters every private helper method takes before its context.
+    pub(super) method_parameters: proc_macro2::TokenStream,
+    /// Arguments every private helper call passes before its context.
+    pub(super) method_arguments: proc_macro2::TokenStream,
+}
+
+/// Wraps one rendered Pretty body in the trait implementation of its representation.
+fn render_pretty_trait_impl(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    access: PrettyAccess,
+    body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let ident = access.target_ident(node);
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
+    match access {
+        PrettyAccess::Nested => {
+            let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
+            quote! {
+                impl #impl_generics #facade::Pretty for #ident #type_generics #where_clause {
+                    fn pretty(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                    ) -> ::core::fmt::Result {
+                        context.configure_defaults(#max_width, #indent);
+                        context.baseline_group(|context| { #body Ok(()) })
+                    }
+                }
+            }
+        }
+        PrettyAccess::Flat => flat_pretty_trait_impl(plan, node, body),
+    }
+}
+
 /// Extracts the terminal Node identifier used in generated trait calls.
 pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     let Type::Path(path) = terminal else {
@@ -2458,6 +2653,7 @@ fn render_pretty_element(
     element: &ElementParsePlan,
     behavior: &PrettyElementBehavior,
     semantic_value: Option<(proc_macro2::TokenStream, bool)>,
+    access: PrettyAccess,
 ) -> proc_macro2::TokenStream {
     match (&element.kind, behavior) {
         (
@@ -2514,6 +2710,7 @@ fn render_pretty_element(
                         provenance,
                     },
                 ) => {
+                    let wrappers = &access.value_wrappers(wrappers);
                     let rendered = if let Some(attachment) = attachment {
                         render_pretty_attached_semantic(
                             plan,
@@ -2526,6 +2723,7 @@ fn render_pretty_element(
                             *presence,
                             *provenance,
                             content_token,
+                            access,
                         )
                     } else {
                         let reference = if borrowed {
@@ -2540,6 +2738,7 @@ fn render_pretty_element(
                             repetition.as_ref(),
                             *provenance,
                             content_token,
+                            access,
                         )
                     };
                     let reference = if borrowed { value } else { quote!(&#value) };
@@ -2557,26 +2756,33 @@ fn render_pretty_element(
     }
 }
 
-/// Renders structured Pretty and source-map behavior for a Node with no declared precedence.
-///
-/// # Long-function contract
-///
-/// Rationale: renders one Node from its frozen Pretty behavior and source-order shape.
-/// Invariants: every spacing, break, separator, and provenance decision participates in family identity.
-/// Phases: binds the active shape, renders its element sequence, then writes through PrettyContext.
+/// Renders structured Pretty and source-map behavior for one nested Node.
 pub(super) fn render_node_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     node_index: usize,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    let node_ident = &node.ident;
-    let max_width = plan.pretty_max_width;
-    let indent = plan.pretty_indent;
+    render_node_pretty_for(plan, node, node_index, PrettyAccess::Nested)
+}
+
+/// Renders structured Pretty behavior for one Node in the requested representation.
+///
+/// # Long-function contract
+///
+/// Rationale: renders one Node from its frozen Pretty behavior and source-order shape.
+/// Invariants: every spacing, break, separator, and provenance decision participates in family
+/// identity, and the two representations differ only in how a value and its children are reached.
+/// Phases: binds the active shape, renders its element sequence, then writes through PrettyContext.
+pub(super) fn render_node_pretty_for(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+    access: PrettyAccess,
+) -> proc_macro2::TokenStream {
+    let target_ident = access.target_ident(node);
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Node behavior");
-    let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let elements = |elements: &[ElementParsePlan],
                     behavior: &[PrettyElementBehavior],
                     layout: PrettySequenceLayout,
@@ -2594,7 +2800,7 @@ pub(super) fn render_node_pretty(
                     ElementParseKind::Fixed { .. }
                     | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
                 };
-                render_pretty_element(plan, index, element, behavior, value)
+                render_pretty_element(plan, index, element, behavior, value, access)
             })
             .collect::<Vec<_>>();
         render_pretty_sequence(layout, &rendered)
@@ -2612,7 +2818,7 @@ pub(super) fn render_node_pretty(
             quote!({ #rendered Ok(()) })
         }
         NodeBodyPlan::Enum { .. } if behavior.declared.is_some() => {
-            return render_declared_enum_pretty(plan, node, node_index);
+            return render_declared_enum_pretty(plan, node, node_index, access);
         }
         NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
@@ -2622,7 +2828,8 @@ pub(super) fn render_node_pretty(
                 .zip(&behavior.variants)
                 .zip(&behavior.variant_pretty)
                 .map(|(((variant, layout), behavior), variant_pretty)| {
-                    let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
+                    let (pattern, bindings) =
+                        variant_bound_pattern(&target_ident, variant, "pretty");
                     let mut binding_index = 0;
                     let rendered = variant
                         .elements
@@ -2638,7 +2845,7 @@ pub(super) fn render_node_pretty(
                             } else {
                                 None
                             };
-                            render_pretty_element(plan, index, element, behavior, value)
+                            render_pretty_element(plan, index, element, behavior, value, access)
                         })
                         .collect::<Vec<_>>();
                     let rendered = render_pretty_sequence(*layout, &rendered);
@@ -2649,17 +2856,7 @@ pub(super) fn render_node_pretty(
         }
     };
     let body = render_pretty_hints(&behavior.pretty, quote!(#body?;));
-    quote! {
-        impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
-            fn pretty(
-                &self,
-                context: &mut #facade::PrettyContext,
-            ) -> ::core::fmt::Result {
-                context.configure_defaults(#max_width, #indent);
-                context.baseline_group(|context| { #body Ok(()) })
-            }
-        }
-    }
+    render_pretty_trait_impl(plan, node, access, body)
 }
 
 /// Renders one semantic field with its presence, repetition, attachment, and provenance rules.
@@ -2670,17 +2867,9 @@ pub(super) fn render_pretty_semantic(
     repetition: Option<&PrettyRepetitionBehavior>,
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
+    access: PrettyAccess,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    let module_anchor = &plan.module_anchor;
-    let pretty = if content_token {
-        quote! {
-            <_ as #module_anchor::__RecursaPrettyWith>
-                ::__recursa_pretty_with(#value, context)
-        }
-    } else {
-        quote!(#facade::Pretty::pretty(#value, context))
-    };
+    let pretty = access.dispatch(plan, value, content_token);
     let render_value = if let Some(repetition) = repetition {
         let separator = repetition
             .separator
@@ -3086,18 +3275,10 @@ pub(super) fn render_pretty_attached_semantic(
     presence: PrettyPresence,
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
+    access: PrettyAccess,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    let module_anchor = &plan.module_anchor;
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let semantic = if content_token {
-            quote! {
-                <_ as #module_anchor::__RecursaPrettyWith>
-                    ::__recursa_pretty_with(#terminal, context)
-            }
-        } else {
-            quote!(#facade::Pretty::pretty(#terminal, context))
-        };
+        let semantic = access.dispatch(plan, terminal, content_token);
         render_pretty_attachment_unit(attachment, provenance, semantic)
     };
 
@@ -3122,6 +3303,7 @@ pub(super) fn render_pretty_attached_semantic(
         let space_before_separator = repetition.space_before_separator;
         let space_after_separator = repetition.space_after_separator;
         let render_collection = |collection: proc_macro2::TokenStream| {
+            let items = access.iterate(collection);
             let scoped = render_pretty_context_scope(
                 &format_ident!("repetition_scope_style"),
                 quote!(
@@ -3133,7 +3315,7 @@ pub(super) fn render_pretty_attached_semantic(
                 ),
                 quote! {
                     context.render_repeated_by(
-                        (#collection).iter(),
+                        #items,
                         |context, item| { #unit Ok(()) },
                     )
                 },
@@ -3142,7 +3324,7 @@ pub(super) fn render_pretty_attached_semantic(
         };
         let outer_optional = presence == PrettyPresence::Optional;
         let body = if outer_optional {
-            let collection = render_optional_view_reference(value, outer, value_is_reference);
+            let collection = access.optional_collection(value, outer, value_is_reference);
             let rendered = render_collection(quote!(collection));
             quote! {
                 if let Some(collection) = #collection {
@@ -3150,7 +3332,7 @@ pub(super) fn render_pretty_attached_semantic(
                 }
             }
         } else {
-            let collection = render_terminal_reference(value, outer, value_is_reference);
+            let collection = access.collection(value, outer, value_is_reference);
             render_collection(collection)
         };
         let scoped = render_pretty_context_scope(

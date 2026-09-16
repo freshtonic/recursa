@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Item, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 29;
+const PRIVATE_PROTOCOL: u32 = 33;
 
 /// Reports the retired concrete-Node authoring surface.
 ///
@@ -24,7 +24,9 @@ const PRIVATE_PROTOCOL: u32 = 29;
 /// unknown-attribute error (`docs/declared-precedence.md`).
 #[proc_macro_derive(
     Node,
-    attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy)
+    attributes(
+        lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy, flat
+    )
 )]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

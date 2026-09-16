@@ -1,7 +1,10 @@
 # Flat AST design
 
-Status: tiered storage design settled on 2026-09-16. Implementation has not started. Mutation
-and compaction are a later milestone.
+Status: tiered storage delivered on 2026-09-16. Steps 1 to 6 of the implementation order below
+are done: storage, generated flat types, `parse_flat`, traversal, flat Pretty, and the pg-sql
+`pg-sql-flat` benchmark entry with its correctness evidence. pg-sql now selects `flat` in both
+`grammar!` blocks, pools `Expr`, `ColumnRef`, `FuncCall`, `SelectStmt` and `Statement`, and proves
+nested/flat parity over the whole pinned corpus. Mutation and compaction are a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -30,7 +33,8 @@ In scope:
 - Storage primitives in `recursa-core`, tested under Miri.
 - The `flat` grammar-root flag and the `#[flat(...)]` declaration attribute.
 - Generated flat Node types, handles, and layout assertions.
-- Flat reduce actions and `parse_flat` entry points, with optional per-Node spans.
+- Flat reduce actions and `parse_flat` entry points, with optional per-Node spans, built on the
+  LR extent stack.
 - `NodeRef`, `children`, `Visitor`, and a debug post-order checker.
 - Flat Pretty rendering.
 - The `pg-sql-flat` benchmark entry and correctness evidence.
@@ -77,12 +81,32 @@ ast_node! {
 - `#[flat(pool)]` puts every application of the declaration into its own typed pool. A generic
   Node gets one pool per materialized application.
 - `max_size = N` adds a generated compile-time assertion that the flat Node type is at most `N`
-  bytes. Without it the generator only records the size in the generated-code debug bundle.
+  bytes. The assertion is opt-in. The size record is not. The generator emits `FLAT_NODE_SIZES` at
+  the grammar root. It is a `&[(&str, usize)]` that holds the name and the `size_of` of every flat
+  Node application, in parse-index order. A Node the root cannot name appears there too: it records
+  its own size beside its declaration, and the table reads that constant. `size_of` is const, so a
+  test can pin the whole table.
 - A declaration without the attribute lives in the shared pool.
 - `#[flat(...)]` in a grammar whose root does not enable `flat` is a diagnostic.
 
 A type belongs in a typed pool when a consumer visits every instance, or keeps a dense side
 table over it, or scans it linearly. Do not add a type to a pool without a measurement.
+
+pg-sql's 1,463 declarations generate 1,479 flat Node types, one per materialized application.
+Five carry `#[flat(pool)]`, which is the hot set a consumer walks or side-tables; the other 1,474
+reach the shared pool. Measured sizes, on which only `FlatExpr` declares a bound:
+
+| Flat type | `size_of` | Bound |
+| --- | --: | --- |
+| `FlatExpr` | 16 | `max_size = 16` |
+| `FlatColumnRef` | 12 | — |
+| `FlatFuncCall` | 8 | — |
+| `FlatSelectStmt` | 20 | — |
+| `FlatStatement` | 8 | — |
+
+The bound is the measured size, not the measured size plus headroom, so widening a variant's
+payload fails to compile and raising the bound is a deliberate edit. No declaration was
+restructured to shrink a flat type; that is a later, measured decision.
 
 ### Handles
 
@@ -162,15 +186,27 @@ The generated owner is a grammar-local `FlatAst<'input>` with private fields.
   range. `get(handle)` returns `Option`. No `IndexMut` and no mutable store access is public.
 - `span(handle) -> Option<Span>` returns `None` when the parse did not capture. `has_spans()`
   reports the whole result.
-- `ids()` on a typed pool iterates its handles in post-order.
+- `pool::<T>()` borrows one pooled Node type's typed pool, whose `handles()` iterates its handles
+  in post-order and whose `len()` sizes a side table. Only a pooled type has a pool.
+- `lists()` and `texts()` borrow the list store and the text pool, read-only.
+- `root_ref()` returns the root as a `NodeRef`. It needs the generated `FlatNodeRef` bound on the
+  root type, because the owner's root is a type parameter and only a trait can name its variant.
 - The result is `Send + Sync`, checked at compile time.
 
 ## Construction
 
-Flat reduce actions run on the existing LR automaton and value stack. They push handles, not
-values. A parent is reduced after its children, so every typed pool is in post-order for a fresh
-parse. This is a documented contract: for every Node in a typed pool, every same-pool child has
-a smaller index. A debug checker walks `children` over every Node and asserts it.
+Flat reduce actions run on the existing LR automaton, tables and value stack. They push handles,
+not values. A flat action pops and pushes exactly as many values as the nested action of the same
+rule, so the packed `value_pops` table serves both and the two dispatchers cover the same rules.
+A parent is reduced after its children, so every typed pool is in post-order for a fresh parse.
+This is a documented contract: for every Node in a typed pool, every same-pool child has a
+smaller index. A debug checker walks `children` over every Node and asserts it.
+
+`Type::parse_flat` and `Type::parse_flat_without_spans` exist beside `parse` for every Node
+application that has one. They return the grammar's own `FlatAst` rooted at that application's
+flat type. Both run the same automaton loop as `parse`, so diagnostics, prefix acceptance and
+consumed input are identical, and a failure restores the input cursor and drops every store.
+`boxed!` disappears from the flat actions: every child is already a handle.
 
 Lists are built on one scratch stack owned by the parse. Each list-step reduce pushes one
 handle; when the parent rule consumes the list, the action copies the run into the list store
@@ -179,17 +215,66 @@ list receives its next item, so open lists nest.
 
 Content-token reduces push the token's text into the text pool and return a text handle.
 
+A fixed-token unit Node carries no value on the value stack, in the flat path exactly as in the
+nested one. Its parent allocates it and keeps the handle.
+
 Exhausting a handle's `u32` range is a checked panic with a clear message in every build, as ADR
 0009 requires. It is distinct from allocation failure.
 
+### The extent stack
+
+Per-Node spans come from one runtime fact a later step must keep. When a parse tracks extents,
+and only then, the LR loop keeps a stack of source extents parallel to its state stack: a shift
+pushes the shifted token's span, and a reduce replaces its popped frames' extents with the extent
+that covers them, so the goto frame carries the extent of the whole rule. A frame that covers no
+token holds `Span::SYNTHETIC` and merging skips it. A reduce action reads `Reduction::extent` for
+its own rule and `Reduction::symbol_extent` or `Reduction::symbol_range_extent` for one
+right-hand-side symbol, which is how a parent gives an allocated unit Node a span.
+
+Only a flat parse asks for extents. The request that asks for them is the one that suppresses
+occurrence provenance, so the two never run together and nested parsing allocates no extent
+stack and behaves exactly as before.
+
 ## Traversal
 
-The generator emits:
+The generator emits, at the grammar root beside the owner:
 
-- `NodeRef`: an enum with one variant per Node application, each holding that application's
-  handle. It is a traversal value only and is never stored in a Node.
-- `children(ast, NodeRef, &mut impl FnMut(NodeRef))`: the direct children in source order.
-- `Visitor` with `enter`, which returns `false` to skip children, and `leave`; and `walk`.
+- `NodeRef`: an enum with one variant per publicly materialized Node application, each holding
+  that application's handle. It is a traversal value only and is never stored in a Node. The
+  variant name is the declaration's name followed by the name of each type argument, so
+  `Holder<Name>` is `HolderName`; two applications that would share a name both take their
+  canonical parse index as a suffix. `NodeRef::name()` returns the variant's own name.
+- One `Opaque` variant, only for a grammar in which a public Node has a child the root cannot
+  name. Such a child is a Node declared without `pub`, or a Node in a private module. The variant
+  holds an `OpaqueRef`, which carries the child's raw handle and a `&'static OpaqueTable`. The
+  table holds the Node's name and a children function. The generator emits the table in the Node's
+  own module, which is the one module that can name the Node. `NodeRef::name()` returns that name.
+  `children` reports the opaque Node's own children too, so no subtree is truncated. Every Node of
+  a result is therefore reachable from its root. The table's children function takes the shared
+  pool, the list store and the raw handle, and nothing else. It needs no typed pool, because a Node
+  the root cannot name is always in the shared pool.
+- `children(ast, node, &mut impl FnMut(NodeRef))`: a free function that calls the sink once per
+  direct child in source order. A text handle and a presence flag are data, never children. A wide
+  match is split into bounded helper functions, as a wide Visit match is, so a pg-sql-scale
+  grammar typechecks as a series of small functions. A split leaf whose applications all have no
+  children is the `Pat => true, _ => false` shape `clippy::match_like_matches_macro` rewrites, so
+  the generated-code lint policy covers that lint; nothing downstream can edit a generated match.
+- `FlatNodeRef`, which names one flat type's own variant, and the owner's `root_ref` built on it.
+- `check_post_order(ast)`, which walks `children` over every Node of every typed pool and returns
+  the first same-pool child that does not precede its parent. A fresh parse always passes, so the
+  call is cheap evidence for invariant I1 in a test or a debug build. An opaque Node is never
+  pooled, so the checker reads none of them. It reaches a pooled Node below one through the pool
+  itself.
+
+`recursa-core` owns the grammar-erased half, so one walk serves every grammar and an adapter can
+reuse it:
+
+- `FlatChildren`, with the grammar's `NodeRef` as its associated type, implemented by the
+  generated owner. Its sink is a trait object, so the traversal compiles once per grammar.
+- `FlatVisitor`, with `enter`, which returns `false` to skip children, and `leave`. `leave` runs
+  for a skipped Node too, so the two calls always pair.
+- `walk`, which is iterative: it keeps its own stack on the heap and reuses one child buffer, so
+  the depth of the Flat AST does not bound it.
 
 Parent links are not stored. A consumer that needs them builds a side table on demand.
 
@@ -199,6 +284,43 @@ Flat Pretty is generated from grammar syntax and declarative Pretty annotations,
 milestone settled. It does not reuse handwritten nested implementations. An edited Flat AST
 renders to SQL that reparses to the same semantic tree; whitespace and comment fidelity are not
 required.
+
+One renderer serves both representations. The generator renders a Node's nested body and its flat
+body from the same frozen Pretty behavior, so spacing, breaks, groups, separators, `#[pretty(...)]`
+hints, presence and declared-precedence parenthesization cannot drift apart. Two things differ, and
+nothing else does:
+
+- **Value access.** A flat Node is `Copy` and holds each child as a handle, so a field access is
+  spelled exactly as the nested one. The `Box` layer disappears, because the field mapping already
+  dropped it.
+- **Child dispatch.** A nested child renders itself. A flat child is a Node handle, an optional
+  handle, a list handle or a text handle, and only the result's stores can resolve one.
+
+The contract is an equality: for one input, `FlatAst::render` returns exactly what the detached
+nested AST of the same input returns. Neither value carries occurrence provenance, so both emit the
+canonical spelling of every fixed token, omit optional fixed syntax that only provenance could
+report, and read a content token's spelling from stored text — the text pool for the Flat AST, the
+token value for the nested one.
+
+The rendering surface on the owner is:
+
+- `pretty(&self, context)` renders the Node at `root()`.
+- `render()` renders with the grammar's selected layout and `render_with(config)` with a caller's.
+- `pretty_node(handle, context)` renders any Node of the result, which is how a consumer renders
+  one subtree.
+
+The protocol behind them is [`FlatPretty<S>`](../recursa-core/src/flat_pretty.rs) in
+`recursa-core`: one public trait whose `pretty_in` takes the store beside the value. The generator
+implements it once per flat Node type, beside the declaration, so a Node declared without `pub`
+renders too. One generated container trait resolves every handle shape a field can hold, which is
+what keeps the rendering code above it identical for both representations. A declared-precedence
+operand is resolved through the store before its grouping decision is made, because that decision
+reads the operand's own variant.
+
+Evidence is the `flat-pretty` generation fixture: every positive input of the container grammar is
+parsed twice and the two renders are asserted equal, each flat render reparses to the same flat
+document and the same nested semantic tree, and the mutation cases cover declared-precedence
+parenthesization and a grammar that selects `arena_ast` beside `flat`.
 
 ## Mutation
 
@@ -251,13 +373,13 @@ flowchart TD
 ## Implementation order
 
 1. Storage primitives in `recursa-core`: handles, typed pool, shared pool, list store, text
-   pool, side table. Unit tests and Miri.
+   pool, side table. Unit tests and Miri. Done.
 2. The `flat` root flag, the `#[flat(...)]` attribute, and generated flat types with size and
-   alignment assertions.
-3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans.
-4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker.
-5. Flat Pretty.
-6. The `pg-sql-flat` bench entry and correctness evidence.
+   alignment assertions. Done.
+3. Flat reduce actions and `parse_flat`, with the scratch list stack and optional spans. Done.
+4. `NodeRef`, `children`, `Visitor`, and the post-order debug checker. Done.
+5. Flat Pretty. Done.
+6. The `pg-sql-flat` bench entry and correctness evidence. Done.
 7. Later milestone: mutation API and compaction.
 
 ## Correctness and performance acceptance
@@ -276,14 +398,38 @@ flowchart TD
 
 ### Benchmark
 
-Extend the existing `parse` target in `../pg-sql/benches/parse.rs` with the engine name
-`pg-sql-flat` beside `pg-sql`, `sqlparser`, and `postgres`, under the same timing boundary:
-lexing, parsing, and destruction inside each call, identical inputs, no prelexed input for the
-flat entry alone. Verify nested and flat acceptance agreement before reporting timings.
+The `parse` target in `../pg-sql/benches/parse.rs` carries the engine name `pg-sql-flat` beside
+`pg-sql`, `sqlparser`, and `postgres`, under the same timing boundary: lexing, parsing, and
+destruction inside each call, identical inputs, no prelexed input for the flat entry alone. The
+probe asserts nested and flat acceptance agreement over every statement it looked at and aborts
+with a listing before any timing is taken, so a flat-only rejection cannot hide behind the
+exclusion filter.
 
 ```sh
 cargo bench -p pg-sql --features postgres-oracle --bench parse
 ```
+
+Run on 2026-09-16 against Recursa `6e6c758`. The harness wrote its report to
+`pg-sql/docs/benchmarks/2026-09-16T09-21-17Z-7ea2355/`, which is a local run artifact: that
+directory is gitignored, so the numbers that matter are reproduced here. 238 benchmarks, 33,708
+statements timed by all four engines, and the two representations rejected exactly the same 180
+statements.
+
+| Engine | Total median time | vs pg-sql |
+| --- | --: | --: |
+| pg-sql (nested arena AST) | 90.092 ms | 1.00× |
+| pg-sql-flat (Flat AST) | 84.876 ms | 1.06× |
+| postgres (PostgreSQL 17.9 raw parser) | 43.184 ms | 2.09× |
+| sqlparser | 194.852 ms | 0.46× |
+
+Per benchmark the flat entry ranges from 0.86× to 1.41× of the nested entry, median 1.02×. The
+win concentrates where a parse allocates many small Nodes: every generated stress shape except
+deep subquery nesting gains, `select_list_10000` by 1.41×, `in_list_10000` by 1.38×,
+`insert_values_10000` by 1.30×. It is a loss on 54 of the 237 timed benchmarks, all of them short
+corpus files whose statements are few and shallow — `create_schema` 0.86×, `create_role` 0.87×,
+`reindex_catalog` 0.89× — where the flat store's fixed setup is not yet amortized and the median of
+a sub-millisecond workload is noisy. No pool sizing or declaration restructuring was attempted;
+that is a later, measured decision.
 
 The "everything in the shared pool" variant is an opt-in experiment made by removing the pool
 attributes. It is not a third engine name and not an acceptance condition. A measured speedup is
