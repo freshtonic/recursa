@@ -1516,6 +1516,73 @@ fn site_forms_map_every_element_to_its_symbols() {
     assert_eq!(grammar.rule(let_rules[3]).value_pops, 4);
 }
 
+#[test]
+fn a_restricted_expression_substitutes_its_first_and_last_operands() {
+    let (_, grammar) = lr_fixture("restricted");
+    // `BExpr` admits three of `Expr`'s five variants, and each admitted rule is the base's own
+    // rule with exactly one substitution: a recursive operand that is the rule's first or last
+    // symbol becomes `BExpr`, and every other operand keeps `Expr`. That is `gram.y`'s
+    // `b_expr`: `b_expr '+' b_expr`, but `'(' a_expr ')'`.
+    assert_eq!(
+        rules_of(&grammar, "BExpr"),
+        [
+            "BExpr -> restricted::Name",
+            "BExpr -> LPAREN restricted::Expr RPAREN",
+            "BExpr -> BExpr PLUS BExpr",
+        ]
+    );
+    // The base keeps every variant, boolean `And` included, and the restricted operand of
+    // `Between` is the only site that parses through `BExpr`.
+    assert_eq!(
+        rules_of(&grammar, "restricted::Expr"),
+        [
+            "restricted::Expr -> restricted::Name",
+            "restricted::Expr -> LPAREN restricted::Expr RPAREN",
+            "restricted::Expr -> restricted::Expr AND restricted::Expr",
+            "restricted::Expr -> restricted::Expr PLUS restricted::Expr",
+            "restricted::Expr -> restricted::Expr BETWEEN BExpr AND restricted::Expr",
+        ]
+    );
+    // Every rule of the restriction constructs the base type, so a field that names `BExpr`
+    // needs no conversion and no type of its own.
+    let restricted = grammar
+        .nonterminal_by_name("BExpr")
+        .expect("the restriction has its own nonterminal");
+    let base = grammar
+        .nonterminal_by_name("restricted::Expr")
+        .expect("the base has its own nonterminal");
+    for rule in grammar.rules_of(restricted) {
+        let RuleAction::Construct { type_id, .. } = grammar.rule(*rule).action else {
+            panic!("a restricted rule constructs the base type");
+        };
+        let NonterminalOrigin::DeclaredRestriction { type_id: declared } =
+            grammar.nonterminal(restricted).origin
+        else {
+            panic!("a restriction's nonterminal records the base it builds");
+        };
+        assert_eq!(type_id, declared);
+        assert!(matches!(
+            grammar.nonterminal(base).origin,
+            NonterminalOrigin::Type(base_type) if base_type == type_id
+        ));
+    }
+}
+
+#[test]
+fn a_restricted_expression_builds_a_conflict_free_automaton() {
+    let (_, grammar) = lr_fixture("restricted");
+    let automaton = Automaton::build(
+        &grammar,
+        &BindingPowerPrecedence::new(&grammar).expect("the fixture has representable precedence"),
+        AutomatonOptions::default(),
+    );
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{}",
+        automaton_dump(&grammar, &automaton)
+    );
+}
+
 /// Runs the whole table-driven analysis over the precedence generation fixture.
 fn precedence_fixture_analysis() -> LrAnalysis {
     let fixture =

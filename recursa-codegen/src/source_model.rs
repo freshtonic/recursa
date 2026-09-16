@@ -31,7 +31,7 @@ use crate::lowering::{
 use crate::resolution::{
     CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
     ResolvedNodeBody, ResolvedNodeField, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
-    ResolvedVariantId, SemanticTarget,
+    ResolvedVariantId, SemanticTarget, TypeAliasId,
 };
 use crate::source_syntax::{
     CargoCfgSnapshot, configured_attribute_metas as configured_metas,
@@ -134,6 +134,36 @@ pub(crate) struct SourceModel {
     /// Authored LR conflict resolutions, compiled to typed source identities and token
     /// definitions.
     pub(crate) lr_conflict_resolutions: Vec<LrConflictResolution>,
+    /// Validated `#[restricts(Base)]` declarations in authored alias order.
+    pub(crate) restrictions: Vec<SourceRestriction>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One validated restricted expression (`docs/declared-precedence.md`, "Restricted
+/// expressions"): a grammar nonterminal whose rules are a subset of one base enum Node's
+/// variants, never an AST type of its own.
+pub(crate) struct SourceRestriction {
+    /// The type alias the restricted declaration expanded to, which is how a field that names
+    /// the restriction is recognized as parsing its base through it.
+    pub(crate) alias: TypeAliasId,
+    /// The authored name, which becomes the LR nonterminal's name.
+    pub(crate) name: String,
+    /// The root base Node, reached through any chain of restrictions: the Node whose type every
+    /// rule of this restriction constructs.
+    pub(crate) base: NodeId,
+    /// The admitted variants of `base`, in the base's own declaration order.
+    pub(crate) variants: Vec<ResolvedVariantId>,
+    /// Locates the declaration.
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What one restricted expression restricts: an enum Node directly, or another restriction.
+enum RestrictionBase {
+    /// The base is an ordinary enum Node.
+    Node(NodeId),
+    /// The base is another restricted expression, named by the alias it expanded to.
+    Restriction(TypeAliasId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1114,6 +1144,17 @@ pub(crate) enum SourceModelDiagnosticKind {
     /// A `#[parse(lr_conflict(...))]` declaration is malformed or names an unknown source rule
     /// owner or lookahead token.
     InvalidLrConflictResolution,
+    /// A `#[restricts(Base)]` declaration is not an enum of bare variant names.
+    RestrictedVariantHasFields,
+    /// A `#[restricts(Base)]` declaration names a variant its base does not admit.
+    RestrictedVariantUnknown,
+    /// A `#[restricts(Base)]` declaration names a base that is not an enum Node.
+    RestrictedBaseNotEnum,
+    /// A `#[restricts(Base)]` declaration names itself, directly or around a cycle.
+    RestrictedBaseCycle,
+    /// A restricted expression is used where a type is required, or carries configuration only
+    /// a type can carry.
+    RestrictedExpressionAsType,
 }
 
 impl SourceModelDiagnosticKind {
@@ -1197,6 +1238,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         precedence_overrides: Vec::new(),
         pending_lr_conflict_resolutions: Vec::new(),
         lr_conflict_resolutions: Vec::new(),
+        restrictions: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
@@ -1247,6 +1289,8 @@ struct SourceModelBuilder<'cfg> {
     pending_lr_conflict_resolutions: Vec<PendingLrConflictResolution>,
     /// Validated LR conflict declarations.
     lr_conflict_resolutions: Vec<LrConflictResolution>,
+    /// Validated restricted expressions.
+    restrictions: Vec<SourceRestriction>,
 }
 
 #[derive(Clone)]
@@ -5190,6 +5234,7 @@ impl SourceModelBuilder<'_> {
         self.tokens.compile_lookahead_filters(&mut self.diagnostics);
         self.resolve_precedence();
         self.resolve_lr_conflict_resolutions();
+        self.resolve_restrictions();
         let source_modeled = self
             .diagnostics
             .iter()
@@ -5206,6 +5251,7 @@ impl SourceModelBuilder<'_> {
                     precedence: self.precedence,
                     precedence_overrides: self.precedence_overrides,
                     lr_conflict_resolutions: self.lr_conflict_resolutions,
+                    restrictions: self.restrictions,
                 },
             });
         SourceModelReport {
@@ -5215,6 +5261,303 @@ impl SourceModelBuilder<'_> {
             pretty_boundary_node_evaluations,
             #[cfg(test)]
             pretty_soft_node_evaluations,
+        }
+    }
+
+    /// Validates every `#[restricts(Base)]` declaration against its resolved base and records
+    /// the ones a grammar can lower (`docs/declared-precedence.md`, "Restricted expressions").
+    ///
+    /// A restricted expression is a grammar nonterminal, never an AST type: the declaration
+    /// expanded to a type alias for its base, so this pass reads the authored body back off the
+    /// alias and checks the four things the alias cannot express — that the declaration is an
+    /// enum of bare names, that the base is an enum Node, that the base chain is acyclic, and
+    /// that every admitted name is a variant the base itself admits — plus that the declaration
+    /// carries no configuration only a type can carry.
+    ///
+    /// The admitted names are checked against the *immediate* base, which for a restriction of
+    /// a restriction is that restriction's own admitted set, and are then resolved against the
+    /// root base Node, whose type every rule constructs.
+    fn resolve_restrictions(&mut self) {
+        self.reject_restricted_framing();
+        let mut restrictions = Vec::new();
+        for index in 0..self.resolved.type_aliases.len() {
+            let alias_id = self.resolved.type_aliases[index].id;
+            let Some(authored) = self.resolved.type_aliases[index].restriction.clone() else {
+                continue;
+            };
+            let origin = SourceOrigin {
+                module: self.resolved.type_aliases[index].module,
+                source: self.resolved.type_aliases[index].source,
+            };
+            let site = self.site(origin, authored.range.clone());
+            for (path, range) in &authored.configured {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedExpressionAsType.at(
+                        self.site(origin, range.clone()),
+                        format!(
+                            "#[{path}] configures a type, and a restricted expression is a \
+                             grammar nonterminal that generates none",
+                        ),
+                    ));
+            }
+            if !authored.enumerated {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedVariantHasFields.at(
+                        site.clone(),
+                        "a restricted expression is an enum whose variants are the bare names of \
+                         the base variants it admits",
+                    ));
+                continue;
+            }
+            let mut malformed = false;
+            for variant in &authored.variants {
+                if variant.has_fields {
+                    malformed = true;
+                    self.diagnostics.push(
+                        SourceModelDiagnosticKind::RestrictedVariantHasFields.at(
+                            self.site(origin, variant.range.clone()),
+                            format!(
+                                "`{}` names a base variant, so it takes no fields: a restricted \
+                                 expression admits the base's own rule unchanged",
+                                variant.name,
+                            ),
+                        ),
+                    );
+                }
+            }
+            let Some((base, root)) = self.restriction_base(alias_id, &site, &authored) else {
+                continue;
+            };
+            if malformed {
+                continue;
+            }
+            let admitted = self.admitted_variant_names(base);
+            let mut names = Vec::new();
+            for variant in &authored.variants {
+                if admitted.contains(&variant.name) {
+                    names.push(variant.name.clone());
+                    continue;
+                }
+                malformed = true;
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedVariantUnknown.at(
+                        self.site(origin, variant.range.clone()),
+                        format!(
+                            "`{}` is no variant of `{}`; a restricted expression admits only \
+                             variants its base admits",
+                            variant.name,
+                            self.restriction_base_name(base),
+                        ),
+                    ));
+            }
+            if malformed {
+                continue;
+            }
+            let variants = self.root_variant_order(root, &names);
+            restrictions.push(SourceRestriction {
+                alias: alias_id,
+                name: self.resolved.type_aliases[index].ident.clone(),
+                base: root,
+                variants,
+                site,
+            });
+        }
+        self.restrictions = restrictions;
+    }
+
+    /// Rejects a `framing` island or payload owner that names a restricted expression: framing
+    /// parses each island as a type, and a restriction generates none.
+    fn reject_restricted_framing(&mut self) {
+        let Some(framing) = self.resolved.configuration.framing.clone() else {
+            return;
+        };
+        let owners = std::iter::once(&framing.island)
+            .chain(framing.payload.as_ref().map(|payload| &payload.after));
+        let named: Vec<_> = owners
+            .filter_map(|ty| match &ty.kind {
+                ResolvedTypeKind::Semantic {
+                    target: SemanticTarget::TypeAlias(alias),
+                    ..
+                } if self.resolved.type_aliases[alias.index()]
+                    .restriction
+                    .is_some() =>
+                {
+                    Some((
+                        ty.range.clone(),
+                        self.resolved.type_aliases[alias.index()].ident.clone(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        for (range, name) in named {
+            let origin = SourceOrigin {
+                module: self
+                    .resolved
+                    .tree
+                    .inclusions
+                    .first()
+                    .expect("a resolved grammar has a root module inclusion")
+                    .id,
+                source: self.resolved.configuration.source,
+            };
+            let site = self.site(origin, range);
+            self.diagnostics
+                .push(SourceModelDiagnosticKind::RestrictedExpressionAsType.at(
+                    site,
+                    format!(
+                        "`{name}` is a restricted expression, a grammar nonterminal with no \
+                         generated type, and `framing` needs a Node type here",
+                    ),
+                ));
+        }
+    }
+
+    /// Resolves one restriction's base: the Node or restriction its alias target names, with a
+    /// base that is not an enum Node and a base cycle each reported at its own code.
+    fn restriction_base(
+        &mut self,
+        alias: TypeAliasId,
+        site: &SourceSite,
+        authored: &crate::declaration::DeclarationRestriction,
+    ) -> Option<(RestrictionBase, NodeId)> {
+        let origin = SourceOrigin {
+            module: self.resolved.type_aliases[alias.index()].module,
+            source: self.resolved.type_aliases[alias.index()].source,
+        };
+        let base_site = self.site(origin, authored.base_range.clone());
+        let mut current = alias;
+        let mut visited = BTreeSet::from([alias]);
+        // The chain is walked all the way to its root Node even once the immediate base is
+        // known, because only the root proves the chain terminates and is an enum.
+        let mut immediate = None;
+        loop {
+            let Some(target) = self.resolved.type_aliases[current.index()].target.clone() else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                        base_site,
+                        "#[restricts(Base)] names one enum Node, the expression this Node \
+                         restricts",
+                    ));
+                return None;
+            };
+            let ResolvedTypeKind::Semantic { target, .. } = &target.kind else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                        base_site,
+                        "#[restricts(Base)] names one enum Node, not a container or an \
+                         unresolved type",
+                    ));
+                return None;
+            };
+            match *target {
+                SemanticTarget::Node(node) => {
+                    if !self.node_is_plain_enum(node) {
+                        self.diagnostics
+                            .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                                base_site,
+                                format!(
+                                    "`{}` is not an enum Node, so it has no variants to admit",
+                                    self.resolved.nodes[node.index()].ident,
+                                ),
+                            ));
+                        return None;
+                    }
+                    return Some((immediate.unwrap_or(RestrictionBase::Node(node)), node));
+                }
+                SemanticTarget::TypeAlias(next) => {
+                    if !visited.insert(next) {
+                        self.diagnostics
+                            .push(SourceModelDiagnosticKind::RestrictedBaseCycle.at(
+                                site.clone(),
+                                "a restricted expression cannot restrict itself, directly or \
+                                 around a cycle of restrictions",
+                            ));
+                        return None;
+                    }
+                    if immediate.is_none()
+                        && self.resolved.type_aliases[next.index()]
+                            .restriction
+                            .is_some()
+                    {
+                        immediate = Some(RestrictionBase::Restriction(next));
+                    }
+                    current = next;
+                }
+                _ => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::RestrictedBaseNotEnum.at(
+                            base_site,
+                            "#[restricts(Base)] names one enum Node, not a token or a generic \
+                             parameter",
+                        ));
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Reports whether one Node is an ordinary enum, the only base a restriction admits.
+    fn node_is_plain_enum(&self, node: NodeId) -> bool {
+        self.nodes
+            .iter()
+            .find(|candidate| candidate.resolved_node == node)
+            .is_some_and(|candidate| matches!(candidate.body, NodeBody::Enum(_)))
+    }
+
+    /// The variant names one restriction base admits: an enum Node's own variants, or the
+    /// admitted subset of a base that is itself a restriction.
+    fn admitted_variant_names(&self, base: RestrictionBase) -> Vec<String> {
+        match base {
+            RestrictionBase::Node(node) => self.node_variant_names(node),
+            // A base that is itself a restriction admits exactly the names it lists, read from
+            // the authored declaration so that the order restrictions are declared in cannot
+            // change what a restriction of a restriction admits.
+            RestrictionBase::Restriction(alias) => self.resolved.type_aliases[alias.index()]
+                .restriction
+                .as_ref()
+                .map(|restriction| {
+                    restriction
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The enum variant names of one Node, in declaration order.
+    fn node_variant_names(&self, node: NodeId) -> Vec<String> {
+        match &self.resolved.nodes[node.index()].body {
+            ResolvedNodeBody::Enum { variants } => variants
+                .iter()
+                .map(|variant| variant.ident.clone())
+                .collect(),
+            ResolvedNodeBody::Struct { .. } => Vec::new(),
+        }
+    }
+
+    /// The display name of one restriction base, for a diagnostic message.
+    fn restriction_base_name(&self, base: RestrictionBase) -> String {
+        match base {
+            RestrictionBase::Node(node) => self.resolved.nodes[node.index()].ident.clone(),
+            RestrictionBase::Restriction(alias) => {
+                self.resolved.type_aliases[alias.index()].ident.clone()
+            }
+        }
+    }
+
+    /// Orders admitted names by the root base's own declaration order and resolves each to its
+    /// variant identity.
+    fn root_variant_order(&self, root: NodeId, names: &[String]) -> Vec<ResolvedVariantId> {
+        match &self.resolved.nodes[root.index()].body {
+            ResolvedNodeBody::Enum { variants } => variants
+                .iter()
+                .filter(|variant| names.contains(&variant.ident))
+                .map(|variant| variant.id)
+                .collect(),
+            ResolvedNodeBody::Struct { .. } => Vec::new(),
         }
     }
 
@@ -12002,6 +12345,170 @@ recursa::ast_node! {
             model.lr_conflict_resolutions[1].against,
             super::LrRuleOwner::Type(_)
         ));
+    }
+
+    #[test]
+    fn restricted_expressions_lower_to_their_admitted_base_variants() {
+        let report = model(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! { punctuation { PLUS => "+", LPAREN => "(", RPAREN => ")" } }
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+recursa::ast_node! {
+
+    pub enum Expr {
+        Name(Name),
+        Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name,
+        Parenthesized,
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(BExpr)]
+    pub enum CExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(model.restrictions.len(), 2);
+        assert_eq!(model.restrictions[0].name, "BExpr");
+        assert_eq!(model.restrictions[0].variants.len(), 2);
+        assert_eq!(model.restrictions[1].name, "CExpr");
+        // A restriction of a restriction resolves to the root base Node and admits one of its
+        // variants, so its rules still build the type the author declared.
+        assert_eq!(model.restrictions[1].base, model.restrictions[0].base);
+        assert_eq!(model.restrictions[1].variants.len(), 1);
+    }
+
+    #[test]
+    fn invalid_restricted_expressions_have_structured_diagnostics() {
+        const PRELUDE: &str = r#"recursa::grammar! { module = crate }
+recursa::tokens! { punctuation { PLUS => "+" } }
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+recursa::ast_node! {
+
+    pub enum Expr {
+        Name(Name),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
+    }
+}
+"#;
+        let with = |declaration: &str| model(&format!("{PRELUDE}{declaration}"));
+
+        let fields = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name(Name),
+    }
+}
+"#,
+        );
+        assert!(fields.source_modeled.is_none());
+        assert_code(
+            &fields,
+            SourceModelDiagnosticKind::RestrictedVariantHasFields,
+            "RCA3135",
+        );
+
+        let unknown = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Missing,
+    }
+}
+"#,
+        );
+        assert!(unknown.source_modeled.is_none());
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::RestrictedVariantUnknown,
+            "RCA3136",
+        );
+
+        let not_enum = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(Name)]
+    pub enum BExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(not_enum.source_modeled.is_none());
+        assert_code(
+            &not_enum,
+            SourceModelDiagnosticKind::RestrictedBaseNotEnum,
+            "RCA3137",
+        );
+
+        let cycle = with(
+            r#"recursa::ast_node! {
+
+    #[restricts(CExpr)]
+    pub enum BExpr {
+        Name,
+    }
+}
+recursa::ast_node! {
+
+    #[restricts(BExpr)]
+    pub enum CExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(cycle.source_modeled.is_none());
+        assert_code(
+            &cycle,
+            SourceModelDiagnosticKind::RestrictedBaseCycle,
+            "RCA3138",
+        );
+
+        let configured = with(
+            r#"recursa::ast_node! {
+
+    #[node(derive(Pretty))]
+    #[restricts(Expr)]
+    pub enum BExpr {
+        Name,
+    }
+}
+"#,
+        );
+        assert!(configured.source_modeled.is_none());
+        assert_code(
+            &configured,
+            SourceModelDiagnosticKind::RestrictedExpressionAsType,
+            "RCA3139",
+        );
     }
 
     #[test]

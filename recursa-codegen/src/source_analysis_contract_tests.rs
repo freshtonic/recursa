@@ -422,6 +422,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::invalid_precedence_declarations_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3135", "RCA3136", "RCA3137", "RCA3138", "RCA3139"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "invalid_restricted_expressions_have_structured_diagnostics",
+        command: "cargo test -p recursa-codegen source_model::tests::invalid_restricted_expressions_have_structured_diagnostics --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3134"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",

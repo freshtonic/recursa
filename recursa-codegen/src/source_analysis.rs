@@ -745,6 +745,11 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidLookaheadFilter => "RCA3132",
         SourceModelDiagnosticKind::InvalidPrecedenceDeclaration => "RCA3133",
         SourceModelDiagnosticKind::InvalidLrConflictResolution => "RCA3134",
+        SourceModelDiagnosticKind::RestrictedVariantHasFields => "RCA3135",
+        SourceModelDiagnosticKind::RestrictedVariantUnknown => "RCA3136",
+        SourceModelDiagnosticKind::RestrictedBaseNotEnum => "RCA3137",
+        SourceModelDiagnosticKind::RestrictedBaseCycle => "RCA3138",
+        SourceModelDiagnosticKind::RestrictedExpressionAsType => "RCA3139",
     }
 }
 

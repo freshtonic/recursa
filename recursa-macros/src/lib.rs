@@ -76,6 +76,14 @@ pub fn ast_node(input: TokenStream) -> TokenStream {
                 continue;
             }
         };
+        // A restricted expression (`#[restricts(Base)]`) is a grammar nonterminal, not an AST
+        // type: generation emits no declaration for it, so there is nothing to load here.
+        if attributes
+            .iter()
+            .any(|attribute| attribute.path().is_ident("restricts"))
+        {
+            continue;
+        }
         let conditional = attributes.into_iter().filter_map(conditional_gate);
         let loader = load_declared_node(&ident);
         output.extend(quote! {

@@ -649,6 +649,14 @@ pub enum NonterminalOrigin {
         /// The minimum binding power; zero for an exclusion-only clone and for attachments.
         min_bp: u8,
     },
+    /// An authored restricted expression (`docs/declared-precedence.md`, "Restricted
+    /// expressions"): a nonterminal whose rules are the admitted alternatives of one enum type,
+    /// each with its first or last recursive operand parsed through this nonterminal instead of
+    /// through the base. Its rules build the base type, so it is a grammar symbol only.
+    DeclaredRestriction {
+        /// The base enum type whose value every rule of this nonterminal builds.
+        type_id: TypeId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
