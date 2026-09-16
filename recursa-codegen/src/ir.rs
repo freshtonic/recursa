@@ -10,8 +10,8 @@
 use std::ops::Range;
 
 use crate::{
-    AtomId, DeclId, KindId, LocationId, PrecedenceLevelId, SiteId, SourceId, TextPredicateId,
-    TypeId,
+    AtomId, DeclId, KindId, LocationId, PrecedenceLevelId, RestrictionId, SiteId, SourceId,
+    TextPredicateId, TypeId,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +53,26 @@ pub struct GrammarDescription {
     /// Authored resolutions for specific unresolved LR conflict cells, validated after precedence
     /// resolution.
     pub lr_conflict_resolutions: Vec<LrConflictResolution>,
+    /// Dense restricted expressions indexed by [`RestrictionId`], each a grammar nonterminal
+    /// whose rules are a subset of one base enum type's alternatives.
+    pub restrictions: Vec<RestrictionDescription>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One restricted expression (`docs/declared-precedence.md`, "Restricted expressions"): a
+/// grammar nonterminal, never a type, whose rules are the admitted alternatives of `base` with
+/// one substitution — a recursive operand that is the first or the last symbol of the rule is
+/// parsed through this restriction instead of through `base`.
+///
+/// `base` is the root enum type every rule constructs, resolved through any chain of
+/// restrictions, so a restriction of a restriction still builds the type the author declared.
+pub struct RestrictionDescription {
+    /// The nonterminal's name, used in the automaton dump and conflict reports.
+    pub name: String,
+    /// The enum type whose alternatives this restriction admits and whose value its rules build.
+    pub base: TypeId,
+    /// The admitted alternatives of `base`, in the base's own declaration order.
+    pub variants: Vec<DeclId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -158,6 +178,7 @@ impl GrammarDescription {
             text_predicates: Vec::new(),
             sites: Vec::new(),
             types: Vec::new(),
+            restrictions: Vec::new(),
             lookahead_filters: Vec::new(),
             precedence: Vec::new(),
             lr_conflict_resolutions: Vec::new(),
@@ -481,6 +502,12 @@ pub struct ParseSite {
     pub container: ContainerShape,
     /// Minimum Pratt binding power required at this site.
     pub min_bp: u8,
+    /// The restricted expression this site parses its target through
+    /// (`docs/declared-precedence.md`, "Restricted expressions"): the site's `target` stays the
+    /// base type, because every rule of a restriction constructs the base type and the site's
+    /// value has the base's Rust type, but the grammar symbol is the restriction's own
+    /// nonterminal. `None` at every ordinary site.
+    pub restriction: Option<RestrictionId>,
     /// The variants of the target Pratt type this site excludes
     /// (`#[parse(pratt(exclude(...)))]`), in ascending order without duplicates: an atom or
     /// prefix variant leaves the operand's nud selection and its FIRST set, an infix or
@@ -507,8 +534,15 @@ impl ParseSite {
             declaration,
             container,
             min_bp: 0,
+            restriction: None,
             pratt_excluded: Vec::new(),
         }
+    }
+
+    /// Parses this site's target through one restricted expression.
+    pub const fn with_restriction(mut self, restriction: Option<RestrictionId>) -> Self {
+        self.restriction = restriction;
+        self
     }
 
     /// Sets the minimum Pratt binding power for this site.

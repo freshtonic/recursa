@@ -27,6 +27,40 @@ pub(crate) struct DeclarationOrigin {
     pub(crate) concrete_item: Item,
     /// Number of authored abstract container markers on each field in source order.
     pub(crate) field_marker_ranges: Vec<Vec<Range<u32>>>,
+    /// The authored `#[restricts(Base)]` body when this declaration is a restricted expression
+    /// (`docs/declared-precedence.md`, "Restricted expressions"), which expands to a type alias
+    /// for its base rather than to a Node.
+    pub(crate) restriction: Option<DeclarationRestriction>,
+}
+
+/// The authored body of one `#[restricts(Base)]` declaration, retained exactly as written so
+/// that source-model lowering can validate it against the resolved base and report each failure
+/// at the authored range rather than at the expanded alias.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeclarationRestriction {
+    /// Authored range of the declared identifier, the primary label of a restriction error.
+    pub(crate) range: Range<u32>,
+    /// Authored range of the base named by the attribute.
+    pub(crate) base_range: Range<u32>,
+    /// The admitted base variants, in authored order.
+    pub(crate) variants: Vec<DeclarationRestrictedVariant>,
+    /// Whether the declaration was an enum; a struct names no base variants.
+    pub(crate) enumerated: bool,
+    /// Every other attribute the author wrote on the declaration, by path and range. A
+    /// restriction is a nonterminal, not a type, so it configures nothing and each of these is
+    /// an authoring error reported by source-model lowering.
+    pub(crate) configured: Vec<(String, Range<u32>)>,
+}
+
+/// One name listed by a `#[restricts(Base)]` declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeclarationRestrictedVariant {
+    /// The authored name, which must be a variant of the base.
+    pub(crate) name: String,
+    /// Authored range of the name.
+    pub(crate) range: Range<u32>,
+    /// Whether the author wrote fields after the name, which a restriction never admits.
+    pub(crate) has_fields: bool,
 }
 
 /// Result of expanding declarations in one logical module.
@@ -40,8 +74,9 @@ pub(crate) struct DeclarationExpansion {
     pub(crate) errors: Vec<syn::Error>,
 }
 
-/// Parsed declaration items paired with per-field abstract marker ranges.
-type ParsedDeclarations = Vec<(Item, Vec<Vec<Range<u32>>>)>;
+/// Parsed declaration items paired with per-field abstract marker ranges and, for a restricted
+/// expression, the authored `#[restricts(Base)]` body its alias replaced.
+type ParsedDeclarations = Vec<(Item, Vec<Vec<Range<u32>>>, Option<DeclarationRestriction>)>;
 
 /// Expands every recognized declaration invocation in one logical module.
 #[cfg(test)]
@@ -96,7 +131,7 @@ pub(crate) fn expand_declarations_with_aliases(
         match parse_declaration_items(item_macro, facade, arena_ast, cfg) {
             Ok(items) => {
                 let invocation_range = span_range(item_macro.mac.path.span());
-                for (concrete_item, field_marker_ranges) in items {
+                for (concrete_item, field_marker_ranges, restriction) in items {
                     let name =
                         item_name(&concrete_item).expect("declaration parser emits named items");
                     let mut emitted_item = concrete_item.clone();
@@ -107,6 +142,7 @@ pub(crate) fn expand_declarations_with_aliases(
                             invocation_range: invocation_range.clone(),
                             concrete_item: emitted_item,
                             field_marker_ranges,
+                            restriction,
                         },
                     ));
                     expanded.push(concrete_item);
@@ -175,6 +211,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "pretty"
                         | "greedy"
                         | "omit"
+                        | "restricts"
                 )
             )
         })
@@ -300,12 +337,16 @@ fn parse_declaration_items(
         if !configure_declaration_item(&mut item, cfg)? {
             continue;
         }
+        if let Some(restriction) = restriction_syntax(&item)? {
+            declarations.push((restriction_alias(&item)?, Vec::new(), Some(restriction)));
+            continue;
+        }
         let marker_ranges = active_item_fields(&item, cfg)
             .into_iter()
             .map(|field| type_marker_ranges(&field.ty))
             .collect();
         prepare_item(&mut item, facade, arena_ast)?;
-        declarations.push((item, marker_ranges));
+        declarations.push((item, marker_ranges, None));
     }
     Ok(declarations)
 }
@@ -626,8 +667,105 @@ fn item_name(item: &Item) -> Option<String> {
     match item {
         Item::Struct(item) => Some(item.ident.unraw().to_string()),
         Item::Enum(item) => Some(item.ident.unraw().to_string()),
+        Item::Type(item) => Some(item.ident.unraw().to_string()),
         _ => None,
     }
+}
+
+/// Reads the authored `#[restricts(Base)]` body of one declaration, or `None` when the
+/// declaration carries no such attribute.
+///
+/// Only the failures that make the attribute unreadable are reported here, as syntax errors:
+/// a missing or malformed base path, and a generic declaration, which a grammar nonterminal
+/// cannot be. Every authoring failure the model defines — a variant with fields, an unknown
+/// variant name, a base that is not an enum Node, a base cycle — is recorded rather than
+/// rejected, so that source-model lowering reports it at its own registered code with the base
+/// resolved.
+fn restriction_syntax(item: &Item) -> syn::Result<Option<DeclarationRestriction>> {
+    let (attrs, ident, generics) = match item {
+        Item::Struct(item) => (&item.attrs, &item.ident, &item.generics),
+        Item::Enum(item) => (&item.attrs, &item.ident, &item.generics),
+        _ => return Ok(None),
+    };
+    let Some(attribute) = attrs
+        .iter()
+        .find(|attribute| attribute.path().is_ident("restricts"))
+    else {
+        return Ok(None);
+    };
+    let base: syn::Path = attribute.parse_args().map_err(|error| {
+        syn::Error::new(
+            error.span(),
+            "#[restricts(Base)] names one base Node: the expression this Node restricts",
+        )
+    })?;
+    if !generics.params.is_empty() {
+        return Err(syn::Error::new(
+            generics.span(),
+            "a restricted expression is a grammar nonterminal, not a type, and takes no generic parameters",
+        ));
+    }
+    let variants = match item {
+        Item::Enum(item) => item
+            .variants
+            .iter()
+            .map(|variant| DeclarationRestrictedVariant {
+                name: variant.ident.unraw().to_string(),
+                range: span_range(variant.ident.span()),
+                has_fields: !matches!(variant.fields, syn::Fields::Unit),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let configured = attrs
+        .iter()
+        .filter(|attribute| {
+            !matches!(
+                attribute
+                    .path()
+                    .get_ident()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("restricts" | "doc" | "cfg" | "cfg_attr"),
+            )
+        })
+        .map(|attribute| {
+            (
+                attribute
+                    .path()
+                    .get_ident()
+                    .map_or_else(|| "?".to_owned(), ToString::to_string),
+                span_range(attribute.span()),
+            )
+        })
+        .collect();
+    Ok(Some(DeclarationRestriction {
+        range: span_range(ident.span()),
+        base_range: span_range(base.span()),
+        variants,
+        enumerated: matches!(item, Item::Enum(_)),
+        configured,
+    }))
+}
+
+/// Expands one restricted expression to the type alias that stands for it: a restricted Node is
+/// not an AST type, so every use of its name in field position is a use of its base's type, and
+/// the alias is what makes the resolver see exactly that. The alias is never emitted into the
+/// generated crate; it exists so that the name resolves and so that the site that names it can
+/// carry the restriction into LR lowering.
+fn restriction_alias(item: &Item) -> syn::Result<Item> {
+    let (attrs, ident) = match item {
+        Item::Struct(item) => (&item.attrs, &item.ident),
+        Item::Enum(item) => (&item.attrs, &item.ident),
+        _ => unreachable!("a restricted declaration is a struct or an enum"),
+    };
+    let base: syn::Path = attrs
+        .iter()
+        .find(|attribute| attribute.path().is_ident("restricts"))
+        .expect("the caller read the restriction off this declaration first")
+        .parse_args()?;
+    let ident = ident.clone();
+    Ok(syn::parse_quote_spanned!(item.span()=> pub type #ident = #base;))
 }
 
 #[cfg(test)]

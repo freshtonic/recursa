@@ -45,8 +45,8 @@
 //! position, as a Pratt LED reduce already does for its implicit left operand. Every other
 //! attachment unit — one behind a Pratt variant's site, an optional attached-token field
 //! (cardinality zero-or-one), or one per occurrence of a repeated element — keeps its private
-//! nonterminal, unchanged. See [`inlinable_attachment_units`] for the exact eligibility rule and
-//! [`Lowering::inline_attachment`] for the lowering.
+//! nonterminal, unchanged. `inlinable_attachment_units` states the exact eligibility rule and
+//! `Lowering::inline_attachment` performs the lowering.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -264,6 +264,7 @@ pub fn lower(
     let mut lowering = Lowering::new(grammar, roles);
     lowering.note_operands();
     lowering.lower_types();
+    lowering.lower_restrictions();
     lowering.lower_clones();
     if !lowering.diagnostics.is_empty() {
         return Err(lowering.diagnostics);
@@ -640,6 +641,14 @@ struct Lowering<'a> {
     /// Cardinality-one attachment unit types that lower inline into their owner's rule instead
     /// of a private nonterminal (see [`inlinable_attachment_units`]).
     inline_attachments: BTreeSet<TypeId>,
+    /// The nonterminal of each authored restricted expression, dense by
+    /// [`RestrictionId`](crate::RestrictionId); every one exists before any rule is emitted, so
+    /// a site can name a restriction whose own rules are lowered later.
+    restrictions: Vec<NonterminalId>,
+    /// The restricted expression whose rules are being emitted, as `(restricted, base)`
+    /// nonterminals. While it is set, [`Lowering::lower_alternative`] retypes a rule's first and
+    /// last symbol from the base to the restriction (see [`Lowering::lower_restrictions`]).
+    active_restriction: Option<(NonterminalId, NonterminalId)>,
 }
 
 #[derive(Clone, Copy)]
@@ -1174,6 +1183,26 @@ impl<'a> Lowering<'a> {
             });
             type_symbols.push(Some(symbol));
         }
+        // Every restricted expression gets its nonterminal before any rule is emitted, so a
+        // site can name one whose own rules are lowered afterwards.
+        let restrictions = grammar
+            .restrictions
+            .iter()
+            .map(|restriction| {
+                let mut name = restriction.name.clone();
+                if !names.insert(name.clone()) {
+                    name = format!("{name}#restricts");
+                    names.insert(name.clone());
+                }
+                lr.add_nonterminal(
+                    name,
+                    NonterminalOrigin::DeclaredRestriction {
+                        type_id: restriction.base,
+                    },
+                    true,
+                )
+            })
+            .collect();
         Self {
             grammar,
             roles,
@@ -1191,6 +1220,8 @@ impl<'a> Lowering<'a> {
             operand_attachments: HashMap::new(),
             separated_tail_sites,
             inline_attachments,
+            restrictions,
+            active_restriction: None,
         }
     }
 
@@ -1382,6 +1413,44 @@ impl<'a> Lowering<'a> {
             variant: Some(variant.declaration),
         };
         self.lower_alternative(lhs, prefix, &variant.sites, kind, precedence, operands);
+    }
+
+    /// Emits the rules of every authored restricted expression (`docs/declared-precedence.md`,
+    /// "Restricted expressions"): the admitted alternatives of its base enum, each lowered the
+    /// way the base lowers it, with one substitution — a recursive operand that is the first or
+    /// the last symbol of the rule is retyped to the restriction, every other operand keeps the
+    /// base. That is `gram.y`'s `b_expr`: `b_expr '+' b_expr`, but `'(' a_expr ')'`.
+    ///
+    /// Every rule constructs the base type, so the restriction's nonterminal carries the base's
+    /// value and a field that names it needs no conversion. The rules are emitted after
+    /// [`Self::lower_types`] so that every type already has its nonterminal, and before
+    /// [`Self::lower_clones`] so that a Pratt clone a restricted rule reaches is still lowered.
+    fn lower_restrictions(&mut self) {
+        for index in 0..self.grammar.restrictions.len() {
+            let restriction = self.grammar.restrictions[index].clone();
+            let lhs = self.restrictions[index];
+            let TypeShape::Enum { alternatives } =
+                self.grammar.types[restriction.base.index()].shape.clone()
+            else {
+                unreachable!("source-model lowering admits only an enum Node as a base")
+            };
+            let Some(Symbol::Nonterminal(base)) = self.type_symbols[restriction.base.index()]
+            else {
+                unreachable!("an enum type is never inlined, so it has a nonterminal")
+            };
+            self.active_restriction = Some((lhs, base));
+            for alternative in alternatives {
+                if !restriction.variants.contains(&alternative.declaration) {
+                    continue;
+                }
+                let kind = ConstructKind::Construct {
+                    type_id: restriction.base,
+                    variant: Some(alternative.declaration),
+                };
+                self.lower_alternative(lhs, Vec::new(), &alternative.sites, kind, None, None);
+            }
+            self.active_restriction = None;
+        }
     }
 
     /// Emits the rules of every clone created so far, including the clones those rules create:
@@ -1719,6 +1788,20 @@ impl<'a> Lowering<'a> {
                     }
                 }
             };
+            // A restricted expression's rule retypes the base operand it begins or ends with
+            // (`docs/declared-precedence.md`, "Restricted expressions"): `b_expr '+' b_expr`,
+            // but `'(' a_expr ')'`.
+            if let Some((restricted, base)) = self.active_restriction {
+                let base = Symbol::Nonterminal(base);
+                if rhs.first() == Some(&base) {
+                    rhs[0] = Symbol::Nonterminal(restricted);
+                }
+                if let Some(last) = rhs.last_mut()
+                    && *last == base
+                {
+                    *last = Symbol::Nonterminal(restricted);
+                }
+            }
             let value_pops = self.value_pops(&rhs);
             self.lr.add_rule(Rule {
                 lhs,
@@ -1803,6 +1886,11 @@ impl<'a> Lowering<'a> {
         last: bool,
     ) -> Symbol {
         let site = &self.grammar.sites[site_id.index()];
+        if let Some(restriction) = site.restriction {
+            // The site parses its target through an authored restricted expression: the value
+            // is still the base's, so only the symbol changes.
+            return Symbol::Nonterminal(self.restrictions[restriction.index()]);
+        }
         let (target, site_min_bp) = (site.target, site.min_bp);
         let own = self.roles.pratt_exclusions.get(&site_id).cloned();
         let operand = match (&own, context) {

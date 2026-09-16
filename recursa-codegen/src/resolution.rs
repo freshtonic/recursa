@@ -24,7 +24,9 @@ use syn::{
 };
 
 use crate::SourceId;
-use crate::declaration::{DeclarationOrigin, expand_declarations_with_aliases};
+use crate::declaration::{
+    DeclarationOrigin, DeclarationRestriction, expand_declarations_with_aliases,
+};
 use crate::discovery::{DiscoveredModuleTree, ModuleInclusion};
 use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
@@ -356,6 +358,10 @@ pub(crate) struct ResolvedTypeAlias {
     pub(crate) target: Option<ResolvedType>,
     /// Supplies the defaults needed either to resolve the reference or diagnose its failure.
     pub(crate) defaults: Vec<ResolvedAliasDefault>,
+    /// The authored `#[restricts(Base)]` body when this alias stands for a restricted
+    /// expression (`docs/declared-precedence.md`, "Restricted expressions") rather than an
+    /// ordinary authored alias. `target` is the base the restriction names.
+    pub(crate) restriction: Option<DeclarationRestriction>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1453,6 +1459,10 @@ impl Resolver<'_> {
                     let id = TypeAliasId::next(self.type_aliases.len());
                     let generic_parameters =
                         self.register_generic_parameters(&generics, SemanticOwner::TypeAlias(id));
+                    let restriction = self
+                        .declaration_origins
+                        .remove(&(inclusion.id, name.clone()))
+                        .and_then(|origin| origin.restriction);
                     self.type_aliases.push(PendingTypeAlias {
                         resolved: ResolvedTypeAlias {
                             id,
@@ -1464,6 +1474,7 @@ impl Resolver<'_> {
                             ty: (*item_type.ty).clone(),
                             target: None,
                             defaults: Vec::new(),
+                            restriction,
                         },
                         generic_parameters,
                     });
@@ -2568,7 +2579,27 @@ impl Resolver<'_> {
             self.nodes[node_index].resolved.fields = resolved_fields;
         }
         let framing = self.resolve_framing_types();
+        // A restricted expression's alias is a grammar declaration, not a passive alias: its
+        // base must resolve even when no field names the restriction, so that source-model
+        // lowering can report an unusable declaration as a restriction error rather than as a
+        // silently unresolved name.
         let mut resolved_aliases = BTreeSet::new();
+        for index in 0..self.type_aliases.len() {
+            if self.type_aliases[index].resolved.restriction.is_none() {
+                continue;
+            }
+            let alias = self.type_aliases[index].resolved.clone();
+            if !resolved_aliases.insert(alias.id) {
+                continue;
+            }
+            let target = self.resolve_type(
+                &alias.ty,
+                alias.module,
+                SemanticOwner::TypeAlias(alias.id),
+                alias.source,
+            );
+            self.type_aliases[index].resolved.target = target;
+        }
         let mut resolution_index = 0;
         while resolution_index < self.resolutions.len() {
             let target = self.resolutions[resolution_index].target;
@@ -3963,6 +3994,15 @@ fn concrete_input_type(
                 *argument_syntax = concrete_input_type(resolved, required_nodes, aliases);
             }
         }
+    }
+    // A restricted expression is not an AST type: its name in field position spells its base's
+    // type, so the concrete field type is the base's, never the restriction's own name (which
+    // the generated crate never declares).
+    if let SemanticTarget::TypeAlias(alias) = target
+        && aliases[alias.index()].resolved.restriction.is_some()
+        && let Some(base) = aliases[alias.index()].resolved.target.as_ref()
+    {
+        return concrete_input_type(base, required_nodes, aliases);
     }
     let target_lifetimes = match target {
         SemanticTarget::ContentToken(_) => 1,

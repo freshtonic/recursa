@@ -54,14 +54,14 @@ pub use build_diagnostic::{
 };
 pub use generation::{Generation, generate};
 pub use ids::{
-    AtomId, DeclId, KindId, LocationId, PrecedenceLevelId, SiteId, SourceId, TextPredicateId,
-    TypeId,
+    AtomId, DeclId, KindId, LocationId, PrecedenceLevelId, RestrictionId, SiteId, SourceId,
+    TextPredicateId, TypeId,
 };
 pub use ir::{
     Alternative, AtomDescription, AtomExpression, AuthoredRole, AuthoredSite, ContainerShape,
     Declaration, GrammarDescription, KindDescription, Location, LookaheadFilter, LrConflictAction,
     LrConflictResolution, LrRuleOwner, ParseSite, PrattPosition, PrattVariant,
     PrecedenceAssociativity, PrecedenceLevel, RepeatSeparator, RepetitionCardinality,
-    TextEquivalence, TextPredicate, TypeDescription, TypeShape,
+    RestrictionDescription, TextEquivalence, TextPredicate, TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};

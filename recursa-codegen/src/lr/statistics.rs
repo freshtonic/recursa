@@ -29,6 +29,8 @@ pub enum LrOrigin {
     HelperCopy,
     /// A restricted Pratt language or its attachment unit.
     Restriction,
+    /// An authored restricted expression.
+    DeclaredRestriction,
 }
 
 impl LrOrigin {
@@ -39,6 +41,7 @@ impl LrOrigin {
             Self::Start => "start",
             Self::Helper => "helper",
             Self::HelperCopy => "helper-copy",
+            Self::DeclaredRestriction => "declared-restriction",
             Self::Restriction => "restriction",
         }
     }
@@ -57,12 +60,19 @@ pub struct OriginStatistics {
     pub helper_copy: usize,
     /// Restricted Pratt languages and attachment units.
     pub restriction: usize,
+    /// Authored restricted expressions.
+    pub declared_restriction: usize,
 }
 
 impl OriginStatistics {
     /// Returns the sum of all origin categories.
     pub const fn total(&self) -> usize {
-        self.r#type + self.start + self.helper + self.helper_copy + self.restriction
+        self.r#type
+            + self.start
+            + self.helper
+            + self.helper_copy
+            + self.restriction
+            + self.declared_restriction
     }
 
     /// Increments one origin category.
@@ -73,6 +83,7 @@ impl OriginStatistics {
             LrOrigin::Helper => self.helper += 1,
             LrOrigin::HelperCopy => self.helper_copy += 1,
             LrOrigin::Restriction => self.restriction += 1,
+            LrOrigin::DeclaredRestriction => self.declared_restriction += 1,
         }
     }
 }
@@ -432,6 +443,7 @@ fn origin(origin: &NonterminalOrigin) -> LrOrigin {
         NonterminalOrigin::Helper => LrOrigin::Helper,
         NonterminalOrigin::HelperCopy { .. } => LrOrigin::HelperCopy,
         NonterminalOrigin::Restriction { .. } => LrOrigin::Restriction,
+        NonterminalOrigin::DeclaredRestriction { .. } => LrOrigin::DeclaredRestriction,
     }
 }
 

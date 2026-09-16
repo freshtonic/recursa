@@ -704,6 +704,10 @@ pub(crate) struct MaterializedNodeUse {
     pub(crate) application: MaterializedApplicationId,
     /// Supplies the lifetimes needed to materialize a concrete grammar application.
     pub(crate) lifetimes: Vec<syn::Lifetime>,
+    /// The restricted expression this use names (`docs/declared-precedence.md`, "Restricted
+    /// expressions"). The application stays the base's, because the restriction's rules build
+    /// the base's value and its name is no type; only the grammar symbol differs.
+    pub(crate) restriction: Option<crate::RestrictionId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -971,6 +975,13 @@ struct Materializer {
     diagnostics: Vec<MaterializationDiagnostic>,
     /// Supplies the active aliases needed to materialize a concrete grammar application.
     active_aliases: Vec<TypeAliasId>,
+    /// Restricted expressions in the order a site first parsed its target through one, which is
+    /// the order their [`RestrictionId`](crate::RestrictionId)s and normalized descriptions take.
+    /// A restriction no site names generates no nonterminal and is absent here.
+    used_restrictions: Vec<TypeAliasId>,
+    /// The base application each used restriction restricts, recorded when it is first parsed
+    /// through, so its normalized description names the exact type its rules construct.
+    restriction_bases: BTreeMap<TypeAliasId, MaterializedApplicationId>,
     /// Supplies the active applications needed to materialize a concrete grammar application.
     active_applications: Vec<ApplicationKey>,
     /// Reuses compiled regular-language products across Pretty-boundary checks in this run.
@@ -1115,6 +1126,8 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
         framing: None,
         diagnostics: Vec::new(),
         active_aliases: Vec::new(),
+        used_restrictions: Vec::new(),
+        restriction_bases: BTreeMap::new(),
         active_applications: Vec::new(),
         pretty_boundary_prover: RefCell::new(pretty_boundary_prover),
         pretty_lexical_catalog,
@@ -2266,6 +2279,7 @@ impl Materializer {
         let environment = EvaluationEnvironment { types, lifetimes };
         let current_use = MaterializedNodeUse {
             application: id,
+            restriction: None,
             lifetimes: node
                 .generics
                 .params
@@ -2900,6 +2914,25 @@ impl Materializer {
             .expect("source-model field identity belongs to resolved grammar")
     }
 
+    /// Assigns one restricted expression its dense identity on first use, and records the base
+    /// application its rules construct.
+    fn restriction_id(
+        &mut self,
+        alias: TypeAliasId,
+        base: MaterializedApplicationId,
+    ) -> crate::RestrictionId {
+        if let Some(index) = self
+            .used_restrictions
+            .iter()
+            .position(|candidate| *candidate == alias)
+        {
+            return crate::RestrictionId::new(index as u32);
+        }
+        self.used_restrictions.push(alias);
+        self.restriction_bases.insert(alias, base);
+        crate::RestrictionId::new((self.used_restrictions.len() - 1) as u32)
+    }
+
     /// Closes a resolved semantic type under the current generic substitution.
     fn evaluate_type(
         &mut self,
@@ -3022,6 +3055,7 @@ impl Materializer {
                             closed: ClosedType::Node(MaterializedNodeUse {
                                 application,
                                 lifetimes,
+                                restriction: None,
                             }),
                             trace,
                         })
@@ -3286,11 +3320,17 @@ impl Materializer {
         let evaluated = self.evaluate_type(target, current_application, &alias_environment);
         let popped = self.active_aliases.pop();
         debug_assert_eq!(popped, Some(alias));
+        let restricted = declaration.restriction.is_some();
         evaluated.map(|mut evaluated| {
             let mut steps = prefix;
             steps.push(MaterializationTraceStep::Alias(alias));
             steps.extend(evaluated.trace);
             evaluated.trace = steps;
+            if restricted && let ClosedType::Node(node) = &mut evaluated.closed {
+                // The site parses the base through this restriction: the outermost restriction
+                // of a chain wins, because it is the nonterminal the site's symbol names.
+                node.restriction = Some(self.restriction_id(alias, node.application));
+            }
             evaluated
         })
     }
@@ -4007,6 +4047,7 @@ impl Materializer {
             &projected_fields,
         );
         self.project_pratt_exclusions(&mut grammar, &projected_fields, &variant_correlations);
+        self.project_restrictions(&mut grammar, terminal_type_count, &variant_correlations);
         self.project_lr_conflict_resolutions(
             &mut grammar,
             &reservations.applications,
@@ -4233,7 +4274,8 @@ impl Materializer {
             ),
             Terminal::ContentToken(token) => content_types[&token],
         };
-        let mut semantic = ParseSite::new(unit.id, target, declaration, ContainerShape::Direct);
+        let mut semantic = ParseSite::new(unit.id, target, declaration, ContainerShape::Direct)
+            .with_restriction(closed_restriction(&unit.ty));
         if is_recursive_pratt_operand(&unit.ty, unit.application) {
             semantic = semantic.with_min_bp(unit.recursive_min_bp);
         }
@@ -4444,6 +4486,52 @@ impl Materializer {
     /// reports them, and the build fails before analysis facts are consumed. The filter
     /// names led variants only today; once a field can also exclude NUD atoms (#122), the
     /// same pass should record them so FIRST-based overlaps subtract them as well.
+    /// Publishes one normalized description per restricted expression a site parses through, in
+    /// the dense order [`Materializer::restriction_id`] assigned (`docs/declared-precedence.md`,
+    /// "Restricted expressions").
+    ///
+    /// Each description names the base type its rules construct — the application the alias
+    /// resolved to, which is the root base of a chain of restrictions — and the admitted
+    /// alternatives of that type, as the declarations the base's own body projection created.
+    fn project_restrictions(
+        &self,
+        grammar: &mut GrammarDescription,
+        terminal_type_count: usize,
+        variants: &[VariantAlternativeCorrelation],
+    ) {
+        for alias in &self.used_restrictions {
+            let restriction = self
+                .source_model()
+                .restrictions
+                .iter()
+                .find(|restriction| restriction.alias == *alias)
+                .expect("a parsed restriction is a validated source-model restriction");
+            let base = self.restriction_bases[alias];
+            let admitted = restriction
+                .variants
+                .iter()
+                .filter_map(|variant| {
+                    variants
+                        .iter()
+                        .find(|correlation| {
+                            correlation.application == base && correlation.variant == *variant
+                        })
+                        .map(|correlation| correlation.lowered)
+                })
+                .collect();
+            grammar.restrictions.push(crate::RestrictionDescription {
+                name: restriction.name.clone(),
+                base: TypeId::new(
+                    (terminal_type_count + base.index())
+                        .try_into()
+                        .expect("normalized type ID overflow"),
+                ),
+                variants: admitted,
+            });
+        }
+    }
+
+    /// Records each Pratt exclusion site's excluded variants on its normalized parse site.
     fn project_pratt_exclusions(
         &self,
         grammar: &mut GrammarDescription,
@@ -4717,7 +4805,8 @@ impl Materializer {
                     let target = attachment.as_ref().map_or(semantic_target, |_| {
                         attachment_types[&(application.id, *field)]
                     });
-                    let mut parse_site = ParseSite::new(owner, target, declaration, container);
+                    let mut parse_site = ParseSite::new(owner, target, declaration, container)
+                        .with_restriction(closed_restriction(ty));
                     if is_recursive_pratt_operand(ty, application.id) {
                         parse_site = parse_site.with_min_bp(recursive_min_bp);
                     }
@@ -4934,6 +5023,20 @@ fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
 }
 
 /// Derives the terminal and container while materializing grammar applications and container shapes.
+/// The restricted expression one closed type parses its terminal through, looking past every
+/// container layer to the node use that names it.
+fn closed_restriction(ty: &ClosedType) -> Option<crate::RestrictionId> {
+    match ty {
+        ClosedType::Node(node) => node.restriction,
+        ClosedType::ContentToken(_) => None,
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => closed_restriction(inner),
+    }
+}
+
+/// Splits one closed type into the terminal it reaches and the container shape around it.
 fn terminal_and_container(
     ty: &ClosedType,
     separator: Option<RepeatSeparator>,
