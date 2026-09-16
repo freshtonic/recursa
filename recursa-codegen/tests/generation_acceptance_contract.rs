@@ -13,10 +13,10 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
     let document = fs::read_to_string(matrix_path()).expect("read generation acceptance contract");
     let rows = matrix_rows(&document);
 
-    assert_eq!(rows.len(), 13);
+    assert_eq!(rows.len(), 11);
     assert_eq!(
         rows.values().filter(|row| row.status == "Green").count(),
-        13,
+        11,
     );
     assert_eq!(
         rows.values().filter(|row| row.status == "Pending").count(),
@@ -47,9 +47,7 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
         BTreeSet::from([
             "M4-GENERATED-CONTAINERS",
             "M4-DIAGRAM-DECL-LOCAL",
-            "M4-PRATT-DIAGRAM",
             "M4-LEGACY-RUNTIME-TOY",
-            "M4-LEGACY-RUNTIME-ARITH",
             "M4-LEGACY-RUNTIME-JSON",
             "M4-LEGACY-RUNTIME-SQL",
             "M4-LEGACY-RUNTIME-OPTQ",

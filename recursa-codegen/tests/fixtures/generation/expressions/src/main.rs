@@ -33,6 +33,10 @@ const ACCEPTED: &[&str] = &[
     "a like b",
     "a like b and c",
     "a like b + c escape d",
+    // The runtime `tail` flag: an operator rule is a left-recursive continuation of its own
+    // Node, so its reduce leaves the following token to whatever encloses the expression and
+    // the parsed prefix stays acceptable. `a + b` is accepted with input left over.
+    "a + b c",
 ];
 
 /// Inputs the parser rejects, with the reason each one is a decision of the declaration.
@@ -46,6 +50,8 @@ const REJECTED: &[&str] = &[
     // The restricted operand admits no boolean `AND`, so this `and` closes the clause and the
     // second one has no right operand.
     "a between b and",
+    // The runtime `tail` flag again: an atom is a one-token alternative of an enum Node, whose
+    // reduce does end the root, so a token outside the root FOLLOW is an error.
     "1 2",
 ];
 

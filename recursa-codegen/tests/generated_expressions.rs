@@ -5,7 +5,7 @@
 //! earns.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -89,6 +89,18 @@ fn the_expressions_fixture_decides_every_operator_by_its_declared_level() {
     );
     assert!(
         lines.contains("err \"a between b and\" => code=RCA4101 kind=UnexpectedEof"),
+        "{lines}"
+    );
+
+    // The runtime `tail` flag. An operator rule is a left-recursive continuation of its own
+    // Node and clears the flag, so a token outside the root FOLLOW ends the parse instead of
+    // failing it; a one-token atom sets the flag, so the same token is an error there.
+    assert!(
+        lines.contains("ok \"a + b c\" => add(a, b) eof=false\n"),
+        "{lines}"
+    );
+    assert!(
+        lines.contains("err \"1 2\" => code=RCA4100 kind=UnexpectedToken"),
         "{lines}"
     );
 }
@@ -208,6 +220,153 @@ fn lint_fixture(package: &TempDir) -> Output {
         .env("CARGO_TARGET_DIR", package.path().join("target"))
         .output()
         .expect("lint the generated grammar fixture")
+}
+
+#[test]
+fn expression_variants_render_as_the_rules_the_author_wrote() {
+    // A variant of an expression Node is an ordinary enum alternative, so its diagram is its
+    // rule under its own name. No `atom`/`prefix`/`infix`/`postfix` role label and no binding
+    // power is rendered, and the attachment units that once carried an operator are inlined,
+    // so no private `__recursa_attachment` nonterminal reaches the diagram either.
+    let package = scaffold(FIXTURE, None);
+    configure_diagrams(&package);
+    let output = document_fixture(&package);
+    assert_success(&output);
+
+    let expression = rendered_rustdoc(&package)
+        .into_iter()
+        .find(|(path, source)| {
+            path.ends_with("grammar/enum.Expr.html") && source.contains("RECURSA_NODE_DIAGRAM")
+        })
+        .expect("the expression Node has a documentation page");
+    let diagram = diagram_svg(&expression.1);
+
+    for expected in [
+        // The author wrote `#[tok(MINUS, this)] boxed!(Self)`; the rule is `- Expr`.
+        vec!["Negate", "-", "Expr"],
+        vec!["Factorial", "Expr", "!"],
+        vec!["Power", "Expr", "^", "Expr"],
+        vec!["Parenthesized", "(", "Expr", ")"],
+        // A restricted operand renders as the base type its rules construct.
+        vec!["Between", "Expr", "between", "Expr", "and", "Expr"],
+    ] {
+        assert!(
+            contains_text_sequence(diagram, &expected),
+            "{expected:?} is the rule the author wrote:\n{}",
+            expression.1,
+        );
+    }
+    for role in ["atom", "prefix", "infix", "postfix", "bp=", "lbp=", "rbp="] {
+        assert!(
+            !diagram.contains(role),
+            "a variant renders as its rule, with no `{role}` label:\n{}",
+            expression.1,
+        );
+    }
+    assert!(
+        !expression.1.contains("__recursa_attachment"),
+        "an inlined attachment unit never reaches a diagram:\n{}",
+        expression.1,
+    );
+}
+
+/// Selects the one SVG of a rendered documentation page.
+fn diagram_svg(document: &str) -> &str {
+    let start = document.find("<svg ").expect("diagram SVG start");
+    let end = document[start..]
+        .find("</svg>")
+        .map(|offset| start + offset + "</svg>".len())
+        .expect("diagram SVG end");
+    &document[start..end]
+}
+
+/// Reports whether the SVG's text nodes contain `expected` as a consecutive run.
+fn contains_text_sequence(svg: &str, expected: &[&str]) -> bool {
+    let document = roxmltree::Document::parse(svg).expect("diagram is valid XML");
+    let text = document
+        .descendants()
+        .filter(|node| node.has_tag_name("text"))
+        .filter_map(|node| node.text())
+        .collect::<Vec<_>>();
+    text.windows(expected.len())
+        .any(|window| window == expected)
+}
+
+/// Requests diagrams from the scaffolded fixture and selects its diagrams-capable lock.
+fn configure_diagrams(package: &TempDir) {
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read the scaffolded grammar");
+    fs::write(
+        grammar,
+        source.replace(
+            "    module = crate::grammar,",
+            "    module = crate::grammar,\n    diagrams,",
+        ),
+    )
+    .expect("request diagrams");
+
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read the scaffolded manifest");
+    fs::write(
+        manifest,
+        source.replace(
+            "features = [\"spans\"]",
+            "features = [\"spans\", \"diagrams\"]",
+        ),
+    )
+    .expect("enable the diagram capability");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(FIXTURE)
+            .join("Cargo.lock"),
+        package.path().join("Cargo.lock"),
+    )
+    .expect("select the diagrams-capable fixture lock");
+}
+
+/// Renders the scaffolded fixture's documentation.
+fn document_fixture(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("doc")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--quiet")
+        .arg("--no-deps")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
+        .env("CARGO_TARGET_DIR", package.path().join("target"))
+        .output()
+        .expect("render the generated grammar fixture documentation")
+}
+
+/// Reads every rendered documentation page the fixture produced.
+fn rendered_rustdoc(package: &TempDir) -> Vec<(PathBuf, String)> {
+    let mut rendered = Vec::new();
+    collect_rendered_rustdoc(&package.path().join("target/doc"), &mut rendered);
+    rendered
+}
+
+/// Walks `root` for rendered documentation pages.
+fn collect_rendered_rustdoc(root: &Path, rendered: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rendered_rustdoc(&path, rendered);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "html")
+        {
+            let source = fs::read_to_string(&path).expect("read a rendered documentation page");
+            rendered.push((path, source));
+        }
+    }
 }
 
 /// Copies the fixture package into a temporary directory; `grammar` replaces its grammar file.

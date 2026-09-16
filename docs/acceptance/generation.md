@@ -11,15 +11,22 @@ The legacy-case inventory was extracted from `recursa-spike` revision
 [`legacy-identities.tsv`](legacy-identities.tsv); their successor mappings are
 in [`legacy-case-ledger.tsv`](legacy-case-ledger.tsv).
 
+`M4-PRATT-DIAGRAM` and `M4-LEGACY-RUNTIME-ARITH` were retired with the Pratt
+authoring surface ([`../declared-precedence.md`](../declared-precedence.md)).
+Neither claim survives the removal: a variant of an expression Node renders as
+the rule its author wrote, with no role label and no binding power, and the
+arithmetic runtime cases are decided by the `precedence { ... }` declaration.
+Their identities are remapped in the ledger to the `expressions` example's
+behaviour tests and the `generated_expressions` fixture's diagram test. Retired
+gate IDs are not reused.
+
 ## Matrix
 
 | Stable ID | Scope | Executable evidence | Expected result | Status |
 | --- | --- | --- | --- | --- |
 | M4-GENERATED-CONTAINERS | Removed combinator API | `cargo test -p recursa-codegen --test generated_repetitions --locked` | Generated Option, Box, Vec, Vec1, separator, delimiter, and cardinality behavior supersedes manual combinators. | Green |
 | M4-DIAGRAM-DECL-LOCAL | Removed diagram depth, SVG, lookup, and path APIs | `cargo test -p recursa-codegen --test generated_compound_nodes diagrams_are_published_in_aggregate_and_declaration_local_rustdoc --locked` | Frozen grammar plans produce aggregate and declaration-local documentation without restoring public filesystem or SVG contracts. | Green |
-| M4-PRATT-DIAGRAM | Pratt and auxiliary diagram structure | `cargo test -p recursa-codegen --test generated_pratt pratt_diagrams_render_frozen_roles_binding_powers_and_operands --locked` | Pratt roles, binding powers, recursive operands, and grouping syntax render from the frozen plan. | Green |
 | M4-LEGACY-RUNTIME-TOY | Four toy runtime cases | `cargo test -p recursa-codegen --test generated_legacy_grammars all_six_frozen_legacy_grammar_suites_pass --locked` | Explicit EOF, rejection, AST/presence, and lexical behavior have named executable successor cases. | Green |
-| M4-LEGACY-RUNTIME-ARITH | Sixteen arithmetic runtime cases | `cargo test -p recursa-codegen --test generated_legacy_grammars all_six_frozen_legacy_grammar_suites_pass --locked` | Pratt AST shape, precedence, associativity, errors, exact token text, lexing, and explicit EOF have named executable successor cases. | Green |
 | M4-LEGACY-RUNTIME-JSON | Twenty-four JSON runtime cases | `cargo test -p recursa-codegen --test generated_legacy_grammars all_six_frozen_legacy_grammar_suites_pass --locked` | JSON AST shape, accepted and rejected lexical forms, exact token text, and explicit EOF have named executable successor cases. | Green |
 | M4-LEGACY-RUNTIME-SQL | Eighteen SQL runtime cases | `cargo test -p recursa-codegen --test generated_legacy_grammars all_six_frozen_legacy_grammar_suites_pass --locked` | All twelve statement variants, errors, exact content, lexing, and explicit EOF have named executable successor cases. | Green |
 | M4-LEGACY-RUNTIME-OPTQ | Nine optional-query runtime cases | `cargo test -p recursa-codegen --test generated_legacy_grammars all_six_frozen_legacy_grammar_suites_pass --locked` | Qualified and unqualified LL(2) paths, failures, content, and explicit EOF have named executable successor cases. | Green |
