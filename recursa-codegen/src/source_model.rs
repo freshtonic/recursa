@@ -11794,7 +11794,7 @@ recursa::ast_node! {
             emitted_codes,
             [
                 "RCA3102", "RCA3103", "RCA3105", "RCA3114", "RCA3106", "RCA3104", "RCA3113",
-                "RCA3115", "RCA3112",
+                "RCA3140", "RCA3112",
             ],
         );
 
@@ -11964,39 +11964,6 @@ recursa::ast_node! {
                 .collect::<Vec<_>>(),
             ["IF", "ELSE", "ELSE", "IF"],
         );
-    }
-
-    #[test]
-    fn infix_tokens_precede_the_entire_second_field_attachment() {
-        let report = model(
-            r#"recursa::grammar! { module = crate }
-
-recursa::ast_node! {
-
-    enum Expr {
-        Infix(boxed!(Expr), #[tok("+", this, "AND")] boxed!(Expr)),
-    }
-}
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = completed(report);
-        let rendered = model.nodes[0].variants()[0]
-            .elements
-            .iter()
-            .map(|element| match element {
-                super::GrammarElement::SemanticField { .. } => "field",
-                super::GrammarElement::FixedToken { token_use, .. } => {
-                    let definition = model.token_uses[token_use.index()].definition;
-                    model.token_definitions[definition.index()].name.as_str()
-                }
-                super::GrammarElement::OptionalFixedTokenGroup { .. } => {
-                    unreachable!("fixture contains only required syntax")
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(rendered, ["field", "+", "AND", "field"]);
     }
 
     #[test]

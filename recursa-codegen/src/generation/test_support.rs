@@ -1493,34 +1493,25 @@ pub(super) fn every_typed_pretty_declared_decision_is_part_of_family_authority()
         *next = PrettyDeclaredNext::None;
     });
     reject(package.path(), plan.clone(), |plan| {
-        let fixed = behavior(plan)
+        let attached = behavior(plan)
             .variants
             .iter_mut()
             .flatten()
-            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
-            .expect("fixed Pretty element");
-        let PrettyElementBehavior::Fixed {
-            soft_break_before, ..
-        } = fixed
-        else {
-            unreachable!()
+            .find_map(|element| match element {
+                PrettyElementBehavior::Semantic {
+                    projection:
+                        PrettySemanticProjection::Direct {
+                            attachment: Some(attachment),
+                            ..
+                        },
+                } => attachment.before.first_mut(),
+                _ => None,
+            })
+            .expect("an operator token attached before a semantic operand");
+        let PrettyAttachedSyntaxBehavior::Required(fixed) = attached else {
+            unreachable!("the expressions fixture attaches required operator syntax")
         };
-        *soft_break_before = !*soft_break_before;
-    });
-    reject(package.path(), plan.clone(), |plan| {
-        let fixed = behavior(plan)
-            .variants
-            .iter_mut()
-            .flatten()
-            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
-            .expect("fixed Pretty element");
-        let PrettyElementBehavior::Fixed {
-            soft_break_after, ..
-        } = fixed
-        else {
-            unreachable!()
-        };
-        *soft_break_after = !*soft_break_after;
+        fixed.spelling.push('!');
     });
     reject(package.path(), plan, |plan| {
         let semantic = behavior(plan)

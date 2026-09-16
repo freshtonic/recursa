@@ -1,5 +1,5 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/toy.rs description=src/descriptions/toy.rs
-transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality
 recursa-semantic-projection-v1
 grammar edition=Rust2024 anchor=toy equivalence=Sensitive
 
@@ -33,8 +33,8 @@ type fixed:( = token(atom=fixed:(, text=any)
 type fixed:) = token(atom=fixed:), text=any)
 type fixed:, = token(atom=fixed:,, text=any)
 type fixed:; = token(atom=fixed:;, text=any)
-type toy::SemicolonStmt = sequence(toy::SemicolonStmt::element0:toy::SemicolonStmt target=fixed:; cardinality=one separator=- min_bp=0)
-type toy::IdentHolder = sequence(toy::IdentHolder::element0:toy::IdentHolder target=Ident cardinality=one separator=- min_bp=0)
+type toy::SemicolonStmt = sequence(toy::SemicolonStmt::element0:toy::SemicolonStmt target=fixed:; cardinality=one separator=-)
+type toy::IdentHolder = sequence(toy::IdentHolder::element0:toy::IdentHolder target=Ident cardinality=one separator=-)
 
 [lowering-correlations]
 field toy::IdentHolder::ident -> parse-site(toy::IdentHolder::element0)

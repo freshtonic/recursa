@@ -337,7 +337,7 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
     ProducerEvidence {
         codes: &[
             "RCA3101", "RCA3102", "RCA3103", "RCA3104", "RCA3105", "RCA3106", "RCA3112", "RCA3113",
-            "RCA3114", "RCA3115",
+            "RCA3114", "RCA3140",
         ],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
@@ -371,13 +371,6 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/source_analysis_tests.rs",
         test_name: "invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics",
         command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA3130"],
-        producer_source: "src/source_analysis.rs",
-        test_source: "src/source_analysis_tests.rs",
-        test_name: "invalid_pratt_extension_filter_reports_source_analysis_diagnostic",
-        command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_pratt_extension_filter_reports_source_analysis_diagnostic --locked",
     },
     ProducerEvidence {
         codes: &["RCA3131"],
@@ -452,20 +445,6 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen materialization::tests::rejects_open_unsupported_cyclic_and_invalid_closed_types_before_semantic_analysis --locked",
     },
     ProducerEvidence {
-        codes: &["RCA3209"],
-        producer_source: "src/source_analysis.rs",
-        test_source: "src/materialization.rs",
-        test_name: "rejects_missing_unboxed_and_foreign_pratt_lhs_fields",
-        command: "cargo test -p recursa-codegen materialization::tests::rejects_missing_unboxed_and_foreign_pratt_lhs_fields --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA3212"],
-        producer_source: "src/source_analysis.rs",
-        test_source: "src/materialization.rs",
-        test_name: "rejects_an_unresolvable_or_unsupported_pratt_exclusion",
-        command: "cargo test -p recursa-codegen materialization::tests::rejects_an_unresolvable_or_unsupported_pratt_exclusion --locked",
-    },
-    ProducerEvidence {
         codes: &["RCA0400"],
         producer_source: "src/lr/report.rs",
         test_source: "src/lr.rs",
@@ -478,13 +457,6 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/lr.rs",
         test_name: "lalr_merge_artefacts_report_rca0401_with_an_rca0405_note",
         command: "cargo test -p recursa-codegen lr::tests::lalr_merge_artefacts_report_rca0401_with_an_rca0405_note --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA0402"],
-        producer_source: "src/lr/lowering.rs",
-        test_source: "src/lr.rs",
-        test_name: "unrepresentable_binding_powers_are_rejected_with_rca0402",
-        command: "cargo test -p recursa-codegen lr::tests::unrepresentable_binding_powers_are_rejected_with_rca0402 --locked",
     },
     ProducerEvidence {
         codes: &["RCA0403"],
@@ -829,7 +801,8 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
             .collect::<Vec<_>>(),
         [
             "RCA0001", "RCA0002", "RCA0100", "RCA0200", "RCA0201", "RCA0202", "RCA0203", "RCA0300",
-            "RCA0301", "RCA0302", "RCA0303", "RCA0404", "RCA3117",
+            "RCA0301", "RCA0302", "RCA0303", "RCA0402", "RCA0404", "RCA3115", "RCA3117", "RCA3130",
+            "RCA3209", "RCA3212",
         ],
         "retired diagnostic assignments remain reserved and cannot be reused",
     );
