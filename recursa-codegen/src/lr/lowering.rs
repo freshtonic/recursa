@@ -32,6 +32,19 @@
 //!
 //! Helpers carry on their rules everything a reduce action needs to name the value it builds:
 //! the element type and its `Box` layers, or the optional's content.
+//!
+//! # Attachment units
+//!
+//! A semantic field with attached fixed tokens materializes as a private attachment-unit
+//! sequence type (`docs/declared-precedence.md`, "Attachment units inline"). A cardinality-one
+//! attachment (`Direct` or boxed, never `Option<...>` or a repetition element) that does not
+//! wrap a Pratt variant's own site lowers inline into its owner's rule instead of into that
+//! private nonterminal: the owner's reduce takes the field's value from its right-hand-side
+//! position, as a Pratt LED reduce already does for its implicit left operand. Every other
+//! attachment unit — one behind a Pratt variant's site, an optional attached-token field
+//! (cardinality zero-or-one), or one per occurrence of a repeated element — keeps its private
+//! nonterminal, unchanged. See [`inlinable_attachment_units`] for the exact eligibility rule and
+//! [`Lowering::inline_attachment`] for the lowering.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -394,16 +407,19 @@ enum OptionalInner {
 /// choices are inlined.
 #[derive(Clone, Debug)]
 enum SiteLowering {
-    /// A required site: one symbol, or, for an inlined cardinality-one attachment unit (see
-    /// [`Lowering::inline_attachment`]), the attachment's own fixed-token and operand symbols
-    /// in right-hand-side order.
+    /// A required site: one symbol.
     Required {
-        /// The site's symbol, or symbols when an attachment unit inlined.
+        /// The site's symbol.
         symbols: Vec<Symbol>,
-        /// The site's fold: a fixed token's leaf, or a group around any other target (or the
-        /// inlined attachment's symbols).
+        /// The site's fold: a fixed token's leaf, or a group around any other target.
         kind: SiteKind,
     },
+    /// A cardinality-one attachment unit inlined into its owner's rule (see
+    /// [`Lowering::inline_attachment`]): one alternative per combination of the attachment's own
+    /// interior choices, each already carrying the attachment's own fixed-token and operand
+    /// symbols and the `Node`-kind fold that reproduces the removed private nonterminal's own
+    /// `Node` fold exactly.
+    InlinedAttachment(Vec<Alternative>),
     /// An erased optional group or a presence: inlined as its terminals or a helper.
     FixedOptional {
         /// The fixed-token symbols of the atomic sequence.
@@ -456,6 +472,7 @@ impl SiteLowering {
         };
         match self {
             Self::Required { .. } => 1,
+            Self::InlinedAttachment(combinations) => combinations.len(),
             Self::FixedOptional { inline, .. } => 1 + usize::from(*inline),
             Self::ValuedOptional { inline: false, .. } => 1,
             Self::ValuedOptional {
@@ -545,6 +562,12 @@ struct Alternative {
     kind: SiteKind,
     /// The policy of the site's fold.
     policy: FoldPolicy,
+    /// This alternative's own sub-sites when `kind` is [`SiteKind::Attachment`] (an inlined
+    /// attachment unit's own `Node` fold, reproduced in place of its removed private rule);
+    /// empty otherwise. Each nested site's `start` is relative to this alternative's own
+    /// `symbols`, not yet offset by where the owner's rule places them (see
+    /// [`Lowering::lower_alternative`]).
+    nested: Vec<FoldSite>,
 }
 
 /// What the rules of one alternative set build.
@@ -1622,11 +1645,8 @@ impl<'a> Lowering<'a> {
             let mut forms = Vec::with_capacity(alternatives.len());
             let mut fold_sites = Vec::with_capacity(alternatives.len() + prefix.len());
             // The implicit left operand of a Pratt rule is grouped like a direct child.
-            fold_sites.extend((0..prefix.len()).map(|position| FoldSite {
-                start: position as u32,
-                len: 1,
-                kind: SiteKind::Group,
-                policy: FoldPolicy::Inherited,
+            fold_sites.extend((0..prefix.len()).map(|position| {
+                FoldSite::flat(position as u32, 1, SiteKind::Group, FoldPolicy::Inherited)
             }));
             for (position, ((site_id, site), choice)) in
                 sites.iter().zip(&alternatives).zip(&selection).enumerate()
@@ -1651,11 +1671,24 @@ impl<'a> Lowering<'a> {
                     present: alternative.present,
                     inlined: alternative.inlined,
                 });
-                fold_sites.push(FoldSite {
-                    start: rhs.len() as u32,
-                    len: alternative.symbols.len() as u32,
-                    kind: site_kind,
-                    policy: alternative.policy,
+                let start = rhs.len() as u32;
+                let len = alternative.symbols.len() as u32;
+                fold_sites.push(if site_kind == SiteKind::Attachment {
+                    // An inlined attachment unit: reproduce its own removed `Node` fold inside
+                    // this site's group, offsetting its nested sites' positions from "relative
+                    // to this alternative's own symbols" to "relative to the owner's popped
+                    // entries", now that the owner's rule carries them directly.
+                    let nested = alternative
+                        .nested
+                        .iter()
+                        .map(|site| FoldSite {
+                            start: site.start + start,
+                            ..site.clone()
+                        })
+                        .collect();
+                    FoldSite::attachment(start, len, alternative.policy, nested)
+                } else {
+                    FoldSite::flat(start, len, site_kind, alternative.policy)
                 });
                 rhs.extend_from_slice(&alternative.symbols);
             }
@@ -1806,27 +1839,75 @@ impl<'a> Lowering<'a> {
         attachment_wraps_pratt_operand(self.grammar, self.roles, unit, pratt)
     }
 
-    /// Lowers a cardinality-one attachment unit inline: the symbols of its own fixed-token and
-    /// semantic-operand sites, in right-hand-side order, become one `Group`-kind alternative in
-    /// the owner's rule instead of a separate attachment nonterminal (`docs/declared-
-    /// precedence.md`, "Attachment units inline"). Every entry is popped with `FoldPolicy::
-    /// Inherited`, exactly as the removed attachment rule's own sites were, so a `Group` fold
-    /// over them builds the same children and span the removed rule's `Node` fold did: the
-    /// occurrence for the field is unchanged, just built by the owner's own reduce instead of a
-    /// nested one. `unit`'s own sites never carry a Pratt exclusion (inlining is only chosen
-    /// for a non-Pratt attachment, see [`inlinable_attachment_units`]), so each lowers with no
-    /// operand context.
+    /// Lowers a cardinality-one attachment unit inline: instead of the attachment's own private
+    /// nonterminal and rule (`docs/declared-precedence.md`, "Attachment units inline"), returns
+    /// one alternative per combination of the attachment's own interior choices (the erased
+    /// optional fixed-token groups inside it), each a [`SiteKind::Attachment`] alternative whose
+    /// `nested` sites are exactly the `FoldSite`s the attachment's own removed `Node` fold would
+    /// have built: one nested site per one of `unit`'s own sites, with the same kind
+    /// (`Leaf`/`Group`/`Through`/...) and policy (an erased group still keeps
+    /// [`FoldPolicy::Mandatory`]) [`Self::alternatives`] would have given it as a top-level
+    /// fold. The owner folds this field with one [`SiteKind::Attachment`] `FoldSite` over that
+    /// nested list, which builds the same group around the same node the un-inlined lowering
+    /// built — the owner's own semantic site was a [`SiteKind::Group`] over the single entry the
+    /// attachment nonterminal left — so the field's occurrence is unchanged; only the separate
+    /// reduce that used to build it is gone. `unit`'s own sites never carry a Pratt exclusion
+    /// (inlining is only chosen for a non-Pratt attachment, see
+    /// [`inlinable_attachment_units`]), so each lowers with no operand context.
     fn inline_attachment(&mut self, unit: TypeId) -> SiteLowering {
         let TypeShape::Sequence { sites } = self.grammar.types[unit.index()].shape.clone() else {
             unreachable!("an attachment unit is always a sequence type")
         };
-        let symbols: Vec<Symbol> = sites
+        let pass_through = self.roles.attachment_units.get(&unit).copied();
+        let per_site_alternatives: Vec<Vec<Alternative>> = sites
             .iter()
-            .map(|site| self.site_target_symbol(*site, None, false))
+            .map(|site| {
+                let lowering = self.site_lowering(*site, None, false);
+                self.alternatives(&lowering)
+            })
             .collect();
-        SiteLowering::Required {
-            symbols,
-            kind: SiteKind::Group,
+        let mut combinations = Vec::new();
+        let mut selection = vec![0_usize; per_site_alternatives.len()];
+        loop {
+            let mut symbols = Vec::new();
+            let mut nested = Vec::with_capacity(sites.len());
+            for ((site_id, site_alternatives), choice) in
+                sites.iter().zip(&per_site_alternatives).zip(&selection)
+            {
+                let alternative = &site_alternatives[*choice];
+                let kind = if pass_through == Some(*site_id) {
+                    SiteKind::Through
+                } else {
+                    alternative.kind
+                };
+                nested.push(FoldSite::flat(
+                    symbols.len() as u32,
+                    alternative.symbols.len() as u32,
+                    kind,
+                    alternative.policy,
+                ));
+                symbols.extend_from_slice(&alternative.symbols);
+            }
+            combinations.push(Alternative {
+                symbols,
+                present: true,
+                inlined: false,
+                kind: SiteKind::Attachment,
+                policy: FoldPolicy::Inherited,
+                nested,
+            });
+            let mut position = selection.len();
+            loop {
+                if position == 0 {
+                    return SiteLowering::InlinedAttachment(combinations);
+                }
+                position -= 1;
+                selection[position] += 1;
+                if selection[position] < per_site_alternatives[position].len() {
+                    break;
+                }
+                selection[position] = 0;
+            }
         }
     }
 
@@ -1989,6 +2070,7 @@ impl<'a> Lowering<'a> {
                 inlined,
                 kind,
                 policy,
+                nested: Vec::new(),
             };
         let absent = |kind: SiteKind| Alternative {
             symbols: Vec::new(),
@@ -1996,12 +2078,14 @@ impl<'a> Lowering<'a> {
             inlined: true,
             kind,
             policy: FoldPolicy::Inherited,
+            nested: Vec::new(),
         };
         let inherited = FoldPolicy::Inherited;
         match lowering.clone() {
             SiteLowering::Required { symbols, kind } => {
                 vec![present(symbols, false, kind, inherited)]
             }
+            SiteLowering::InlinedAttachment(combinations) => combinations,
             SiteLowering::FixedOptional {
                 tokens,
                 presence,

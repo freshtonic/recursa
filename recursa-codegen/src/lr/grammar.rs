@@ -313,6 +313,11 @@ pub enum SiteKind {
     Presence,
     /// An inlined repetition, present or absent, over the list entry and any trailing separator.
     Repetition,
+    /// An inlined cardinality-one attachment unit (`docs/declared-precedence.md`, "Attachment
+    /// units inline"): the group this site builds around the node the removed private
+    /// attachment nonterminal's own `Node` fold built, over the site's own [`FoldSite::nested`]
+    /// sites, so inlining the rule leaves the field's occurrence unchanged.
+    Attachment,
 }
 
 impl SiteKind {
@@ -325,13 +330,22 @@ impl SiteKind {
             Self::Absent => 3,
             Self::Presence => 4,
             Self::Repetition => 5,
+            Self::Attachment => 6,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 /// One site of a node fold: the popped entries it occupies (in right-hand-side order, so a
 /// Pratt rule's implicit left operand is the first site) and the shape it builds.
+///
+/// `start`/`len` index the rule's popped entries for every kind, [`SiteKind::Attachment`]
+/// included: an inlined attachment unit's fixed tokens and operand are popped entries of the
+/// owner's own rule, so the site occupies them exactly as the one attachment-nonterminal entry
+/// it replaces did. `nested` is empty except for an `Attachment` site, where it carries the
+/// sites of the removed attachment rule's own `Node` fold, each indexing the same popped
+/// entries. One level of nesting is all an inlined attachment ever needs, so a nested site is
+/// never itself an `Attachment` site.
 pub struct FoldSite {
     /// Index of the site's first entry among the rule's popped entries.
     pub start: u32,
@@ -341,6 +355,53 @@ pub struct FoldSite {
     pub kind: SiteKind,
     /// The policy of the site's group and leaves.
     pub policy: FoldPolicy,
+    /// The sites of the node an inlined attachment unit builds inside this site's group;
+    /// non-empty only when `kind` is [`SiteKind::Attachment`].
+    pub nested: Vec<FoldSite>,
+}
+
+impl FoldSite {
+    /// A site occupying the popped-entries range `start..start + len`, with no nested sites.
+    pub const fn flat(start: u32, len: u32, kind: SiteKind, policy: FoldPolicy) -> Self {
+        Self {
+            start,
+            len,
+            kind,
+            policy,
+            nested: Vec::new(),
+        }
+    }
+
+    /// An [`SiteKind::Attachment`] site over the popped-entries range `start..start + len`,
+    /// whose `nested` sites reproduce the `Node` fold the private attachment nonterminal's own
+    /// rule would have built, now that inlining has removed that rule.
+    pub const fn attachment(start: u32, len: u32, policy: FoldPolicy, nested: Vec<Self>) -> Self {
+        Self {
+            start,
+            len,
+            kind: SiteKind::Attachment,
+            policy,
+            nested,
+        }
+    }
+
+    /// Appends this site's packed form to `into`: `start, len, kind, policy`, then, for an
+    /// [`SiteKind::Attachment`] site, its nested site count followed by each nested site's own
+    /// packed form.
+    fn pack(&self, into: &mut Vec<u32>) {
+        into.extend([self.start, self.len, self.kind.code(), self.policy.code()]);
+        if self.kind == SiteKind::Attachment {
+            into.push(self.nested.len() as u32);
+            for site in &self.nested {
+                debug_assert_ne!(
+                    site.kind,
+                    SiteKind::Attachment,
+                    "an inlined attachment's own sites are never themselves inlined attachments"
+                );
+                site.pack(into);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -382,23 +443,23 @@ impl RuleFold {
         }
     }
 
-    /// Whether the fold or one of its sites applies a mandatory policy.
+    /// Whether the fold or one of its sites (recursively, through a `Node`-kind site's own
+    /// nested sites) applies a mandatory policy.
     pub fn is_mandatory(&self) -> bool {
-        self.policy == FoldPolicy::Mandatory
-            || self
-                .sites
-                .iter()
-                .any(|site| site.policy == FoldPolicy::Mandatory)
+        fn site_mandatory(site: &FoldSite) -> bool {
+            site.policy == FoldPolicy::Mandatory || site.nested.iter().any(site_mandatory)
+        }
+        self.policy == FoldPolicy::Mandatory || self.sites.iter().any(site_mandatory)
     }
 
-    /// Appends the packed form: `kind, policy, site count`, then `start, len, kind, policy`
-    /// per site.
+    /// Appends the packed form: `kind, policy, site count`, then each site's own packed form
+    /// (see [`FoldSite::pack`]).
     pub fn pack(&self, into: &mut Vec<u32>) {
         into.push(self.kind.code());
         into.push(self.policy.code());
         into.push(self.sites.len() as u32);
         for site in &self.sites {
-            into.extend([site.start, site.len, site.kind.code(), site.policy.code()]);
+            site.pack(into);
         }
     }
 }
