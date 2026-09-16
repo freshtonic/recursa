@@ -16,6 +16,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "compound-nodes/Cargo.core.lock",
         "compound-nodes/Cargo.lock",
         "expressions/Cargo.core.lock",
+        "expressions/Cargo.lock",
         "follow-pollution/Cargo.core.lock",
         "lexing/Cargo.lock",
         "lookahead/Cargo.core.lock",
@@ -46,6 +47,7 @@ fn diagram_fixture_locks_cover_the_mutated_optional_dependency_graph() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative in [
         "compound-nodes/Cargo.lock",
+        "expressions/Cargo.lock",
         "one-node/Cargo.lock",
         "repetitions/Cargo.lock",
     ] {

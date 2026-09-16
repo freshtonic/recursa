@@ -19,7 +19,7 @@ fn every_green_generation_evidence_command_executes_without_pending_rows() {
         .expect("read generation acceptance contract");
     let rows = matrix_rows(&document);
 
-    assert_eq!(rows.len(), 16);
+    assert_eq!(rows.len(), 11);
     assert!(rows.values().all(|row| row.status == "Green"));
     assert_eq!(
         rows[AGGREGATE_GATE].evidence,
@@ -46,10 +46,10 @@ fn every_green_generation_evidence_command_executes_without_pending_rows() {
         covered_rows.insert(*id);
     }
 
-    assert_eq!(covered_rows.len(), 15);
+    assert_eq!(covered_rows.len(), 10);
     assert_eq!(
         executed_commands.len(),
-        11,
+        7,
         "shared evidence is run once while every non-aggregate Green row remains covered",
     );
 }
