@@ -3,7 +3,9 @@
 //! Lowering from the normalized grammar to LR rules.
 //!
 //! Terminals are the grammar's token kinds. Every grammar type becomes one nonterminal, except a
-//! fixed token of one kind, which is inlined as its terminal so that keywords cost no reduce.
+//! fixed token of one kind, which is inlined as its terminal so that keywords cost no reduce, and
+//! a cardinality-one attachment unit, which is inlined into its owner's rule (see "Attachment
+//! units" below).
 //! Pratt enums become plain alternatives with the implicit left operand prepended to infix and
 //! postfix rules, and their binding powers are recorded on the rules for the precedence
 //! resolver; a pair with no precedence equivalent is `RCA0402`. A `#[parse(pratt(exclude(...)))]`
