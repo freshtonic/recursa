@@ -3,7 +3,7 @@ use recursa_generated_shared_suffix::grammar;
 
 fn main() {
     // The dispatch commits where `Qualified` and `Named` part and leaves the call tail,
-    // whose arguments are open Pratt expressions, to the selected variant's parser.
+    // whose arguments are open expressions, to the selected variant's parser.
     for (source, qualified) in [
         ("f(a + b)", false),
         ("s.f(a + b)", true),

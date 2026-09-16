@@ -60,8 +60,8 @@ pub use ids::{
 pub use ir::{
     Alternative, AtomDescription, AtomExpression, AuthoredRole, AuthoredSite, ContainerShape,
     Declaration, GrammarDescription, KindDescription, Location, LookaheadFilter, LrConflictAction,
-    LrConflictResolution, LrRuleOwner, ParseSite, PrattPosition, PrattVariant,
-    PrecedenceAssociativity, PrecedenceLevel, RepeatSeparator, RepetitionCardinality,
-    RestrictionDescription, TextEquivalence, TextPredicate, TypeDescription, TypeShape,
+    LrConflictResolution, LrRuleOwner, ParseSite, PrecedenceAssociativity, PrecedenceLevel,
+    RepeatSeparator, RepetitionCardinality, RestrictionDescription, TextEquivalence, TextPredicate,
+    TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};

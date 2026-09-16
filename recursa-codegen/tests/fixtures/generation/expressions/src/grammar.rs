@@ -15,6 +15,7 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = sensitive,
+    derives(Pretty),
 }
 
 recursa::tokens! {

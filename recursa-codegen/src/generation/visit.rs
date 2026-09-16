@@ -1253,7 +1253,7 @@ fn render_visit_children(
                 body: render_visit_child_list(plan, mutable, event_input, true, &children),
             }
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let node_ident = &node.ident;
             let arms = variants

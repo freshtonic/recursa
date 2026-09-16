@@ -1,7 +1,7 @@
 //! Pretty-golden fixture proving declared-precedence parenthesization for a plain (non-Pratt)
 //! expression enum, per `docs/declared-precedence.md`'s "Consumers -> Pretty" paragraph.
 //!
-//! `Expr` carries no `#[pratt]` role at all: every operator variant takes its level from the
+//! Every operator variant of `Expr` takes its level from the
 //! `precedence { ... }` declaration below, either from its last declared terminal (`Add`,
 //! `Subtract`, `Multiply`, `Power`, `Factorial`, `Equals`) or from a `#[parse(prec = UMINUS)]`
 //! override (`Negate`). Pretty must derive parenthesization from each variant's level and
@@ -53,7 +53,7 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    /// An ordinary enum: no `#[pratt]`, no Pratt role attributes, no binding powers. Every
+    /// An ordinary enum. Every
     /// operator token attaches to the operand field it precedes or follows, per the "Attachment
     /// units inline" authoring surface.
     pub enum Expr {

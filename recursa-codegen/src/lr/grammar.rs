@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::{DeclId, PrattPosition, TypeId};
+use crate::{DeclId, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Dense terminal identity: token kinds keep their [`KindId`](crate::KindId) index and the end
@@ -78,27 +78,9 @@ pub enum Associativity {
     Left,
     /// `rbp = lbp` or `rbp = lbp - 1`: the right operand binds first.
     Right,
-    /// Prefix and postfix operators, which have one operand and no associativity question.
-    None,
     /// A `nonassoc` level of the `precedence` declaration: a tie is a syntax error, as in
     /// bison.
     NonAssociative,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Where a rule's precedence comes from; the resolver reads the lookahead's precedence from
-/// the matching side.
-pub enum PrecedenceOrigin {
-    /// A Pratt variant's binding powers, compared with the operator levels of the rule's
-    /// owner nonterminal.
-    Pratt {
-        /// The authored Pratt position with its raw binding powers.
-        position: PrattPosition,
-    },
-    /// The `precedence` declaration: the level of the rule's last terminal with declared
-    /// precedence, or of its `#[parse(prec = ...)]` override, compared with the lookahead's
-    /// declared level.
-    Declared,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -106,7 +88,7 @@ pub enum PrecedenceOrigin {
 /// associativity. Levels are declared with strictly ascending binding powers, so the binding
 /// power orders the levels and identifies one.
 pub struct DeclaredPrecedence {
-    /// The binding power of the level, on the Pratt scale.
+    /// The level's binding power: it orders the levels and identifies one.
     pub binding_power: u8,
     /// The associativity of the level: `left`, `right` or `nonassoc`.
     pub associativity: Associativity,
@@ -114,86 +96,23 @@ pub struct DeclaredPrecedence {
 
 impl DeclaredPrecedence {
     /// The rule precedence a rule takes from this level.
-    pub fn rule_precedence(self, lhs: NonterminalId) -> RulePrecedence {
+    pub const fn rule_precedence(self) -> RulePrecedence {
         RulePrecedence {
-            origin: PrecedenceOrigin::Declared,
             level: self.binding_power,
             associativity: self.associativity,
-            owner: lhs,
-            attaches_at: None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// The precedence of a lowered rule, for shift/reduce resolution: a Pratt variant's binding
-/// powers, or a declared level for a rule outside the Pratt hierarchy.
+/// The precedence of a lowered rule, for shift/reduce resolution: the declared level the rule
+/// takes from its last declared terminal or from its `#[parse(prec = NAME)]` override.
 pub struct RulePrecedence {
-    /// Where the precedence comes from.
-    pub origin: PrecedenceOrigin,
-    /// The precedence level on the binding-power scale: `lbp` for infix and postfix, `bp` for
-    /// prefix, and the level's binding power for a declared precedence.
+    /// The declared level, which orders it against every other level and every token's.
     pub level: u8,
-    /// The associativity: derived from the binding-power pair for a Pratt rule, declared with
-    /// the level otherwise.
+    /// The level's associativity, which settles a tie as bison's `%left`, `%right` and
+    /// `%nonassoc` do.
     pub associativity: Associativity,
-    /// The Pratt nonterminal whose operator tokens a Pratt precedence is compared with: the
-    /// rule's own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion
-    /// clone) that owns the operand for a fixed-token attachment around one. A declared
-    /// precedence names the rule's own left-hand side and never consults it.
-    pub owner: NonterminalId,
-    /// For the attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`),
-    /// the level at which its leading token attaches to the variant: the variant's level plus
-    /// one, so that the token shifts against the variant's own reduce, as gram.y's
-    /// `%nonassoc ESCAPE` just above `LIKE` decides it. `None` on every other rule.
-    pub attaches_at: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// An infix binding-power pair with no precedence equivalent: `rbp` is neither `lbp + 1`
-/// (left-associative) nor `lbp` or `lbp - 1` (right-associative). The lowering reports it as
-/// `RCA0402` naming the variant.
-pub struct UnrepresentableBindingPowers {
-    /// The left binding power.
-    pub lbp: u8,
-    /// The right binding power.
-    pub rbp: u8,
-}
-
-impl RulePrecedence {
-    /// Derives the precedence facts of one Pratt position of `owner`; atoms have none, and an
-    /// infix pair outside the three representable shapes is the error.
-    pub fn from_position(
-        position: PrattPosition,
-        owner: NonterminalId,
-    ) -> Result<Option<Self>, UnrepresentableBindingPowers> {
-        match position {
-            PrattPosition::Atom => Ok(None),
-            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Ok(Some(Self {
-                origin: PrecedenceOrigin::Pratt { position },
-                level: bp,
-                associativity: Associativity::None,
-                owner,
-                attaches_at: None,
-            })),
-            PrattPosition::Infix { lbp, rbp } => {
-                let associativity = if u16::from(rbp) == u16::from(lbp) + 1 {
-                    Associativity::Left
-                } else if rbp == lbp || u16::from(rbp) + 1 == u16::from(lbp) {
-                    Associativity::Right
-                } else {
-                    return Err(UnrepresentableBindingPowers { lbp, rbp });
-                };
-                Ok(Some(Self {
-                    origin: PrecedenceOrigin::Pratt { position },
-                    level: lbp,
-                    associativity,
-                    owner,
-                    attaches_at: None,
-                }))
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -336,8 +255,8 @@ impl SiteKind {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-/// One site of a node fold: the popped entries it occupies (in right-hand-side order, so a
-/// Pratt rule's implicit left operand is the first site) and the shape it builds.
+/// One site of a node fold: the popped entries it occupies, in right-hand-side order, and the
+/// shape it builds.
 ///
 /// `start`/`len` index the rule's popped entries for every kind, [`SiteKind::Attachment`]
 /// included: an inlined attachment unit's fixed tokens and operand are popped entries of the
@@ -474,7 +393,9 @@ pub enum TailDecision {
     /// The rule ends only before root FOLLOW, including a one-token enum alternative or a rule
     /// whose final site is a repetition.
     Reject,
-    /// A Pratt rule: the Pratt loop stops before any token, so the flag is cleared.
+    /// A left-recursive continuation of its own enum Node (`Expr -> Expr PLUS Expr`): the
+    /// reduce completes an operand of an enclosing expression, so what follows belongs to
+    /// whatever encloses it and the flag is cleared.
     Clear,
 }
 
@@ -534,14 +455,13 @@ pub enum RuleAction {
         /// The token type the value belongs to.
         type_id: TypeId,
     },
-    /// A sequence, alias, enum alternative or Pratt variant built from its value-carrying sites.
+    /// A sequence, alias or enum alternative built from its value-carrying sites.
     Construct {
         /// The grammar type being built.
         type_id: TypeId,
-        /// The enum alternative or Pratt variant selected, when the type has several.
+        /// The enum alternative selected, when the type has several.
         variant: Option<DeclId>,
-        /// One form per explicit site of the type, in site order. A Pratt infix or postfix
-        /// rule's implicit left operand is the first right-hand-side symbol and has no form.
+        /// One form per explicit site of the type, in site order.
         sites: Vec<SiteForm>,
     },
     /// A fixed-token-only sequence: it carries no value and pops none.
@@ -608,7 +528,8 @@ pub struct Rule {
     /// not, and neither does a bare terminal, whose token the [`RuleAction::Token`] rule reads
     /// from the popped state-stack entry.
     pub value_pops: u32,
-    /// Binding powers recorded for precedence resolution; `None` outside Pratt variants.
+    /// The declared level recorded for precedence resolution; `None` when the rule has no
+    /// declared terminal and no `#[parse(prec = NAME)]` override.
     pub precedence: Option<RulePrecedence>,
     /// What reducing the rule builds.
     pub action: RuleAction,
@@ -634,20 +555,6 @@ pub enum NonterminalOrigin {
     HelperCopy {
         /// The shared helper it was copied from.
         original: NonterminalId,
-    },
-    /// A distinct Pratt language: the grammar type minus the variants a
-    /// `#[parse(pratt(exclude(...)))]` site names, of any position, and minus the LED variants
-    /// below an operand's minimum binding power, or the fixed-token attachment around such an
-    /// operand, cloned once per distinct restriction the way gram.y has `b_expr` beside
-    /// `a_expr`. Its rules build the original type.
-    Restriction {
-        /// The Pratt type, or the attachment sequence around one of its operands, cloned.
-        type_id: TypeId,
-        /// The excluded variants, atoms and prefix variants included, as normalized
-        /// declarations in ascending order.
-        excluded: Vec<DeclId>,
-        /// The minimum binding power; zero for an exclusion-only clone and for attachments.
-        min_bp: u8,
     },
     /// An authored restricted expression (`docs/declared-precedence.md`, "Restricted
     /// expressions"): a nonterminal whose rules are the admitted alternatives of one enum type,
@@ -1084,29 +991,6 @@ impl TextbookGrammar {
         })
     }
 
-    /// Adds `lhs -> rhs` as a Pratt rule with the binding powers of `position`, the way the
-    /// lowering records an infix, prefix or postfix variant.
-    pub fn pratt_rule(&mut self, lhs: &str, rhs: &str, position: PrattPosition) -> RuleId {
-        self.attachment_rule(lhs, rhs, lhs, position)
-    }
-
-    /// Adds `lhs -> rhs` carrying the binding powers of `position` as a rule of `owner`'s
-    /// Pratt language, the way the lowering records a fixed-token attachment around an operand
-    /// (`Plus -> + E` for `E -> E Plus`).
-    pub fn attachment_rule(
-        &mut self,
-        lhs: &str,
-        rhs: &str,
-        owner: &str,
-        position: PrattPosition,
-    ) -> RuleId {
-        let id = self.rule(lhs, rhs);
-        let owner = self.nonterminal(owner);
-        self.grammar.rules[id.index()].precedence = RulePrecedence::from_position(position, owner)
-            .expect("textbook Pratt rules use representable binding powers");
-        id
-    }
-
     /// Declares one level of the `precedence` declaration over terminal spellings, the way
     /// `left(bp = N) { ... }` does; a spelling that is no terminal is a precedence-only name
     /// such as bison's `UMINUS`, usable by [`Self::rule_precedence`] alone. Levels must be
@@ -1133,12 +1017,11 @@ impl TextbookGrammar {
     /// `#[parse(prec = NAME)]` (bison's `%prec`) does.
     pub fn rule_precedence(&mut self, rule: RuleId, name: &str) {
         let precedence = self.levels[name];
-        let lhs = self.grammar.rules[rule.index()].lhs;
-        self.grammar.rules[rule.index()].precedence = Some(precedence.rule_precedence(lhs));
+        self.grammar.rules[rule.index()].precedence = Some(precedence.rule_precedence());
     }
 
-    /// Gives every rule without a Pratt precedence or an override the precedence of its last
-    /// declared terminal, as the lowering does after every rule is emitted.
+    /// Gives every rule without an override the precedence of its last declared terminal, as
+    /// the lowering does after every rule is emitted.
     pub fn assign_declared_precedence(&mut self) {
         super::declared_precedence::assign_rule_precedence(&mut self.grammar);
     }

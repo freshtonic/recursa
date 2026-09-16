@@ -22,7 +22,7 @@
 //! `table_driven.rs`) already use, and the same aggregation shape `__recursa_content_tokens`
 //! already uses for content tokens. Keying by *application* rather than by a Node's own position in
 //! [`EmissionPlan::nodes`] matters as soon as any Node has more than one materialized application
-//! (generics, Pratt): `parse_index` is the one identity already unique per concrete generated type,
+//! (generics): `parse_index` is the one identity already unique per concrete generated type,
 //! not per Node family.
 
 use super::*;
@@ -221,10 +221,9 @@ fn rewrite_variant_for_seed(plan: &EmissionPlan, variant: &VariantParsePlan) -> 
     rewritten
 }
 
-/// Rewrites a Node's body for seed use. A Pratt body is collapsed into the same flat, ordered
-/// variant list [`trait_variants`] already produces for every other Nested-AST trait renderer
-/// (including [`render_node_arbitrary`] itself) — the Pratt LHS element it splices into each LED
-/// variant is a self-referential `Boxed` Node terminal like any other, so it rewrites the same way.
+/// Rewrites a Node's body for seed use, over the flat, ordered variant list [`trait_variants`]
+/// already produces for every other Nested-AST trait renderer (including
+/// [`render_node_arbitrary`] itself).
 fn rewrite_body_for_seed(plan: &EmissionPlan, body: &NodeBodyPlan) -> NodeBodyPlan {
     match body {
         NodeBodyPlan::Struct { style, elements } => NodeBodyPlan::Struct {
@@ -234,7 +233,7 @@ fn rewrite_body_for_seed(plan: &EmissionPlan, body: &NodeBodyPlan) -> NodeBodyPl
                 .map(|element| rewrite_element_for_seed(plan, element))
                 .collect(),
         },
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => NodeBodyPlan::Enum {
+        NodeBodyPlan::Enum { .. } => NodeBodyPlan::Enum {
             variants: trait_variants(body)
                 .iter()
                 .map(|variant| rewrite_variant_for_seed(plan, variant))
@@ -328,7 +327,6 @@ fn render_seed_type_definition(
                 }
             }
         }
-        NodeBodyPlan::Pratt(_) => unreachable!("rewrite_body_for_seed collapses Pratt into Enum"),
     }
 }
 
@@ -637,7 +635,7 @@ fn render_seed_materialize(
                 }
             },
         ),
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let arms = trait_variants(&application.body)
                 .into_iter()
                 .map(|primary_variant| {

@@ -20,7 +20,6 @@ use syn::spanned::Spanned as _;
 use syn::visit::{self as syn_visit, Visit as _};
 use syn::{GenericArgument, GenericParam, Generics, Ident, Item, PathArguments, Type, Visibility};
 
-use crate::PrattPosition;
 use crate::TypeShape;
 use crate::build_diagnostic::{
     BuildReport, DiagnosticEvidence, DiagnosticLocation, DiagnosticRemedy, DiagnosticStage,
@@ -31,15 +30,11 @@ use crate::lexical::{
 };
 use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
 use crate::lr::LrDiagnostic;
+#[cfg(feature = "diagrams")]
+use crate::materialization::MaterializedFixedAttachment;
 use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedNodeApplication,
-    MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattVariant,
-    MaterializedSemanticFieldProjection,
-};
-#[cfg(feature = "diagrams")]
-use crate::materialization::{
-    MaterializedFixedAttachment, MaterializedPrattLedPosition, MaterializedPrattNud,
-    MaterializedPrattNudPosition,
+    MaterializedNodeBody, MaterializedSemanticFieldProjection,
 };
 use crate::profile::{ENVIRONMENT as PROFILE_ENVIRONMENT, Span};
 use crate::resolution::{
@@ -58,7 +53,7 @@ use crate::source_model::{
     AttachedFixedSyntax, ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
     NodeBody as SourceNodeBody, PrecedenceKindReference, PrecedenceOwner, PrettyBreak, PrettyGroup,
     PrettyHints, PrettySeparatorPosition, PrettySpacing, PrettyTrailingSeparator,
-    SemanticFieldProjection, SourceModel, SourcePrattPosition, TokenDefinitionKind,
+    SemanticFieldProjection, SourceModel, TokenDefinitionKind,
 };
 use crate::{PrecedenceAssociativity, PrecedenceLevelId};
 
