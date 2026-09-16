@@ -5,13 +5,13 @@
 //! An [`LrGrammar`] is a plain context-free grammar over dense symbol identities: terminals are
 //! token kinds plus one synthetic end marker, nonterminals are grammar types plus the helper
 //! nonterminals the lowering invents, and rules carry the facts the later tickets need (value
-//! pops for the reduce action, binding powers for precedence). It is source-independent and
+//! pops for the reduce action, the declared level for precedence). It is source-independent and
 //! knows nothing about how a rule came to exist beyond its [`RuleAction`].
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::{DeclId, PrattPosition, TypeId};
+use crate::{DeclId, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Dense terminal identity: token kinds keep their [`KindId`](crate::KindId) index and the end
@@ -72,41 +72,23 @@ pub enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Associativity a binding-power pair lowers to; the precedence resolver consults it on a tie.
+/// One declared level's associativity; the precedence resolver consults it on a tie.
 pub enum Associativity {
-    /// `rbp = lbp + 1`: the left operand binds first.
+    /// A `left` level of the `precedence` declaration: on a tie the rule reduces, as in bison.
     Left,
-    /// `rbp = lbp` or `rbp = lbp - 1`: the right operand binds first.
+    /// A `right` level of the `precedence` declaration: on a tie the lookahead shifts.
     Right,
-    /// Prefix and postfix operators, which have one operand and no associativity question.
-    None,
     /// A `nonassoc` level of the `precedence` declaration: a tie is a syntax error, as in
     /// bison.
     NonAssociative,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Where a rule's precedence comes from; the resolver reads the lookahead's precedence from
-/// the matching side.
-pub enum PrecedenceOrigin {
-    /// A Pratt variant's binding powers, compared with the operator levels of the rule's
-    /// owner nonterminal.
-    Pratt {
-        /// The authored Pratt position with its raw binding powers.
-        position: PrattPosition,
-    },
-    /// The `precedence` declaration: the level of the rule's last terminal with declared
-    /// precedence, or of its `#[parse(prec = ...)]` override, compared with the lookahead's
-    /// declared level.
-    Declared,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// One terminal's entry in the `precedence` declaration: its level's binding power and
-/// associativity. Levels are declared with strictly ascending binding powers, so the binding
-/// power orders the levels and identifies one.
+/// One terminal's entry in the `precedence` declaration: its level's `bp` and associativity.
+/// Levels are declared with strictly ascending `bp`, so the `bp` orders the levels and
+/// identifies one.
 pub struct DeclaredPrecedence {
-    /// The binding power of the level, on the Pratt scale.
+    /// The level's `bp`: it orders the levels and identifies one.
     pub binding_power: u8,
     /// The associativity of the level: `left`, `right` or `nonassoc`.
     pub associativity: Associativity,
@@ -114,86 +96,23 @@ pub struct DeclaredPrecedence {
 
 impl DeclaredPrecedence {
     /// The rule precedence a rule takes from this level.
-    pub fn rule_precedence(self, lhs: NonterminalId) -> RulePrecedence {
+    pub const fn rule_precedence(self) -> RulePrecedence {
         RulePrecedence {
-            origin: PrecedenceOrigin::Declared,
             level: self.binding_power,
             associativity: self.associativity,
-            owner: lhs,
-            attaches_at: None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// The precedence of a lowered rule, for shift/reduce resolution: a Pratt variant's binding
-/// powers, or a declared level for a rule outside the Pratt hierarchy.
+/// The precedence of a lowered rule, for shift/reduce resolution: the declared level the rule
+/// takes from its last declared terminal or from its `#[parse(prec = NAME)]` override.
 pub struct RulePrecedence {
-    /// Where the precedence comes from.
-    pub origin: PrecedenceOrigin,
-    /// The precedence level on the binding-power scale: `lbp` for infix and postfix, `bp` for
-    /// prefix, and the level's binding power for a declared precedence.
+    /// The declared level, which orders it against every other level and every token's.
     pub level: u8,
-    /// The associativity: derived from the binding-power pair for a Pratt rule, declared with
-    /// the level otherwise.
+    /// The level's associativity, which settles a tie as bison's `%left`, `%right` and
+    /// `%nonassoc` do.
     pub associativity: Associativity,
-    /// The Pratt nonterminal whose operator tokens a Pratt precedence is compared with: the
-    /// rule's own left-hand side for a Pratt rule, and the Pratt nonterminal (or exclusion
-    /// clone) that owns the operand for a fixed-token attachment around one. A declared
-    /// precedence names the rule's own left-hand side and never consults it.
-    pub owner: NonterminalId,
-    /// For the attachment around an optional operand (`#[tok(ESCAPE, this)] Option<Box<Self>>`),
-    /// the level at which its leading token attaches to the variant: the variant's level plus
-    /// one, so that the token shifts against the variant's own reduce, as gram.y's
-    /// `%nonassoc ESCAPE` just above `LIKE` decides it. `None` on every other rule.
-    pub attaches_at: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// An infix binding-power pair with no precedence equivalent: `rbp` is neither `lbp + 1`
-/// (left-associative) nor `lbp` or `lbp - 1` (right-associative). The lowering reports it as
-/// `RCA0402` naming the variant.
-pub struct UnrepresentableBindingPowers {
-    /// The left binding power.
-    pub lbp: u8,
-    /// The right binding power.
-    pub rbp: u8,
-}
-
-impl RulePrecedence {
-    /// Derives the precedence facts of one Pratt position of `owner`; atoms have none, and an
-    /// infix pair outside the three representable shapes is the error.
-    pub fn from_position(
-        position: PrattPosition,
-        owner: NonterminalId,
-    ) -> Result<Option<Self>, UnrepresentableBindingPowers> {
-        match position {
-            PrattPosition::Atom => Ok(None),
-            PrattPosition::Prefix { bp } | PrattPosition::Postfix { bp } => Ok(Some(Self {
-                origin: PrecedenceOrigin::Pratt { position },
-                level: bp,
-                associativity: Associativity::None,
-                owner,
-                attaches_at: None,
-            })),
-            PrattPosition::Infix { lbp, rbp } => {
-                let associativity = if u16::from(rbp) == u16::from(lbp) + 1 {
-                    Associativity::Left
-                } else if rbp == lbp || u16::from(rbp) + 1 == u16::from(lbp) {
-                    Associativity::Right
-                } else {
-                    return Err(UnrepresentableBindingPowers { lbp, rbp });
-                };
-                Ok(Some(Self {
-                    origin: PrecedenceOrigin::Pratt { position },
-                    level: lbp,
-                    associativity,
-                    owner,
-                    attaches_at: None,
-                }))
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -313,6 +232,11 @@ pub enum SiteKind {
     Presence,
     /// An inlined repetition, present or absent, over the list entry and any trailing separator.
     Repetition,
+    /// An inlined cardinality-one attachment unit (`docs/declared-precedence.md`, "Attachment
+    /// units inline"): the group this site builds around the node the removed private
+    /// attachment nonterminal's own `Node` fold built, over the site's own [`FoldSite::nested`]
+    /// sites, so inlining the rule leaves the field's occurrence unchanged.
+    Attachment,
 }
 
 impl SiteKind {
@@ -325,13 +249,22 @@ impl SiteKind {
             Self::Absent => 3,
             Self::Presence => 4,
             Self::Repetition => 5,
+            Self::Attachment => 6,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// One site of a node fold: the popped entries it occupies (in right-hand-side order, so a
-/// Pratt rule's implicit left operand is the first site) and the shape it builds.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// One site of a node fold: the popped entries it occupies, in right-hand-side order, and the
+/// shape it builds.
+///
+/// `start`/`len` index the rule's popped entries for every kind, [`SiteKind::Attachment`]
+/// included: an inlined attachment unit's fixed tokens and operand are popped entries of the
+/// owner's own rule, so the site occupies them exactly as the one attachment-nonterminal entry
+/// it replaces did. `nested` is empty except for an `Attachment` site, where it carries the
+/// sites of the removed attachment rule's own `Node` fold, each indexing the same popped
+/// entries. One level of nesting is all an inlined attachment ever needs, so a nested site is
+/// never itself an `Attachment` site.
 pub struct FoldSite {
     /// Index of the site's first entry among the rule's popped entries.
     pub start: u32,
@@ -341,6 +274,53 @@ pub struct FoldSite {
     pub kind: SiteKind,
     /// The policy of the site's group and leaves.
     pub policy: FoldPolicy,
+    /// The sites of the node an inlined attachment unit builds inside this site's group;
+    /// non-empty only when `kind` is [`SiteKind::Attachment`].
+    pub nested: Vec<FoldSite>,
+}
+
+impl FoldSite {
+    /// A site occupying the popped-entries range `start..start + len`, with no nested sites.
+    pub const fn flat(start: u32, len: u32, kind: SiteKind, policy: FoldPolicy) -> Self {
+        Self {
+            start,
+            len,
+            kind,
+            policy,
+            nested: Vec::new(),
+        }
+    }
+
+    /// An [`SiteKind::Attachment`] site over the popped-entries range `start..start + len`,
+    /// whose `nested` sites reproduce the `Node` fold the private attachment nonterminal's own
+    /// rule would have built, now that inlining has removed that rule.
+    pub const fn attachment(start: u32, len: u32, policy: FoldPolicy, nested: Vec<Self>) -> Self {
+        Self {
+            start,
+            len,
+            kind: SiteKind::Attachment,
+            policy,
+            nested,
+        }
+    }
+
+    /// Appends this site's packed form to `into`: `start, len, kind, policy`, then, for an
+    /// [`SiteKind::Attachment`] site, its nested site count followed by each nested site's own
+    /// packed form.
+    fn pack(&self, into: &mut Vec<u32>) {
+        into.extend([self.start, self.len, self.kind.code(), self.policy.code()]);
+        if self.kind == SiteKind::Attachment {
+            into.push(self.nested.len() as u32);
+            for site in &self.nested {
+                debug_assert_ne!(
+                    site.kind,
+                    SiteKind::Attachment,
+                    "an inlined attachment's own sites are never themselves inlined attachments"
+                );
+                site.pack(into);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -382,23 +362,23 @@ impl RuleFold {
         }
     }
 
-    /// Whether the fold or one of its sites applies a mandatory policy.
+    /// Whether the fold or one of its sites (recursively, through a `Node`-kind site's own
+    /// nested sites) applies a mandatory policy.
     pub fn is_mandatory(&self) -> bool {
-        self.policy == FoldPolicy::Mandatory
-            || self
-                .sites
-                .iter()
-                .any(|site| site.policy == FoldPolicy::Mandatory)
+        fn site_mandatory(site: &FoldSite) -> bool {
+            site.policy == FoldPolicy::Mandatory || site.nested.iter().any(site_mandatory)
+        }
+        self.policy == FoldPolicy::Mandatory || self.sites.iter().any(site_mandatory)
     }
 
-    /// Appends the packed form: `kind, policy, site count`, then `start, len, kind, policy`
-    /// per site.
+    /// Appends the packed form: `kind, policy, site count`, then each site's own packed form
+    /// (see [`FoldSite::pack`]).
     pub fn pack(&self, into: &mut Vec<u32>) {
         into.push(self.kind.code());
         into.push(self.policy.code());
         into.push(self.sites.len() as u32);
         for site in &self.sites {
-            into.extend([site.start, site.len, site.kind.code(), site.policy.code()]);
+            site.pack(into);
         }
     }
 }
@@ -413,7 +393,9 @@ pub enum TailDecision {
     /// The rule ends only before root FOLLOW, including a one-token enum alternative or a rule
     /// whose final site is a repetition.
     Reject,
-    /// A Pratt rule: the Pratt loop stops before any token, so the flag is cleared.
+    /// A left-recursive continuation of its own enum Node (`Expr -> Expr PLUS Expr`): the
+    /// reduce completes an operand of an enclosing expression, so what follows belongs to
+    /// whatever encloses it and the flag is cleared.
     Clear,
 }
 
@@ -473,14 +455,13 @@ pub enum RuleAction {
         /// The token type the value belongs to.
         type_id: TypeId,
     },
-    /// A sequence, alias, enum alternative or Pratt variant built from its value-carrying sites.
+    /// A sequence, alias or enum alternative built from its value-carrying sites.
     Construct {
         /// The grammar type being built.
         type_id: TypeId,
-        /// The enum alternative or Pratt variant selected, when the type has several.
+        /// The enum alternative selected, when the type has several.
         variant: Option<DeclId>,
-        /// One form per explicit site of the type, in site order. A Pratt infix or postfix
-        /// rule's implicit left operand is the first right-hand-side symbol and has no form.
+        /// One form per explicit site of the type, in site order.
         sites: Vec<SiteForm>,
     },
     /// A fixed-token-only sequence: it carries no value and pops none.
@@ -547,7 +528,8 @@ pub struct Rule {
     /// not, and neither does a bare terminal, whose token the [`RuleAction::Token`] rule reads
     /// from the popped state-stack entry.
     pub value_pops: u32,
-    /// Binding powers recorded for precedence resolution; `None` outside Pratt variants.
+    /// The declared level recorded for precedence resolution; `None` when the rule has no
+    /// declared terminal and no `#[parse(prec = NAME)]` override.
     pub precedence: Option<RulePrecedence>,
     /// What reducing the rule builds.
     pub action: RuleAction,
@@ -574,19 +556,13 @@ pub enum NonterminalOrigin {
         /// The shared helper it was copied from.
         original: NonterminalId,
     },
-    /// A distinct Pratt language: the grammar type minus the variants a
-    /// `#[parse(pratt(exclude(...)))]` site names, of any position, and minus the LED variants
-    /// below an operand's minimum binding power, or the fixed-token attachment around such an
-    /// operand, cloned once per distinct restriction the way gram.y has `b_expr` beside
-    /// `a_expr`. Its rules build the original type.
-    Restriction {
-        /// The Pratt type, or the attachment sequence around one of its operands, cloned.
+    /// An authored restricted expression (`docs/declared-precedence.md`, "Restricted
+    /// expressions"): a nonterminal whose rules are the admitted alternatives of one enum type,
+    /// each with its first or last recursive operand parsed through this nonterminal instead of
+    /// through the base. Its rules build the base type, so it is a grammar symbol only.
+    DeclaredRestriction {
+        /// The base enum type whose value every rule of this nonterminal builds.
         type_id: TypeId,
-        /// The excluded variants, atoms and prefix variants included, as normalized
-        /// declarations in ascending order.
-        excluded: Vec<DeclId>,
-        /// The minimum binding power; zero for an exclusion-only clone and for attachments.
-        min_bp: u8,
     },
 }
 
@@ -1015,33 +991,10 @@ impl TextbookGrammar {
         })
     }
 
-    /// Adds `lhs -> rhs` as a Pratt rule with the binding powers of `position`, the way the
-    /// lowering records an infix, prefix or postfix variant.
-    pub fn pratt_rule(&mut self, lhs: &str, rhs: &str, position: PrattPosition) -> RuleId {
-        self.attachment_rule(lhs, rhs, lhs, position)
-    }
-
-    /// Adds `lhs -> rhs` carrying the binding powers of `position` as a rule of `owner`'s
-    /// Pratt language, the way the lowering records a fixed-token attachment around an operand
-    /// (`Plus -> + E` for `E -> E Plus`).
-    pub fn attachment_rule(
-        &mut self,
-        lhs: &str,
-        rhs: &str,
-        owner: &str,
-        position: PrattPosition,
-    ) -> RuleId {
-        let id = self.rule(lhs, rhs);
-        let owner = self.nonterminal(owner);
-        self.grammar.rules[id.index()].precedence = RulePrecedence::from_position(position, owner)
-            .expect("textbook Pratt rules use representable binding powers");
-        id
-    }
-
     /// Declares one level of the `precedence` declaration over terminal spellings, the way
     /// `left(bp = N) { ... }` does; a spelling that is no terminal is a precedence-only name
     /// such as bison's `UMINUS`, usable by [`Self::rule_precedence`] alone. Levels must be
-    /// declared from lowest to highest binding power.
+    /// declared from loosest to tightest.
     pub fn precedence_level(
         &mut self,
         associativity: Associativity,
@@ -1064,12 +1017,11 @@ impl TextbookGrammar {
     /// `#[parse(prec = NAME)]` (bison's `%prec`) does.
     pub fn rule_precedence(&mut self, rule: RuleId, name: &str) {
         let precedence = self.levels[name];
-        let lhs = self.grammar.rules[rule.index()].lhs;
-        self.grammar.rules[rule.index()].precedence = Some(precedence.rule_precedence(lhs));
+        self.grammar.rules[rule.index()].precedence = Some(precedence.rule_precedence());
     }
 
-    /// Gives every rule without a Pratt precedence or an override the precedence of its last
-    /// declared terminal, as the lowering does after every rule is emitted.
+    /// Gives every rule without an override the precedence of its last declared terminal, as
+    /// the lowering does after every rule is emitted.
     pub fn assign_declared_precedence(&mut self) {
         super::declared_precedence::assign_rule_precedence(&mut self.grammar);
     }

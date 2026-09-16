@@ -1,4 +1,4 @@
-//! Source-analysis fixture for the arithmetic Pratt grammar.
+//! Source-analysis fixture for the arithmetic expression grammar.
 //!
 //! Rust 2024 source derived from `recursa-spike` revision
 //! `b410d2f123cd7510a8a40e9e5b971936a2fd8463`, specifically
@@ -18,6 +18,11 @@ recursa::tokens! {
         SLASH => "/",
         LPAREN => "(",
         RPAREN => ")",
+    }
+    precedence {
+        left(bp = 10) { PLUS, MINUS },
+        left(bp = 20) { STAR, SLASH },
+        right(bp = 30) { UMINUS },
     }
 }
 
@@ -49,32 +54,22 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Arithmetic expressions with atom, prefix, and infix Pratt positions.
+    /// Arithmetic expressions with atom, prefix, and infix operator variants.
 
-    #[pratt]
     pub enum Expr {
         IntLit(Atom<IntAtom>),
         Ident(Atom<IdentAtom>),
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
 
-        #[parse(prefix, bp = 30)]
-        #[tok(MINUS)]
-        Neg(boxed!(Self)),
+        #[parse(prec = UMINUS)]
+        Neg(#[tok(MINUS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(MINUS)]
-        Sub(boxed!(Self), boxed!(Self)),
+        Sub(boxed!(Self), #[tok(MINUS, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(STAR)]
-        Mul(boxed!(Self), boxed!(Self)),
+        Mul(boxed!(Self), #[tok(STAR, this)] boxed!(Self)),
 
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(SLASH)]
-        Div(boxed!(Self), boxed!(Self)),
+        Div(boxed!(Self), #[tok(SLASH, this)] boxed!(Self)),
     }
 }

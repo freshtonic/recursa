@@ -426,22 +426,28 @@ impl RenderingPlan for EmissionPlan {
     }
 }
 
-/// Renders every logical file of a generation after constructing the LALR(1) parser.
+/// Renders every logical file of a generation after constructing the LALR(1) parser: the
+/// LALR(1) construction itself can fail with an authored grammar's unresolved conflicts, which
+/// the caller reports as their registered diagnostic code rather than as an internal-invariant
+/// failure, so this keeps that structured error apart from every other, genuinely-internal
+/// rendering failure below it.
 pub(super) fn render_declared(
     plan: &impl RenderingPlan,
     lowered: &crate::materialization::LoweredGrammar,
-) -> Result<RenderedGeneration, String> {
+) -> Result<RenderedGeneration, LrBuildError> {
     let parsers = ParserSet::declared(plan.emission_plan(), lowered)?;
-    render_generation(plan, &parsers)
+    render_generation(plan, &parsers).map_err(LrBuildError::Internal)
 }
 
 #[cfg(test)]
-/// Renders a unit-test plan with the LR lowering captured when the plan was joined.
+/// Renders a unit-test plan with the LR lowering captured when the plan was joined. Tests care
+/// only about the failure's message, not whether it is a structured conflict report or an
+/// internal invariant, so this flattens [`LrBuildError`] back to text.
 pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
     let identity = &plan.emission_plan().identity;
     let lowered = test_lowered(identity)
         .ok_or_else(|| format!("unit-test LR lowering is missing for generation {identity}"))?;
-    render_declared(plan, &lowered)
+    render_declared(plan, &lowered).map_err(|error| error.render())
 }
 
 /// Renders every logical file without performing filesystem publication; `parsers` names the

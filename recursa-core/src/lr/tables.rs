@@ -73,8 +73,8 @@ pub struct LrTables {
     /// Packed `folds`, the provenance fold of each rule (see [`super::provenance`]).
     folds: &'static [u8],
     /// Packed `tail`: per rule, whether the rule's end is constrained by root FOLLOW (`1`), never
-    /// constrained below it (`2`, a Pratt rule), or inherits the decision from its last symbol
-    /// (`0`).
+    /// constrained below it (`2`, a left-recursive continuation of its own enum Node), or
+    /// inherits the decision from its last symbol (`0`).
     tail: &'static [u8],
     /// Whether any fold carries a mandatory policy, so provenance is retained even when the
     /// root's policy does not capture.

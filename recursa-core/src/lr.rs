@@ -233,9 +233,12 @@ fn unexpected_here<A>(
 ///
 /// `tail` tracks whether the current reduction spine requires a following token to belong to the
 /// root FOLLOW. After the last shift, reductions up to acceptance are exactly the spine of last
-/// symbols, so one flag set by the rules' `tail` table (a one-token enum alternative or repetition
-/// tail sets it, while a Pratt rule clears it) decides whether an outside token is an error or the
-/// parsed prefix may be accepted.
+/// symbols, so one flag set by the rules' `tail` table decides whether an outside token is an
+/// error or the parsed prefix may be accepted. A one-token enum alternative and a rule whose
+/// final site is a repetition set it; a left-recursive continuation of its own enum Node — a
+/// rule whose first symbol is its own left-hand side, which is what an operator variant of an
+/// expression Node lowers to — clears it, because such a reduce completes an operand of an
+/// enclosing expression and what follows belongs to whatever encloses it.
 fn drive<'input, 'arena, T, A, F>(
     context: &mut ParseContext<'_, 'input, 'arena, A>,
     tables: &LrTables,

@@ -76,7 +76,7 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
                     NonterminalOrigin::Start(_) => 1,
                     NonterminalOrigin::Helper => 2,
                     NonterminalOrigin::HelperCopy { .. } => 3,
-                    NonterminalOrigin::Restriction { .. } => 4,
+                    NonterminalOrigin::DeclaredRestriction { .. } => 4,
                 };
                 nonterminals_by_origin[bucket] += 1;
             }
@@ -87,12 +87,12 @@ fn pg_sql_grammar_constructs_and_reports_its_conflicts() {
                     NonterminalOrigin::Start(_) => 1,
                     NonterminalOrigin::Helper => 2,
                     NonterminalOrigin::HelperCopy { .. } => 3,
-                    NonterminalOrigin::Restriction { .. } => 4,
+                    NonterminalOrigin::DeclaredRestriction { .. } => 4,
                 };
                 rules_by_origin[bucket] += 1;
             }
             println!(
-                "nonterminals by origin: type {} start {} helper {} helper-copy {} restriction {}; rules: type {} start {} helper {} helper-copy {} restriction {}",
+                "nonterminals by origin: type {} start {} helper {} helper-copy {} declared-restriction {}; rules: type {} start {} helper {} helper-copy {} declared-restriction {}",
                 nonterminals_by_origin[0],
                 nonterminals_by_origin[1],
                 nonterminals_by_origin[2],

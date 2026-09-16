@@ -46,19 +46,6 @@ pub(super) fn validate_accessor_names(
                 }
             }
         }
-        NodeBodyPlan::Pratt(pratt) => {
-            for branch in &pratt.nud {
-                for element in &branch.variant.elements {
-                    check(element)?;
-                }
-            }
-            for branch in &pratt.led {
-                check(&branch.lhs)?;
-                for element in &branch.variant.elements {
-                    check(element)?;
-                }
-            }
-        }
     }
     Ok(())
 }
@@ -88,26 +75,6 @@ pub(super) fn render_metadata(
                 quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
             });
             quote!(#(#definitions)*)
-        }
-        NodeBodyPlan::Pratt(pratt) => {
-            let nud = pratt.nud.iter().enumerate().map(|(index, branch)| {
-                let name = metadata_static(node_index, Some(index));
-                let entries = branch
-                    .variant
-                    .elements
-                    .iter()
-                    .map(|element| render_metadata_entry(facade, element));
-                quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
-            });
-            let led_offset = pratt.nud.len();
-            let led = pratt.led.iter().enumerate().map(|(index, branch)| {
-                let name = metadata_static(node_index, Some(led_offset + index));
-                let entries = std::iter::once(&branch.lhs)
-                    .chain(branch.variant.elements.iter())
-                    .map(|element| render_metadata_entry(facade, element));
-                quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
-            });
-            quote!(#(#nud)* #(#led)*)
         }
     }
 }
@@ -149,23 +116,6 @@ pub(super) fn render_span_elements(
             });
             quote!(match self { #(#arms)* })
         }
-        NodeBodyPlan::Pratt(pratt) => {
-            let node_ident = &node.ident;
-            let nud = pratt.nud.iter().enumerate().map(|(index, branch)| {
-                let variant = &branch.variant;
-                let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
-                let metadata = metadata_static(node_index, Some(index));
-                quote!(#pattern => cursor.elements(#metadata),)
-            });
-            let led_offset = pratt.nud.len();
-            let led = pratt.led.iter().enumerate().map(|(index, branch)| {
-                let variant = &branch.variant;
-                let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
-                let metadata = metadata_static(node_index, Some(led_offset + index));
-                quote!(#pattern => cursor.elements(#metadata),)
-            });
-            quote!(match self { #(#nud)* #(#led)* })
-        }
     }
 }
 
@@ -202,40 +152,6 @@ pub(super) fn render_accessors(
                     })
             });
             quote!(#(#methods)*)
-        }
-        NodeBodyPlan::Pratt(pratt) => {
-            let nud = pratt.nud.iter().flat_map(|branch| {
-                let variant = &branch.variant;
-                variant
-                    .elements
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(index, element)| {
-                        render_accessor(
-                            plan,
-                            self_type,
-                            element,
-                            index,
-                            Some((node_ident, &variant.ident, variant.style)),
-                        )
-                    })
-            });
-            let led = pratt.led.iter().flat_map(|branch| {
-                let variant = &branch.variant;
-                std::iter::once(&branch.lhs)
-                    .chain(variant.elements.iter())
-                    .enumerate()
-                    .filter_map(move |(index, element)| {
-                        render_accessor(
-                            plan,
-                            self_type,
-                            element,
-                            index,
-                            Some((node_ident, &variant.ident, variant.style)),
-                        )
-                    })
-            });
-            quote!(#(#nud)* #(#led)*)
         }
     }
 }

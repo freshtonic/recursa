@@ -8,7 +8,7 @@
 //! `LIKE` as `NOT_LA`, the token the test rules shift, so `Subject` reduces on `NOT_LA` and
 //! `Operand` on `NOT`.
 //!
-//! `ExprRule` is gram.y's `a_expr` shape: a `#[pratt]` enum with prefix `NOT`, infix `LIKE`
+//! `ExprRule` is gram.y's `a_expr` shape: a left-recursive enum with prefix `NOT`, infix `LIKE`
 //! and the tests `NOT LIKE`, `NOT BETWEEN` and `NOT IN`, over a name that admits `like` and
 //! `between` the way `ColId` admits `BETWEEN` and `func_name` admits `LIKE`. The operand of
 //! prefix `NOT` can therefore begin with a trigger or with anything else, so the rule is
@@ -38,6 +38,10 @@ recursa::tokens! {
         SEMI => ";",
     }
     lookahead { NOT_LA = NOT before { BETWEEN, IN, LIKE } }
+    precedence {
+        left(bp = 10) { NOT },
+        nonassoc(bp = 20) { BETWEEN, IN, LIKE, NOT_LA },
+    }
 }
 
 recursa::ast_node! {
@@ -164,38 +168,35 @@ recursa::ast_node! {
     /// `NOT (a LIKE b)` and `NOT a NOT LIKE b` is `NOT (a NOT LIKE b)`; the tests and `LIKE`
     /// share one level.
     #[derive(Debug, Clone)]
-    #[pratt]
     pub enum Expr {
         Ident(Ident),
         Number(Number),
         Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
 
         /// `NOT expr`, pg-sql's `Expr::Not`: the operand can begin with `like` or `between` as a
-        /// name, so the lowering twins the rule with `NOT_LA`.
-        #[parse(prefix, bp = 10)]
+        /// name, so the lowering twins the rule with `NOT_LA`. The override keeps both twins at
+        /// `NOT`'s level, as `gram.y`'s `a_expr: NOT a_expr | NOT_LA a_expr` does.
+        #[parse(prec = NOT)]
         Not(#[tok(NOT, this)] boxed!(Self)),
 
-        #[parse(postfix, bp = 20)]
         NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
 
-        #[parse(postfix, bp = 20)]
+        #[parse(prec = BETWEEN)]
         NotBetween(
             boxed!(Self),
             #[tok(NOT, BETWEEN, this)] boxed!(Self),
             #[tok(AND, this)] boxed!(Self),
         ),
 
-        #[parse(postfix, bp = 20)]
+        #[parse(prec = IN)]
         NotIn(
             boxed!(Self),
             #[tok(NOT, IN, LPAREN, this, RPAREN)] boxed!(Self),
         ),
 
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(LIKE)]
-        Like(boxed!(Self), boxed!(Self)),
+        Like(boxed!(Self), #[tok(LIKE, this)] boxed!(Self)),
 
-        #[parse(postfix, bp = 20)]
+        #[parse(prec = BETWEEN)]
         Between(
             boxed!(Self),
             #[tok(BETWEEN, this)] boxed!(Self),

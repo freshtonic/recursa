@@ -39,6 +39,7 @@ recursa::tokens! {
     // `NOT_LA` is the merged kind of the filter above, not a lexed token; naming it here is
     // what recursa#128 adds.
     precedence {
+        left(bp = 10) { NOT },
         nonassoc(bp = 20) { BETWEEN, LIKE, NOT_LA },
     }
 }
@@ -80,18 +81,14 @@ recursa::ast_node! {
     /// `NOT` the filter merges. The prefix's operand can begin with a trigger read as a name, so
     /// its rule is twinned with `NOT_LA`.
     #[derive(Debug, Clone)]
-    #[pratt]
     pub enum Expr {
         Column(Ident),
         /// The enclosing atom Pretty needs to repair a precedence it cannot express.
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Self)),
-        #[parse(prefix, bp = 10)]
+        #[parse(prec = NOT)]
         Not(#[tok(NOT, this)] boxed!(Self)),
-        #[parse(postfix, bp = 20)]
         NotLike(boxed!(Self), #[tok(NOT, LIKE, this)] boxed!(Self)),
-        #[parse(infix, lbp = 20, rbp = 21)]
-        #[tok(LIKE)]
-        Like(boxed!(Self), boxed!(Self)),
+        Like(boxed!(Self), #[tok(LIKE, this)] boxed!(Self)),
     }
 }
 

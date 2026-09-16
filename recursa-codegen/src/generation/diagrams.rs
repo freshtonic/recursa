@@ -236,8 +236,8 @@ fn merge_link(links: &mut BTreeMap<String, Option<String>>, label: &str, link: O
 
 /// Returns the Rustdoc item kind for one generated Node's Rust type.
 ///
-/// Enum and Pratt parse bodies generate Rust enums; struct bodies generate
-/// structs. Links must name the kind Rustdoc uses in the page filename.
+/// Enum parse bodies generate Rust enums; struct bodies generate structs. Links must name the
+/// kind Rustdoc uses in the page filename.
 fn node_rustdoc_kind(node: &NodeParsePlan) -> &'static str {
     match node
         .parse_applications
@@ -307,189 +307,7 @@ fn diagram_production(
                 .collect::<Result<Vec<_>, String>>()
                 .map(DiagramNode::Choice)
         }
-        (NodeBodyPlan::Pratt(pratt), MaterializedNodeBody::Pratt(materialized)) => {
-            diagram_pratt_production(pratt, materialized, lowered, links, variant_anchor)
-        }
         _ => Err("diagram and materialized Node shapes disagree".to_owned()),
-    }
-}
-
-/// Projects ordered Pratt branches, roles, and binding powers into a choice.
-fn diagram_pratt_production(
-    pratt: &PrattParsePlan,
-    materialized: &[MaterializedPrattVariant],
-    lowered: &crate::materialization::LoweredGrammar,
-    links: &BTreeMap<String, Option<String>>,
-    variant_anchor: Option<&str>,
-) -> Result<DiagramNode, String> {
-    if pratt.expected_nud_count + pratt.expected_led_count != materialized.len() {
-        return Err("Pratt diagram lost a materialized variant".to_owned());
-    }
-    materialized
-        .iter()
-        .enumerate()
-        .map(|(source_index, materialized)| {
-            let (role, name, body) = match materialized {
-                MaterializedPrattVariant::Nud(materialized) => {
-                    let branch = unique_pratt_nud(pratt, source_index)?;
-                    validate_pratt_position(Some(branch.position), materialized)?;
-                    (
-                        diagram_pratt_role(branch.position),
-                        branch.variant.ident.unraw().to_string(),
-                        diagram_sequence(
-                            &branch.variant.elements,
-                            &materialized.body,
-                            lowered,
-                            links,
-                        )?,
-                    )
-                }
-                MaterializedPrattVariant::Led(materialized) => {
-                    let branch = unique_pratt_led(pratt, source_index)?;
-                    validate_pratt_led_position(Some(branch.position), materialized)?;
-                    let lhs = diagram_pratt_lhs(&branch.lhs, materialized, lowered, links)?;
-                    let tail = diagram_sequence(
-                        &branch.variant.elements,
-                        &materialized.tail,
-                        lowered,
-                        links,
-                    )?;
-                    (
-                        diagram_pratt_role(branch.position),
-                        branch.variant.ident.unraw().to_string(),
-                        sequence(vec![lhs, tail]),
-                    )
-                }
-            };
-            Ok(sequence(vec![
-                DiagramNode::LinkedComment {
-                    link: variant_anchor.map(|base| format!("{base}#variant.{name}")),
-                    label: format!("{role} {name}"),
-                },
-                body,
-            ]))
-        })
-        .collect::<Result<Vec<_>, String>>()
-        .map(DiagramNode::Choice)
-}
-
-/// Verifies that diagram projection retained the materialized nud role and binding power.
-fn validate_pratt_position(
-    planned: Option<PrattPosition>,
-    materialized: &MaterializedPrattNud,
-) -> Result<(), String> {
-    let matches = match (planned, materialized.position) {
-        (Some(PrattPosition::Atom), MaterializedPrattNudPosition::Atom) => true,
-        (
-            Some(PrattPosition::Prefix { bp: planned }),
-            MaterializedPrattNudPosition::Prefix { bp: actual },
-        ) => planned == actual,
-        _ => false,
-    };
-    matches
-        .then_some(())
-        .ok_or_else(|| "Pratt diagram nud position diverges from materialization".to_owned())
-}
-
-/// Verifies that diagram projection retained the materialized led role and binding powers.
-fn validate_pratt_led_position(
-    planned: Option<PrattPosition>,
-    materialized: &MaterializedPrattLed,
-) -> Result<(), String> {
-    let matches = match (planned, materialized.position) {
-        (
-            Some(PrattPosition::Infix {
-                lbp: planned_lbp,
-                rbp: planned_rbp,
-            }),
-            MaterializedPrattLedPosition::Infix {
-                lbp: actual_lbp,
-                rbp: actual_rbp,
-            },
-        ) => planned_lbp == actual_lbp && planned_rbp == actual_rbp,
-        (
-            Some(PrattPosition::Postfix { bp: planned }),
-            MaterializedPrattLedPosition::Postfix { bp: actual },
-        ) => planned == actual,
-        _ => false,
-    };
-    matches
-        .then_some(())
-        .ok_or_else(|| "Pratt diagram led position diverges from materialization".to_owned())
-}
-
-/// Finds the sole prefix/atom parse branch for a materialized source variant.
-fn unique_pratt_nud(
-    pratt: &PrattParsePlan,
-    source_index: usize,
-) -> Result<&PrattNudParsePlan, String> {
-    let mut matching = pratt
-        .nud
-        .iter()
-        .filter(|branch| branch.source_index == source_index);
-    let branch = matching
-        .next()
-        .ok_or_else(|| "Pratt diagram lacks its nud branch".to_owned())?;
-    if matching.next().is_some() {
-        return Err("Pratt diagram has duplicate nud branches".to_owned());
-    }
-    Ok(branch)
-}
-
-/// Finds the sole infix/postfix parse branch for a materialized source variant.
-fn unique_pratt_led(
-    pratt: &PrattParsePlan,
-    source_index: usize,
-) -> Result<&PrattLedParsePlan, String> {
-    let mut matching = pratt
-        .led
-        .iter()
-        .filter(|branch| branch.source_index == source_index);
-    let branch = matching
-        .next()
-        .ok_or_else(|| "Pratt diagram lacks its led branch".to_owned())?;
-    if matching.next().is_some() {
-        return Err("Pratt diagram has duplicate led branches".to_owned());
-    }
-    Ok(branch)
-}
-
-/// Reconstructs the implicit left operand of an infix or postfix branch.
-fn diagram_pratt_lhs(
-    lhs: &ElementParsePlan,
-    materialized: &MaterializedPrattLed,
-    lowered: &crate::materialization::LoweredGrammar,
-    links: &BTreeMap<String, Option<String>>,
-) -> Result<DiagramNode, String> {
-    let ElementParseKind::Semantic {
-        projection: semantic,
-        ..
-    } = &lhs.kind
-    else {
-        return Err("Pratt diagram lhs is not semantic".to_owned());
-    };
-    let SemanticParseProjection::Direct {
-        container,
-        pratt_min_bp,
-        ..
-    } = semantic.as_ref()
-    else {
-        return Err("Pratt diagram lhs is not a direct semantic field".to_owned());
-    };
-    if pratt_min_bp.is_some() {
-        return Err("Pratt diagram lhs has a minimum binding power".to_owned());
-    }
-    let label = diagram_terminal_name(&ClosedType::Node(materialized.lhs.owner.clone()), lowered)?;
-    diagram_semantic_element(non_terminal(label, true, links), None, container)
-}
-
-/// Formats a Pratt role without discarding its binding-power thresholds.
-fn diagram_pratt_role(position: PrattPosition) -> String {
-    match position {
-        PrattPosition::Atom => "atom".to_owned(),
-        PrattPosition::Prefix { bp } => format!("prefix bp={bp}"),
-        PrattPosition::Infix { lbp, rbp } => format!("infix lbp={lbp} rbp={rbp}"),
-        PrattPosition::Postfix { bp } => format!("postfix bp={bp}"),
     }
 }
 
@@ -1005,8 +823,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs() {
-        super::super::test_support::semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs();
+    fn semantic_diagrams_cover_expression_nodes_content_tokens_and_local_docs() {
+        super::super::test_support::semantic_diagrams_cover_expression_nodes_content_tokens_and_local_docs();
     }
 
     #[test]

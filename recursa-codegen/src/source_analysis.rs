@@ -471,8 +471,10 @@ fn cargo_one_line(value: &str) -> String {
         .collect()
 }
 
-/// Constructs a validated diagnostic from structured evidence and remedy data.
-fn make_diagnostic(
+/// Constructs a validated diagnostic from structured evidence and remedy data. `pub(crate)` so
+/// other pipeline boundaries (the LR conflict report at the render stage, for one) can build a
+/// registered-code diagnostic without duplicating the registry lookup and label construction.
+pub(crate) fn make_diagnostic(
     code: &'static str,
     summary: &str,
     location: Option<DiagnosticLocation>,
@@ -723,8 +725,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::UnsupportedFixedSyntax => "RCA3113",
         SourceModelDiagnosticKind::InvalidFixedTokenPresence => "RCA3129",
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
-        SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
-        SourceModelDiagnosticKind::InvalidPrattExtensionFilter => "RCA3130",
+        SourceModelDiagnosticKind::RemovedPrattSurface => "RCA3140",
         SourceModelDiagnosticKind::InvalidGreedyAcceptance => "RCA3131",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
         SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
@@ -743,6 +744,11 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidLookaheadFilter => "RCA3132",
         SourceModelDiagnosticKind::InvalidPrecedenceDeclaration => "RCA3133",
         SourceModelDiagnosticKind::InvalidLrConflictResolution => "RCA3134",
+        SourceModelDiagnosticKind::RestrictedVariantHasFields => "RCA3135",
+        SourceModelDiagnosticKind::RestrictedVariantUnknown => "RCA3136",
+        SourceModelDiagnosticKind::RestrictedBaseNotEnum => "RCA3137",
+        SourceModelDiagnosticKind::RestrictedBaseCycle => "RCA3138",
+        SourceModelDiagnosticKind::RestrictedExpressionAsType => "RCA3139",
     }
 }
 
@@ -1070,8 +1076,6 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
         MaterializationDiagnosticKind::UnsupportedType => "RCA3204",
         MaterializationDiagnosticKind::InvalidArguments => "RCA3205",
         MaterializationDiagnosticKind::InvalidContainer => "RCA3206",
-        MaterializationDiagnosticKind::InvalidPrattShape => "RCA3209",
-        MaterializationDiagnosticKind::InvalidPrattExclusion => "RCA3212",
         MaterializationDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         MaterializationDiagnosticKind::UnsafePrettyBoundary => "RCA3211",
         MaterializationDiagnosticKind::AliasCycle => "RCA3207",

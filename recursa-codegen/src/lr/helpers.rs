@@ -292,7 +292,7 @@ pub fn copy_polluted_helpers(grammar: &mut LrGrammar, automaton: &Automaton) -> 
 /// Builds the automaton, copying polluted helpers and rebuilding until a round copies nothing.
 ///
 /// `resolver` makes the conflict resolver for each grammar the loop builds, because a resolver
-/// such as binding-power precedence is derived from the rules. Intermediate automata skip the
+/// such as declared precedence is derived from the rules. Intermediate automata skip the
 /// merge-artefact check; the last one is classified per `options`.
 pub fn build_with_helper_copies<R: ConflictResolver>(
     mut grammar: LrGrammar,

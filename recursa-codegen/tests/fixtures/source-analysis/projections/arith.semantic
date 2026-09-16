@@ -1,5 +1,5 @@
 provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/arith.rs description=src/descriptions/arith.rs
-transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 precedence=declared repetitions=typed-cardinality
 recursa-semantic-projection-v1
 grammar edition=Rust2024 anchor=arith equivalence=Sensitive
 
@@ -47,11 +47,11 @@ type fixed:* = token(atom=fixed:*, text=any)
 type fixed:+ = token(atom=fixed:+, text=any)
 type fixed:- = token(atom=fixed:-, text=any)
 type fixed:/ = token(atom=fixed:/, text=any)
-type arith::IntAtom = sequence(arith::IntAtom::element0:arith::IntAtom target=IntLit cardinality=one separator=- min_bp=0)
-type arith::IdentAtom = sequence(arith::IdentAtom::element0:arith::IdentAtom target=Ident cardinality=one separator=- min_bp=0)
-type arith::Expr = pratt(arith::Expr::IntLit Atom => [arith::Expr::IntLit::element0:arith::Expr target=arith::Atom<arith::IntAtom> cardinality=one separator=- min_bp=0]; arith::Expr::Ident Atom => [arith::Expr::Ident::element0:arith::Expr target=arith::Atom<arith::IdentAtom> cardinality=one separator=- min_bp=0]; arith::Expr::Paren Atom => [arith::Expr::Paren::element0:arith::Expr target=fixed:( cardinality=one separator=- min_bp=0, arith::Expr::Paren::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=0, arith::Expr::Paren::element2:arith::Expr target=fixed:) cardinality=one separator=- min_bp=0]; arith::Expr::Neg Prefix { bp: 30 } => [arith::Expr::Neg::element0:arith::Expr target=fixed:- cardinality=one separator=- min_bp=0, arith::Expr::Neg::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=30]; arith::Expr::Add Infix { lbp: 10, rbp: 11 } => [arith::Expr::Add::element0:arith::Expr target=fixed:+ cardinality=one separator=- min_bp=0, arith::Expr::Add::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=11]; arith::Expr::Sub Infix { lbp: 10, rbp: 11 } => [arith::Expr::Sub::element0:arith::Expr target=fixed:- cardinality=one separator=- min_bp=0, arith::Expr::Sub::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=11]; arith::Expr::Mul Infix { lbp: 20, rbp: 21 } => [arith::Expr::Mul::element0:arith::Expr target=fixed:* cardinality=one separator=- min_bp=0, arith::Expr::Mul::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=21]; arith::Expr::Div Infix { lbp: 20, rbp: 21 } => [arith::Expr::Div::element0:arith::Expr target=fixed:/ cardinality=one separator=- min_bp=0, arith::Expr::Div::element1:arith::Expr target=arith::Expr cardinality=one separator=- min_bp=21])
-type arith::Atom<arith::IntAtom> = sequence(arith::Atom<arith::IntAtom>::element0:arith::Atom<arith::IntAtom> target=arith::IntAtom cardinality=one separator=- min_bp=0)
-type arith::Atom<arith::IdentAtom> = sequence(arith::Atom<arith::IdentAtom>::element0:arith::Atom<arith::IdentAtom> target=arith::IdentAtom cardinality=one separator=- min_bp=0)
+type arith::IntAtom = sequence(arith::IntAtom::element0:arith::IntAtom target=IntLit cardinality=one separator=-)
+type arith::IdentAtom = sequence(arith::IdentAtom::element0:arith::IdentAtom target=Ident cardinality=one separator=-)
+type arith::Expr = enum(arith::Expr::IntLit => [arith::Expr::IntLit::element0:arith::Expr target=arith::Atom<arith::IntAtom> cardinality=one separator=-]; arith::Expr::Ident => [arith::Expr::Ident::element0:arith::Expr target=arith::Atom<arith::IdentAtom> cardinality=one separator=-]; arith::Expr::Paren => [arith::Expr::Paren::element0:arith::Expr target=fixed:( cardinality=one separator=-, arith::Expr::Paren::element1:arith::Expr target=arith::Expr cardinality=one separator=-, arith::Expr::Paren::element2:arith::Expr target=fixed:) cardinality=one separator=-]; arith::Expr::Neg => [arith::Expr::Neg::element0:arith::Expr target=fixed:- cardinality=one separator=-, arith::Expr::Neg::element1:arith::Expr target=arith::Expr cardinality=one separator=-]; arith::Expr::Add => [arith::Expr::Add::element0:arith::Expr target=arith::Expr cardinality=one separator=-, arith::Expr::Add::element1:arith::Expr target=fixed:+ cardinality=one separator=-, arith::Expr::Add::element2:arith::Expr target=arith::Expr cardinality=one separator=-]; arith::Expr::Sub => [arith::Expr::Sub::element0:arith::Expr target=arith::Expr cardinality=one separator=-, arith::Expr::Sub::element1:arith::Expr target=fixed:- cardinality=one separator=-, arith::Expr::Sub::element2:arith::Expr target=arith::Expr cardinality=one separator=-]; arith::Expr::Mul => [arith::Expr::Mul::element0:arith::Expr target=arith::Expr cardinality=one separator=-, arith::Expr::Mul::element1:arith::Expr target=fixed:* cardinality=one separator=-, arith::Expr::Mul::element2:arith::Expr target=arith::Expr cardinality=one separator=-]; arith::Expr::Div => [arith::Expr::Div::element0:arith::Expr target=arith::Expr cardinality=one separator=-, arith::Expr::Div::element1:arith::Expr target=fixed:/ cardinality=one separator=-, arith::Expr::Div::element2:arith::Expr target=arith::Expr cardinality=one separator=-])
+type arith::Atom<arith::IntAtom> = sequence(arith::Atom<arith::IntAtom>::element0:arith::Atom<arith::IntAtom> target=arith::IntAtom cardinality=one separator=-)
+type arith::Atom<arith::IdentAtom> = sequence(arith::Atom<arith::IdentAtom>::element0:arith::Atom<arith::IdentAtom> target=arith::IdentAtom cardinality=one separator=-)
 
 [lowering-correlations]
 field arith::IntAtom::value -> parse-site(arith::IntAtom::element0)
@@ -60,14 +60,14 @@ field arith::Expr::IntLit::field0 -> parse-site(arith::Expr::IntLit::element0)
 field arith::Expr::Ident::field0 -> parse-site(arith::Expr::Ident::element0)
 field arith::Expr::Paren::field0 -> parse-site(arith::Expr::Paren::element1)
 field arith::Expr::Neg::field0 -> parse-site(arith::Expr::Neg::element1)
-field arith::Expr::Add::field0 -> pratt-lhs(owner=arith::Expr, variant=arith::Expr::Add)
-field arith::Expr::Add::field1 -> parse-site(arith::Expr::Add::element1)
-field arith::Expr::Sub::field0 -> pratt-lhs(owner=arith::Expr, variant=arith::Expr::Sub)
-field arith::Expr::Sub::field1 -> parse-site(arith::Expr::Sub::element1)
-field arith::Expr::Mul::field0 -> pratt-lhs(owner=arith::Expr, variant=arith::Expr::Mul)
-field arith::Expr::Mul::field1 -> parse-site(arith::Expr::Mul::element1)
-field arith::Expr::Div::field0 -> pratt-lhs(owner=arith::Expr, variant=arith::Expr::Div)
-field arith::Expr::Div::field1 -> parse-site(arith::Expr::Div::element1)
+field arith::Expr::Add::field0 -> parse-site(arith::Expr::Add::element0)
+field arith::Expr::Add::field1 -> parse-site(arith::Expr::Add::element2)
+field arith::Expr::Sub::field0 -> parse-site(arith::Expr::Sub::element0)
+field arith::Expr::Sub::field1 -> parse-site(arith::Expr::Sub::element2)
+field arith::Expr::Mul::field0 -> parse-site(arith::Expr::Mul::element0)
+field arith::Expr::Mul::field1 -> parse-site(arith::Expr::Mul::element2)
+field arith::Expr::Div::field0 -> parse-site(arith::Expr::Div::element0)
+field arith::Expr::Div::field1 -> parse-site(arith::Expr::Div::element2)
 field arith::Atom<arith::IntAtom>::value -> parse-site(arith::Atom<arith::IntAtom>::element0)
 field arith::Atom<arith::IdentAtom>::value -> parse-site(arith::Atom<arith::IdentAtom>::element0)
 

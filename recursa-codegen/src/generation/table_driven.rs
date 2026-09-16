@@ -17,8 +17,8 @@
 //! constructed field, so a mismatch cannot be written by hand. Fixed tokens never reach the
 //! value stack: a field whose type is a fixed token is constructed as a unit value.
 //!
-//! Sequences, enum alternatives, Pratt variants, fixed tokens and content tokens are rendered.
-//! A Pratt variant's reduce pops its operands like any other children and boxes them at
+//! Sequences, enum alternatives, fixed tokens and content tokens are rendered.
+//! An alternative's reduce pops its children and boxes them at
 //! construction; the implicit left operand of an infix or postfix variant is the first pop.
 //! Textually identical node-local reductions share one match arm so rustc optimizes their
 //! construction once while the LR table retains every distinct rule number.
@@ -149,25 +149,61 @@ pub(super) struct TableDrivenRendering {
     pub(super) dump: String,
 }
 
-/// Joins conflict diagnostics into one generation failure message.
-fn render_diagnostics(diagnostics: &[LrDiagnostic]) -> String {
-    let mut text = format!(
-        "the Recursa parser cannot be generated: {} conflict(s)\n",
-        diagnostics.len()
-    );
-    for diagnostic in diagnostics {
-        text.push_str(&diagnostic.render());
+/// Why the table-driven parser's LALR(1) construction failed to produce tables.
+///
+/// An unresolved conflict in an authored grammar (or a lowering-stage diagnostic to which no
+/// rule or token binds) is an
+/// ordinary authoring error, carried structured so the render-stage caller reports it as its
+/// registered code (`RCA0400`, `RCA0401`, `RCA0402` or `RCA0403`) instead of the internal-
+/// invariant `RCA9105`. Every other failure in this boundary is genuinely unexpected, so it
+/// stays free text for that fallback.
+pub(super) enum LrBuildError {
+    /// Every unresolved conflict or lowering diagnostic the LR analysis reported, in the
+    /// analysis's own deterministic `(state, lookahead)` order.
+    Diagnostics(Vec<LrDiagnostic>),
+    /// An unexpected internal invariant violation.
+    Internal(String),
+}
+
+impl From<String> for LrBuildError {
+    /// Classifies a plain-text failure from elsewhere in this boundary (table packing, plan
+    /// rendering, ...) as an internal invariant violation, so the many helpers below that
+    /// already return `Result<_, String>` keep working unchanged behind `?`.
+    fn from(detail: String) -> Self {
+        Self::Internal(detail)
     }
-    text
+}
+
+#[cfg(test)]
+impl LrBuildError {
+    /// Renders this failure as free text: joined conflict/lowering diagnostics, or the internal
+    /// detail unchanged. Only test code, which cares solely about the message, collapses the
+    /// structured `Diagnostics` case back to text this way; the render-stage boundary
+    /// (`generation.rs`'s `render_lr_parser`) keeps it structured.
+    pub(super) fn render(&self) -> String {
+        match self {
+            Self::Diagnostics(diagnostics) => {
+                let mut text = format!(
+                    "the Recursa parser cannot be generated: {} conflict(s)\n",
+                    diagnostics.len()
+                );
+                for diagnostic in diagnostics {
+                    text.push_str(&diagnostic.render());
+                }
+                text
+            }
+            Self::Internal(detail) => detail.clone(),
+        }
+    }
 }
 
 impl TableDrivenRendering {
     /// Runs the analysis and indexes its rules by node application and content token.
-    pub(super) fn build(lowered: &LoweredGrammar) -> Result<Self, String> {
+    pub(super) fn build(lowered: &LoweredGrammar) -> Result<Self, LrBuildError> {
         let analysis = LrAnalysis::from_lowered(lowered, AutomatonOptions::default())
-            .map_err(|diagnostics| render_diagnostics(&diagnostics))?;
+            .map_err(LrBuildError::Diagnostics)?;
         if !analysis.diagnostics.is_empty() {
-            return Err(render_diagnostics(&analysis.diagnostics));
+            return Err(LrBuildError::Diagnostics(analysis.diagnostics));
         }
         let expected_atoms = expected_atoms(&lowered.grammar)?;
         let map = &lowered.lowering_map;
@@ -228,12 +264,12 @@ impl TableDrivenRendering {
                     Some(application) => Some(DispatchTarget::Application(*application)),
                     None if rule.value_pops <= 1 => None,
                     None => {
-                        return Err(format!(
+                        return Err(LrBuildError::Internal(format!(
                             "table-driven generation cannot reduce `{}`: a normalized type without \
                              a node application carries {} values",
                             grammar.render_rule(crate::lr::RuleId::new(index)),
                             rule.value_pops
-                        ));
+                        )));
                     }
                 },
                 RuleAction::Envelope { .. }
@@ -1044,7 +1080,6 @@ fn render_reduce_body(
     let RuleAction::Construct { variant, sites, .. } = &rule.action else {
         return Ok(quote!({}));
     };
-    let mut implicit_lhs = false;
     let (variant_ident, style, elements): (
         Option<&Ident>,
         ResolvedFieldStyle,
@@ -1067,41 +1102,6 @@ fn render_reduce_body(
                 Cow::Borrowed(variant.elements.as_slice()),
             )
         }
-        (NodeBodyPlan::Pratt(pratt), Some(declaration)) => {
-            let resolved = plan_variant(lr, application, *declaration)?;
-            if let Some(nud) = pratt
-                .nud
-                .iter()
-                .find(|nud| nud.variant.resolved_variant == resolved)
-            {
-                (
-                    Some(&nud.variant.ident),
-                    nud.variant.style,
-                    Cow::Borrowed(nud.variant.elements.as_slice()),
-                )
-            } else if let Some(led) = pratt
-                .led
-                .iter()
-                .find(|led| led.variant.resolved_variant == resolved)
-            {
-                // The lowered rule starts with the implicit left operand, which the plan
-                // keeps apart from the tail; put it back in front so that pops line up.
-                let mut elements = Vec::with_capacity(led.variant.elements.len() + 1);
-                elements.push(led.lhs.clone());
-                elements.extend(led.variant.elements.iter().cloned());
-                implicit_lhs = true;
-                (
-                    Some(&led.variant.ident),
-                    led.variant.style,
-                    Cow::Owned(elements),
-                )
-            } else {
-                return Err(format!(
-                    "`{}` has no Pratt plan for one of its variants",
-                    node.ident
-                ));
-            }
-        }
         _ => {
             return Err(format!(
                 "`{}`: the lowered rule and the node plan disagree on the node's shape",
@@ -1109,16 +1109,7 @@ fn render_reduce_body(
             ));
         }
     };
-    // The implicit left operand has no site form; give it a required one so that the forms
-    // line up with the elements.
-    let forms: Cow<'_, [SiteForm]> = if implicit_lhs {
-        let mut forms = Vec::with_capacity(sites.len() + 1);
-        forms.push(SiteForm::required(0));
-        forms.extend_from_slice(sites);
-        Cow::Owned(forms)
-    } else {
-        Cow::Borrowed(sites.as_slice())
-    };
+    let forms: Cow<'_, [SiteForm]> = Cow::Borrowed(sites.as_slice());
     if elements.len() != forms.len() {
         return Err(format!(
             "`{}`: rule has {} sites but the node plan has {} elements",
@@ -1235,11 +1226,17 @@ fn render_field_value(
     } = site;
     let facade = &plan.facade;
     let is_choice = |wrapper: &FieldWrapper| !matches!(wrapper, FieldWrapper::Boxed);
-    // One element popped or named through the symbol at `symbols[0]`, boxed `boxes` times.
+    // One element popped or named through the field's value-carrying symbol, boxed `boxes`
+    // times. Usually `symbols` is that one symbol, but an inlined cardinality-one attachment
+    // unit (`docs/declared-precedence.md`, "Attachment units inline") widens the form to the
+    // attachment's own fixed-token and operand symbols, with the fixed tokens never carrying a
+    // value; the value stack holds only value-carrying entries regardless of their
+    // right-hand-side position, so `pop` finds the operand's value correctly once any symbol in
+    // the widened form is known to carry one.
     let element = |boxes: usize| -> Result<proc_macro2::TokenStream, String> {
         let carries = symbols
-            .first()
-            .is_some_and(|symbol| lr.symbol_carries_value(*symbol));
+            .iter()
+            .any(|symbol| lr.symbol_carries_value(*symbol));
         let value = if carries {
             return Ok(boxed_stack_value(plan, boxes));
         } else {

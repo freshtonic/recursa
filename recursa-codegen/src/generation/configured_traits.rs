@@ -555,7 +555,7 @@ pub(super) fn pretty_impl_parts(
             .iter()
             .filter_map(|element| attachment_pretty_terminal(node, element))
             .collect::<Vec<_>>(),
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+        NodeBodyPlan::Enum { .. } => trait_variants(&node.body)
             .into_iter()
             .flat_map(|variant| variant.elements)
             .filter_map(|element| attachment_pretty_terminal(node, &element))
@@ -768,20 +768,6 @@ fn semantic_fields_with_projections(
 pub(super) fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
     match body {
         NodeBodyPlan::Enum { variants, .. } => variants.clone(),
-        NodeBodyPlan::Pratt(pratt) => {
-            let mut variants = pratt
-                .nud
-                .iter()
-                .map(|branch| (branch.source_index, branch.variant.clone()))
-                .chain(pratt.led.iter().map(|branch| {
-                    let mut variant = branch.variant.clone();
-                    variant.elements.insert(0, branch.lhs.clone());
-                    (branch.source_index, variant)
-                }))
-                .collect::<Vec<_>>();
-            variants.sort_by_key(|(source_index, _)| *source_index);
-            variants.into_iter().map(|(_, variant)| variant).collect()
-        }
         NodeBodyPlan::Struct { .. } => unreachable!("struct Nodes do not have variants"),
     }
 }
@@ -820,7 +806,7 @@ pub(super) fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
                 ResolvedFieldStyle::Unit => quote!(formatter.write_str(#node_name)),
             }
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let name = variant.ident.unraw().to_string();
@@ -904,7 +890,7 @@ pub(super) fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
                 ResolvedFieldStyle::Unit => quote!(Self),
             }
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let fields = semantic_fields(&variant.elements);
@@ -942,7 +928,7 @@ pub(super) fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::Token
             });
             quote!(true #(&& #comparisons)*)
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "eq_left");
@@ -1005,7 +991,7 @@ pub(super) fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_mac
                 .collect();
             compare_fields(left, right)
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let same_variant = variants.iter().map(|variant| {
                 let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "ord_left");
@@ -1052,7 +1038,7 @@ pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream
             });
             quote!(#(#hashes)*)
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().enumerate().map(|(index, variant)| {
                 let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "hash");
@@ -1068,7 +1054,7 @@ pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream
 
 /// Reports whether a variant has any Node-typed element — a variant with none of these can
 /// always be constructed without recursing into another generated `arbitrary()` call, so it is
-/// safe to prefer once sampling depth is bounded (see `render_node_arbitrary`'s enum/Pratt case).
+/// safe to prefer once sampling depth is bounded (see `render_node_arbitrary`'s enum case).
 fn variant_has_node_element(variant: &VariantParsePlan) -> bool {
     variant.elements.iter().any(|element| {
         let ElementParseKind::Semantic { projection, .. } = &element.kind else {
@@ -1143,7 +1129,7 @@ pub(super) fn render_node_arbitrary(
                 ResolvedFieldStyle::Unit => quote!(Self),
             }
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().enumerate().map(|(index, variant)| {
                 let fields = semantic_fields_with_projections(&variant.elements);
@@ -1228,7 +1214,7 @@ pub(super) fn render_node_arbitrary(
             ) -> #facade::__private::arbitrary::Result<Self> {
                 // Tracks nested Node-construction depth across the whole `arbitrary()` call tree,
                 // not just within this Node — every generated Node increments it on entry, so an
-                // enum/Pratt body several levels below can still see how deep its ancestors
+                // enum body several levels below can still see how deep its ancestors
                 // already went. The guard's own binding keeps it alive for this whole function,
                 // including every nested call `#body` makes before returning.
                 let (__recursa_arbitrary_depth_guard, __recursa_arbitrary_depth) =
@@ -1315,7 +1301,7 @@ pub(super) fn render_node_serde(
                 ResolvedFieldStyle::Unit => quote!(struct #helper #generics;),
             }
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let variants = variants.iter().map(|variant| {
                 let ident = &variant.ident;
@@ -1540,7 +1526,7 @@ pub(super) fn generic_type_dependencies(node: &NodeParsePlan) -> Vec<Type> {
 pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
     let elements = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => elements.clone(),
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+        NodeBodyPlan::Enum { .. } => trait_variants(&node.body)
             .into_iter()
             .flat_map(|variant| variant.elements)
             .collect(),
@@ -1568,7 +1554,7 @@ pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<
 fn non_content_semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
     let elements = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => elements.clone(),
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+        NodeBodyPlan::Enum { .. } => trait_variants(&node.body)
             .into_iter()
             .flat_map(|variant| variant.elements)
             .collect(),

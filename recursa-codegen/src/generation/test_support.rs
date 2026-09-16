@@ -34,7 +34,7 @@ recursa::ast_node! {
 }
 
 pub(super) fn checked_rendering_retains_invalid_rust_diagnostics() {
-    let (_package, mut plan) = joined_pratt_fixture();
+    let (_package, mut plan) = joined_expressions_fixture();
     plan.module_anchor.segments[0].arguments =
         PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
             colon2_token: None,
@@ -66,7 +66,7 @@ pub(super) fn debug_directory_environment_is_always_tracked_by_cargo() {
 }
 
 pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neutral() {
-    let (_package, plan) = joined_pratt_fixture();
+    let (_package, plan) = joined_expressions_fixture();
     let rendered = render(&plan).unwrap();
     let identity = plan.identity.clone();
     let authoritative_root = rendered.root.clone();
@@ -157,7 +157,7 @@ pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neut
 }
 
 pub(super) fn arbitrary_identity_collision_is_preserved_and_rejected_without_replacement() {
-    let (_package, plan) = joined_pratt_fixture();
+    let (_package, plan) = joined_expressions_fixture();
     let rendered = render(&plan).unwrap();
     let destination = tempfile::tempdir().unwrap();
     let collision = destination
@@ -180,7 +180,7 @@ pub(super) fn arbitrary_identity_collision_is_preserved_and_rejected_without_rep
 
 #[cfg(all(feature = "diagrams", feature = "explorer"))]
 pub(super) fn debug_bundle_includes_every_enabled_diagram_and_explorer_capability_body() {
-    let (_package, plan) = joined_pratt_diagram_fixture();
+    let (_package, plan) = joined_expressions_diagram_fixture();
     let rendered = render(&plan).unwrap();
     let files = render_debug_logical_files(&plan, &rendered).unwrap();
     let index = render_debug_index(&plan.identity, &files);
@@ -231,7 +231,7 @@ pub(super) fn debug_bundle_includes_every_enabled_diagram_and_explorer_capabilit
 }
 
 pub(super) fn failed_debug_commit_is_cleaned_and_makes_the_generation_unselectable() {
-    let (_package, plan) = joined_pratt_fixture();
+    let (_package, plan) = joined_expressions_fixture();
     let rendered = render(&plan).unwrap();
     let destination = tempfile::tempdir().unwrap();
     let staged = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
@@ -268,7 +268,7 @@ pub(super) fn failed_debug_commit_is_cleaned_and_makes_the_generation_unselectab
 pub(super) fn debug_destination_and_bundle_entries_reject_symlinks_without_following_them() {
     use std::os::unix::fs::symlink;
 
-    let (_package, plan) = joined_pratt_fixture();
+    let (_package, plan) = joined_expressions_fixture();
     let rendered = render(&plan).unwrap();
     let parent = tempfile::tempdir().unwrap();
     let target = parent.path().join("target");
@@ -333,12 +333,11 @@ pub(super) fn fixed_accessor_names_remain_valid_for_numeric_spellings() {
 }
 
 #[cfg(feature = "diagrams")]
-pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs() {
-    let (_package, plan) = joined_pratt_diagram_fixture();
+pub(super) fn semantic_diagrams_cover_expression_nodes_content_tokens_and_local_docs() {
+    let (_package, plan) = joined_expressions_diagram_fixture();
     let diagrams = plan.diagrams.as_ref().expect("diagram plan");
     assert_eq!(diagrams.nodes.len(), plan.nodes.len());
     assert_eq!(diagrams.tokens.len(), plan.tokens.len());
-    assert_eq!(diagrams.tokens.len(), 3);
     assert!(
         diagrams
             .tokens
@@ -349,13 +348,13 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
         .nodes
         .iter()
         .find(|node| node.ident == "Expr")
-        .expect("Pratt diagram");
+        .expect("the expression diagram");
     let topology = format!("{:?}", expression.production);
     assert!(topology.contains("Choice"));
-    assert!(topology.contains("prefix bp=35 Neg"));
-    assert!(topology.contains("infix lbp=10 rbp=11 Add"));
-    assert!(topology.contains("infix lbp=15 rbp=16 Custom"));
-    assert!(topology.contains("postfix bp=40 Factorial"));
+    // Each variant renders as the rule its author wrote, under its own name.
+    for variant in ["Negate", "Factorial", "Power", "Add", "Between"] {
+        assert!(topology.contains(variant), "{variant}\n{topology}");
+    }
     let aggregate = recursa_diagrams::render_aggregate_document(diagrams);
     assert!(aggregate.contains("## Content tokens"));
     for binding in &plan.token_bindings {
@@ -395,7 +394,7 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
 #[cfg(feature = "diagrams")]
 #[cfg(feature = "diagrams")]
 pub(super) fn semantic_diagrams_preserve_generic_applications_and_repetition_topology() {
-    let (_package, plan) = joined_pratt_fixture_from(include_str!(
+    let (_package, plan) = joined_expressions_fixture_from(include_str!(
         "../../tests/fixtures/generation/generic-applications/src/grammar.rs"
     ));
     let diagrams = plan.diagrams.as_ref().expect("diagram plan");
@@ -419,39 +418,40 @@ pub(super) fn semantic_diagrams_preserve_generic_applications_and_repetition_top
     );
 }
 
-fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
-    joined_pratt_fixture_from(include_str!(
-        "../../tests/fixtures/generation/pratt/src/grammar.rs"
+fn joined_expressions_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    joined_expressions_fixture_from(include_str!(
+        "../../tests/fixtures/generation/expressions/src/grammar.rs"
     ))
 }
 
 #[cfg(feature = "diagrams")]
-fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
-    let source = include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs").replacen(
-        "module = crate::grammar,",
-        "module = crate::grammar,\n    diagrams,",
-        1,
-    );
-    joined_pratt_fixture_from(&source)
+fn joined_expressions_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    let source = include_str!("../../tests/fixtures/generation/expressions/src/grammar.rs")
+        .replacen(
+            "module = crate::grammar,",
+            "module = crate::grammar,\n    diagrams,",
+            1,
+        );
+    joined_expressions_fixture_from(&source)
 }
 
-fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
-    let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
-    fs::write(package.path().join("grammar.rs"), source).expect("write Pratt plan fixture");
+fn joined_expressions_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
+    let package = tempfile::tempdir().expect("temporary expressions plan fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write expressions plan fixture");
     let success = analyze_source_tree(
         SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
         &mut Vec::new(),
     )
-    .expect("analyze Pratt plan fixture");
+    .expect("analyze expressions plan fixture");
     let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
-        .expect("join a complete Pratt Emission plan");
-    render(&plan).expect("a complete Pratt plan renders");
+        .expect("join a complete expressions Emission plan");
+    render(&plan).expect("a complete expressions plan renders");
     (package, plan)
 }
 
 #[cfg(feature = "explorer")]
 pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
-    let (_, plan) = joined_pratt_fixture();
+    let (_, plan) = joined_expressions_fixture();
     let explorer = plan
         .explorer
         .as_ref()
@@ -473,8 +473,8 @@ pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
     let node = explorer
         .nodes
         .iter()
-        .find(|node| matches!(node.body, ExplorerNodeBodyPlan::Pratt(_)))
-        .expect("Pratt application has a Node descriptor");
+        .find(|node| matches!(node.body, ExplorerNodeBodyPlan::Enum(_)))
+        .expect("the expression application has a Node descriptor");
     assert!(
         explorer
             .roots
@@ -483,9 +483,9 @@ pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
     );
     assert!(node.qualified_name.ends_with(&format!("::{}", node.name)));
     let variants = match &node.body {
-        ExplorerNodeBodyPlan::Pratt(variants) => variants,
-        ExplorerNodeBodyPlan::Struct(_) | ExplorerNodeBodyPlan::Enum(_) => {
-            panic!("Pratt root keeps its complete variant table")
+        ExplorerNodeBodyPlan::Enum(variants) => variants,
+        ExplorerNodeBodyPlan::Struct(_) => {
+            panic!("an enum root keeps its complete variant table")
         }
     };
     assert!(variants.iter().all(|variant| {
@@ -502,9 +502,7 @@ pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
     );
     let all_variants = explorer.nodes.iter().flat_map(|node| match &node.body {
         ExplorerNodeBodyPlan::Struct(variant) => std::slice::from_ref(variant),
-        ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
-            variants.as_slice()
-        }
+        ExplorerNodeBodyPlan::Enum(variants) => variants.as_slice(),
     });
     assert!(
         all_variants
@@ -524,7 +522,7 @@ pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
 
 #[cfg(feature = "explorer")]
 pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
-    let (_, mut plan) = joined_pratt_fixture();
+    let (_, mut plan) = joined_expressions_fixture();
     let explorer = plan
         .explorer
         .as_mut()
@@ -535,9 +533,7 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
         .iter_mut()
         .flat_map(|node| match &mut node.body {
             ExplorerNodeBodyPlan::Struct(variant) => std::slice::from_mut(variant),
-            ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
-                variants.as_mut_slice()
-            }
+            ExplorerNodeBodyPlan::Enum(variants) => variants.as_mut_slice(),
         })
         .flat_map(|variant| &mut variant.elements)
         .find(|element| matches!(element.display, ExplorerDisplayPlan::Fixed(_)))
@@ -597,11 +593,11 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
         .nodes
         .iter()
         .find(|node| node.ident == "Expr")
-        .expect("fixture has the Pratt expression Node");
+        .expect("fixture has the expression Node");
     let application = expr
         .parse_applications
         .first()
-        .expect("Pratt expression has a materialized application");
+        .expect("the expression has a materialized application");
     let node_source = render_node_application_explorer(
         &plan,
         plan.explorer
@@ -626,7 +622,7 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
 
 #[cfg(feature = "explorer")]
 pub(super) fn explorer_output_omits_only_redundant_lifetimes() {
-    let (_, plan) = joined_pratt_fixture();
+    let (_, plan) = joined_expressions_fixture();
     let explorer = plan
         .explorer
         .as_ref()
@@ -848,7 +844,7 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
     let package = tempfile::tempdir().expect("temporary Pretty authority fixture");
     fs::write(
         package.path().join("grammar.rs"),
-        include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs"),
+        include_str!("../../tests/fixtures/generation/expressions/src/grammar.rs"),
     )
     .expect("write Pretty authority fixture");
     let success = analyze_source_tree(
@@ -870,17 +866,6 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
                 .iter_mut()
                 .flat_map(|variant| variant.elements.iter_mut())
                 .collect(),
-            NodeBodyPlan::Pratt(pratt) => pratt
-                .nud
-                .iter_mut()
-                .flat_map(|branch| branch.variant.elements.iter_mut())
-                .chain(
-                    pratt
-                        .led
-                        .iter_mut()
-                        .flat_map(|branch| branch.variant.elements.iter_mut()),
-                )
-                .collect(),
         })
         .find(|element| matches!(element.kind, ElementParseKind::Semantic { .. }))
         .expect("Pretty fixture contains a semantic declaration element");
@@ -894,7 +879,8 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
         unreachable!("selected fixture semantic field is direct")
     };
     *opaque_provenance = !*opaque_provenance;
-    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens)
+        .expect("fixture-derived Pretty plan has a reachable grouping atom");
 
     let authority_after_corruption =
         authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
@@ -908,8 +894,8 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
     );
 }
 
-pub(super) fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path_segment() {
-    let package = tempfile::tempdir().expect("temporary typed Pratt Pretty fixture");
+pub(super) fn pretty_recursion_uses_typed_node_identity_not_the_final_path_segment() {
+    let package = tempfile::tempdir().expect("temporary typed Pretty fixture");
     fs::write(
         package.path().join("grammar.rs"),
         r#"
@@ -921,6 +907,7 @@ recursa::grammar! {
 recursa::tokens! {
     ignore = r"[ \t\n\r]+",
     punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+    precedence { left(bp = 10) { PLUS } }
 }
 pub mod foreign {
     recursa::ast_node! {
@@ -940,14 +927,11 @@ recursa::ast_node! {
 }
 recursa::ast_node! {
 
-    #[pratt]
     pub enum Expr<T> {
         Foreign(foreign::Expr),
         Generic(T),
         Group(#[tok(OPEN, this, CLOSE)] boxed!(Self)),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }
 recursa::ast_node! {
@@ -958,80 +942,81 @@ recursa::ast_node! {
 }
 "#,
     )
-    .expect("write typed Pratt Pretty fixture");
+    .expect("write typed Pretty fixture");
     let success = analyze_source_tree(
         SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
         &mut Vec::new(),
     )
-    .expect("analyze typed Pratt Pretty fixture");
+    .expect("analyze typed Pretty fixture");
     let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
-        .expect("join typed Pratt Pretty fixture");
+        .expect("join typed Pretty fixture");
     let index = plan
         .nodes
         .iter()
         .position(|node| node.semantic_key == "grammar::Expr")
-        .expect("fixture has the owning Pratt Expr");
+        .expect("fixture has the owning Expr");
     let behavior = plan.pretty.nodes[index]
         .as_ref()
         .expect("owning Expr has Pretty behavior");
-    let pratt = behavior
-        .pratt
+    let declared = behavior
+        .declared
         .as_ref()
-        .expect("Expr has typed Pratt behavior");
+        .expect("Expr has typed declared-precedence behavior");
 
     assert_eq!(
-        pratt.variants[0].operands,
-        vec![PrettyPrattOperandBehavior::Ordinary],
+        declared.variants[0].operands,
+        vec![PrettyDeclaredOperandBehavior::Ordinary],
         "foreign::Expr must not become recursive merely because its final ident matches",
     );
     assert_eq!(
-        pratt.variants[1].operands,
-        vec![PrettyPrattOperandBehavior::Ordinary]
+        declared.variants[1].operands,
+        vec![PrettyDeclaredOperandBehavior::Ordinary]
     );
     assert!(matches!(
-        pratt.variants[2].operands.as_slice(),
-        [PrettyPrattOperandBehavior::Recursive { owner, applications, .. }]
+        declared.variants[2].operands.as_slice(),
+        [PrettyDeclaredOperandBehavior::Recursive { owner, applications, .. }]
             if *owner == behavior.node && applications == &behavior.applications
     ));
     assert!(matches!(
-        pratt.variants[3].operands.as_slice(),
+        declared.variants[3].operands.as_slice(),
         [
-            PrettyPrattOperandBehavior::Recursive { .. },
-            PrettyPrattOperandBehavior::Recursive { .. }
+            PrettyDeclaredOperandBehavior::Recursive { .. },
+            PrettyDeclaredOperandBehavior::Recursive { .. }
         ]
     ));
     assert!(
-        pratt.grouping.is_some(),
+        declared.grouping.is_some(),
         "typed Self atom supplies grouping"
     );
 }
 
-pub(super) fn pretty_pratt_variants_are_typechecked_in_isolated_helpers() {
-    let (_package, plan) = joined_pratt_fixture();
-    let rendered = render(&plan).expect("the Pratt fixture renders");
+pub(super) fn pretty_variants_are_typechecked_in_isolated_helpers() {
+    let (_package, plan) = joined_expressions_fixture();
+    let rendered = render(&plan).expect("the expressions fixture renders");
     let expr_index = plan
         .nodes
         .iter()
         .position(|node| node.ident == "Expr")
-        .expect("the fixture contains its Pratt Expr");
+        .expect("the fixture contains its Expr");
     let variant_count = plan.pretty.nodes[expr_index]
         .as_ref()
-        .and_then(|behavior| behavior.pratt.as_ref())
-        .expect("Expr has typed Pratt Pretty behavior")
+        .and_then(|behavior| behavior.declared.as_ref())
+        .expect("Expr has typed declared-precedence Pretty behavior")
         .variants
         .len();
     let expr = &rendered.nodes[expr_index].1;
 
     assert_eq!(
-        expr.matches("fn __recursa_pretty_pratt_variant_").count(),
-        variant_count,
-        "each Pratt Pretty variant must have a separately typechecked function item",
-    );
-    assert_eq!(
-        expr.matches("self . __recursa_pretty_pratt_variant_")
+        expr.matches("fn __recursa_pretty_declared_variant_")
             .count(),
         variant_count,
-        "the compact Pratt Pretty dispatcher must call every isolated variant helper",
+        "each Pretty variant must have a separately typechecked function item",
+    );
+    assert_eq!(
+        expr.matches("self . __recursa_pretty_declared_variant_")
+            .count(),
+        variant_count,
+        "the compact Pretty dispatcher must call every isolated variant helper",
     );
 }
 
@@ -1074,13 +1059,14 @@ pub(super) fn generated_pretty_scopes_do_not_emit_callback_boundaries() {
     assert!(nodes.contains("context . repetition_scope_style ("));
 }
 
-pub(super) fn pretty_pratt_grouping_follows_a_unique_authored_helper_path() {
-    let (_package, plan) = joined_pratt_fixture_from(
+pub(super) fn pretty_grouping_follows_a_unique_authored_helper_path() {
+    let (_package, plan) = joined_expressions_fixture_from(
         r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
     keywords { ANY => "any", QUERY => "query" }
     punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
+    precedence { left(bp = 10) { PLUS } }
 }
 
 recursa::ast_node! {
@@ -1151,14 +1137,11 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     enum Expr {
         Integer(Integer),
         Quantified(QuantifiedExpr),
         Parenthesized(ParenthesizedExpr),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }
 "#,
@@ -1167,12 +1150,12 @@ recursa::ast_node! {
         .nodes
         .iter()
         .position(|node| node.semantic_key == "Expr")
-        .expect("fixture has the owning Pratt Expr");
+        .expect("fixture has the owning Expr");
     let grouping = plan.pretty.nodes[index]
         .as_ref()
-        .and_then(|behavior| behavior.pratt.as_ref())
-        .and_then(|pratt| pratt.grouping.as_ref())
-        .expect("the helper path supplies Pratt grouping syntax");
+        .and_then(|behavior| behavior.declared.as_ref())
+        .and_then(|declared| declared.grouping.as_ref())
+        .expect("the helper path supplies grouping syntax");
 
     assert_eq!(
         grouping
@@ -1194,8 +1177,8 @@ recursa::ast_node! {
 
 /// Proves the emitted grouping survives the same witnessless cycle the source
 /// model admits, so a grammar that clears RCA3101 still renders its delimiters.
-pub(super) fn pretty_pratt_grouping_survives_a_witnessless_cyclic_sibling_variant() {
-    let (_package, plan) = joined_pratt_fixture_from(
+pub(super) fn pretty_grouping_survives_a_witnessless_cyclic_sibling_variant() {
+    let (_package, plan) = joined_expressions_fixture_from(
         r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
@@ -1204,6 +1187,7 @@ recursa::tokens! {
         OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
         COMMA => ",", PLUS => "+"
     }
+    precedence { left(bp = 10) { PLUS } }
 }
 
 recursa::ast_node! {
@@ -1257,13 +1241,10 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     enum Expr {
         Integer(Integer),
         Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }
 "#,
@@ -1272,12 +1253,12 @@ recursa::ast_node! {
         .nodes
         .iter()
         .position(|node| node.semantic_key == "Expr")
-        .expect("fixture has the owning Pratt Expr");
+        .expect("fixture has the owning Expr");
     let grouping = plan.pretty.nodes[index]
         .as_ref()
-        .and_then(|behavior| behavior.pratt.as_ref())
-        .and_then(|pratt| pratt.grouping.as_ref())
-        .expect("the witnessless cycle still supplies Pratt grouping syntax");
+        .and_then(|behavior| behavior.declared.as_ref())
+        .and_then(|declared| declared.grouping.as_ref())
+        .expect("the witnessless cycle still supplies grouping syntax");
 
     assert_eq!(
         grouping
@@ -1303,8 +1284,8 @@ recursa::ast_node! {
 /// mark survives. Reaching it through `S` puts it behind required syntax with
 /// nothing after, a context that can never contribute a witness, so the mark
 /// must not reach `C` and cost the sibling `Exprs` witness its grouping.
-pub(super) fn pretty_pratt_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context() {
-    let (_package, plan) = joined_pratt_fixture_from(
+pub(super) fn pretty_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context() {
+    let (_package, plan) = joined_expressions_fixture_from(
         r#"recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
@@ -1313,6 +1294,7 @@ recursa::tokens! {
         OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]",
         COMMA => ",", PLUS => "+"
     }
+    precedence { left(bp = 10) { PLUS } }
 }
 
 recursa::ast_node! {
@@ -1365,13 +1347,10 @@ recursa::ast_node! {
 
 recursa::ast_node! {
 
-    #[pratt]
     enum Expr {
         Integer(Integer),
         Parenthesized(P),
-        #[parse(infix, lbp = 10, rbp = 11)]
-        #[tok(PLUS)]
-        Add(boxed!(Self), boxed!(Self)),
+        Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
     }
 }
 "#,
@@ -1380,11 +1359,11 @@ recursa::ast_node! {
         .nodes
         .iter()
         .position(|node| node.semantic_key == "Expr")
-        .expect("fixture has the owning Pratt Expr");
+        .expect("fixture has the owning Expr");
     let grouping = plan.pretty.nodes[index]
         .as_ref()
-        .and_then(|behavior| behavior.pratt.as_ref())
-        .and_then(|pratt| pratt.grouping.as_ref())
+        .and_then(|behavior| behavior.declared.as_ref())
+        .and_then(|declared| declared.grouping.as_ref())
         .expect("a half-open context withholds the cycle mark and keeps the grouping");
 
     assert_eq!(
@@ -1405,8 +1384,8 @@ recursa::ast_node! {
     );
 }
 
-pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
-    let (package, plan) = joined_pratt_fixture();
+pub(super) fn every_typed_pretty_declared_decision_is_part_of_family_authority() {
+    let (package, plan) = joined_expressions_fixture();
 
     fn behavior(plan: &mut EmissionPlan) -> &mut PrettyNodeBehavior {
         let index = plan
@@ -1416,8 +1395,11 @@ pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
             .expect("fixture has Expr");
         plan.pretty.nodes[index].as_mut().expect("Expr has Pretty")
     }
-    fn pratt(plan: &mut EmissionPlan) -> &mut PrettyPrattBehavior {
-        behavior(plan).pratt.as_mut().expect("Expr is Pratt")
+    fn declared(plan: &mut EmissionPlan) -> &mut PrettyDeclaredBehavior {
+        behavior(plan)
+            .declared
+            .as_mut()
+            .expect("Expr has declared precedence")
     }
     fn reject(package: &Path, mut plan: EmissionPlan, corrupt: impl FnOnce(&mut EmissionPlan)) {
         corrupt(&mut plan);
@@ -1431,102 +1413,104 @@ pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
         behavior(plan).applications.clear();
     });
     reject(package.path(), plan.clone(), |plan| {
-        let grouping = pratt(plan).grouping.as_mut().expect("grouping");
-        assert_eq!(grouping.before.len(), 2);
-        grouping.before[1].spelling.push('!');
+        let grouping = declared(plan).grouping.as_mut().expect("grouping");
+        grouping.before[0].spelling.push('!');
     });
     reject(package.path(), plan.clone(), |plan| {
-        let grouping = pratt(plan).grouping.as_mut().expect("grouping");
-        assert_eq!(grouping.after.len(), 2);
-        grouping.after.remove(0);
+        let grouping = declared(plan).grouping.as_mut().expect("grouping");
+        grouping.after.clear();
     });
     reject(package.path(), plan.clone(), |plan| {
-        pratt(plan).grouping.as_mut().expect("grouping").after[1].rendering =
+        declared(plan).grouping.as_mut().expect("grouping").after[0].rendering =
             PrettyFixedRendering::Punctuation;
     });
     reject(package.path(), plan.clone(), |plan| {
-        pratt(plan).variants[0].parenthesization.entry_lbp = Some(1);
+        declared(plan).variants[0].level = Some(1);
     });
     reject(package.path(), plan.clone(), |plan| {
-        pratt(plan).variants[0].parenthesization.exit_rbp = 1;
-    });
-    reject(package.path(), plan.clone(), |plan| {
-        let recursive = pratt(plan)
+        let recursive = declared(plan)
             .variants
             .iter_mut()
             .flat_map(|variant| &mut variant.operands)
-            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .find(|operand| matches!(operand, PrettyDeclaredOperandBehavior::Recursive { .. }))
             .expect("recursive operand");
-        let PrettyPrattOperandBehavior::Recursive { owner, .. } = recursive else {
+        let PrettyDeclaredOperandBehavior::Recursive { owner, .. } = recursive else {
             unreachable!()
         };
         *owner = NodeId::next(999);
     });
     reject(package.path(), plan.clone(), |plan| {
-        let recursive = pratt(plan)
+        let recursive = declared(plan)
             .variants
             .iter_mut()
             .flat_map(|variant| &mut variant.operands)
-            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .find(|operand| matches!(operand, PrettyDeclaredOperandBehavior::Recursive { .. }))
             .expect("recursive operand");
-        let PrettyPrattOperandBehavior::Recursive { applications, .. } = recursive else {
+        let PrettyDeclaredOperandBehavior::Recursive { applications, .. } = recursive else {
             unreachable!()
         };
         applications.clear();
     });
     reject(package.path(), plan.clone(), |plan| {
-        let recursive = pratt(plan)
+        let recursive = declared(plan)
             .variants
             .iter_mut()
             .flat_map(|variant| &mut variant.operands)
-            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
-            .expect("recursive operand");
-        let PrettyPrattOperandBehavior::Recursive { minimum, .. } = recursive else {
+            .find(|operand| {
+                matches!(
+                    operand,
+                    PrettyDeclaredOperandBehavior::Recursive {
+                        minimum: PrettyDeclaredMinimum::Binding(_),
+                        ..
+                    }
+                )
+            })
+            .expect("a recursive operand with a left-edge bound");
+        let PrettyDeclaredOperandBehavior::Recursive { minimum, .. } = recursive else {
             unreachable!()
         };
-        *minimum = PrettyPrattMinimum::Binding(255);
+        *minimum = PrettyDeclaredMinimum::None;
     });
     reject(package.path(), plan.clone(), |plan| {
-        let recursive = pratt(plan)
+        let recursive = declared(plan)
             .variants
             .iter_mut()
             .flat_map(|variant| &mut variant.operands)
-            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
-            .expect("recursive operand");
-        let PrettyPrattOperandBehavior::Recursive { next, .. } = recursive else {
+            .find(|operand| {
+                matches!(
+                    operand,
+                    PrettyDeclaredOperandBehavior::Recursive {
+                        next: PrettyDeclaredNext::Binding(_),
+                        ..
+                    }
+                )
+            })
+            .expect("a recursive operand with a right-edge bound");
+        let PrettyDeclaredOperandBehavior::Recursive { next, .. } = recursive else {
             unreachable!()
         };
-        *next = PrettyPrattNext::Binding(255);
+        *next = PrettyDeclaredNext::None;
     });
     reject(package.path(), plan.clone(), |plan| {
-        let fixed = behavior(plan)
+        let attached = behavior(plan)
             .variants
             .iter_mut()
             .flatten()
-            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
-            .expect("fixed Pretty element");
-        let PrettyElementBehavior::Fixed {
-            soft_break_before, ..
-        } = fixed
-        else {
-            unreachable!()
+            .find_map(|element| match element {
+                PrettyElementBehavior::Semantic {
+                    projection:
+                        PrettySemanticProjection::Direct {
+                            attachment: Some(attachment),
+                            ..
+                        },
+                } => attachment.before.first_mut(),
+                _ => None,
+            })
+            .expect("an operator token attached before a semantic operand");
+        let PrettyAttachedSyntaxBehavior::Required(fixed) = attached else {
+            unreachable!("the expressions fixture attaches required operator syntax")
         };
-        *soft_break_before = !*soft_break_before;
-    });
-    reject(package.path(), plan.clone(), |plan| {
-        let fixed = behavior(plan)
-            .variants
-            .iter_mut()
-            .flatten()
-            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
-            .expect("fixed Pretty element");
-        let PrettyElementBehavior::Fixed {
-            soft_break_after, ..
-        } = fixed
-        else {
-            unreachable!()
-        };
-        *soft_break_after = !*soft_break_after;
+        fixed.spelling.push('!');
     });
     reject(package.path(), plan, |plan| {
         let semantic = behavior(plan)
@@ -1619,7 +1603,7 @@ pub(super) fn visit_bodies_use_the_runtime_step_and_child_list_macros() {
                 "PartialEq, Pretty, Visit, VisitMut, serde::Serialize",
                 1,
             );
-    let (_package, plan) = joined_pratt_fixture_from(&source);
+    let (_package, plan) = joined_expressions_fixture_from(&source);
     let render_visit = |ident: &str| {
         let node = plan
             .nodes
@@ -1667,7 +1651,7 @@ pub(super) fn visit_bounds_only_cover_node_type_parameters() {
         "    #[omit(Visit, VisitMut)]\n    #[tok(LPAREN, this, RPAREN)]\n    pub struct Pair",
         1,
     );
-    let (_package, plan) = joined_pratt_fixture_from(&source);
+    let (_package, plan) = joined_expressions_fixture_from(&source);
     let render_visit = |ident: &str| {
         let node = plan
             .nodes
@@ -1977,7 +1961,6 @@ recursa::ast_node! {
                     .iter()
                     .flat_map(|variant| variant.elements.iter())
                     .collect(),
-                NodeBodyPlan::Pratt(_) => Vec::new(),
             })
             .find_map(|element| match &element.kind {
                 ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
@@ -2004,7 +1987,6 @@ recursa::ast_node! {
                     .iter_mut()
                     .flat_map(|variant| variant.elements.iter_mut())
                     .collect(),
-                NodeBodyPlan::Pratt(_) => Vec::new(),
             })
             .find_map(|element| match &mut element.kind {
                 ElementParseKind::Semantic { projection, .. } => match projection.as_mut() {
@@ -2022,7 +2004,8 @@ recursa::ast_node! {
             .expect("fixture contains an attached word-separated repetition");
     assert_eq!(separator, "AND");
     *separator = "and".to_owned();
-    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens)
+        .expect("fixture-derived Pretty plan has a reachable grouping atom");
 
     assert_ne!(Some(plan.pretty.clone()), authority);
     assert!(
