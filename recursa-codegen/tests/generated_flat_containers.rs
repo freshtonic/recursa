@@ -21,6 +21,19 @@ const FIXTURE: &str = "tests/fixtures/generation/flat-containers";
 /// The grammar-root line the negative cases replace to drop or keep the `flat` flag.
 const FLAT_FLAG: &str = "    flat,\n";
 
+/// The size record the generator emits for the container grammar, as the fixture prints it.
+///
+/// One entry per flat Node application, in parse-index order. A zero size is a unit fixed-token
+/// Node, which holds no field at all.
+const FLAT_NODE_SIZES: &str = "flat-sizes => FlatStatement=8 FlatLet=16 FlatAlias=4 \
+                               FlatPrint=12 FlatGuard=4 FlatCall=8 FlatArgs=8 \
+                               FlatFunctionTail=12 FlatTrailingVariadic=4 FlatDefine=12 \
+                               FlatParams=8 FlatParam=8 FlatMode=1 FlatWith=12 FlatBlock=8 \
+                               FlatModifiers=8 FlatErased=4 FlatOptions=20 FlatKwAs=0 \
+                               FlatKwIn=0 FlatKwOut=0 FlatKwOnly=0 FlatKwTemp=0 FlatTrail=8 \
+                               FlatBoxes=8 FlatMarks=16 FlatFilter=16 FlatValue=12 FlatList=8 \
+                               FlatTuple=8 FlatBang=0 FlatName=4 FlatCallee=4 FlatNumber=4";
+
 #[test]
 fn the_flat_containers_fixture_emits_a_flat_type_for_every_declaration_and_one_owner() {
     let package = scaffold(FIXTURE, None);
@@ -62,6 +75,14 @@ fn the_flat_containers_fixture_emits_a_flat_type_for_every_declaration_and_one_o
         lines.contains("optional handle=4 optional list=8\n"),
         "{lines}"
     );
+
+    // The generator's own size record. `size_of` is const, so the whole table is a compile-time
+    // fact and the fixture pins it entry by entry, in parse-index order.
+    let sizes = lines
+        .lines()
+        .find(|line| line.starts_with("flat-sizes "))
+        .expect("the fixture prints the generated size table");
+    assert_eq!(sizes, FLAT_NODE_SIZES);
 
     // Every flat type carries a distinct tag derived from its Node key.
     let tags = lines
@@ -433,9 +454,14 @@ fn main() {
 #[test]
 fn a_child_the_grammar_root_cannot_name_reaches_the_traversal_as_an_opaque_reference() {
     // `NodeRef` holds a handle per variant, so it cannot hold the handle of a Node the grammar
-    // root cannot name. A Node in a private module is exactly that case: `children` reports its
-    // site as `NodeRef::Opaque` and stops there, and the variant exists only for a grammar that
-    // has such a child. Every other grammar of this file omits it.
+    // root cannot name. A Node in a private module is exactly that case. `children` reports its
+    // site as `NodeRef::Opaque`, and the variant exists only for a grammar that has such a child.
+    // Every other grammar of this file omits it.
+    //
+    // The opaque reference carries the Node's own traversal behavior, so the traversal does not
+    // stop there: the reference reports the Node's name and the Node's children, and the walk
+    // reaches everything below it. `Seen` is pooled and lives under the private Node, which is
+    // what proves the subtree is not truncated.
     let package = scaffold(FIXTURE, Some(OPAQUE_FLAT_GRAMMAR));
     fs::write(package.path().join("src/main.rs"), OPAQUE_FLAT_DRIVER)
         .expect("write the opaque consumer");
@@ -443,10 +469,30 @@ fn a_child_the_grammar_root_cannot_name_reaches_the_traversal_as_an_opaque_refer
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.ends_with("opaque-flat-ok\n"), "{stdout}");
+
+    // An opaque reference reports the Node's own name, and walking into it finds one `Seen` per
+    // private Node.
     assert!(
-        stdout.contains("opaque children=[\"Name\", \"Opaque\", \"Opaque\"] below=0\n"),
-        "a non-public child reports one opaque reference per site and no child of its own\n\
-         {stdout}"
+        stdout.contains("opaque children=[\"Name\", \"Hidden\", \"Hidden\"] below=2\n"),
+        "an opaque reference names its Node and still yields its children\n{stdout}"
+    );
+
+    // The whole tree, through two opaque references, with the pooled Node under each one.
+    assert!(
+        stdout.contains("opaque walk => Root(Name Hidden(Seen) Hidden(Seen))\n"),
+        "the walk reaches every Node below a Node the root cannot name\n{stdout}"
+    );
+
+    // The pooled Node below the private one is in the pool, and in post-order.
+    assert!(
+        stdout.contains("opaque pool seen=2 post-order=ok\n"),
+        "a pooled Node under a private Node keeps invariant I1\n{stdout}"
+    );
+
+    // An opaque reference compares and prints by the Node it names.
+    assert!(
+        stdout.contains("opaque refs equal=true distinct=true debug=Hidden\n"),
+        "{stdout}"
     );
 }
 
@@ -477,6 +523,7 @@ recursa::ast_node! {
 pub mod visible {
     recursa::ast_node! {
         #[derive(Debug)]
+        #[flat(pool)]
         pub struct Seen {
             #[lex(pattern = r"[0-9]+")]
             pub text: SeenText,
@@ -503,20 +550,95 @@ recursa::ast_node! {
 "#;
 
 /// The consumer that traverses a result whose second child is a Node in a private module.
-const OPAQUE_FLAT_DRIVER: &str = r#"//! Proves a non-public child reaches the traversal as `NodeRef::Opaque`.
+const OPAQUE_FLAT_DRIVER: &str = r#"//! Proves a non-public child reaches the traversal as `NodeRef::Opaque`, children and all.
 
+use recursa::{FlatNode, FlatVisitor, walk};
 use recursa_generated_flat_containers::grammar;
+use recursa_generated_flat_containers::grammar::{FlatAst, NodeRef};
+
+/// Prints one `NodeRef` name per Node, nested one pair of parentheses per level.
+struct WalkPrinter {
+    /// The tree rendered so far.
+    text: String,
+    /// Whether the Node at each open level has printed a child already.
+    open: Vec<bool>,
+}
+
+impl<'input, R: FlatNode> FlatVisitor<FlatAst<'input, R>> for WalkPrinter {
+    fn enter(&mut self, _ast: &FlatAst<'input, R>, node: NodeRef) -> bool {
+        if let Some(printed) = self.open.last_mut() {
+            if *printed {
+                self.text.push(' ');
+            } else {
+                self.text.push('(');
+                *printed = true;
+            }
+        }
+        self.text.push_str(node.name());
+        self.open.push(false);
+        true
+    }
+
+    fn leave(&mut self, _ast: &FlatAst<'input, R>, _node: NodeRef) {
+        if self.open.pop() == Some(true) {
+            self.text.push(')');
+        }
+    }
+}
 
 fn main() {
     let source = "let x 1, 2;";
     let lexed = grammar::lex(source);
     let mut input = lexed.input();
     let flat = grammar::Root::parse_flat(&mut input).expect("the flat parse succeeds");
+
+    // The direct children of the root: one Node the root can name, and two it cannot.
     let mut names = Vec::new();
-    grammar::children(&flat, flat.root_ref(), &mut |child| names.push(child.name()));
+    let mut opaque = Vec::new();
+    grammar::children(&flat, flat.root_ref(), &mut |child| {
+        names.push(child.name());
+        if let NodeRef::Opaque(reference) = child {
+            opaque.push(reference);
+        }
+    });
+
+    // What walking into each opaque reference finds, which is the subtree a stop would lose.
     let mut below = 0;
-    grammar::children(&flat, grammar::NodeRef::Opaque, &mut |_| below += 1);
+    for child in &opaque {
+        grammar::children(&flat, NodeRef::Opaque(*child), &mut |_| below += 1);
+    }
     println!("opaque children={names:?} below={below}");
+
+    // The whole tree, which reaches through both opaque references.
+    let mut printer = WalkPrinter {
+        text: String::new(),
+        open: Vec::new(),
+    };
+    walk(&flat, flat.root_ref(), &mut printer);
+    println!("opaque walk => {}", printer.text);
+
+    // The pooled Node below the private one, and invariant I1 over its pool.
+    let post_order = match grammar::check_post_order(&flat) {
+        Ok(()) => "ok".to_owned(),
+        Err(violation) => violation.to_string(),
+    };
+    println!(
+        "opaque pool seen={} post-order={post_order}",
+        flat.pool::<grammar::visible::FlatSeen>().len(),
+    );
+
+    // An opaque reference is a value: it compares by the Node it names and prints that name.
+    // The raw handle is a shared-pool offset, so only the name half of `Debug` is pinned.
+    let (first, second) = (opaque[0], opaque[1]);
+    let debug = format!("{first:?}");
+    let (debug_name, _) = debug
+        .split_once('#')
+        .expect("an opaque reference prints its name and its raw handle");
+    println!(
+        "opaque refs equal={} distinct={} debug={debug_name}",
+        first == opaque[0],
+        first != second,
+    );
     println!("opaque-flat-ok");
 }
 "#;

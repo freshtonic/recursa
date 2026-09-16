@@ -558,8 +558,14 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
     quote!(#visit_event #visit_mut_event)
 }
 
-/// Maximum enum variants typechecked by one generated traversal helper.
-const VISIT_DISPATCH_LEAF_WIDTH: usize = 32;
+/// Maximum match arms typechecked by one generated traversal helper.
+///
+/// Both generated traversals split a wide match on this width. [`super::flat_traversal`] splits
+/// the Flat AST `children` dispatch, and this module splits the nested Visit dispatch. The two
+/// splits answer the same problem: a pg-sql-scale grammar has enum declarations with more than a
+/// hundred variants, and more than a thousand Node applications in one dispatch. One constant
+/// keeps the two answers equal.
+pub(super) const VISIT_DISPATCH_LEAF_WIDTH: usize = 32;
 
 /// Maximum child helpers called by one generated traversal routing helper.
 const VISIT_DISPATCH_ROUTE_WIDTH: usize = 16;

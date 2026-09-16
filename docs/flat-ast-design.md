@@ -81,7 +81,11 @@ ast_node! {
 - `#[flat(pool)]` puts every application of the declaration into its own typed pool. A generic
   Node gets one pool per materialized application.
 - `max_size = N` adds a generated compile-time assertion that the flat Node type is at most `N`
-  bytes. Without it the generator only records the size in the generated-code debug bundle.
+  bytes. The assertion is opt-in. The size record is not. The generator emits `FLAT_NODE_SIZES` at
+  the grammar root. It is a `&[(&str, usize)]` that holds the name and the `size_of` of every flat
+  Node application, in parse-index order. A Node the root cannot name appears there too: it records
+  its own size beside its declaration, and the table reads that constant. `size_of` is const, so a
+  test can pin the whole table.
 - A declaration without the attribute lives in the shared pool.
 - `#[flat(...)]` in a grammar whose root does not enable `flat` is a diagnostic.
 
@@ -241,8 +245,14 @@ The generator emits, at the grammar root beside the owner:
   `Holder<Name>` is `HolderName`; two applications that would share a name both take their
   canonical parse index as a suffix. `NodeRef::name()` returns the variant's own name.
 - One `Opaque` variant, only for a grammar in which a public Node has a child the root cannot
-  name, which is a Node declared in a private module. `children` reports such a child's site as
-  `Opaque` and stops there; the Node is still stored, and its own module can read it.
+  name. Such a child is a Node declared without `pub`, or a Node in a private module. The variant
+  holds an `OpaqueRef`, which carries the child's raw handle and a `&'static OpaqueTable`. The
+  table holds the Node's name and a children function. The generator emits the table in the Node's
+  own module, which is the one module that can name the Node. `NodeRef::name()` returns that name.
+  `children` reports the opaque Node's own children too, so no subtree is truncated. Every Node of
+  a result is therefore reachable from its root. The table's children function takes the shared
+  pool, the list store and the raw handle, and nothing else. It needs no typed pool, because a Node
+  the root cannot name is always in the shared pool.
 - `children(ast, node, &mut impl FnMut(NodeRef))`: a free function that calls the sink once per
   direct child in source order. A text handle and a presence flag are data, never children. A wide
   match is split into bounded helper functions, as a wide Visit match is, so a pg-sql-scale
@@ -252,7 +262,9 @@ The generator emits, at the grammar root beside the owner:
 - `FlatNodeRef`, which names one flat type's own variant, and the owner's `root_ref` built on it.
 - `check_post_order(ast)`, which walks `children` over every Node of every typed pool and returns
   the first same-pool child that does not precede its parent. A fresh parse always passes, so the
-  call is cheap evidence for invariant I1 in a test or a debug build.
+  call is cheap evidence for invariant I1 in a test or a debug build. An opaque Node is never
+  pooled, so the checker reads none of them. It reaches a pooled Node below one through the pool
+  itself.
 
 `recursa-core` owns the grammar-erased half, so one walk serves every grammar and an adapter can
 reuse it:

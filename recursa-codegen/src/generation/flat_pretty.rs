@@ -1,31 +1,33 @@
-//! Flat Pretty generation: one `FlatPretty` implementation per flat Node type, the container
-//! dispatch its fields need, and the rendering surface of the grammar's `FlatAst` owner.
+//! Flat Pretty generation. This module renders one `FlatPretty` implementation per flat Node
+//! type, the container dispatch its fields need, and the rendering surface of the grammar's
+//! `FlatAst` owner.
 //!
 //! A flat render must produce exactly what a detached nested value of the same Node produces, so
-//! it is not a second renderer. [`super::pretty`] renders both representations from one frozen
-//! [`PrettyNodeBehavior`]; this module supplies the flat half of the two decisions that actually
-//! differ:
+//! this is not a second renderer. [`super::pretty`] renders both representations from one frozen
+//! [`PrettyNodeBehavior`]. This module supplies the flat half of the two decisions that differ:
 //!
-//! - **Value access.** A flat Node is `Copy` and holds its children as four-byte handles, so a
-//!   field access is spelled exactly as the nested one (`self.field`), minus the `Box` layer the
-//!   flat field mapping drops.
-//! - **Child dispatch.** A nested child renders itself; a flat child is a handle, an optional
-//!   handle, a list handle or a text handle, and only the result's stores can resolve one. Every
-//!   such field renders through the generated `__RecursaFlatPrettyWith` container trait, which
-//!   reaches the Node behind a handle and calls its `FlatPretty` implementation.
+//! - **Value access.** A flat Node is `Copy` and holds its children as four-byte handles. A field
+//!   access is therefore spelled exactly as the nested one, `self.field`. The flat field mapping
+//!   drops the `Box` layer, so the access drops it too.
+//! - **Child dispatch.** A nested child renders itself. A flat child is a handle, an optional
+//!   handle, a list handle or a text handle, and only the result's stores can resolve one. Each
+//!   such field renders through the generated `__RecursaFlatPrettyWith` container trait. That
+//!   trait reaches the Node behind a handle and calls the Node's `FlatPretty` implementation.
 //!
-//! What is emitted where:
+//! The module emits one `FlatPretty` implementation per Node family beside the authored
+//! declaration. It uses the same per-node path [`super::flat`] uses, because the grammar root
+//! cannot name a Node declared without `pub`.
 //!
-//! - One `FlatPretty` implementation per Node family goes beside the authored declaration, through
-//!   the same per-node path [`super::flat`] uses, because a Node declared without `pub` cannot be
-//!   named from the grammar root.
-//! - The container trait, its handle, optional, list and text implementations, and the owner's
-//!   `pretty`, `render`, `render_with` and `pretty_node` methods go at the grammar root.
+//! The module emits these items at the grammar root: the container trait, its handle, optional,
+//! list and text implementations, and the owner's `pretty`, `render`, `render_with` and
+//! `pretty_node` methods.
 //!
-//! A flat result keeps no occurrence provenance, so a flat render emits the canonical spelling of
-//! every fixed token and omits optional fixed syntax it cannot have captured. That is the same
-//! document a detached nested AST renders. `docs/flat-ast-design.md` settles the rendering
-//! contract and `docs/adr/0008-keep-flat-asts-semantic-only.md` records the decision.
+//! A flat result keeps no occurrence provenance. A flat render therefore emits the canonical
+//! spelling of every fixed token, and it omits optional fixed syntax it cannot have captured.
+//! That is the same document a detached nested AST renders.
+//!
+//! `docs/flat-ast-design.md` settles the rendering contract and
+//! `docs/adr/0008-keep-flat-asts-semantic-only.md` records the decision.
 
 use super::*;
 
@@ -64,9 +66,9 @@ fn flat_pretty_store(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
 /// Returns the rendering predicates one Node family's own type parameters owe the store.
 ///
-/// A generic flat Node reaches a child of a parameter type through `Handle<T>`, so the parameter
-/// must both render itself against this store and resolve inside it. A non-generic Node owes
-/// nothing: every child type is closed, and its implementation covers every store.
+/// A generic flat Node reaches a child of a parameter type through `Handle<T>`. The parameter must
+/// therefore render itself against this store, and it must resolve inside it. A non-generic Node
+/// owes nothing: every child type is closed, and its implementation covers every store.
 fn flat_pretty_parameter_predicates(
     plan: &EmissionPlan,
     parameters: &[Ident],
@@ -86,9 +88,9 @@ fn flat_pretty_parameter_predicates(
 
 /// Renders the child dispatch of one flat semantic value.
 ///
-/// Every flat field — a handle, an optional handle, a list handle or a content token's text
-/// handle — is dispatched through one generated container trait, so the rendering code above this
-/// call is identical for both representations.
+/// One generated container trait dispatches every flat field. The four field shapes are a handle,
+/// an optional handle, a list handle and a content token's text handle. The rendering code above
+/// this call is therefore identical for both representations.
 pub(super) fn flat_pretty_dispatch(
     plan: &EmissionPlan,
     value: proc_macro2::TokenStream,
@@ -147,9 +149,9 @@ pub(super) fn flat_pretty_declared_recursion(
 
 /// Returns the frame one Node family's private flat Pretty helpers are assembled into.
 ///
-/// The store's lifetime and root Node type are bound by each helper method rather than by the
-/// inherent implementation block, because an inherent block cannot bind a parameter the flat type
-/// itself does not mention.
+/// Each helper method binds the store's lifetime and root Node type. The inherent implementation
+/// block does not bind them. An inherent block cannot bind a parameter that the flat type itself
+/// does not mention.
 pub(super) fn flat_pretty_frame(plan: &EmissionPlan, node: &NodeParsePlan) -> PrettyFrame {
     let facade = &plan.facade;
     let parameters = flat_pretty_parameters(node);

@@ -2,41 +2,47 @@
 //! pool, and side tables.
 //!
 //! One parsed result owns one Flat AST store. The store keeps every Node of a pooled Node type in
-//! its own [`TypedPool`], every other Node in one [`SharedPool`] of four-byte words, every list of
-//! handles in one [`ListStore`], and every content token's text in one [`TextPool`]. Nodes refer to
-//! one another through four-byte typed handles, never through pointers. `docs/flat-ast-design.md`
-//! settles the design and `docs/adr/0012-tiered-flat-storage.md` records the decision.
+//! its own [`TypedPool`]. It keeps every other Node in one [`SharedPool`] of four-byte words. It
+//! keeps every list of handles in one [`ListStore`], and every content token's text in one
+//! [`TextPool`]. Nodes refer to one another through four-byte typed handles, never through
+//! pointers. `docs/flat-ast-design.md` settles the design and
+//! `docs/adr/0012-tiered-flat-storage.md` records the decision.
 //!
-//! Every part is append-only. A handle stays valid for the life of the store, and no slot is
-//! removed, reused, or compacted. This module therefore exposes no mutable Node access: there is no
-//! `get_mut` and no `IndexMut` on a pool. Mutation is a later milestone. A [`SideTable`] is the
-//! exception, because a consumer owns its values and writing them does not change the AST.
+//! Every part is append-only. A handle stays valid for the life of the store. No slot is removed,
+//! reused, or compacted. This module therefore exposes no mutable Node access: there is no
+//! `get_mut`, and a pool has no `IndexMut`. Mutation is a later milestone. A [`SideTable`] is the
+//! one exception, because a consumer owns its values and a write to them does not change the AST.
 //!
 //! # Handle encoding
 //!
 //! Every handle is `#[repr(transparent)]` over [`NonZeroU32`], so an optional handle is also four
-//! bytes. A pool interprets the raw value; the handle type does not know which pool holds it.
+//! bytes. A pool interprets the raw value. The handle type does not know which pool holds it.
 //!
 //! - A typed pool, the text pool, and a side table read the raw value as `index + 1`.
-//! - The shared pool and the list store read it as an offset into their word or slot vector, whose
-//!   slot zero is reserved and never allocated. The value is therefore never zero.
+//! - The shared pool and the list store read it as an offset into their word or slot vector. Slot
+//!   zero of each one is reserved and never allocated, so the value is never zero.
 //!
-//! Exhausting the `u32` range is a checked panic with a clear message in every build, as
-//! `docs/adr/0009-give-each-flat-ast-its-own-typed-stores.md` requires. A handle never wraps,
-//! truncates, or becomes zero.
+//! A handle never wraps, truncates, or becomes zero. An exhausted `u32` range is a checked panic
+//! with a clear message in every build, as
+//! `docs/adr/0009-give-each-flat-ast-its-own-typed-stores.md` requires.
 //!
 //! # Safety model
 //!
-//! The shared pool stores whole four-byte words. Every flat Node has an alignment of at most four,
-//! because a handle is a `u32`, a list handle is two `u32`, and a [`Span`] is two `u32`. A `Vec<u32>`
-//! buffer is four-byte aligned, so a Node written at a word offset can be read back through an
-//! aligned pointer. [`SharedPool::alloc`] asserts `align_of::<T>() <= 4` at compile time and
-//! [`SharedPool::get`] performs the only pointer cast, guarded by the typed handle (invariant I3),
-//! the bounds check, and, in debug and test builds, a type tag word. The list store reads a run of
-//! `u32` slots as a slice of handles, which is sound because it wrote every slot from a handle's raw
-//! value (invariant I4) and because [`ListItem`] requires a transparent representation. The value
-//! stack in this crate is the precedent for both the confinement and the documentation style. This
-//! module's tests run under Miri in CI.
+//! The shared pool stores whole four-byte words. Every flat Node has an alignment of at most four
+//! bytes: a handle is a `u32`, a list handle is two `u32`, and a [`Span`] is two `u32`. A
+//! `Vec<u32>` buffer is four-byte aligned. A Node written at a word offset can therefore be read
+//! back through an aligned pointer.
+//!
+//! [`SharedPool::alloc`] asserts `align_of::<T>() <= 4` at compile time. [`SharedPool::get`]
+//! performs the only pointer cast. Three things guard that cast: the typed handle, which is
+//! invariant I3, the bounds check, and a type tag word in debug and test builds.
+//!
+//! The list store reads a run of `u32` slots as a slice of handles. That is sound for two
+//! reasons: the store wrote every slot from a handle's raw value, which is invariant I4, and
+//! [`ListItem`] requires a transparent representation.
+//!
+//! The value stack in this crate is the precedent for both the confinement and the documentation
+//! style. This module's tests run under Miri in CI.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -194,7 +200,10 @@ pub struct Handle<T> {
 
 impl<T> Handle<T> {
     /// Wraps a raw handle value that a store produced.
-    const fn from_raw(raw: NonZeroU32) -> Self {
+    ///
+    /// The constructor stays crate-visible. [`crate::__private::opaque_handle`] is the one
+    /// documentation-hidden door generated code reaches it through.
+    pub(crate) const fn from_raw(raw: NonZeroU32) -> Self {
         Self {
             raw,
             _node: PhantomData,
@@ -348,8 +357,8 @@ pub unsafe trait ListItem: Copy {
     ///
     /// # Safety
     ///
-    /// `raw` must be a value that `raw()` returned for a handle of this type, so that the rebuilt
-    /// handle names an entry of the store that produced it.
+    /// `raw` must be a value that `raw()` returned for a handle of this type. The rebuilt handle
+    /// then names an entry of the store that produced it.
     unsafe fn from_raw(raw: NonZeroU32) -> Self;
 }
 
@@ -727,8 +736,8 @@ impl SharedPool {
     ///
     /// # Panics
     ///
-    /// In debug and test builds, panics when the tag beside the Node is not `T`'s tag, which means
-    /// the handle names a Node of another type.
+    /// In debug and test builds, panics when the tag beside the Node is not `T`'s tag. Such a tag
+    /// means that the handle names a Node of another type.
     pub fn try_get<T: FlatNode>(&self, handle: Handle<T>) -> Option<&T> {
         const {
             assert!(
@@ -902,9 +911,9 @@ impl<H: ListItem> Index<List1<H>> for ListStore {
 
 /// One list a parse is still building on the [`ListScratch`] stack.
 ///
-/// A reduce action keeps this value on the parser's value stack, pushes one item per list step, and
-/// closes the list when the parent rule consumes it. It is `Copy`, holds no borrow, and names no
-/// store: only the scratch stack it came from can interpret it.
+/// A reduce action keeps this value on the parser's value stack. It pushes one item per list step.
+/// It closes the list when the parent rule consumes it. The value is `Copy`, holds no borrow, and
+/// names no store: only the scratch stack it came from can interpret it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct OpenList {
     /// First scratch slot of this list. Scratch slots are plain indices, not handles.
