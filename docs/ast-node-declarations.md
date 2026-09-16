@@ -126,6 +126,32 @@ boxed!(Option<T>)
 
 `Option<zero_or_many!(T)>` and `one_or_many!(zero_or_many!(T))` are rejected.
 
+## Flat output mapping
+
+A grammar root that declares `flat` gets a second representation beside the nested one. Every
+declaration then also receives a lifetime-free `Copy` type named `Flat{Ident}`, in the
+declaration's own module and at its own visibility. The mapping is in
+[the flat AST design](flat-ast-design.md).
+
+`#[flat(pool)]` on a whole struct or enum puts every application of that declaration in its own
+typed pool. `#[flat(pool, max_size = N)]` adds a generated assertion that the flat type is at most
+`N` bytes. A declaration without the attribute reaches the grammar's shared pool.
+
+```rust,ignore
+ast_node! {
+    #[flat(pool, max_size = 16)]
+    pub enum Expr {
+        Name { name: Name },
+        Neg(boxed!(Expr)),
+    }
+}
+```
+
+The attribute belongs on a declaration, not on a variant or a field, because a typed pool holds
+every Node of one type. A pooled declaration must be publicly reachable, because the generated
+owner names one pool field per pooled application. `#[flat(...)]` in a grammar whose root omits
+`flat` is an error.
+
 The accepted omission surface is:
 
 ```rust,ignore

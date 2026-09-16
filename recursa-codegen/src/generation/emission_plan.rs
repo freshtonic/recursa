@@ -34,6 +34,8 @@ pub(super) fn emission_plan_validation_count() -> usize {
 pub(super) struct EmissionPlan {
     /// Whether semantic boxes and vectors borrow the parse-owned arena.
     pub(super) arena_ast: bool,
+    /// Whether the grammar emits the Flat AST representation beside the nested one.
+    pub(super) flat: bool,
     /// Generation identity over canonical lowered content and emitter protocol.
     pub(super) identity: String,
     /// Authored facade mapping used by all generated Rust paths.
@@ -309,27 +311,15 @@ fn plan_framing(
 }
 
 /// Reports whether every module segment and the declaration itself are public.
+///
+/// The walk itself lives in [`crate::discovery::publicly_reachable`], because source modeling
+/// applies the same reachability rule to a `#[flat(pool)]` declaration before generation runs.
 pub(super) fn publicly_reachable(
     tree: &crate::discovery::DiscoveredModuleTree,
     module: ModuleId,
     visibility: &Visibility,
 ) -> bool {
-    if !is_public(visibility) {
-        return false;
-    }
-    let mut current = module;
-    loop {
-        let Some(inclusion) = tree.inclusions.iter().find(|entry| entry.id == current) else {
-            return false;
-        };
-        let Some(parent) = inclusion.parent else {
-            return true;
-        };
-        if !is_public(&inclusion.visibility) {
-            return false;
-        }
-        current = parent;
-    }
+    crate::discovery::publicly_reachable(tree, module, visibility)
 }
 
 impl EmissionPlan {
@@ -967,9 +957,15 @@ impl EmissionPlan {
         } else {
             ";arena_ast=false"
         });
+        canonical.push_str(if resolved.build_inputs.flat {
+            ";flat=true"
+        } else {
+            ";flat=false"
+        });
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
+            flat: resolved.build_inputs.flat,
             identity,
             facade,
             module_anchor,
