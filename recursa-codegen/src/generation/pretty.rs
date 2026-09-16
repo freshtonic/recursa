@@ -2297,24 +2297,22 @@ pub(super) fn render_declared_enum_pretty(
             .collect::<Vec<_>>();
             let rendered = render_pretty_sequence(*layout, &rendered);
             let rendered = render_pretty_hints(variant_pretty, rendered);
-            let entry_check = declared_variant.level.map_or_else(
+            // A variant with no declared level is never parenthesized, so the whole test folds
+            // to `false` here rather than to a `false || false` the downstream crate's
+            // deny-by-default `clippy::eq_op` would reject.
+            let parenthesize_check = declared_variant.level.map_or_else(
                 || quote!(false),
                 |level| {
-                    quote! {
-                        min.is_some_and(|(candidate, tie)| {
-                            #level < candidate || (#level == candidate && tie)
-                        })
-                    }
-                },
-            );
-            let exit_check = declared_variant.level.map_or_else(
-                || quote!(false),
-                |level| {
-                    quote! {
-                        next.is_some_and(|(candidate, tie)| {
-                            #level < candidate || (#level == candidate && tie)
-                        })
-                    }
+                    let bound = |bound: proc_macro2::TokenStream| {
+                        quote! {
+                            #bound.is_some_and(|(candidate, tie)| {
+                                #level < candidate || (#level == candidate && tie)
+                            })
+                        }
+                    };
+                    let entry = bound(quote!(min));
+                    let exit = bound(quote!(next));
+                    quote!(#entry || #exit)
                 },
             );
             let group_open = declared_behavior.grouping.as_ref().map(|grouping| {
@@ -2336,7 +2334,7 @@ pub(super) fn render_declared_enum_pretty(
                     .collect::<proc_macro2::TokenStream>()
             });
             let helper_body = quote! {
-                    let __recursa_parenthesize = #entry_check || #exit_check;
+                    let __recursa_parenthesize = #parenthesize_check;
                     if __recursa_parenthesize {
                         #group_open
                     }
