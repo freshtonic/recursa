@@ -17,7 +17,7 @@ documentation, which also reports 3.20.3. No prototype or benchmark was run.
 Replacing owning Node relationships with indices already removes their individual box
 allocations. Allocator choice then mainly concerns Node-store buffers and child-list buffers.
 This is a consequence of the accepted transformation, not measured evidence of a speedup.
-[Accepted transformation](flat-ast-design.md#field-transformation).
+[Accepted transformation](flat-ast-design.md#field-mapping).
 
 | Concern | Typed `std::Vec` stores | Typed bumpalo vectors |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ buffer when populated; standard `Vec` has no inline small-list storage. Using bu
 for Node stores leaves those child-list allocations unchanged. Changing lists to bump vectors
 would be a further container/API choice, including equivalent support for `Vec1`.
 [Rust Vec guarantees](https://doc.rust-lang.org/stable/std/vec/struct.Vec.html#guarantees),
-[accepted field mapping](flat-ast-design.md#field-transformation).
+[accepted field mapping](flat-ast-design.md#field-mapping).
 
 **Destructors remain necessary.** `Bump` does not run destructors for values merely allocated
 inside it. Recursa's synthesized token text owns `Box<str>`, and standard child lists own heap
