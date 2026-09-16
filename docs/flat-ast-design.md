@@ -135,7 +135,7 @@ Apply the rule within struct fields and enum variant payloads. Remove boxes arou
 that become indices and preserve the remaining supported container structure. Content-token
 values and presence booleans remain inline. Generated types retain the original module context
 and the existing distinctions between concrete generic applications; no new arbitrary generic
-instantiations are introduced. Parser-internal Pratt states do not create new semantic Node types.
+instantiations are introduced. Parser-internal states do not create new semantic Node types.
 
 The source-of-truth decision is recorded in
 [ADR 0007](adr/0007-derive-flat-asts-from-the-primary-ast.md), and the deliberate omission of

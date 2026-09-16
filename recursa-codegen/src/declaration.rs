@@ -189,6 +189,10 @@ fn prepare_emitted_item(item: &mut Item, cfg: &CargoCfgSnapshot) {
 }
 
 /// Applies cfg selection and retains Rust attributes while consuming grammar annotations.
+///
+/// `pratt` and `greedy` are removed authoring surfaces the list still consumes, so that the
+/// source-aware migration diagnostic reaches the author instead of Rust's unknown-attribute
+/// error (`docs/declared-precedence.md`).
 fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapshot) -> bool {
     let Ok(Some(metas)) = configured_attribute_metas(attrs, cfg) else {
         attrs.clear();

@@ -4,7 +4,7 @@
 //! of the token grammar.
 //!
 //! The declaration lists levels from lowest to highest, each `left`, `right` or `nonassoc`
-//! over token names, with a binding power that orders the level against the others; the
+//! over token names, with a `bp` that orders the level against the others; the
 //! lowering records each terminal's level on the [`LrGrammar`]. This module assigns rule
 //! precedence the way bison does: a rule with no `#[parse(prec = ...)]` override takes the
 //! level of its last terminal that has one. The resolver in

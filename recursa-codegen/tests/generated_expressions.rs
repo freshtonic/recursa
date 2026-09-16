@@ -309,10 +309,7 @@ fn configure_diagrams(package: &TempDir) {
     let source = fs::read_to_string(&manifest).expect("read the scaffolded manifest");
     fs::write(
         manifest,
-        source.replace(
-            "features = [\"spans\"]",
-            "features = [\"spans\", \"diagrams\"]",
-        ),
+        source.replace("\"spans\"]", "\"spans\", \"diagrams\"]"),
     )
     .expect("enable the diagram capability");
     fs::copy(

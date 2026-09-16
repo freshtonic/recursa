@@ -1,5 +1,5 @@
 //! The table-driven tracer grammar: sequences, enum alternatives, fixed tokens and content
-//! tokens, and nothing a later ticket owns (no `Vec`, no `Option`, no Pratt). `Value::Sum`
+//! tokens, and nothing a later ticket owns (no `Vec`, no `Option`). `Value::Sum`
 //! shares its first symbol with `Value::Number`, so the automaton state after a number both
 //! shifts `+` and reduces by default: the case where a default reduction hides a continuation
 //! from the failing state's row (#117).

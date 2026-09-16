@@ -1,4 +1,3 @@
-pub mod arith;
 pub mod json;
 
 use recursa_codegen::{

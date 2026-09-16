@@ -18,6 +18,10 @@ const PRIVATE_PROTOCOL: u32 = 29;
 ///
 /// Use [`ast_node`] to declare representation-independent Nodes. The generator emits their
 /// concrete declarations and parsing behavior together from that canonical source.
+///
+/// `pratt` and `greedy` stay in the helper-attribute list although both authoring surfaces are
+/// removed, so that Recursa's own migration diagnostic reaches the author instead of Rust's
+/// unknown-attribute error (`docs/declared-precedence.md`).
 #[proc_macro_derive(
     Node,
     attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty, greedy)

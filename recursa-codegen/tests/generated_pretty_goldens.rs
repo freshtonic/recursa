@@ -262,7 +262,7 @@ fn name(text: &'static str) -> declared_precedence::Expr<'static> {
 }
 "#,
         repair: r#"
-    // The parsed round trip above already proves a plain (non-Pratt) enum with a declared
+    // The parsed round trip above already proves an enum with a declared
     // `precedence { ... }` block generates and pretty-prints a left-assoc chain on its first
     // operand without parentheses. Every other declared-precedence case needs a value no parse
     // of this grammar can produce without an authored `Parenthesized` node, so it is built

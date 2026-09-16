@@ -4,7 +4,7 @@
 //!
 //! The construction is the one bison uses: LR(0) states from every start rule, then lookaheads
 //! by DeRemer and Pennello's `reads`, `includes` and `lookback` relations over the digraph
-//! algorithm. Shift/reduce conflicts go through a [`ConflictResolver`] seam, which binding-power
+//! algorithm. Shift/reduce conflicts go through a [`ConflictResolver`] seam, which declared
 //! precedence implements; a resolved conflict is recorded, not reported. Without a resolution a
 //! shift/reduce conflict keeps the shift and a reduce/reduce conflict keeps the lowest rule, as
 //! bison does, and both are reported.
@@ -406,8 +406,8 @@ pub struct EndMarkerResolution {
     pub chosen: RuleId,
 }
 
-/// The precedence seam: [`BindingPowerPrecedence`](super::precedence::BindingPowerPrecedence)
-/// implements it over Pratt binding powers; [`NoPrecedence`] reports every conflict.
+/// The precedence seam: [`PrecedenceResolver`](super::precedence::PrecedenceResolver)
+/// implements it over the `precedence { ... }` declaration; [`NoPrecedence`] reports every conflict.
 pub trait ConflictResolver {
     /// Resolves a shift/reduce conflict between `reduce` and the shift items on `lookahead`,
     /// or returns `None` to report the conflict.

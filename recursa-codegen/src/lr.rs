@@ -30,7 +30,7 @@ pub mod lookahead;
 pub mod lowering;
 /// Shortest symbol paths from the start states, for diagnostics and the dump.
 pub mod paths;
-/// Binding-power precedence, the conflict resolver of the table-driven style.
+/// Declared precedence, the conflict resolver of the Recursa parser.
 pub mod precedence;
 /// Bison-style automaton dump and conflict diagnostics.
 pub mod report;
@@ -177,7 +177,7 @@ impl LrAnalysis {
     }
 
     /// Runs source analysis over a Rust 2024 grammar package and then the whole LR analysis, with
-    /// binding-power precedence.
+    /// declared precedence.
     ///
     /// `selected_root` is the grammar's root file relative to `manifest_dir`, as
     /// [`generate`](crate::generate) takes it. The module tree is read under Cargo's default
