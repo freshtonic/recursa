@@ -1634,6 +1634,7 @@ recursa::ast_node! {
                     .then_some(output)
             })
             .expect("rendered Root node");
+        let root = root.split_whitespace().collect::<Vec<_>>().join(" ");
 
         assert!(
             root.contains("unsafe { reduction . pop_boxed () }"),
