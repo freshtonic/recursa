@@ -94,6 +94,7 @@ mod protocol;
 mod publication;
 mod reuse;
 mod rust_names;
+mod source_text;
 mod table_driven;
 mod table_driven_flat;
 mod visit;
