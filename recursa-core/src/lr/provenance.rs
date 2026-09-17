@@ -228,7 +228,7 @@ fn decode_site(values: &mut impl Iterator<Item = u32>, sites: &mut Vec<SiteFold>
 
 impl FoldTable {
     /// Decodes the flat packed values: per rule `kind, policy, site count`, then per site its
-    /// own packed form (see [`decode_site`]).
+    /// own packed form (see `decode_site`).
     pub fn decode(values: &[u32]) -> Self {
         let mut rules = Vec::new();
         let mut sites = Vec::new();

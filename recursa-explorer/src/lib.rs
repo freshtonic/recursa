@@ -18,7 +18,7 @@ use std::fmt;
 /// grammar-specific protocol.
 ///
 /// When re-invoked as a sample worker (the mechanism the running server itself uses to
-/// isolate Arbitrary sampling in a disposable child process — see [`worker`]), this instead
+/// isolate Arbitrary sampling in a disposable child process — see `worker`), this instead
 /// samples, renders, and exits without ever binding a listener.
 ///
 /// # Errors
