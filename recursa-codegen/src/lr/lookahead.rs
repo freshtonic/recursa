@@ -3,7 +3,7 @@
 //! A `lookahead { MERGED = TOKEN before { TRIGGER, ... } }` declaration makes the table-driven
 //! token feed read `TOKEN` as `MERGED` whenever the next record is a trigger. This pass rewrites
 //! the lowered rules so that the automaton expects what the feed produces. It runs inside
-//! [`lower`](crate::lr::lowering::lower) after every type rule exists and before the start rules
+//! [`lower`] after every type rule exists and before the start rules
 //! are added, over FIRST and FOLLOW of the *unsubstituted* grammar, because the feed decides on
 //! lexed kinds and a merged kind is never a trigger.
 //!
