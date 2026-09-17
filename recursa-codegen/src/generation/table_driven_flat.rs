@@ -19,6 +19,11 @@
 //!
 //! The runtime types are `recursa-core`'s `flat` module.
 //!
+//! Each application also gets `parse_flat_reusing` and `parse_flat_reusing_without_spans`. They
+//! run the same automaton over the same stores; the stores come from the caller's buffer slot and
+//! go back into it when the parse fails. [`super::flat`] renders `FlatBuffers` and the builder
+//! constructor they use.
+//!
 //! A parent reduces after its children, so every typed pool comes out in post-order. Invariant I1
 //! of `docs/flat-ast-design.md` therefore holds by construction, with no ordering work here.
 //!
@@ -714,8 +719,52 @@ fn render_flat_entry_points(
             )
         }
     };
+    // The reusing form differs from `run` in two places only: it takes the caller's buffers when
+    // it builds the stores, and it gives them back when the automaton fails.
+    let run_reusing = |spans: bool| {
+        quote! {
+            #facade::__private::parse_flat_with(
+                &mut input.inner,
+                &#module_anchor::__RECURSA_GRAMMAR,
+                #spans,
+                |context| {
+                    let capture_spans = context.tracks_extents();
+                    let tokens = context.remaining_tokens();
+                    let mut builder = match buffers.take() {
+                        Some(recycled) => #module_anchor::FlatAstBuilder::from_buffers(
+                            recycled,
+                            capture_spans,
+                            tokens,
+                        ),
+                        None => #module_anchor::FlatAstBuilder::new(capture_spans, tokens),
+                    };
+                    match #facade::__private::lr_run_flat::<
+                        #facade::__private::Handle<#flat_ty>,
+                        A,
+                        _,
+                        _,
+                    >(
+                        context,
+                        &#tables_module::TABLES,
+                        #start_state,
+                        #accept_rule,
+                        &mut builder,
+                        #tables_module::__recursa_reduce_flat,
+                    ) {
+                        Ok(root) => Ok(builder.finish(root)),
+                        Err(error) => {
+                            *buffers = Some(builder.recycle());
+                            Err(error)
+                        }
+                    }
+                },
+            )
+        }
+    };
     let spanned = run(true);
     let without_spans = run(false);
+    let spanned_reusing = run_reusing(true);
+    let without_spans_reusing = run_reusing(false);
     let result =
         quote!(Result<#module_anchor::FlatAst<#input_lifetime, #flat_ty>, #facade::ParseError>);
     quote! {
@@ -745,6 +794,40 @@ fn render_flat_entry_points(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,
             ) -> #result {
                 #without_spans
+            }
+
+            /// Parses this Node into a Flat AST built on `buffers`, with one span per Node and
+            /// per text.
+            ///
+            /// The result is the one `parse_flat` returns. The difference is where its stores
+            /// come from: a slot holding the buffers of an earlier result starts this parse with
+            /// warm capacity, so a batch consumer that recycles every result allocates nothing
+            /// after its first parse. An empty slot pre-sizes fresh stores exactly as
+            /// `parse_flat` does, so one call site serves the first parse and every later one.
+            ///
+            /// The slot is emptied on success, because the result owns the stores; call
+            /// `FlatAst::recycle` to fill it again. On failure the buffers go back into the slot
+            /// emptied, so a failed parse loses neither the capacity nor the caller's ability to
+            /// use `?` on a `ParseError`.
+            ///
+            /// Recycling invalidates every handle of the recycled result, which
+            /// `FlatAst::recycle` documents.
+            pub fn parse_flat_reusing #method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+                buffers: &mut Option<#module_anchor::FlatBuffers>,
+            ) -> #result {
+                #spanned_reusing
+            }
+
+            /// Parses this Node into a Flat AST built on `buffers`, without retaining any span.
+            ///
+            /// This is `parse_flat_reusing` with the span policy of
+            /// `parse_flat_without_spans`.
+            pub fn parse_flat_reusing_without_spans #method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+                buffers: &mut Option<#module_anchor::FlatBuffers>,
+            ) -> #result {
+                #without_spans_reusing
             }
         }
     }

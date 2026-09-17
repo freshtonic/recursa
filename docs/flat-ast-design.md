@@ -5,8 +5,10 @@ are done: storage, generated flat types, `parse_flat`, traversal, flat Pretty, a
 `pg-sql-flat` benchmark entry with its correctness evidence. pg-sql now selects `flat` in both
 `grammar!` blocks, pools `Expr`, `ColumnRef`, `FuncCall`, `SelectStmt` and `Statement`, and proves
 nested/flat parity over the whole pinned corpus. Each parse pre-sizes its store from the token
-count, which is a follow-up to step 3 recorded under [Construction](#construction). Mutation and
-compaction are a later milestone.
+count, which is a follow-up to step 3 recorded under [Construction](#construction). Two more
+follow-ups landed on 2026-09-17: a finished result hands its stores to the next parse, and the text
+pool releases borrowed texts without a per-entry drop walk. Both are recorded under
+[Recycling](#recycling). Mutation and compaction are a later milestone.
 
 Decisions: [ADR 0008](adr/0008-keep-flat-asts-semantic-only.md) (semantic-only, amended),
 [ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) (per-result ownership, partly
@@ -196,6 +198,80 @@ The generated owner is a grammar-local `FlatAst<'input>` with private fields.
 - `root_ref()` returns the root as a `NodeRef`. It needs the generated `FlatNodeRef` bound on the
   root type, because the owner's root is a type parameter and only a trait can name its variant.
 - The result is `Send + Sync`, checked at compile time.
+- `recycle()` consumes the result and returns its stores for the next parse. See below.
+
+### Recycling
+
+A batch consumer parses one statement after another, and on a short statement the flat parser's
+fixed cost is allocator calls rather than bytes. A finished result therefore hands its buffers on:
+
+- `FlatAst::recycle(self) -> FlatBuffers` empties every store of the result and keeps its capacity.
+  `FlatBuffers` is a grammar-local type at the grammar root. It holds every typed pool, the shared
+  pool, the list store, the text pool, and the list scratch stack. It is `Send + Sync`, and
+  `FlatBuffers::new()` starts empty, so a consumer can hold one value from its first parse onward.
+- `FlatBuffers` borrows nothing. A live result's text pool borrows the input it was lexed from; an
+  emptied pool holds no text, so `TextPool::into_recycled` drops the borrow and the buffers outlive
+  that input. One buffer value therefore serves a whole batch of separately owned inputs. The
+  lifetime erasure is one `unsafe` block in `recursa-core`'s storage module, guarded by an assertion
+  that the buffer is empty, and it is covered by Miri.
+- `parse_flat_reusing(input, buffers)` and `parse_flat_reusing_without_spans(input, buffers)` sit
+  beside `parse_flat` on every application that has one. They return exactly what `parse_flat`
+  returns. `buffers` is a `&mut Option<FlatBuffers>` slot rather than a value, which keeps
+  `ParseError` and `?` unchanged: a successful parse empties the slot, because the result now owns
+  the stores, and a failed parse puts the buffers back into it, emptied. A slot that is already
+  empty makes fresh pre-sized stores, exactly as `parse_flat` does, so one call site serves the
+  first parse and every later one.
+- The builder clears each store, which applies the parse's own span-capture setting, and then
+  reserves the same pre-sized capacity a cold parse reserves. A reservation a warm store already
+  covers allocates nothing, so a recycled parse of a statement no larger than the last makes no
+  allocation of its own. The result keeps the scratch stack for the same reason: without it the
+  first list of the next parse would allocate.
+
+Recycling ends the result it took the buffers from, which fixes one contract:
+
+> Every handle of a recycled result is stale. The next parse hands the same handle values out for
+> Nodes of its own, so a stale read reports another Node, or panics when the index is out of range
+> or its shared-pool tag disagrees.
+
+Consuming `self` stops a handle from outliving the result through the owner, and nothing can stop a
+handle a caller copied out first: an index belongs to one result by contract, as
+[ADR 0009](adr/0009-give-each-flat-ast-its-own-typed-stores.md) already says. Read what you need of
+a result before you recycle it.
+
+Measured on pg-sql, in a throwaway program that counts allocator calls around the parse call
+alone. A short statement is `SELECT a, b FROM t WHERE c = 1;`; the wide one is the
+`in_list_10000` stress fixture. Allocator calls per parse, without spans:
+
+| Input | Cold flat | Warm flat (recycled) | Nested |
+| --- | --: | --: | --: |
+| short statement | 13.0 | 3.0 | 10.0 |
+| `in_list_10000` | 14.0 | 3.0 | 21.0 |
+
+A recycled parse allocates nothing for its stores. The three calls that remain are the LR run's own
+scratch buffers, which are outside this milestone: the value stack's two vectors and the state
+stack. The count is three for a 12-token statement and for a 10,000-element list alike, which is
+what proves the stores allocate nothing.
+
+The text pool carries one more cost that recycling exposed. A `ContentText` has drop glue, because
+its owned variant holds a `Box<str>`, so dropping or clearing the pool walks every entry to check
+each one's variant — and every text a parse stores borrows the input, so the walk never finds an
+owned one. The pool therefore counts its owned texts, and at a count of zero it releases the
+elements without the walk, in `clear` and in `Drop` alike. Miri covers both the borrowed and the
+owned case.
+
+Measured on the same program, with the fast path forced off and then on. The wide input's text pool
+holds 10,001 texts; the short statement's holds five:
+
+| Input | Operation | Walk | Fast path |
+| --- | --- | --: | --: |
+| `in_list_10000` | drop the result | 5.05 µs | 0.64 µs |
+| `in_list_10000` | recycle the result | 4.17 µs | 0.13 µs |
+| short statement | drop the result | 0.14 µs | 0.14 µs |
+| short statement | recycle the result | 0.06 µs | 0.06 µs |
+
+The wide input's destruction is 6 to 30 times cheaper, and what remains is freeing the buffers
+themselves. A short statement has too few texts to measure, which is the expected result: the walk
+costs one branch per text.
 
 ## Construction
 
@@ -456,6 +532,10 @@ to 0.94×, and `drop_if_exists` 0.91× to 1.00×. The large corpus files gained 
 more: `select_list_10000` 1.41× to 1.43×, `in_list_10000` 1.38× to 1.43×, and `bool_chain_1000`
 1.29× to 1.32×. Deep subquery nesting turned from a loss into a win, `nested_subquery_15` 0.98×
 to 1.07×. No declaration was restructured; that is a separate, later decision.
+
+The engine list stays as it is. The benchmark's model is parse-from-scratch inside the timing
+boundary, so a warm-reuse entry would be a different engine rather than a faster one, and
+recycling is measured by allocation count instead.
 
 The "everything in the shared pool" variant is an opt-in experiment made by removing the pool
 attributes. It is not a third engine name and not an acceptance condition. A measured speedup is

@@ -34,11 +34,15 @@ struct LiveCounting;
 /// Live allocation count maintained by [`LiveCounting`].
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 
+/// Total allocation calls maintained by [`LiveCounting`], which recycling must reduce.
+static CALLS: AtomicIsize = AtomicIsize::new(0);
+
 // SAFETY: every allocation is forwarded to the system allocator unchanged; the counter is a
 // side channel that never influences the returned pointer or layout.
 unsafe impl GlobalAlloc for LiveCounting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         LIVE.fetch_add(1, Ordering::SeqCst);
+        CALLS.fetch_add(1, Ordering::SeqCst);
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract for `layout`.
         unsafe { System.alloc(layout) }
     }
@@ -166,6 +170,7 @@ fn main() {
     drive_without_spans();
     drive_prefixes();
     drive_entry_points();
+    drive_reuse();
     for source in NEGATIVE {
         drive_negative(source);
     }
@@ -463,6 +468,170 @@ fn drive_entry_points() {
     let parsed =
         grammar::Alias::parse_flat(&mut input).expect("an alias parses from its own entry");
     println!("lr entry alias {}", alias(&parsed, parsed.root()));
+}
+
+/// Parses through the recycling entry points: cold, then on the buffers of the finished result.
+///
+/// Recycling ends the result it took the buffers from. Every handle of that result is stale from
+/// then on, which is a contract and not a compile error, so this driver reads no handle of a
+/// recycled result: it takes the structural rendering and the store sizes first and compares those.
+///
+/// # Long-function contract
+///
+/// Rationale: the cold parse, the recycled parse, the failure that returns the buffers, and the
+/// parse of an input the buffers outlive are one protocol. Each step consumes what the step before
+/// produced, so splitting them would hide the handoff this fixture exists to prove.
+/// Invariants: a successful reusing parse empties the slot; a failed one refills it; a recycled
+/// parse stores exactly what a cold parse stores.
+/// Phases: cold parse, recycled parse, failure and recovery, span-free reuse, and reuse across an
+/// input that has been dropped.
+fn drive_reuse() {
+    let source = "print [[1, [2]], [3, as]];";
+    let mut buffers: Option<grammar::FlatBuffers> = None;
+
+    // Cold: the slot is empty, so the parse pre-sizes fresh stores, exactly as `parse_flat` does.
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let before = CALLS.load(Ordering::SeqCst);
+    let cold = grammar::Statement::parse_flat_reusing(&mut input, &mut buffers)
+        .expect("the input parses through the reusing entry point");
+    let cold_calls = CALLS.load(Ordering::SeqCst) - before;
+    assert!(
+        buffers.is_none(),
+        "a successful parse owns the stores it was given"
+    );
+    let render = statement(&cold, cold.root());
+    let stores = (
+        cold.texts().len(),
+        cold.lists().len_slots(),
+        cold.shared_words(),
+    );
+    let pools = (
+        cold.pool::<FlatValue>().len(),
+        cold.pool::<FlatName>().len(),
+    );
+    let root_span = cold.span(cold.root());
+    println!(
+        "lr reuse cold {source:?} => {render} texts={} lists={} shared={} root={}",
+        stores.0,
+        stores.1,
+        stores.2,
+        span_text(root_span)
+    );
+
+    // Recycling ends the first result. Its handles are stale from here, so nothing below reads
+    // one; only the renderings and the counts taken above are compared.
+    buffers = Some(cold.recycle());
+    println!("lr reuse stale {source:?} => handles-not-read");
+
+    // Warm: the same input on the first result's buffers builds the same Flat AST.
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let before = CALLS.load(Ordering::SeqCst);
+    let warm = grammar::Statement::parse_flat_reusing(&mut input, &mut buffers)
+        .expect("the input parses on recycled buffers");
+    let warm_calls = CALLS.load(Ordering::SeqCst) - before;
+    assert!(buffers.is_none());
+    let warm_render = statement(&warm, warm.root());
+    let warm_stores = (
+        warm.texts().len(),
+        warm.lists().len_slots(),
+        warm.shared_words(),
+    );
+    let warm_pools = (
+        warm.pool::<FlatValue>().len(),
+        warm.pool::<FlatName>().len(),
+    );
+    assert_eq!(warm_render, render, "a recycled parse builds the same tree");
+    assert_eq!(warm_stores, stores, "it stores the same words, slots, texts");
+    assert_eq!(warm_pools, pools, "and the same Nodes per typed pool");
+    assert_eq!(warm.span(warm.root()), root_span);
+    assert_eq!(post_order(&warm), "ok");
+    println!(
+        "lr reuse warm {source:?} => {warm_render} texts={} lists={} shared={} root={}",
+        warm_stores.0,
+        warm_stores.1,
+        warm_stores.2,
+        span_text(warm.span(warm.root()))
+    );
+    // The reservation is the only difference between the two parses, so the warm one makes
+    // strictly fewer allocation calls: its stores are already big enough.
+    assert!(
+        warm_calls < cold_calls,
+        "a recycled parse allocates less: cold={cold_calls} warm={warm_calls}"
+    );
+    println!("lr reuse allocs {source:?} => warm-below-cold=true");
+
+    // A failed parse gives the buffers back, so the next parse still runs warm.
+    buffers = Some(warm.recycle());
+    let bad = "print [1,];";
+    let lexed = grammar::lex(bad);
+    let mut input = lexed.input();
+    let error = match grammar::Statement::parse_flat_reusing(&mut input, &mut buffers) {
+        Ok(_) => panic!("failing input {bad:?} parsed flat"),
+        Err(error) => error,
+    };
+    assert!(
+        buffers.is_some(),
+        "a failed parse returns the buffers it borrowed"
+    );
+    assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
+    println!(
+        "lr reuse err {bad:?} => {} buffers-returned=true",
+        Reported::of(&error, input.cursor()).line()
+    );
+
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let again = grammar::Statement::parse_flat_reusing(&mut input, &mut buffers)
+        .expect("the returned buffers still parse");
+    assert_eq!(statement(&again, again.root()), render);
+    println!("lr reuse after-failure {source:?} => same-tree=true");
+
+    // The span-free form reuses the same buffers and retains no span.
+    buffers = Some(again.recycle());
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let plain = grammar::Statement::parse_flat_reusing_without_spans(&mut input, &mut buffers)
+        .expect("the input parses without spans on recycled buffers");
+    assert_eq!(statement(&plain, plain.root()), render);
+    assert!(!plain.has_spans());
+    assert!(plain.span(plain.root()).is_none());
+    println!("lr reuse nospans {source:?} => has_spans={}", plain.has_spans());
+
+    // The buffers borrow nothing, so they outlive the input they were filled from.
+    buffers = Some(plain.recycle());
+    let owned_render = {
+        let owned = String::from("print [1, [2]];");
+        let lexed = grammar::lex(&owned);
+        let mut input = lexed.input();
+        let parsed = grammar::Statement::parse_flat_reusing(&mut input, &mut buffers)
+            .expect("an owned input parses on recycled buffers");
+        let rendered = statement(&parsed, parsed.root());
+        buffers = Some(parsed.recycle());
+        rendered
+    };
+    let lexed = grammar::lex("print [1, [2]];");
+    let mut input = lexed.input();
+    let after = grammar::Statement::parse_flat_reusing(&mut input, &mut buffers)
+        .expect("the buffers of a dropped input still parse");
+    assert_eq!(statement(&after, after.root()), owned_render);
+    println!("lr reuse dropped-input => {owned_render}");
+
+    // Empty buffers a consumer made itself serve the first parse too.
+    let mut fresh = Some(grammar::FlatBuffers::new());
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let first = grammar::Statement::parse_flat_reusing(&mut input, &mut fresh)
+        .expect("empty buffers parse like no buffers at all");
+    assert_eq!(statement(&first, first.root()), render);
+    let mut default = Some(grammar::FlatBuffers::default());
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let defaulted = grammar::Statement::parse_flat_reusing(&mut input, &mut default)
+        .expect("the default buffers parse too");
+    assert_eq!(statement(&defaulted, defaulted.root()), render);
+    println!("lr reuse empty-buffers {source:?} => same-tree=true");
 }
 
 /// Runs one failing flat parse and returns its error.
