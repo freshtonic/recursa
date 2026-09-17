@@ -4,7 +4,7 @@
 //!
 //! Recursa resolves every shift/reduce conflict the way bison does, and with one source only:
 //! the `precedence { ... }` declaration of the token grammar
-//! ([`declared_precedence`](crate::lr::declared_precedence) records it on the terminals and
+//! ([`declared_precedence`] records it on the terminals and
 //! assigns each rule its level). See `docs/declared-precedence.md`.
 //!
 //! The reducing rule's level is the level of its last terminal with a declared level, or of the

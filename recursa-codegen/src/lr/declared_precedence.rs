@@ -8,7 +8,7 @@
 //! lowering records each terminal's level on the [`LrGrammar`]. This module assigns rule
 //! precedence the way bison does: a rule with no `#[parse(prec = ...)]` override takes the
 //! level of its last terminal that has one. The resolver in
-//! [`precedence`](crate::lr::precedence) then compares a reducing rule's level with the
+//! [`precedence`] then compares a reducing rule's level with the
 //! lookahead's declared level.
 
 use super::grammar::{
