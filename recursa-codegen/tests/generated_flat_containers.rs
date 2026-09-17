@@ -205,6 +205,49 @@ fn parse_flat_builds_every_container_shape_out_of_pools_lists_and_text_handles()
         "{lines}"
     );
 
+    // Recycling: the same input parsed twice, once cold and once on the finished result's
+    // buffers. The two lines carry the structural rendering, the store sizes and the root span,
+    // so comparing them whole is the evidence that a recycled parse builds exactly what a cold
+    // one builds. The driver asserts the same facts field by field.
+    let cold = reuse_line(&lines, "cold");
+    let warm = reuse_line(&lines, "warm");
+    assert_eq!(
+        cold, warm,
+        "a recycled parse stores what a cold parse stores"
+    );
+    assert!(
+        cold.contains(
+            "=> Print{negated=false value=Value::List{items=[\
+             Value::List{items=[Value::Number(Number(\"1\")) \
+             Value::List{items=[Value::Number(Number(\"2\"))]}]} \
+             Value::List{items=[Value::Number(Number(\"3\")) Value::Name(Name(\"as\"))]}]} \
+             guard=-} texts="
+        ),
+        "{cold}"
+    );
+
+    for expected in [
+        // Every handle of a recycled result is stale, so the driver reads none of them.
+        "reuse stale \"print [[1, [2]], [3, as]];\" => handles-not-read\n",
+        // Warm buffers are already big enough, so the second parse allocates strictly less.
+        "reuse allocs \"print [[1, [2]], [3, as]];\" => warm-below-cold=true\n",
+        // A failed reusing parse returns the buffers and restores the cursor, and the next parse
+        // runs on them and builds the same tree as the first.
+        "reuse err \"print [1,];\" => code=RCA4100 kind=UnexpectedToken \
+         span=Span { start: 9, end: 10 } found=Some(\"fixed:]\") cursor=0 buffers-returned=true\n",
+        "reuse after-failure \"print [[1, [2]], [3, as]];\" => same-tree=true\n",
+        // The span-free reusing entry point retains no span.
+        "reuse nospans \"print [[1, [2]], [3, as]];\" => has_spans=false\n",
+        // The buffers borrow nothing: they outlive the input that filled them.
+        "reuse dropped-input => Print{negated=false value=Value::List{items=[\
+         Value::Number(Number(\"1\")) Value::List{items=[Value::Number(Number(\"2\"))]}]} \
+         guard=-}\n",
+        // Buffers a consumer made itself serve a first parse exactly as no buffers do.
+        "reuse empty-buffers \"print [[1, [2]], [3, as]];\" => same-tree=true\n",
+    ] {
+        assert!(lines.contains(expected), "{expected}\n{lines}");
+    }
+
     // Entry points other than the grammar root build a Flat AST rooted at their own Node.
     for expected in [
         "entry value Value::List{items=[Value::Number(Number(\"1\")) Value::List{items=[Value::Name(Name(\"as\")) Value::Name(Name(\"only\"))]}]} root=0..15\n",
@@ -899,6 +942,19 @@ fn scaffold(fixture: &str, grammar: Option<&str>) -> TempDir {
     fs::write(package.path().join("Cargo.toml"), manifest)
         .expect("write generated grammar fixture manifest");
     package
+}
+
+/// Returns one `reuse` line of the fixture's output, without its leading `reuse <stage>` words.
+///
+/// The cold and the warm line carry the same facts, so the caller compares the two remainders
+/// rather than pinning store sizes that the grammar's shape, not this milestone, decides.
+fn reuse_line(lines: &str, stage: &str) -> String {
+    let prefix = format!("reuse {stage} ");
+    lines
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .map(|line| line[prefix.len()..].to_owned())
+        .unwrap_or_else(|| panic!("the fixture prints one {stage} reuse line\n{lines}"))
 }
 
 /// Selects the fixture's tagged lines and terminates each with a newline for whole-line matching.
