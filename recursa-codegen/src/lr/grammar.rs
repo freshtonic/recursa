@@ -372,7 +372,7 @@ impl RuleFold {
     }
 
     /// Appends the packed form: `kind, policy, site count`, then each site's own packed form
-    /// (see [`FoldSite::pack`]).
+    /// (see `FoldSite::pack`).
     pub fn pack(&self, into: &mut Vec<u32>) {
         into.push(self.kind.code());
         into.push(self.policy.code());
