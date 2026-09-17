@@ -1137,6 +1137,14 @@ impl<'input> ContentText<'input> {
             .map(|text| Self(ContentTextStorage::Matched(text)))
     }
 
+    /// Reports whether the text owns its bytes instead of borrowing the input.
+    ///
+    /// The Flat AST text pool counts owned texts so that it can release a pool of borrowed texts
+    /// without walking every entry for drop glue ([`crate::flat::TextPool`]).
+    pub(crate) fn is_owned(&self) -> bool {
+        matches!(self.0, ContentTextStorage::Owned(_))
+    }
+
     /// Borrows the token text independently of its storage mode.
     pub fn as_str(&self) -> &str {
         match &self.0 {

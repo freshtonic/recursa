@@ -27,6 +27,10 @@
 //! - `FlatAst`, its builder, and the generic index implementations. The builder pre-sizes every
 //!   store from the parse's remaining token count, by the measured multipliers this module
 //!   declares below.
+//! - `FlatBuffers`, the emptied stores of a finished result, with `FlatAst::recycle` that produces
+//!   them and `FlatAstBuilder::from_buffers` that reuses them. The buffers borrow no input, so one
+//!   value serves a whole batch of parses; `super::table_driven_flat` renders the entry points that
+//!   take them.
 //! - `FLAT_NODE_SIZES`, which records the size of every flat Node type in parse-index order.
 //! - One `FlatStorage` implementation per application whose flat type is publicly reachable. Every
 //!   other application gets that implementation in the declaration's own module. A non-public Node
@@ -800,6 +804,47 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             }
         }
     });
+    let pool_buffer_fields = pooled.iter().map(|pool| {
+        let (field, ty) = (&pool.field, &pool.ty);
+        let doc = format!(" The emptied `{}` pool.", pool.name);
+        quote!(#[doc = #doc] #field: #facade::__private::TypedPool<#ty>)
+    });
+    let pool_buffer_moves = pooled.iter().map(|pool| {
+        let field = &pool.field;
+        quote!(#field: buffers.#field)
+    });
+    let pool_recycles = pooled.iter().map(|pool| {
+        let field = &pool.field;
+        quote! {
+            #field: {
+                let mut pool = self.#field;
+                pool.clear(false);
+                pool
+            }
+        }
+    });
+    let builder_pool_recycles = pool_recycles.clone();
+    let pool_warm_ups = pooled.iter().map(|pool| {
+        let field = &pool.field;
+        quote! {
+            builder.#field.clear(capture_spans);
+            builder.#field.reserve(pooled_nodes);
+        }
+    });
+    let empty_pool_fields = pooled.iter().map(|pool| {
+        let field = &pool.field;
+        quote!(#field: #facade::__private::TypedPool::new(false))
+    });
+    let capacities = quote! {
+        let shared_words = tokens
+            .saturating_mul(#shared_words_per_token)
+            .max(#min_store_entries);
+        let list_slots = tokens
+            .saturating_mul(#list_slots_per_token)
+            .max(#min_store_entries);
+        let texts = (tokens / #tokens_per_text).max(#min_store_entries);
+        #pooled_nodes_binding
+    };
     let storage_impls = plan
         .nodes
         .iter()
@@ -856,6 +901,12 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             lists: #facade::__private::ListStore,
             /// Every content token's text, borrowed from the input or owned.
             texts: #facade::__private::TextPool<'__recursa_input>,
+            /// The scratch stack this parse built its lists on, kept empty.
+            ///
+            /// The result keeps it for one reason: `recycle` hands its capacity to the next parse,
+            /// which is what lets a recycled parse open a list without allocating. No reader
+            /// reaches it, because every list it held was copied into the list store.
+            scratch: #facade::__private::ListScratch,
             /// The handle of the Node the parse reduced last.
             root: #facade::__private::Handle<__RecursaRoot>,
             /// Whether the parse captured one span per Node and per text.
@@ -932,6 +983,42 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
                 handle: #facade::__private::Text<__RecursaToken>,
             ) -> Option<#facade::Span> {
                 self.texts.span(handle)
+            }
+
+            /// Ends this result and returns its stores as buffers for the next parse.
+            ///
+            /// A batch consumer hands the buffers of one finished result to the next parse, which
+            /// then starts with warm capacity and allocates nothing. Pass them to
+            /// `parse_flat_reusing` or `parse_flat_reusing_without_spans`.
+            ///
+            /// # Handle invalidation
+            ///
+            /// Recycling ends the result, so every handle of it is stale from that moment. Reading
+            /// a stale handle against a later result is a contract violation, not a compile error:
+            /// consuming `self` stops a handle from outliving the result through the owner, and
+            /// nothing can stop a handle a caller copied out first. Such a read reports whatever
+            /// the later result stored at that index, or panics when the index is out of range or
+            /// its shared-pool tag disagrees. Read every handle of a result before you recycle it.
+            pub fn recycle(self) -> FlatBuffers {
+                FlatBuffers {
+                    #(#pool_recycles,)*
+                    shared: {
+                        let mut shared = self.shared;
+                        shared.clear(false);
+                        shared
+                    },
+                    lists: {
+                        let mut lists = self.lists;
+                        lists.clear();
+                        lists
+                    },
+                    texts: self.texts.into_recycled(),
+                    scratch: {
+                        let mut scratch = self.scratch;
+                        scratch.clear();
+                        scratch
+                    },
+                }
             }
 
             /// Borrows the shared pool for the Node modules' own storage implementations.
@@ -1041,14 +1128,7 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             /// store the parse never writes to holds nothing.
             #[doc(hidden)]
             pub(crate) fn new(capture_spans: bool, tokens: usize) -> Self {
-                let shared_words = tokens
-                    .saturating_mul(#shared_words_per_token)
-                    .max(#min_store_entries);
-                let list_slots = tokens
-                    .saturating_mul(#list_slots_per_token)
-                    .max(#min_store_entries);
-                let texts = (tokens / #tokens_per_text).max(#min_store_entries);
-                #pooled_nodes_binding
+                #capacities
                 Self {
                     #(#pool_initializers,)*
                     shared: #facade::__private::SharedPool::with_capacity(
@@ -1059,6 +1139,68 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
                     texts: #facade::__private::TextPool::with_capacity(capture_spans, texts),
                     scratch: #facade::__private::ListScratch::with_capacity(list_slots),
                     has_spans: capture_spans,
+                }
+            }
+
+            /// Reuses `buffers` for a parse of `tokens` remaining tokens.
+            ///
+            /// The buffers come from `FlatAst::recycle` or from `FlatBuffers::new`. Every store is
+            /// cleared, which applies the requested span-capture setting and ends the previous
+            /// result, and then reserves the same pre-sized capacity `new` reserves. A reservation
+            /// a warm store already covers allocates nothing, which is the whole point: a parse
+            /// that reuses buffers big enough for it makes no allocation of its own.
+            #[doc(hidden)]
+            pub(crate) fn from_buffers(
+                buffers: FlatBuffers,
+                capture_spans: bool,
+                tokens: usize,
+            ) -> Self {
+                #capacities
+                let mut builder = Self {
+                    #(#pool_buffer_moves,)*
+                    shared: buffers.shared,
+                    lists: buffers.lists,
+                    texts: buffers.texts,
+                    scratch: buffers.scratch,
+                    has_spans: capture_spans,
+                };
+                #(#pool_warm_ups)*
+                builder.shared.clear(capture_spans);
+                builder.shared.reserve(shared_words);
+                builder.lists.clear();
+                builder.lists.reserve(list_slots);
+                builder.texts.clear(capture_spans);
+                builder.texts.reserve(texts);
+                builder.scratch.clear();
+                builder.scratch.reserve(list_slots);
+                builder
+            }
+
+            /// Returns the stores of an abandoned parse as buffers for the next one.
+            ///
+            /// A failed parse calls this so that the caller keeps the capacity it lent. The
+            /// partial result is discarded: every store is emptied, so every handle the abandoned
+            /// parse made is stale.
+            #[doc(hidden)]
+            pub(crate) fn recycle(self) -> FlatBuffers {
+                FlatBuffers {
+                    #(#builder_pool_recycles,)*
+                    shared: {
+                        let mut shared = self.shared;
+                        shared.clear(false);
+                        shared
+                    },
+                    lists: {
+                        let mut lists = self.lists;
+                        lists.clear();
+                        lists
+                    },
+                    texts: self.texts.into_recycled(),
+                    scratch: {
+                        let mut scratch = self.scratch;
+                        scratch.clear();
+                        scratch
+                    },
                 }
             }
 
@@ -1116,11 +1258,68 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
                     shared: self.shared,
                     lists: self.lists,
                     texts: self.texts,
+                    scratch: self.scratch,
                     root,
                     has_spans: self.has_spans,
                 }
             }
         }
+
+        /// The recycled stores of a finished Flat AST, ready for the next parse.
+        ///
+        /// One value holds one result's emptied buffers: every typed pool, the shared pool, the
+        /// list store, the text pool and the list scratch stack, each with the capacity the
+        /// previous parse grew it to and none of its contents. A batch consumer keeps one of these
+        /// beside its loop, so every parse after the first allocates nothing.
+        ///
+        /// It borrows nothing. The text pool of a live result borrows the input it was lexed from;
+        /// a recycled pool holds no text, so the buffers outlive that input and serve a parse of
+        /// any later one.
+        ///
+        /// # Handle invalidation
+        ///
+        /// Recycling a result ends it. Every handle of that result is stale, as `FlatAst::recycle`
+        /// documents, and the next parse hands the same handle values out for Nodes of its own.
+        pub struct FlatBuffers {
+            #(#pool_buffer_fields,)*
+            /// The emptied shared pool.
+            shared: #facade::__private::SharedPool,
+            /// The emptied list store.
+            lists: #facade::__private::ListStore,
+            /// The emptied text pool, which borrows no input.
+            texts: #facade::__private::TextPool<'static>,
+            /// The emptied list scratch stack.
+            scratch: #facade::__private::ListScratch,
+        }
+
+        impl FlatBuffers {
+            /// Creates buffers that hold no capacity at all.
+            ///
+            /// The first parse that reuses them pre-sizes each store exactly as a parse without
+            /// buffers does, so a consumer can hold one value and always call the reusing entry
+            /// point.
+            pub fn new() -> Self {
+                Self {
+                    #(#empty_pool_fields,)*
+                    shared: #facade::__private::SharedPool::new(false),
+                    lists: #facade::__private::ListStore::new(),
+                    texts: #facade::__private::TextPool::new(false),
+                    scratch: #facade::__private::ListScratch::new(),
+                }
+            }
+        }
+
+        impl ::core::default::Default for FlatBuffers {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        /// Proves the recycled buffers cross thread boundaries, as a parsed result does.
+        const _: () = {
+            const fn assert_send_sync<T: Send + Sync>() {}
+            assert_send_sync::<FlatBuffers>();
+        };
 
         #layout_checks
 
