@@ -465,7 +465,7 @@ fn render_generation(
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
     let root_tokens = apply_generated_lint_boundary(root_tokens, "root")
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
-    let root = root_tokens.to_string();
+    let root = source_text::render_source(&root_tokens);
     let mut nodes = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let name = format!("node-{index}.rs");
@@ -475,7 +475,7 @@ fn render_generation(
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         let tokens = apply_generated_lint_boundary(tokens, &format!("node_{index}"))
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
-        nodes.push((name, tokens.to_string()));
+        nodes.push((name, source_text::render_source(&tokens)));
     }
     let selected_root = format!("/recursa-generations/{}/root.rs", plan.identity);
     let selector_tokens = quote! {
@@ -484,7 +484,7 @@ fn render_generation(
     rendering
         .validate_rendered_rust(&selector_tokens)
         .map_err(|error| format!("Generation selector rendering is invalid Rust: {error}"))?;
-    let selector_body = selector_tokens.to_string();
+    let selector_body = source_text::render_source(&selector_tokens);
     let selector = format!("// recursa-generation:{}\n{selector_body}", plan.identity);
     #[cfg(feature = "diagrams")]
     let diagram_plan = plan.diagrams.as_ref().map(DiagramPlan::encode);
