@@ -13,6 +13,17 @@
 //! `get_mut`, and a pool has no `IndexMut`. Mutation is a later milestone. A [`SideTable`] is the
 //! one exception, because a consumer owns its values and a write to them does not change the AST.
 //!
+//! # Recycling
+//!
+//! A batch consumer parses one statement after another. Every store has a `clear` that ends one
+//! result and keeps that result's capacity, and a `reserve` that tops the capacity up without
+//! allocating when it is already enough, so the next parse starts warm and allocates nothing.
+//! Clearing ends the result: every handle of the cleared contents is stale from that moment, and
+//! the next push takes its index. A handle belongs to one result by contract, which
+//! `docs/adr/0009-give-each-flat-ast-its-own-typed-stores.md` already states, and no type can stop
+//! a stale handle. [`TextPool::into_recycled`] is the one store operation that also drops the
+//! input borrow, because recycled capacity must outlive the input it was filled from.
+//!
 //! # Handle encoding
 //!
 //! Every handle is `#[repr(transparent)]` over [`NonZeroU32`], so an optional handle is also four
@@ -588,6 +599,46 @@ impl<T> TypedPool<T> {
         }
     }
 
+    /// Empties the pool for reuse and captures one span per Node only when `capture_spans` is
+    /// true.
+    ///
+    /// The pool then behaves exactly as [`TypedPool::new`] does with the same setting: it holds no
+    /// Node and the next push takes the first handle again. Its allocated capacity stays, which is
+    /// the point: a recycling consumer hands a finished result's buffers to the next parse so that
+    /// the next parse allocates nothing.
+    ///
+    /// # Handle invalidation
+    ///
+    /// Every handle of the emptied contents becomes stale. It names no Node of the new contents,
+    /// and the next push takes its index, so reading through it silently returns another Node. A
+    /// handle belongs to one result by contract, as
+    /// `docs/adr/0009-give-each-flat-ast-its-own-typed-stores.md` says; recycling ends that
+    /// result, and the type system cannot stop a stale handle.
+    ///
+    /// Turning capture off releases the span array and its capacity. Turning it on again allocates
+    /// a new array.
+    pub fn clear(&mut self, capture_spans: bool) {
+        self.nodes.clear();
+        match (capture_spans, self.spans.as_mut()) {
+            (true, Some(spans)) => spans.clear(),
+            (true, None) => self.spans = Some(Vec::new()),
+            (false, _) => self.spans = None,
+        }
+    }
+
+    /// Reserves room for `nodes` Nodes in total, counted from the pool's current length.
+    ///
+    /// The call allocates only when the pool's capacity is short, so a recycled pool that is
+    /// already big enough allocates nothing. Capacity is a performance hint only, exactly as it is
+    /// in [`TypedPool::with_capacity`]. The span array, when the pool captures spans, reserves the
+    /// same count.
+    pub fn reserve(&mut self, nodes: usize) {
+        self.nodes.reserve(nodes.saturating_sub(self.nodes.len()));
+        if let Some(spans) = self.spans.as_mut() {
+            spans.reserve(nodes.saturating_sub(spans.len()));
+        }
+    }
+
     /// Appends `node` and returns its handle.
     ///
     /// A pool that does not capture spans drops `span`. A pool that captures spans stores
@@ -696,6 +747,34 @@ impl SharedPool {
             words: buffer,
             capture_spans,
         }
+    }
+
+    /// Empties the pool for reuse and records one span per Node only when `capture_spans` is
+    /// true.
+    ///
+    /// The pool then behaves exactly as [`SharedPool::new`] does with the same setting: word zero
+    /// is reserved again, so [`SharedPool::len_words`] is one and no handle this pool hands out is
+    /// zero. Its allocated capacity stays. The record layout stays valid too, because the next
+    /// [`SharedPool::alloc`] writes the whole record, tag word included, before the Node's words;
+    /// a cleared pool holds no record of its own.
+    ///
+    /// Every handle of the emptied contents becomes stale, exactly as [`TypedPool::clear`]
+    /// documents. A stale shared-pool handle is worse than a stale pool handle only in that its
+    /// word offset may now hold a Node of another type, which the tag word turns into a panic in a
+    /// debug or test build.
+    pub fn clear(&mut self, capture_spans: bool) {
+        self.words.clear();
+        self.words.push(0);
+        self.capture_spans = capture_spans;
+    }
+
+    /// Reserves room for `words` words in total, including the reserved word zero.
+    ///
+    /// The call allocates only when the pool's capacity is short, so a recycled pool that is
+    /// already big enough allocates nothing. Capacity is a performance hint only, exactly as it is
+    /// in [`SharedPool::with_capacity`].
+    pub fn reserve(&mut self, words: usize) {
+        self.words.reserve(words.saturating_sub(self.words.len()));
     }
 
     /// Returns the number of words a Node of type `T` occupies, which is at least one.
@@ -864,6 +943,24 @@ impl ListStore {
         Self { slots: buffer }
     }
 
+    /// Empties the store for reuse and keeps its capacity.
+    ///
+    /// The store then behaves exactly as [`ListStore::new`] does: slot zero is reserved again, so
+    /// [`ListStore::len_slots`] is one and no run starts at slot zero. Every list handle of the
+    /// emptied contents becomes stale, exactly as [`TypedPool::clear`] documents.
+    pub fn clear(&mut self) {
+        self.slots.clear();
+        self.slots.push(0);
+    }
+
+    /// Reserves room for `slots` slots in total, including the reserved slot zero.
+    ///
+    /// The call allocates only when the store's capacity is short. Capacity is a performance hint
+    /// only, exactly as it is in [`ListStore::with_capacity`].
+    pub fn reserve(&mut self, slots: usize) {
+        self.slots.reserve(slots.saturating_sub(self.slots.len()));
+    }
+
     /// Returns the total number of slots in the store, including the reserved slot zero.
     pub fn len_slots(&self) -> usize {
         self.slots.len()
@@ -1000,6 +1097,23 @@ impl ListScratch {
         self.slots.len()
     }
 
+    /// Drops every open list's items and keeps the stack's capacity.
+    ///
+    /// A parse that ends closes every list it opened, so the stack a finished parse hands back is
+    /// already empty. A failed parse may leave items behind, and this call discards them. Every
+    /// [`OpenList`] taken before the call becomes stale.
+    pub fn clear(&mut self) {
+        self.slots.clear();
+    }
+
+    /// Reserves room for `slots` items in total, counted from the stack's current length.
+    ///
+    /// The call allocates only when the stack's capacity is short. Capacity is a performance hint
+    /// only, exactly as it is in [`ListScratch::with_capacity`].
+    pub fn reserve(&mut self, slots: usize) {
+        self.slots.reserve(slots.saturating_sub(self.slots.len()));
+    }
+
     /// Reports whether no open list holds an item, which every parse must reach when it ends.
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
@@ -1090,6 +1204,11 @@ impl ListScratch {
 /// `u16` and decodes it back. The kind vector always has the same length as the text vector,
 /// because the pool is the only writer of both.
 ///
+/// A [`ContentText`] has drop glue, because its owned variant holds a `Box<str>`. Every text a
+/// parse stores borrows the input instead, so the pool counts its owned texts and releases a pool
+/// of borrowed texts without walking a single entry. [`TextPool::clear`] and the pool's [`Drop`]
+/// share that fast path.
+///
 /// The pool is append-only and exposes no mutable text access.
 pub struct TextPool<'input> {
     /// Every stored text, in index order.
@@ -1098,6 +1217,8 @@ pub struct TextPool<'input> {
     kinds: Vec<u16>,
     /// One span per text when the parse requested capture, otherwise absent.
     spans: Option<Vec<Span>>,
+    /// How many stored texts own their bytes. Zero lets the pool release its texts without a walk.
+    owned: usize,
 }
 
 impl<'input> TextPool<'input> {
@@ -1107,6 +1228,7 @@ impl<'input> TextPool<'input> {
             texts: Vec::new(),
             kinds: Vec::new(),
             spans: capture_spans.then(Vec::new),
+            owned: 0,
         }
     }
 
@@ -1121,6 +1243,7 @@ impl<'input> TextPool<'input> {
             texts: Vec::with_capacity(texts),
             kinds: Vec::with_capacity(texts),
             spans: capture_spans.then(|| Vec::with_capacity(texts)),
+            owned: 0,
         }
     }
 
@@ -1138,12 +1261,85 @@ impl<'input> TextPool<'input> {
     /// Panics when the pool already holds every text a four-byte handle can address.
     pub fn push<K>(&mut self, text: ContentText<'input>, kind: u16, span: Option<Span>) -> Text<K> {
         let handle = Text::from_index(self.texts.len());
+        self.owned += usize::from(text.is_owned());
         self.texts.push(text);
         self.kinds.push(kind);
         if let Some(spans) = self.spans.as_mut() {
             spans.push(span.unwrap_or(Span::SYNTHETIC));
         }
         handle
+    }
+
+    /// Releases every stored text, without a per-entry walk when none of them owns its bytes.
+    ///
+    /// [`TextPool::clear`] and [`Drop`] both call this. It leaves the text buffer empty and its
+    /// capacity untouched.
+    fn release_texts(&mut self) {
+        if self.owned == 0 {
+            // SAFETY: `owned` counts every owned text the pool stored and it is zero here, so
+            // every element is the borrowed variant, whose drop glue has no side effect and frees
+            // nothing. Forgetting those elements therefore leaks nothing and skips only the walk
+            // that would have checked each one's variant. The buffer stays owned by the `Vec`,
+            // which frees or reuses it, and a length of zero is always within its capacity.
+            unsafe { self.texts.set_len(0) };
+        } else {
+            self.texts.clear();
+        }
+        self.owned = 0;
+    }
+
+    /// Empties the pool for reuse and captures one span per text only when `capture_spans` is
+    /// true.
+    ///
+    /// The pool then behaves exactly as [`TextPool::new`] does with the same setting: it holds no
+    /// text and the next push takes the first handle again. Its allocated capacity stays. Every
+    /// text handle of the emptied contents becomes stale, exactly as [`TypedPool::clear`]
+    /// documents.
+    ///
+    /// The call releases the texts through the pool's own fast path, so a pool whose every text
+    /// borrows the input is emptied without a per-entry walk.
+    pub fn clear(&mut self, capture_spans: bool) {
+        self.release_texts();
+        self.kinds.clear();
+        match (capture_spans, self.spans.as_mut()) {
+            (true, Some(spans)) => spans.clear(),
+            (true, None) => self.spans = Some(Vec::new()),
+            (false, _) => self.spans = None,
+        }
+    }
+
+    /// Reserves room for `texts` texts in total, counted from the pool's current length.
+    ///
+    /// The call allocates only when the pool's capacity is short. Capacity is a performance hint
+    /// only, exactly as it is in [`TextPool::with_capacity`]. The kind vector, and the span array
+    /// when the pool captures spans, reserve the same count.
+    pub fn reserve(&mut self, texts: usize) {
+        self.texts.reserve(texts.saturating_sub(self.texts.len()));
+        self.kinds.reserve(texts.saturating_sub(self.kinds.len()));
+        if let Some(spans) = self.spans.as_mut() {
+            spans.reserve(texts.saturating_sub(spans.len()));
+        }
+    }
+
+    /// Empties the pool and returns it with no borrow of any input.
+    ///
+    /// This is how a finished result's text capacity is recycled into the next parse of another
+    /// input. The returned pool captures no span, holds no text, and keeps the capacity of the
+    /// text, kind, and span buffers it can keep. It borrows nothing, because it holds nothing, so
+    /// a consumer may store it for as long as it likes and fill it from any later input.
+    ///
+    /// Every text handle of the emptied contents becomes stale, exactly as [`TypedPool::clear`]
+    /// documents.
+    pub fn into_recycled(mut self) -> TextPool<'static> {
+        self.clear(false);
+        let texts = std::mem::take(&mut self.texts);
+        let kinds = std::mem::take(&mut self.kinds);
+        TextPool {
+            texts: erase_text_lifetime(texts),
+            kinds,
+            spans: None,
+            owned: 0,
+        }
     }
 
     /// Returns the number of texts in the pool.
@@ -1174,6 +1370,43 @@ impl<'input> TextPool<'input> {
     pub fn span<K>(&self, handle: Text<K>) -> Option<Span> {
         self.spans.as_ref()?.get(handle.index()).copied()
     }
+}
+
+/// Releases the pool's texts, skipping the per-entry walk when every text borrows the input.
+///
+/// The pool needs this implementation only for the fast path. Without it, dropping the text vector
+/// walks every entry to check for an owned `Box<str>`, which is a per-text cost a parse never
+/// needs: every text a parse stores borrows the input it lexed.
+impl Drop for TextPool<'_> {
+    fn drop(&mut self) {
+        self.release_texts();
+    }
+}
+
+/// Reinterprets an empty text buffer as one that borrows no input.
+///
+/// A recycled pool holds no text, so its buffer is raw capacity rather than storage of any
+/// particular input's texts. This function is how that capacity outlives the input the pool was
+/// filled from. [`TextPool::into_recycled`] is its one caller.
+///
+/// # Panics
+///
+/// Panics when the buffer is not empty. A non-empty buffer holds live borrows of one input, and
+/// reinterpreting them would claim a longer lifetime than they have.
+fn erase_text_lifetime(texts: Vec<ContentText<'_>>) -> Vec<ContentText<'static>> {
+    assert!(
+        texts.is_empty(),
+        "only an empty text buffer can outlive the input it was filled from"
+    );
+    let mut texts = std::mem::ManuallyDrop::new(texts);
+    let capacity = texts.capacity();
+    let pointer = texts.as_mut_ptr();
+    // SAFETY: `pointer` and `capacity` come from a `Vec` this function owns and never drops, so no
+    // other `Vec` frees the buffer. A lifetime changes no layout, so `ContentText<'static>` has
+    // the size and the alignment `ContentText<'_>` has and the buffer's allocation matches the
+    // rebuilt `Vec`'s exactly. The length is zero, which the assertion above proves, so the call
+    // reinterprets no element at a longer lifetime: it hands over raw capacity only.
+    unsafe { Vec::from_raw_parts(pointer.cast::<ContentText<'static>>(), 0, capacity) }
 }
 
 impl<'input, K> Index<Text<K>> for TextPool<'input> {
@@ -1956,6 +2189,295 @@ mod tests {
     }
 
     #[test]
+    fn a_cleared_typed_pool_is_fresh_again_and_keeps_its_capacity() {
+        let mut pool = TypedPool::<Pair>::with_capacity(false, 64);
+        let first = pool.push(Pair { left: 1, right: 1 }, None);
+        let stale = pool.push(Pair { left: 2, right: 2 }, None);
+        let capacity = pool.nodes.capacity();
+
+        pool.clear(false);
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+        assert_eq!(pool.nodes.capacity(), capacity, "clear keeps the capacity");
+        assert_eq!(pool.handles().next(), None);
+
+        // A new push takes the first handle again, so every handle of the cleared contents is
+        // stale: `first` now names the new Node and `stale` names nothing at all.
+        let again = pool.push(Pair { left: 3, right: 3 }, None);
+        assert_eq!(again, first);
+        assert_eq!(pool[again], Pair { left: 3, right: 3 });
+        assert_eq!(pool.get(stale), None);
+        assert_eq!(pool.nodes.capacity(), capacity, "a warm push does not grow");
+    }
+
+    #[test]
+    fn clearing_a_typed_pool_turns_span_capture_on_and_off() {
+        let mut pool = TypedPool::<Pair>::new(true);
+        let handle = pool.push(Pair { left: 1, right: 1 }, Some(span(0, 4)));
+        assert_eq!(pool.span(handle), Some(span(0, 4)));
+
+        pool.clear(false);
+        let handle = pool.push(Pair { left: 2, right: 2 }, Some(span(0, 4)));
+        assert_eq!(pool.span(handle), None, "capture off drops the span");
+
+        pool.clear(true);
+        let handle = pool.push(Pair { left: 3, right: 3 }, Some(span(1, 4)));
+        assert_eq!(pool.span(handle), Some(span(1, 4)));
+        assert_eq!(pool.len(), 1, "the reopened span array matches the pool");
+    }
+
+    #[test]
+    fn a_cleared_shared_pool_reserves_word_zero_again_and_keeps_its_capacity() {
+        let mut pool = SharedPool::with_capacity(false, 128);
+        let first = pool.alloc(Pair { left: 1, right: 1 }, None);
+        let stale = pool.alloc(Pair { left: 2, right: 2 }, None);
+        let capacity = pool.words.capacity();
+
+        pool.clear(false);
+        assert_eq!(pool.len_words(), 1, "word zero is reserved again");
+        assert_eq!(pool.words.capacity(), capacity, "clear keeps the capacity");
+
+        // The record layout is still valid: the next alloc writes its own tag word, so the tagged
+        // read below succeeds, and the first handle comes back.
+        let again = pool.alloc(Pair { left: 3, right: 3 }, None);
+        assert_eq!(again, first);
+        assert_eq!(*pool.get(again), Pair { left: 3, right: 3 });
+        assert_eq!(pool.try_get(stale), None, "the stale handle names no Node");
+        assert_eq!(
+            pool.words.capacity(),
+            capacity,
+            "a warm alloc does not grow"
+        );
+    }
+
+    #[test]
+    fn clearing_a_shared_pool_turns_span_capture_on_and_off() {
+        let mut pool = SharedPool::new(false);
+        let handle = pool.alloc(Pair { left: 1, right: 1 }, Some(span(0, 4)));
+        assert_eq!(pool.span(handle), None);
+
+        pool.clear(true);
+        let handle = pool.alloc(Pair { left: 2, right: 2 }, Some(span(0, 4)));
+        assert_eq!(pool.span(handle), Some(span(0, 4)));
+        assert_eq!(*pool.get(handle), Pair { left: 2, right: 2 });
+    }
+
+    #[test]
+    fn a_cleared_list_store_reserves_slot_zero_again_and_keeps_its_capacity() {
+        let mut store = ListStore::with_capacity(96);
+        let items: Vec<Handle<Pair>> = (0..3).map(Handle::from_index).collect();
+        let first = store.push(items.iter().copied());
+        let stale = store.push(items.iter().copied());
+        let capacity = store.slots.capacity();
+
+        store.clear();
+        assert_eq!(store.len_slots(), 1, "slot zero is reserved again");
+        assert_eq!(store.slots.capacity(), capacity, "clear keeps the capacity");
+
+        let again = store.push(items.iter().copied());
+        assert_eq!(again, first);
+        assert_eq!(store.get(again), items.as_slice());
+        assert_eq!(store.len_slots(), 4, "the stale run's slots are gone");
+        assert!(
+            stale.start.get() as usize + stale.len as usize > store.len_slots(),
+            "the stale run no longer lies inside the store"
+        );
+        assert_eq!(
+            store.slots.capacity(),
+            capacity,
+            "a warm push does not grow"
+        );
+    }
+
+    #[test]
+    fn a_cleared_list_scratch_drops_its_open_items_and_keeps_its_capacity() {
+        let mut scratch = ListScratch::with_capacity(48);
+        let mut list = scratch.open();
+        for index in 0..3 {
+            scratch.push(&mut list, Handle::<Pair>::from_index(index));
+        }
+        let capacity = scratch.slots.capacity();
+
+        scratch.clear();
+        assert_eq!(scratch.len(), 0);
+        assert!(scratch.is_empty());
+        assert_eq!(scratch.slots.capacity(), capacity, "clear keeps capacity");
+
+        // The stack is usable again: a new list opens at slot zero.
+        let mut store = ListStore::new();
+        let mut list = scratch.open();
+        scratch.push(&mut list, Handle::<Pair>::from_index(7));
+        let closed = scratch.close::<Handle<Pair>>(list, &mut store);
+        assert_eq!(store.get(closed), [Handle::<Pair>::from_index(7)]);
+        assert!(scratch.is_empty());
+    }
+
+    #[test]
+    fn a_cleared_text_pool_is_fresh_again_and_keeps_its_capacity() {
+        let mut pool = TextPool::with_capacity(true, 32);
+        let first: Text<NameText> = pool.push(
+            ContentText::owned("alpha".into()),
+            NAME_KIND,
+            Some(span(0, 5)),
+        );
+        let stale: Text<NameText> = pool.push(ContentText::owned("beta".into()), NAME_KIND, None);
+        let capacity = pool.texts.capacity();
+        assert_eq!(pool.owned, 2, "both texts own their bytes");
+
+        pool.clear(true);
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
+        assert_eq!(pool.owned, 0, "the owned count resets with the contents");
+        assert_eq!(pool.texts.capacity(), capacity, "clear keeps the capacity");
+
+        let again: Text<NameText> = pool.push(
+            ContentText::owned("gamma".into()),
+            NAME_KIND,
+            Some(span(1, 6)),
+        );
+        assert_eq!(again, first);
+        assert_eq!(pool[again].as_str(), "gamma");
+        assert_eq!(pool.kind(again), Some(NAME_KIND));
+        assert_eq!(pool.span(again), Some(span(1, 6)));
+        assert_eq!(pool.get(stale), None, "the stale handle names no text");
+        assert_eq!(pool.texts.capacity(), capacity, "a warm push does not grow");
+    }
+
+    #[test]
+    fn clearing_a_text_pool_turns_span_capture_on_and_off() {
+        let mut pool = TextPool::new(true);
+        pool.clear(false);
+        let handle: Text<NameText> =
+            pool.push(ContentText::owned("x".into()), NAME_KIND, Some(span(0, 1)));
+        assert_eq!(pool.span(handle), None);
+
+        pool.clear(true);
+        let handle: Text<NameText> =
+            pool.push(ContentText::owned("y".into()), NAME_KIND, Some(span(0, 1)));
+        assert_eq!(pool.span(handle), Some(span(0, 1)));
+    }
+
+    #[test]
+    fn a_text_pool_of_borrowed_texts_clears_and_drops_without_walking_its_entries() {
+        let source = "alpha beta";
+        let mut pool = TextPool::new(false);
+        for range in [(0, 5), (6, 10)] {
+            let text = ContentText::matched(source, span(range.0, range.1))
+                .expect("the range is valid UTF-8");
+            let _: Text<NameText> = pool.push(text, NAME_KIND, None);
+        }
+        assert_eq!(pool.owned, 0, "every text borrows the input");
+
+        pool.clear(false);
+        assert!(pool.is_empty());
+        // The pool takes the same fast path when it drops, which Miri checks for a leak.
+        let text = ContentText::matched(source, span(0, 5)).expect("the range is valid UTF-8");
+        let _: Text<NameText> = pool.push(text, NAME_KIND, None);
+        drop(pool);
+    }
+
+    #[test]
+    fn a_text_pool_frees_every_owned_text_it_clears_or_drops() {
+        // Miri's leak check is the assertion here: an owned text holds a `Box<str>`, so a release
+        // that skipped the walk would leak it.
+        let mut pool = TextPool::new(false);
+        let _: Text<NameText> = pool.push(ContentText::owned("owned".into()), NAME_KIND, None);
+        let source = "alpha";
+        let borrowed = ContentText::matched(source, span(0, 5)).expect("the range is valid UTF-8");
+        let _: Text<NameText> = pool.push(borrowed, NAME_KIND, None);
+        assert_eq!(pool.owned, 1, "one of the two texts owns its bytes");
+
+        pool.clear(false);
+        assert_eq!(pool.owned, 0);
+        let _: Text<NameText> = pool.push(ContentText::owned("another".into()), NAME_KIND, None);
+        assert_eq!(pool.owned, 1);
+        drop(pool);
+    }
+
+    #[test]
+    fn a_recycled_text_pool_borrows_nothing_and_keeps_its_capacity() {
+        let source = String::from("alpha beta");
+        let mut pool = TextPool::with_capacity(true, 32);
+        let borrowed = ContentText::matched(&source, span(0, 5)).expect("the range is valid UTF-8");
+        let _: Text<NameText> = pool.push(borrowed, NAME_KIND, Some(span(0, 5)));
+        let _: Text<NameText> = pool.push(ContentText::owned("beta".into()), NAME_KIND, None);
+        let capacity = pool.texts.capacity();
+
+        let mut recycled: TextPool<'static> = pool.into_recycled();
+        // The recycled buffers outlive the input they were filled from.
+        drop(source);
+        assert!(recycled.is_empty());
+        assert_eq!(recycled.owned, 0);
+        assert_eq!(recycled.texts.capacity(), capacity, "the capacity survives");
+        assert!(recycled.spans.is_none(), "a recycled pool captures no span");
+
+        let handle: Text<NameText> =
+            recycled.push(ContentText::owned("gamma".into()), NAME_KIND, None);
+        assert_eq!(handle, Text::<NameText>::from_index(0));
+        assert_eq!(recycled[handle].as_str(), "gamma");
+        assert_eq!(recycled.texts.capacity(), capacity, "the push was warm");
+    }
+
+    #[test]
+    fn a_recycled_empty_text_pool_is_usable() {
+        let recycled = TextPool::new(false).into_recycled();
+        assert!(recycled.is_empty());
+        assert_eq!(recycled.texts.capacity(), 0);
+    }
+
+    #[test]
+    fn reserving_a_warm_store_that_is_big_enough_does_not_grow_it() {
+        let mut pool = TypedPool::<Pair>::with_capacity(true, 64);
+        let capacity = pool.nodes.capacity();
+        pool.reserve(16);
+        assert_eq!(pool.nodes.capacity(), capacity);
+        pool.reserve(capacity + 1);
+        assert!(pool.nodes.capacity() > capacity, "a short pool still grows");
+
+        let mut shared = SharedPool::with_capacity(false, 128);
+        let capacity = shared.words.capacity();
+        shared.reserve(64);
+        assert_eq!(shared.words.capacity(), capacity);
+        assert_eq!(shared.len_words(), 1, "reserve stores nothing");
+
+        let mut lists = ListStore::with_capacity(96);
+        let capacity = lists.slots.capacity();
+        lists.reserve(64);
+        assert_eq!(lists.slots.capacity(), capacity);
+        assert_eq!(lists.len_slots(), 1);
+
+        let mut scratch = ListScratch::with_capacity(48);
+        let capacity = scratch.slots.capacity();
+        scratch.reserve(16);
+        assert_eq!(scratch.slots.capacity(), capacity);
+
+        let mut texts = TextPool::with_capacity(true, 32);
+        let capacity = texts.texts.capacity();
+        texts.reserve(16);
+        assert_eq!(texts.texts.capacity(), capacity);
+        texts.reserve(capacity + 1);
+        assert!(texts.texts.capacity() > capacity);
+    }
+
+    #[test]
+    fn a_recycled_store_reserves_at_least_what_a_pre_sized_one_does() {
+        let mut warm = TypedPool::<Pair>::with_capacity(false, 8);
+        for index in 0..8u32 {
+            warm.push(
+                Pair {
+                    left: index,
+                    right: index,
+                },
+                None,
+            );
+        }
+        warm.clear(false);
+        warm.reserve(64);
+        let cold = TypedPool::<Pair>::with_capacity(false, 64);
+        assert!(warm.nodes.capacity() >= cold.nodes.capacity());
+    }
+
+    #[test]
     fn every_flat_storage_type_is_send_and_sync_whatever_the_node_type() {
         assert_send_sync::<Handle<Cell<u8>>>();
         assert_send_sync::<Option<Handle<Cell<u8>>>>();
@@ -1969,5 +2491,14 @@ mod tests {
         assert_send_sync::<SharedPool>();
         assert_send_sync::<TypedPool<Pair>>();
         assert_send_sync::<TextPool<'static>>();
+    }
+
+    #[test]
+    fn a_cleared_store_that_only_reserved_capacity_stores_nothing() {
+        let mut pool = SharedPool::new(false);
+        pool.reserve(64);
+        assert_eq!(pool.len_words(), 1);
+        pool.clear(false);
+        assert_eq!(pool.len_words(), 1);
     }
 }
