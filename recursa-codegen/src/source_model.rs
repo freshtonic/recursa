@@ -153,6 +153,8 @@ pub(crate) struct SourceRestriction {
     pub(crate) base: NodeId,
     /// The admitted variants of `base`, in the base's own declaration order.
     pub(crate) variants: Vec<ResolvedVariantId>,
+    /// `#[restricts(Base, leading)]`: only an operand that leads a rule is restricted.
+    pub(crate) leading_only: bool,
     /// Locates the declaration.
     pub(crate) site: SourceSite,
 }
@@ -4698,6 +4700,7 @@ impl SourceModelBuilder<'_> {
                 name: self.resolved.type_aliases[index].ident.clone(),
                 base: root,
                 variants,
+                leading_only: authored.leading_only,
                 site,
             });
         }
