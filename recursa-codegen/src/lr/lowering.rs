@@ -570,9 +570,10 @@ struct Lowering<'a> {
     /// a site can name a restriction whose own rules are lowered later.
     restrictions: Vec<NonterminalId>,
     /// The restricted expression whose rules are being emitted, as `(restricted, base)`
-    /// nonterminals. While it is set, [`Lowering::lower_alternative`] retypes a rule's first and
-    /// last symbol from the base to the restriction (see [`Lowering::lower_restrictions`]).
-    active_restriction: Option<(NonterminalId, NonterminalId)>,
+    /// nonterminals and whether it is `leading` only. While it is set,
+    /// [`Lowering::lower_alternative`] retypes a rule's first symbol, and its last one unless
+    /// `leading`, from the base to the restriction (see [`Lowering::lower_restrictions`]).
+    active_restriction: Option<(NonterminalId, NonterminalId, bool)>,
 }
 
 /// Strips the `Box` layers off a container shape, counting them.
@@ -1120,7 +1121,7 @@ impl<'a> Lowering<'a> {
             else {
                 unreachable!("an enum type is never inlined, so it has a nonterminal")
             };
-            self.active_restriction = Some((lhs, base));
+            self.active_restriction = Some((lhs, base, restriction.leading_only));
             for alternative in alternatives {
                 if !restriction.variants.contains(&alternative.declaration) {
                     continue;
@@ -1267,12 +1268,15 @@ impl<'a> Lowering<'a> {
             // A restricted expression's rule retypes the base operand it begins or ends with
             // (`docs/declared-precedence.md`, "Restricted expressions"): `b_expr '+' b_expr`,
             // but `'(' a_expr ')'`.
-            if let Some((restricted, base)) = self.active_restriction {
+            if let Some((restricted, base, leading_only)) = self.active_restriction {
                 let base = Symbol::Nonterminal(base);
                 if rhs.first() == Some(&base) {
                     rhs[0] = Symbol::Nonterminal(restricted);
                 }
+                // A `leading` restriction keeps the base where an operand ends the rule. A rule
+                // that is one operand long both leads and ends with it, and leading decides.
                 if let Some(last) = rhs.last_mut()
+                    && !leading_only
                     && *last == base
                 {
                     *last = Symbol::Nonterminal(restricted);

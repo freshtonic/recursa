@@ -3649,6 +3649,7 @@ impl Materializer {
                         .expect("normalized type ID overflow"),
                 ),
                 variants: admitted,
+                leading_only: restriction.leading_only,
             });
         }
     }
