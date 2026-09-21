@@ -6,6 +6,10 @@
 //! opening a boolean operand. Declared precedence alone cannot express that, exactly as
 //! `gram.y:14762-14766` records; the restriction is written by hand, and the parenthesized atom
 //! keeps the full language, as `b_expr: '(' a_expr ')'` does.
+//!
+//! `Action` is a `leading` restriction: the position after `do` excludes a leading `(`, as
+//! `gram.y`'s single rule action does because `(` there opens the action list. Only the operand
+//! that leads a rule is restricted, so `do a + (b)` is an action and `do (a) + b` is not.
 
 recursa::grammar! {
     module = crate::restricted,
@@ -17,6 +21,7 @@ recursa::tokens! {
     keywords {
         BETWEEN => "between",
         AND => "and",
+        DO => "do",
     }
     punctuation {
         PLUS => "+",
@@ -61,5 +66,22 @@ recursa::ast_node! {
         Name,
         Parenthesized,
         Add,
+    }
+}
+
+recursa::ast_node! {
+    /// An expression that cannot lead with `(`. Its right operand keeps the full language.
+    #[restricts(Expr, leading)]
+    pub enum Action {
+        Name,
+        Add,
+    }
+}
+
+recursa::ast_node! {
+    /// `do action` or the parenthesized list `do ( expr )`, which owns the leading `(`.
+    pub enum Do {
+        One(#[tok(DO, this)] boxed!(Action)),
+        List(#[tok(DO, LPAREN, this, RPAREN)] boxed!(Expr)),
     }
 }

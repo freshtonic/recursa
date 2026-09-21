@@ -975,6 +975,23 @@ fn a_restricted_expression_substitutes_its_first_and_last_operands() {
 }
 
 #[test]
+fn a_leading_restriction_substitutes_only_its_first_operand() {
+    let (_, grammar) = lr_fixture("restricted");
+    // `#[restricts(Expr, leading)]` retypes the operand that leads a rule and leaves the one that
+    // ends it as the base: the position excludes a leading `(` and nothing else, so the right
+    // operand of `+` is still a full `Expr` and may be parenthesized.
+    assert_eq!(
+        rules_of(&grammar, "Action"),
+        [
+            "Action -> restricted::Name",
+            "Action -> Action PLUS restricted::Expr",
+        ]
+    );
+    // `BExpr`, declared without the option, still restricts both ends.
+    assert!(rules_of(&grammar, "BExpr").contains(&"BExpr -> BExpr PLUS BExpr".to_owned()));
+}
+
+#[test]
 fn a_restricted_expression_builds_a_conflict_free_automaton() {
     let (_, grammar) = lr_fixture("restricted");
     let automaton = Automaton::build(

@@ -62,7 +62,8 @@ pub struct GrammarDescription {
 /// One restricted expression (`docs/declared-precedence.md`, "Restricted expressions"): a
 /// grammar nonterminal, never a type, whose rules are the admitted alternatives of `base` with
 /// one substitution — a recursive operand that is the first or the last symbol of the rule is
-/// parsed through this restriction instead of through `base`.
+/// parsed through this restriction instead of through `base` (only the first one when
+/// `leading_only`).
 ///
 /// `base` is the root enum type every rule constructs, resolved through any chain of
 /// restrictions, so a restriction of a restriction still builds the type the author declared.
@@ -73,6 +74,11 @@ pub struct RestrictionDescription {
     pub base: TypeId,
     /// The admitted alternatives of `base`, in the base's own declaration order.
     pub variants: Vec<DeclId>,
+    /// `#[restricts(Base, leading)]`: a recursive operand is retyped only where it is the first
+    /// symbol of a rule, and one that is the last symbol keeps the base. This is the restriction
+    /// of a position that excludes a leading form and nothing else, as `gram.y`'s rule action
+    /// excludes a leading `(`: `SELECT 1 UNION (SELECT 2)` is still an action.
+    pub leading_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -130,6 +130,15 @@ enum Node, is a build error. Interior operands need a restricted Node only
 where `gram.y` uses one; the author follows `gram.y` case by case and never
 derives the restriction from an exclusion list.
 
+`#[restricts(Base, leading)]` restricts only the operand that leads a rule, and
+an operand that ends a rule keeps its base type. It is for a position that
+excludes a leading form and nothing else. `gram.y`'s single rule action is
+one: a `(` after `DO ALSO` opens the action list, so the action's
+`select_clause` cannot lead with a parenthesized query, but `SELECT 1 UNION
+(SELECT 2)` is an action. With the option the rule is `Action UNION Expr`;
+without it, `Action UNION Action`, which rejects that statement. The trailing
+restriction is what `b_expr` needs, so it stays the default.
+
 ### Attachment units inline
 
 A semantic field with attached fixed tokens and cardinality one
