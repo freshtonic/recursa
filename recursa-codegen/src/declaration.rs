@@ -46,6 +46,9 @@ pub(crate) struct DeclarationRestriction {
     pub(crate) variants: Vec<DeclarationRestrictedVariant>,
     /// Whether the declaration was an enum; a struct names no base variants.
     pub(crate) enumerated: bool,
+    /// Whether the author wrote `#[restricts(Base, leading)]`: only an operand that leads a rule
+    /// is retyped, and one that ends a rule keeps the base.
+    pub(crate) leading_only: bool,
     /// Every other attribute the author wrote on the declaration, by path and range. A
     /// restriction is a nonterminal, not a type, so it configures nothing and each of these is
     /// an authoring error reported by source-model lowering.
@@ -700,10 +703,11 @@ fn restriction_syntax(item: &Item) -> syn::Result<Option<DeclarationRestriction>
     else {
         return Ok(None);
     };
-    let base: syn::Path = attribute.parse_args().map_err(|error| {
+    let RestrictsArguments { base, leading_only } = attribute.parse_args().map_err(|error| {
         syn::Error::new(
             error.span(),
-            "#[restricts(Base)] names one base Node: the expression this Node restricts",
+            "#[restricts(Base)] names one base Node: the expression this Node restricts, \
+                 with `leading` after it when only a leading operand is restricted",
         )
     })?;
     if !generics.params.is_empty() {
@@ -751,8 +755,36 @@ fn restriction_syntax(item: &Item) -> syn::Result<Option<DeclarationRestriction>
         base_range: span_range(base.span()),
         variants,
         enumerated: matches!(item, Item::Enum(_)),
+        leading_only,
         configured,
     }))
+}
+
+/// The arguments of `#[restricts(Base)]` or `#[restricts(Base, leading)]`.
+struct RestrictsArguments {
+    /// The base Node the declaration restricts.
+    base: syn::Path,
+    /// Whether `leading` follows the base.
+    leading_only: bool,
+}
+
+impl syn::parse::Parse for RestrictsArguments {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let base = input.parse()?;
+        let mut leading_only = false;
+        if input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
+            let option: syn::Ident = input.parse()?;
+            if option != "leading" {
+                return Err(syn::Error::new(
+                    option.span(),
+                    "the only option of #[restricts(Base, ...)] is `leading`",
+                ));
+            }
+            leading_only = true;
+            input.parse::<Option<syn::Token![,]>>()?;
+        }
+        Ok(Self { base, leading_only })
+    }
 }
 
 /// Expands one restricted expression to the type alias that stands for it: a restricted Node is
@@ -766,7 +798,7 @@ fn restriction_alias(item: &Item) -> syn::Result<Item> {
         Item::Enum(item) => (&item.attrs, &item.ident),
         _ => unreachable!("a restricted declaration is a struct or an enum"),
     };
-    let base: syn::Path = attrs
+    let RestrictsArguments { base, .. } = attrs
         .iter()
         .find(|attribute| attribute.path().is_ident("restricts"))
         .expect("the caller read the restriction off this declaration first")
