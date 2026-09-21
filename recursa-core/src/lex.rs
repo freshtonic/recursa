@@ -550,9 +550,9 @@ where
         if !related(decision) {
             continue;
         }
-        if !decision
+        if decision
             .interior_fence
-            .is_some_and(|(start, _)| start < candidate.len())
+            .is_none_or(|(start, _)| start >= candidate.len())
         {
             continue;
         }
