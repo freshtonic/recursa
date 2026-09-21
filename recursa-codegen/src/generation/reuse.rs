@@ -105,10 +105,10 @@ pub(super) fn reuse_published(
     let Ok(selector) = fs::read_to_string(entry.join(SELECTOR_FILE)) else {
         return Ok(None);
     };
-    if !selector
+    if selector
         .lines()
         .next()
-        .is_some_and(|line| line == format!("// recursa-generation:{identity}"))
+        .is_none_or(|line| line != format!("// recursa-generation:{identity}"))
     {
         return Ok(None);
     }
