@@ -223,6 +223,104 @@ fn generated_downstream_code_is_warning_free_under_clippy() {
     );
 }
 
+/// The `Arbitrary` seed types of an `arena_ast` grammar must be clippy-clean downstream too.
+///
+/// A seed type is a crate-private mirror of an authored Node. The grammar below holds every shape
+/// that pg-sql's 1,479 Nodes turned into a `-D warnings` failure once it enabled `arbitrary`:
+///
+/// - `Truth` and `Tail` borrow nothing, so their arena type has no lifetime and the materialize
+///   method must not declare one (`clippy::needless_lifetimes`);
+/// - `Words` and `MaybeWord` hold content values that need no conversion, so there is no element
+///   closure to write (`clippy::map_identity`);
+/// - `Truth`'s variants share a prefix and `Pile` holds `zero_or_many!(boxed!(T))`. Clippy skips
+///   `enum_variant_names` and `vec_box` on the exported Node and not on its private mirror.
+///
+/// `clippy::large_enum_variant` has no fixture shape here: a small grammar that makes a mirror
+/// wide makes the authored enum wide too, and that one is the author's to box.
+#[test]
+fn generated_arbitrary_seed_types_are_warning_free_under_clippy() {
+    let package = scaffold_fixture();
+    enable_arbitrary_and_serde(&package);
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    keyword_matching = sensitive,
+    arena_ast,
+}
+
+recursa::tokens! {
+    punctuation { BANG => "!", QUERY => "?", TILDE => "~" }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    pub enum Truth {
+        #[tok(BANG)]
+        IsTrue,
+        #[tok(QUERY)]
+        IsFalse,
+        #[tok(TILDE)]
+        IsUnknown,
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    #[tok(BANG)]
+    pub struct Tail {
+        pub truth: Option<Truth>,
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    pub struct Word {
+        #[lex(pattern = r"[A-Za-z]+")]
+        pub value: WordText,
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    pub struct Words {
+        pub values: zero_or_many!(WordText),
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    #[tok(QUERY, this)]
+    pub struct MaybeWord {
+        pub value: Option<WordText>,
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    #[tok(TILDE, this)]
+    pub struct Pile {
+        pub items: zero_or_many!(boxed!(Pair)),
+    }
+}
+
+recursa::ast_node! {
+    #[node(derive(Arbitrary))]
+    pub struct Pair {
+        pub a: WordText,
+        pub b: WordText,
+    }
+}
+
+"#,
+    )
+    .expect("write the seed-shape grammar");
+    fs::write(package.path().join("src/main.rs"), "fn main() {}\n")
+        .expect("write the seed-shape consumer");
+
+    assert_success(&lint_fixture(&package));
+}
+
 #[test]
 fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     let package = scaffold_fixture();

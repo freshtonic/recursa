@@ -60,6 +60,18 @@ pub(super) fn render_arbitrary_seed_module(plan: &EmissionPlan) -> proc_macro2::
     quote! {
         __recursa_if_arbitrary! {
             #[doc(hidden)]
+            // A seed type mirrors the authored Node it stands for: the same variant names and the
+            // same `zero_or_many!(boxed!(T))` field, as `Vec<Box<T>>`. Clippy skips
+            // `enum_variant_names` and `vec_box` on an exported type, so the authored Node never
+            // meets them; the mirror is crate-private and would. A mirror also owns what the
+            // arena type only refers to, so a variant that is small in the authored enum can be
+            // `large_enum_variant` here. Nothing downstream can edit a mirror, and it must keep
+            // the Node's shape.
+            #[allow(
+                clippy::enum_variant_names,
+                clippy::large_enum_variant,
+                clippy::vec_box
+            )]
             pub(crate) mod __recursa_arbitrary_seed {
                 #(#entries)*
             }
@@ -429,6 +441,10 @@ fn materialize_expr(
         };
     };
     match head {
+        // An optional content value has nothing to convert: it moves through as it is. Emitting
+        // the general form here would be `value.map(|inner| inner)`, which is
+        // `clippy::map_identity` in a downstream crate that nobody can edit.
+        FieldWrapper::Optional if rest.is_empty() && terminal_application.is_none() => value,
         FieldWrapper::Optional => {
             let inner = materialize_expr(
                 facade,
@@ -442,6 +458,10 @@ fn materialize_expr(
         FieldWrapper::Boxed => {
             let inner = materialize_expr(facade, rest, terminal_application, quote!(*#value), bump);
             quote!(#facade::ArenaBox::new_in(#inner, #bump))
+        }
+        // The same holds for a list of content values: no element needs a conversion.
+        FieldWrapper::ZeroOrMore if rest.is_empty() && terminal_application.is_none() => {
+            quote!(#facade::ArenaVec::from_iter_in(#value, #bump))
         }
         FieldWrapper::ZeroOrMore => {
             let inner = materialize_expr(
@@ -619,6 +639,20 @@ fn render_seed_materialize(
     let bump_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
     let bump = format_ident!("__recursa_input_bump");
     let return_ty = &application.ty;
+    // A Node with no borrowed content has no lifetime parameter, so its `application.ty` does not
+    // name `'__recursa_input`. Declaring the lifetime for the bump reference alone is
+    // `clippy::needless_lifetimes` in the downstream crate; the elided form says the same thing.
+    let names_input_lifetime = quote!(#return_ty)
+        .to_string()
+        .contains(&bump_lifetime.ident.to_string());
+    let (method_generics, bump_ty) = if names_input_lifetime {
+        (
+            quote!(<#bump_lifetime>),
+            quote!(&#bump_lifetime #facade::__private::bumpalo::Bump),
+        )
+    } else {
+        (quote!(), quote!(&#facade::__private::bumpalo::Bump))
+    };
     let construction_ty = strip_generic_args(&application.ty);
     let body = match &application.body {
         NodeBodyPlan::Struct { style, elements } => render_seed_materialize_construction(
@@ -657,9 +691,9 @@ fn render_seed_materialize(
     quote! {
         #[allow(dead_code)]
         impl #seed_ident {
-            pub fn __recursa_arbitrary_into_arena<#bump_lifetime>(
+            pub fn __recursa_arbitrary_into_arena #method_generics (
                 self,
-                #bump: &#bump_lifetime #facade::__private::bumpalo::Bump,
+                #bump: #bump_ty,
             ) -> #return_ty {
                 #body
             }
