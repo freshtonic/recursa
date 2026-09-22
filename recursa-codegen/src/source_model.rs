@@ -7045,29 +7045,41 @@ impl TokenCatalog {
                     triggers: lookahead.triggers.into_iter().map(reference).collect(),
                 }
             }));
-        self.pending_precedence
-            .extend(syntax.precedence.into_iter().map(|declaration| {
-                PendingPrecedenceDeclaration {
-                    site: source_site(resolved, origin, span_range(declaration.keyword.span())),
-                    levels: declaration
-                        .levels
-                        .into_iter()
-                        .map(|level| PendingPrecedenceLevel {
-                            associativity: level.associativity,
-                            binding_power: level.binding_power,
-                            site: source_site(resolved, origin, span_range(level.span)),
-                            names: level
-                                .names
-                                .into_iter()
-                                .map(|ident| AdmissionReference {
-                                    name: ident.unraw().to_string(),
-                                    site: source_site(resolved, origin, span_range(ident.span())),
-                                })
-                                .collect(),
-                        })
-                        .collect(),
+        for declaration in syntax.precedence {
+            let mut levels = Vec::new();
+            for level in declaration.levels {
+                let mut names = Vec::new();
+                for entry in level.names {
+                    match configured_metas(&entry.cfg, cfg) {
+                        Ok(Some(_)) => names.push(AdmissionReference {
+                            name: entry.name.unraw().to_string(),
+                            site: source_site(resolved, origin, span_range(entry.name.span())),
+                        }),
+                        Ok(None) => {}
+                        Err(error) => diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![source_site(resolved, origin, error.range)],
+                            message: error.message,
+                        }),
+                    }
                 }
-            }));
+                // A level whose every name is inactive in this configuration has no effect;
+                // it is dropped so that each compiled level names at least one kind.
+                if names.is_empty() {
+                    continue;
+                }
+                levels.push(PendingPrecedenceLevel {
+                    associativity: level.associativity,
+                    binding_power: level.binding_power,
+                    site: source_site(resolved, origin, span_range(level.span)),
+                    names,
+                });
+            }
+            self.pending_precedence.push(PendingPrecedenceDeclaration {
+                site: source_site(resolved, origin, span_range(declaration.keyword.span())),
+                levels,
+            });
+        }
         for content in syntax.content {
             if let Some(callback) = content.obsolete_callback {
                 diagnostics.push(SourceModelDiagnostic {
@@ -8494,7 +8506,17 @@ struct CentralPrecedenceLevelSyntax {
     /// Locates the level, from its associativity keyword.
     span: proc_macro2::Span,
     /// Preserves the authored names in order.
-    names: Vec<syn::Ident>,
+    names: Vec<CentralPrecedenceNameSyntax>,
+}
+
+#[derive(Clone)]
+/// Carries one parsed name of a precedence level, with its optional `#[cfg(...)]`.
+struct CentralPrecedenceNameSyntax {
+    /// Holds the name's `#[cfg(...)]` attributes, evaluated against the build configuration
+    /// when the block is collected. An inactive name is dropped from its level.
+    cfg: Vec<syn::Attribute>,
+    /// Preserves the authored name.
+    name: syn::Ident,
 }
 
 #[derive(Clone)]
@@ -9150,7 +9172,8 @@ impl Parse for CentralTokensSyntax {
 /// `right(bp = N) { ... }` or `nonassoc(bp = N) { ... }` from loosest to tightest,
 /// comma-separated. The shape checks that need no token catalog are made here: the
 /// associativity keyword, `bp` as a `u8`, strictly ascending `bp` values, at least one name
-/// per level, and a name listed at most once in the block.
+/// per level, and a name listed at most once in the block. A name may carry `#[cfg(...)]`;
+/// these checks apply to the authored block and do not depend on the build configuration.
 fn parse_precedence_block(
     keyword: syn::Ident,
     body: ParseStream<'_>,
@@ -9206,14 +9229,25 @@ fn parse_precedence_block(
         syn::braced!(members in body);
         let mut names = Vec::new();
         while !members.is_empty() {
+            // A name may carry `#[cfg(...)]`: a token that exists in some build
+            // configurations only is named at its level under the same predicate.
+            let cfg = members.call(syn::Attribute::parse_outer)?;
+            if let Some(attr) = cfg.iter().find(|attr| !attr.path().is_ident("cfg")) {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "precedence level names accept only `#[cfg(...)]`",
+                ));
+            }
             let name = syn::Ident::parse_any(&members)?;
+            // The check is made on the authored block, whatever the configuration: a name
+            // cannot move between levels from one configuration to another.
             if seen.insert(name.unraw().to_string(), ()).is_some() {
                 return Err(syn::Error::new(
                     name.span(),
                     format!("`{name}` appears more than once in the precedence declaration"),
                 ));
             }
-            names.push(name);
+            names.push(CentralPrecedenceNameSyntax { cfg, name });
             if members.peek(Token![,]) {
                 members.parse::<Token![,]>()?;
             } else if !members.is_empty() {
@@ -12262,6 +12296,191 @@ recursa::tokens! {
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn precedence_names_select_their_cfg_active_entries() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords {
+        UNBOUNDED => "unbounded",
+        #[cfg(feature = "since-pg17")]
+        NESTED => "nested",
+        RANGE => "range",
+        #[cfg(feature = "since-pg17")]
+        PATH => "path",
+        #[cfg(feature = "since-pg17")]
+        ONLY17 => "only17",
+    }
+    precedence {
+        nonassoc(bp = 100) {
+            UNBOUNDED,
+            #[cfg(feature = "since-pg17")]
+            NESTED
+        },
+        nonassoc(bp = 105) { #[cfg(feature = "since-pg17")] ONLY17 },
+        nonassoc(bp = 110) { RANGE, #[cfg(feature = "since-pg17")] PATH },
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let levels = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let model = completed(report);
+            model
+                .precedence
+                .iter()
+                .map(|level| {
+                    let kinds = level
+                        .kinds
+                        .iter()
+                        .map(|reference| match reference {
+                            super::PrecedenceKindReference::Token(id) => {
+                                model.token_definitions[id.index()].name.clone()
+                            }
+                            super::PrecedenceKindReference::Merged(filter) => {
+                                model.lookahead_filters[*filter].name.clone()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    (level.binding_power, kinds)
+                })
+                .collect::<Vec<_>>()
+        };
+        let names = |list: &[&str]| list.iter().map(|&name| name.to_owned()).collect::<Vec<_>>();
+        // The level whose only name is inactive is dropped.
+        assert_eq!(
+            levels(&CargoCfgSnapshot::default()),
+            [(100, names(&["UNBOUNDED"])), (110, names(&["RANGE"]))],
+        );
+        assert_eq!(
+            levels(&CargoCfgSnapshot::default().with_value("feature", "since-pg17")),
+            [
+                (100, names(&["UNBOUNDED", "NESTED"])),
+                (105, names(&["ONLY17"])),
+                (110, names(&["RANGE", "PATH"])),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_active_precedence_name_for_an_inactive_token_is_an_error() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords {
+        RANGE => "range",
+        #[cfg(feature = "since-pg17")]
+        PATH => "path",
+    }
+    precedence { nonassoc(bp = 110) { RANGE, PATH } }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let active = model_with_cfg(
+            source,
+            &CargoCfgSnapshot::default().with_value("feature", "since-pg17"),
+        );
+        assert!(active.diagnostics.is_empty(), "{:?}", active.diagnostics);
+
+        let inactive = model_with_cfg(source, &CargoCfgSnapshot::default());
+        assert!(inactive.source_modeled.is_none());
+        assert_code(
+            &inactive,
+            SourceModelDiagnosticKind::InvalidPrecedenceDeclaration,
+            "RCA3133",
+        );
+        assert!(
+            inactive.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .starts_with("`PATH` in the precedence declaration is not a fixed token")),
+            "{:?}",
+            inactive.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_prec_override_naming_an_inactive_precedence_entry_is_an_error() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { RANGE => "range" }
+    precedence {
+        nonassoc(bp = 110) { RANGE },
+        left(bp = 120) { #[cfg(feature = "since-pg17")] Op },
+    }
+}
+recursa::ast_node! {
+    #[parse(prec = Op)]
+    struct Root;
+}
+"#;
+        let active = model_with_cfg(
+            source,
+            &CargoCfgSnapshot::default().with_value("feature", "since-pg17"),
+        );
+        assert!(active.diagnostics.is_empty(), "{:?}", active.diagnostics);
+
+        let inactive = model_with_cfg(source, &CargoCfgSnapshot::default());
+        assert!(inactive.source_modeled.is_none());
+        assert!(
+            inactive.diagnostics.iter().any(|diagnostic| diagnostic.message
+                == "#[parse(prec = Op)] names no level of the `precedence { ... }` declaration"),
+            "{:?}",
+            inactive.diagnostics
+        );
+    }
+
+    #[test]
+    fn precedence_name_attributes_are_restricted_to_valid_cfg() {
+        let error = syn::parse_str::<CentralTokensSyntax>(
+            r#"precedence { left(bp = 1) { #[doc = "no"] A } }"#,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("a `doc` attribute on a precedence name parsed"));
+        assert_eq!(
+            error.to_string(),
+            "precedence level names accept only `#[cfg(...)]`"
+        );
+
+        // The duplicate rule reads the authored block: two names with opposite predicates
+        // are still one name listed twice.
+        let error = syn::parse_str::<CentralTokensSyntax>(
+            r#"precedence {
+                left(bp = 1) { #[cfg(feature = "a")] A },
+                left(bp = 2) { #[cfg(not(feature = "a"))] A },
+            }"#,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("a name listed twice parsed"));
+        assert_eq!(
+            error.to_string(),
+            "`A` appears more than once in the precedence declaration"
+        );
+
+        let report = model_with_cfg(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { A => "a" }
+    precedence { left(bp = 1) { #[cfg(feature = 1)] A } }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#,
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(
+            report.diagnostics.iter().any(
+                |diagnostic| diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+            ),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]
