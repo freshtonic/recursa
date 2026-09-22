@@ -336,8 +336,10 @@ pub(crate) enum ClosedMatcher {
     NextExclusion {
         /// Regex pattern that recognizes the candidate content.
         pattern: String,
-        /// Regex pattern that recognizes one excluded following scalar.
-        excluded: String,
+        /// Regex pattern that recognizes one excluded following scalar. `None` excludes no
+        /// scalar, so the matcher accepts every match of its pattern: a configuration can then
+        /// declare the same matcher with and without an exclusion.
+        excluded: Option<String>,
     },
     /// Recognizes a maximal run with configurable fences and trailing preservation.
     OperatorRun {
@@ -7036,18 +7038,31 @@ impl TokenCatalog {
                 .into_iter()
                 .map(|admission| pending_admission(resolved, origin, admission)),
         );
-        self.pending_lookaheads
-            .extend(syntax.lookaheads.into_iter().map(|lookahead| {
-                let reference = |ident: syn::Ident| AdmissionReference {
-                    name: ident.unraw().to_string(),
-                    site: source_site(resolved, origin, span_range(ident.span())),
-                };
-                PendingLookaheadDefinition {
-                    merged: reference(lookahead.merged),
-                    token: reference(lookahead.token),
-                    triggers: lookahead.triggers.into_iter().map(reference).collect(),
+        for lookahead in syntax.lookaheads {
+            // An inactive filter does not exist in this configuration: a later active filter
+            // may declare the same merged kind, and a reference to the merged kind is an error.
+            match configured_metas(&lookahead.cfg, cfg) {
+                Ok(Some(_)) => {}
+                Ok(None) => continue,
+                Err(error) => {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                        sites: vec![source_site(resolved, origin, error.range)],
+                        message: error.message,
+                    });
+                    continue;
                 }
-            }));
+            }
+            let reference = |ident: syn::Ident| AdmissionReference {
+                name: ident.unraw().to_string(),
+                site: source_site(resolved, origin, span_range(ident.span())),
+            };
+            self.pending_lookaheads.push(PendingLookaheadDefinition {
+                merged: reference(lookahead.merged),
+                token: reference(lookahead.token),
+                triggers: lookahead.triggers.into_iter().map(reference).collect(),
+            });
+        }
         for declaration in syntax.precedence {
             let mut levels = Vec::new();
             for level in declaration.levels {
@@ -8591,6 +8606,9 @@ struct CentralPrecedenceNameSyntax {
 #[derive(Clone)]
 /// Carries one parsed `MERGED = TOKEN before { TRIGGER, ... }` lookahead filter declaration.
 struct CentralLookaheadSyntax {
+    /// Holds the entry's `#[cfg(...)]` attributes, evaluated against the build configuration
+    /// when the entry is collected.
+    cfg: Vec<syn::Attribute>,
     /// Preserves the authored merged kind name.
     merged: syn::Ident,
     /// Preserves the authored name of the token the filter merges.
@@ -8729,8 +8747,15 @@ impl Parse for ClosedMatcherSyntax {
             }
             "next_exclusion" => {
                 let pattern = take_matcher_string(&mut arguments, "pattern")?;
-                let excluded = take_matcher_string(&mut arguments, "excluded")?;
-                if !matches_one_complete_scalar(&excluded) {
+                let excluded = if arguments.contains_key("excluded") {
+                    Some(take_matcher_string(&mut arguments, "excluded")?)
+                } else {
+                    None
+                };
+                if excluded
+                    .as_deref()
+                    .is_some_and(|excluded| !matches_one_complete_scalar(excluded))
+                {
                     return Err(syn::Error::new(
                         family.span(),
                         "next-exclusion predicate must compile and match at least one complete, nonempty scalar",
@@ -9098,6 +9123,15 @@ impl Parse for CentralTokensSyntax {
                     precedence.push(parse_precedence_block(section, &body)?);
                 } else if section == "lookahead" {
                     while !body.is_empty() {
+                        // A filter may carry `#[cfg(...)]`: a filter whose tokens exist only in
+                        // some build configurations is gated with them.
+                        let cfg = body.call(syn::Attribute::parse_outer)?;
+                        if let Some(attr) = cfg.iter().find(|attr| !attr.path().is_ident("cfg")) {
+                            return Err(syn::Error::new(
+                                attr.span(),
+                                "`lookahead` entries accept only `#[cfg(...)]`",
+                            ));
+                        }
                         let merged = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=]>()?;
                         let token = syn::Ident::parse_any(&body)?;
@@ -9117,6 +9151,7 @@ impl Parse for CentralTokensSyntax {
                             .into_iter()
                             .collect();
                         lookaheads.push(CentralLookaheadSyntax {
+                            cfg,
                             merged,
                             token,
                             triggers,
@@ -10036,6 +10071,7 @@ mod tests {
         for valid in [
             r#"next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Z]")"#,
             r#"next_exclusion(pattern = r"[0-9]+", excluded = r"\p{Greek}")"#,
+            r#"next_exclusion(pattern = r"[0-9]+")"#,
         ] {
             syn::parse_str::<ClosedMatcherSyntax>(valid)
                 .unwrap_or_else(|error| panic!("valid predicate was rejected: {valid}: {error}"));
@@ -11380,7 +11416,7 @@ recursa::tokens! {
         #[node(omit(Clone))]
         IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
         #[cfg(not(feature = "since-pg15"))]
-        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+        IntegerLit => next_exclusion(pattern = r"[0-9]+"),
         #[cfg(feature = "since-pg15")]
         DollarRegion => same_delimiter(opener = r"\$\$"),
     }
@@ -11425,23 +11461,23 @@ recursa::ast_node! {
                 .collect::<Vec<_>>();
             (content, bases)
         };
-        let matcher = |excluded: &str| {
+        let matcher = |excluded: Option<&str>| {
             Some(super::ClosedMatcher::NextExclusion {
                 pattern: "[0-9]+".to_owned(),
-                excluded: excluded.to_owned(),
+                excluded: excluded.map(str::to_owned),
             })
         };
         assert_eq!(
             selected(&CargoCfgSnapshot::default()),
             (
-                vec![("IntegerLit".to_owned(), matcher("[.]"), 0)],
+                vec![("IntegerLit".to_owned(), matcher(None), 0)],
                 vec!["OLDER".to_owned(), "LEGACY".to_owned()],
             ),
         );
         assert_eq!(
             selected(&CargoCfgSnapshot::default().with_value("feature", "since-pg15")),
             (
-                vec![("IntegerLit".to_owned(), matcher("[A-Za-z0-9_]"), 1)],
+                vec![("IntegerLit".to_owned(), matcher(Some("[A-Za-z0-9_]")), 1)],
                 vec![
                     "DollarRegion".to_owned(),
                     "NEWER".to_owned(),
@@ -11580,6 +11616,10 @@ recursa::ast_node! {
                 r#"admissions { #[cfg(unix)] Names = keywords }"#,
                 "`admissions` entries accept no attributes",
             ),
+            (
+                r#"lookahead { #[doc = "no"] A_LA = A before { B } }"#,
+                "`lookahead` entries accept only `#[cfg(...)]`",
+            ),
         ] {
             let error = syn::parse_str::<CentralTokensSyntax>(block)
                 .err()
@@ -11604,6 +11644,118 @@ recursa::ast_node! {
             "{:?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn lookahead_entries_select_their_cfg_active_declaration() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords {
+        #[cfg(feature = "since-pg16")]
+        FORMAT => "format",
+        #[cfg(feature = "since-pg16")]
+        JSON => "json",
+        NULLS => "nulls",
+        FIRST => "first",
+        LAST => "last",
+    }
+    lookahead {
+        #[cfg(feature = "since-pg16")]
+        FORMAT_LA = FORMAT before { JSON },
+        #[cfg(feature = "since-pg16")]
+        NULLS_LA = NULLS before { FIRST, LAST },
+        #[cfg(not(feature = "since-pg16"))]
+        NULLS_LA = NULLS before { FIRST },
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let selected = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let model = completed(report);
+            let name =
+                |id: &super::TokenDefinitionId| model.token_definitions[id.index()].name.clone();
+            model
+                .lookahead_filters
+                .iter()
+                .map(|filter| {
+                    (
+                        filter.name.clone(),
+                        name(&filter.token),
+                        filter.triggers.iter().map(name).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default()),
+            [(
+                "NULLS_LA".to_owned(),
+                "NULLS".to_owned(),
+                vec!["FIRST".to_owned()]
+            )],
+        );
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default().with_value("feature", "since-pg16")),
+            [
+                (
+                    "FORMAT_LA".to_owned(),
+                    "FORMAT".to_owned(),
+                    vec!["JSON".to_owned()]
+                ),
+                (
+                    "NULLS_LA".to_owned(),
+                    "NULLS".to_owned(),
+                    vec!["FIRST".to_owned(), "LAST".to_owned()]
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_active_lookahead_entry_that_names_an_inactive_token_is_an_error() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords {
+        #[cfg(feature = "since-pg16")]
+        FORMAT => "format",
+        #[cfg(feature = "since-pg16")]
+        JSON => "json",
+    }
+    lookahead {
+        FORMAT_LA = FORMAT before { JSON },
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let active = model_with_cfg(
+            source,
+            &CargoCfgSnapshot::default().with_value("feature", "since-pg16"),
+        );
+        assert!(active.diagnostics.is_empty(), "{:?}", active.diagnostics);
+
+        let inactive = model_with_cfg(source, &CargoCfgSnapshot::default());
+        assert!(inactive.source_modeled.is_none());
+        assert_code(
+            &inactive,
+            SourceModelDiagnosticKind::InvalidLookaheadFilter,
+            "RCA3132",
+        );
+        for missing in ["not a fixed token", "neither a fixed token"] {
+            assert!(
+                inactive
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(missing)),
+                "{missing}: {:?}",
+                inactive.diagnostics
+            );
+        }
     }
 
     #[test]

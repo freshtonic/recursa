@@ -88,7 +88,7 @@ fn main() {
 #[test]
 fn a_cfg_selected_matcher_bounds_a_numeric_value_through_its_exclusion() {
     let package = scaffold_fixture();
-    // The inactive entry would accept any number of digits. The active entry accepts only the
+    // The inactive entry, which has no exclusion, would accept any number of digits. The active entry accepts only the
     // values from 0 to 2147483647. A longer value matches only its in-range prefix, and the
     // digit that follows that prefix is excluded, so the lexer reports RCA4004.
     fs::write(
@@ -100,7 +100,7 @@ fn a_cfg_selected_matcher_bounds_a_numeric_value_through_its_exclusion() {
 recursa::tokens! {
     matchers {
         #[cfg(feature = "absent")]
-        Param => next_exclusion(pattern = r"\$[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        Param => next_exclusion(pattern = r"\$[0-9]+"),
         #[cfg(not(feature = "absent"))]
         Param => next_exclusion(
             pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])",
@@ -143,6 +143,64 @@ fn main() {
 "#,
     )
     .expect("write cfg-selected matcher assertion");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn a_next_exclusion_matcher_without_an_exclusion_accepts_every_following_scalar() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+}
+
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = "absent")]
+        Number => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        #[cfg(not(feature = "absent"))]
+        Number => next_exclusion(pattern = r"[0-9]+"),
+    }
+    lexer_tokens {
+        WORD => r"[a-z]+",
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Literal {
+        #[lex(matcher)]
+        pub number: Number,
+    }
+}
+"#,
+    )
+    .expect("write exclusion-free matcher grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"
+use recursa_generated_lexing::grammar;
+
+fn main() {
+    let lexed = grammar::lex("123abc");
+    assert_eq!(lexed.errors().count(), 0);
+    let tokens = lexed.tokens().collect::<Vec<_>>();
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(tokens[0].kind(), grammar::TokenKind::Number);
+    assert_eq!(tokens[0].text(), "123");
+    assert_eq!(tokens[1].text(), "abc");
+}
+"#,
+    )
+    .expect("write exclusion-free matcher assertion");
 
     let output = run_fixture(&package);
     assert!(
