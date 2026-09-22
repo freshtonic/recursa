@@ -11681,6 +11681,65 @@ recursa::ast_node! {
     }
 
     #[test]
+    fn cfg_attr_selects_lr_conflict_declarations() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { ORDER => "order" } punctuation { RPAREN => ")" } }
+recursa::ast_node! {
+
+    #[cfg_attr(
+        feature = "since-pg17",
+        parse(lr_conflict(action = reduce, against = SelectClause::Json, lookahead = { RPAREN }, expect = 1))
+    )]
+    #[cfg_attr(
+        not(feature = "since-pg17"),
+        parse(lr_conflict(action = shift, against = SelectClause::Simple, lookahead = { ORDER }, expect = 2))
+    )]
+    struct DirectSubquery;
+}
+recursa::ast_node! {
+
+    enum SelectClause {
+        Simple,
+        #[cfg(feature = "since-pg17")]
+        Json,
+    }
+}
+"#;
+        let resolutions = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            completed(report)
+                .lr_conflict_resolutions
+                .into_iter()
+                .map(|resolution| (resolution.action, resolution.expected))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            resolutions(&CargoCfgSnapshot::default()),
+            [(super::LrConflictAction::Shift, 2)]
+        );
+        assert_eq!(
+            resolutions(&CargoCfgSnapshot::default().with_value("feature", "since-pg17")),
+            [(super::LrConflictAction::Reduce, 1)]
+        );
+
+        // An active declaration that names a cfg-inactive variant stays an error.
+        let stale = model_with_cfg(
+            &source.replace(
+                "feature = \"since-pg17\",\n        parse",
+                "not(feature = \"since-pg17\"),\n        parse",
+            ),
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(stale.source_modeled.is_none());
+        assert_code(
+            &stale,
+            SourceModelDiagnosticKind::InvalidLrConflictResolution,
+            "RCA3134",
+        );
+    }
+
+    #[test]
     fn restricted_expressions_lower_to_their_admitted_base_variants() {
         let report = model(
             r#"recursa::grammar! { module = crate }
