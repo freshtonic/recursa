@@ -131,14 +131,38 @@ recursa::tokens! {
         #[cfg(feature = "v2")]
         IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
         #[cfg(not(feature = "v2"))]
-        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+        IntegerLit => next_exclusion(pattern = r"[0-9]+"),
     }
 }
 ```
 
+The `excluded` argument of `next_exclusion` is optional. Without it, the
+matcher accepts each match of its pattern, whatever scalar follows.
+
 Two active entries with the same name in these three sections are an error
 (`RCA3110`). A `#[lex(matcher)]` field whose matcher is inactive is also an
 error. The `ignore` and `trivia` entries accept no attributes.
+
+A `lookahead` entry can also have `#[cfg(...)]` attributes. Generation ignores
+an inactive entry, so two entries with the same merged name and opposite
+predicates are permitted. Use the same predicate as the tokens that the entry
+names: an active entry that names an inactive token is an error (`RCA3132`).
+Gate each reference to the merged name with the same predicate as the entry.
+
+```rust,ignore
+recursa::tokens! {
+    keywords {
+        #[cfg(feature = "v2")]
+        FORMAT => "FORMAT",
+        #[cfg(feature = "v2")]
+        JSON => "JSON",
+    }
+    lookahead {
+        #[cfg(feature = "v2")]
+        FORMAT_LA = FORMAT before { JSON },
+    }
+}
+```
 
 A `next_exclusion` matcher can also limit a numeric value. Write a pattern that
 matches only the permitted values. For a longer value, the pattern matches only
