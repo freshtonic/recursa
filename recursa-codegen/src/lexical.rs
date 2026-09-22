@@ -4204,10 +4204,8 @@ recursa::ast_node! {
             r#"recursa::grammar! { module = crate }
 
 recursa::tokens! {
-    keywords {
-        SELECT => r"SELECT",
-        SELECT => r"SEL",
-    }
+    keywords { SELECT => r"SELECT" }
+    punctuation { SELECT => r"<>" }
 }
 
 recursa::ast_node! {
@@ -4218,7 +4216,7 @@ recursa::ast_node! {
         );
 
         assert!(report.plan.is_none());
-        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics.len(), 1, "{:?}", report.diagnostics);
         assert_eq!(
             report.diagnostics[0].code,
             super::LexicalDiagnosticCode::Rca3003
