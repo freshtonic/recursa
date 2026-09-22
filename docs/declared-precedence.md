@@ -102,6 +102,13 @@ recursa::ast_node! {
 This is the language of the current `examples/pratt-expressions` with the same
 AST type. `#[parse(prec = NAME)]` is accepted on any Node or variant.
 
+A name in a level can have `#[cfg(...)]` attributes, for example
+`nonassoc(bp = 110) { RANGE, #[cfg(feature = "v2")] PATH }`. Generation
+removes an inactive name from its level, and removes a level that has no active
+name. The checks on the block shape (ascending `bp`, one or more names in each
+level, each name one time only) apply to the block as written, in all
+configurations. An active name that refers to an inactive token is an error.
+
 ### Restricted expressions
 
 Declared precedence cannot express `b_expr`, and `gram.y` does not try. A
