@@ -6043,6 +6043,9 @@ struct TokenCatalog {
     /// Indexes each cfg-active `keywords` entry's name by its first authored site, so that a
     /// second active entry with that name is an error.
     keyword_entries: BTreeMap<String, SourceSite>,
+    /// Indexes each cfg-active `matchers`, `literals` and `lexer_tokens` entry's name by its
+    /// authored site, so that a second active entry with that name is an error.
+    content_entries: BTreeMap<String, SourceSite>,
     /// Indexes declared keyword categories and their authored sites.
     categories: BTreeMap<String, Vec<SourceSite>>,
     /// Indexes declared keyword flags and their authored sites.
@@ -7081,6 +7084,16 @@ impl TokenCatalog {
             });
         }
         for content in syntax.content {
+            let Some(metas) = self.active_content_entry(
+                resolved,
+                origin,
+                cfg,
+                &content.name,
+                &content.attrs,
+                diagnostics,
+            ) else {
+                continue;
+            };
             if let Some(callback) = content.obsolete_callback {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::ObsoleteCentralLexCallback,
@@ -7102,10 +7115,20 @@ impl TokenCatalog {
                 closed_matcher: None,
                 priority: None,
                 site: source_site(resolved, origin, span_range(content.name.span())),
-                metas: content.metas,
+                metas,
             });
         }
         for content in syntax.matchers {
+            let Some(metas) = self.active_content_entry(
+                resolved,
+                origin,
+                cfg,
+                &content.name,
+                &content.attrs,
+                diagnostics,
+            ) else {
+                continue;
+            };
             let name = content.name.unraw().to_string();
             let semantic = resolved
                 .content_tokens
@@ -7119,7 +7142,7 @@ impl TokenCatalog {
                 closed_matcher: Some(content.matcher.matcher),
                 priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
-                metas: content.metas,
+                metas,
             });
         }
         self.lexer_records
@@ -7146,6 +7169,52 @@ impl TokenCatalog {
                     site: source_site(resolved, origin, span_range(record.name.span())),
                 }
             }));
+    }
+
+    /// Evaluates the `#[cfg(...)]` and `#[cfg_attr(...)]` attributes of one `matchers`,
+    /// `literals` or `lexer_tokens` entry against the build configuration.
+    ///
+    /// Returns the entry's remaining metas when the entry is active, and `None` when it is
+    /// inactive or its configuration is malformed. A second active entry with a name that an
+    /// earlier active entry of these sections already declared is an error: a lexer rule that
+    /// changes between configurations is two entries with opposite predicates.
+    fn active_content_entry(
+        &mut self,
+        resolved: &ResolvedSourceGrammar,
+        origin: SourceOrigin,
+        cfg: &CargoCfgSnapshot,
+        name: &syn::Ident,
+        attrs: &[syn::Attribute],
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) -> Option<Vec<Meta>> {
+        let metas = match configured_metas(attrs, cfg) {
+            Ok(Some(metas)) => metas,
+            Ok(None) => return None,
+            Err(error) => {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                    sites: vec![source_site(resolved, origin, error.range)],
+                    message: error.message,
+                });
+                return None;
+            }
+        };
+        let site = source_site(resolved, origin, span_range(name.span()));
+        let name = name.unraw().to_string();
+        if let Some(first) = self.content_entries.get(&name) {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidContentToken,
+                sites: vec![first.clone(), site],
+                message: format!(
+                    "lexer rule `{name}` has more than one active entry in `matchers`, \
+                     `literals` or `lexer_tokens`; give the entries mutually exclusive \
+                     `#[cfg(...)]` predicates or remove one"
+                ),
+            });
+            return None;
+        }
+        self.content_entries.insert(name, site);
+        Some(metas)
     }
 
     /// Interns a fixed-token definition or diagnoses incompatible duplicate spellings.
@@ -8575,8 +8644,10 @@ struct CentralContentSyntax {
     pattern: LitStr,
     /// Retains an obsolete callback path only long enough to diagnose its source site.
     obsolete_callback: Option<syn::Path>,
-    /// Preserves an optional `#[node(derive(...), omit(...))]` trait delta for this entry.
-    metas: Vec<Meta>,
+    /// Holds the entry's attributes: `#[cfg(...)]` and `#[cfg_attr(...)]`, evaluated against the
+    /// build configuration when the entry is collected, and an optional
+    /// `#[node(derive(...), omit(...))]` trait delta.
+    attrs: Vec<syn::Attribute>,
 }
 
 /// Carries one named emitting closed matcher before source locations are retained.
@@ -8585,8 +8656,10 @@ struct CentralMatcherSyntax {
     name: syn::Ident,
     /// Preserves the closed matcher and its source literals.
     matcher: ClosedMatcherSyntax,
-    /// Preserves an optional `#[node(derive(...), omit(...))]` trait delta for this entry.
-    metas: Vec<Meta>,
+    /// Holds the entry's attributes: `#[cfg(...)]` and `#[cfg_attr(...)]`, evaluated against the
+    /// build configuration when the entry is collected, and an optional
+    /// `#[node(derive(...), omit(...))]` trait delta.
+    attrs: Vec<syn::Attribute>,
 }
 
 /// Parsed closed matcher together with its common arbitration metadata.
@@ -9077,14 +9150,10 @@ impl Parse for CentralTokensSyntax {
                         } else {
                             let matcher = body.parse()?;
                             if section == "matchers" {
-                                let metas = attrs
-                                    .iter()
-                                    .map(|attr| attr.meta.clone())
-                                    .collect::<Vec<_>>();
                                 matchers.push(CentralMatcherSyntax {
                                     name,
                                     matcher,
-                                    metas,
+                                    attrs,
                                 });
                             } else {
                                 if let Some(attr) = attrs.first() {
@@ -9131,12 +9200,11 @@ impl Parse for CentralTokensSyntax {
                         } else {
                             None
                         };
-                        let metas = attrs.iter().map(|attr| attr.meta.clone()).collect();
                         content.push(CentralContentSyntax {
                             name,
                             pattern,
                             obsolete_callback,
-                            metas,
+                            attrs,
                         });
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
@@ -11301,6 +11369,192 @@ recursa::ast_node! {
             .find(|diagnostic| diagnostic.message.contains("more than one active entry"))
             .unwrap_or_else(|| panic!("{:?}", active.diagnostics));
         assert_eq!(duplicate.sites.len(), 2);
+    }
+
+    #[test]
+    fn lexer_entries_select_their_cfg_active_declaration() {
+        let source = r#"recursa::grammar! { module = crate, derives(Clone) }
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = "since-pg15")]
+        #[node(omit(Clone))]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        #[cfg(not(feature = "since-pg15"))]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+        #[cfg(feature = "since-pg15")]
+        DollarRegion => same_delimiter(opener = r"\$\$"),
+    }
+    literals {
+        #[cfg(feature = "since-pg15")]
+        NEWER => r"@[a-z]+",
+        OLDER => r"![a-z]+",
+    }
+    lexer_tokens {
+        #[cfg(not(feature = "since-pg15"))]
+        LEGACY => r"%[a-z]+",
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        #[lex(matcher)]
+        value: IntegerLit,
+    }
+}
+"#;
+        let selected = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let model = completed(report);
+            let content = model
+                .token_definitions
+                .iter()
+                .filter_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(content) => Some((
+                        definition.name.clone(),
+                        content.closed_matcher.clone(),
+                        content.configured_traits.omissions.len(),
+                    )),
+                    TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let bases = model
+                .token_definitions
+                .iter()
+                .filter(|definition| matches!(definition.kind, TokenDefinitionKind::LexicalBase(_)))
+                .map(|definition| definition.name.clone())
+                .collect::<Vec<_>>();
+            (content, bases)
+        };
+        let matcher = |excluded: &str| {
+            Some(super::ClosedMatcher::NextExclusion {
+                pattern: "[0-9]+".to_owned(),
+                excluded: excluded.to_owned(),
+            })
+        };
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default()),
+            (
+                vec![("IntegerLit".to_owned(), matcher("[.]"), 0)],
+                vec!["OLDER".to_owned(), "LEGACY".to_owned()],
+            ),
+        );
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default().with_value("feature", "since-pg15")),
+            (
+                vec![("IntegerLit".to_owned(), matcher("[A-Za-z0-9_]"), 1)],
+                vec![
+                    "DollarRegion".to_owned(),
+                    "NEWER".to_owned(),
+                    "OLDER".to_owned()
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn inactive_matcher_leaves_its_lex_matcher_field_unbound() {
+        let report = model(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = "since-pg15")]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+    }
+}
+recursa::ast_node! {
+    struct Root {
+        #[lex(matcher)]
+        value: IntegerLit,
+    }
+}
+"#,
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("requires a matching central `matchers` declaration")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn two_active_lexer_entries_with_one_name_are_an_error() {
+        for entries in [
+            r#"matchers {
+        #[cfg(feature = "since-pg15")]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+    }"#,
+            r#"matchers {
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+    }
+    literals {
+        #[cfg(feature = "since-pg15")]
+        IntegerLit => r"[0-9]+",
+    }"#,
+            r#"literals {
+        #[cfg(feature = "since-pg15")]
+        BASE => r"%[a-z]+",
+    }
+    lexer_tokens {
+        BASE => r"%[a-z]+",
+    }"#,
+        ] {
+            let source = format!(
+                "recursa::grammar! {{ module = crate }}\nrecursa::tokens! {{\n    {entries}\n}}\n\
+                 recursa::ast_node! {{\n    struct Root;\n}}\n"
+            );
+            let inactive = model_with_cfg(&source, &CargoCfgSnapshot::default());
+            assert!(
+                inactive.diagnostics.is_empty(),
+                "{entries}: {:?}",
+                inactive.diagnostics
+            );
+
+            let active = model_with_cfg(
+                &source,
+                &CargoCfgSnapshot::default().with_value("feature", "since-pg15"),
+            );
+            assert!(active.source_modeled.is_none(), "{entries}");
+            assert_code(
+                &active,
+                SourceModelDiagnosticKind::InvalidContentToken,
+                "RCA3110",
+            );
+            let duplicate = active
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.message.contains("more than one active entry"))
+                .unwrap_or_else(|| panic!("{entries}: {:?}", active.diagnostics));
+            assert_eq!(duplicate.sites.len(), 2, "{entries}");
+        }
+    }
+
+    #[test]
+    fn malformed_lexer_entry_cfg_is_invalid_configuration() {
+        let report = model(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = 1)]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[.]"),
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#,
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(
+            report.diagnostics.iter().any(
+                |diagnostic| diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+            ),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]

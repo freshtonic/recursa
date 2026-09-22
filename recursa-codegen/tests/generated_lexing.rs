@@ -86,6 +86,74 @@ fn main() {
 }
 
 #[test]
+fn a_cfg_selected_matcher_bounds_a_numeric_value_through_its_exclusion() {
+    let package = scaffold_fixture();
+    // The inactive entry would accept any number of digits. The active entry accepts only the
+    // values from 0 to 2147483647. A longer value matches only its in-range prefix, and the
+    // digit that follows that prefix is excluded, so the lexer reports RCA4004.
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+}
+
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = "absent")]
+        Param => next_exclusion(pattern = r"\$[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        #[cfg(not(feature = "absent"))]
+        Param => next_exclusion(
+            pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])",
+            excluded = r"[A-Za-z0-9_]"
+        ),
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Parameter {
+        #[lex(matcher)]
+        pub param: Param,
+    }
+}
+"#,
+    )
+    .expect("write cfg-selected matcher grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"
+use recursa_generated_lexing::grammar;
+
+fn main() {
+    for text in ["$1", "$2147483647", "$0002147483647"] {
+        let lexed = grammar::lex(text);
+        assert_eq!(lexed.errors().count(), 0, "{text}");
+        let tokens = lexed.tokens().collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1, "{text}");
+        assert_eq!(tokens[0].kind(), grammar::TokenKind::Param, "{text}");
+        assert_eq!(tokens[0].text(), text);
+    }
+    for (text, prefix) in [("$2147483648", "$214748364"), ("$99999999999", "$999999999")] {
+        let lexed = grammar::lex(text);
+        let error = lexed.errors().next().unwrap_or_else(|| panic!("{text} lexed"));
+        assert_eq!(error.code(), "RCA4004", "{text}");
+        assert_eq!(error.text(), prefix, "{text}");
+    }
+}
+"#,
+    )
+    .expect("write cfg-selected matcher assertion");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn alternative_lexer_cannot_bypass_generated_lexical_validation() {
     let package = scaffold_fixture();
     let grammar_path = package.path().join("src/grammar.rs");
