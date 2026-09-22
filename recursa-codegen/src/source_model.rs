@@ -6040,6 +6040,9 @@ struct TokenCatalog {
     lexer_records: Vec<NonTokenLexerRecord>,
     /// Supplies the uses used to correlate authored source with normalized grammar.
     uses: Vec<TokenUse>,
+    /// Indexes each cfg-active `keywords` entry's name by its first authored site, so that a
+    /// second active entry with that name is an error.
+    keyword_entries: BTreeMap<String, SourceSite>,
     /// Indexes declared keyword categories and their authored sites.
     categories: BTreeMap<String, Vec<SourceSite>>,
     /// Indexes declared keyword flags and their authored sites.
@@ -6864,9 +6867,13 @@ impl TokenCatalog {
                         .is_some_and(|segment| segment.ident == "tokens")
                 {
                     match syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone()) {
-                        Ok(syntax) => {
-                            self.collect_central_definitions(resolved, origin, syntax, diagnostics)
-                        }
+                        Ok(syntax) => self.collect_central_definitions(
+                            resolved,
+                            origin,
+                            cfg,
+                            syntax,
+                            diagnostics,
+                        ),
                         Err(error) => diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![source_site(resolved, origin, span_range(error.span()))],
@@ -6939,6 +6946,7 @@ impl TokenCatalog {
         &mut self,
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
+        cfg: &CargoCfgSnapshot,
         syntax: CentralTokensSyntax,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
@@ -6951,7 +6959,34 @@ impl TokenCatalog {
             });
         }
         for fixed in syntax.fixed {
+            match configured_metas(&fixed.cfg, cfg) {
+                Ok(Some(_)) => {}
+                Ok(None) => continue,
+                Err(error) => {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                        sites: vec![source_site(resolved, origin, error.range)],
+                        message: error.message,
+                    });
+                    continue;
+                }
+            }
             let declaration_site = source_site(resolved, origin, span_range(fixed.name.span()));
+            if fixed.authored_class == AuthoredFixedTokenClass::Keyword {
+                let name = fixed.name.unraw().to_string();
+                if let Some(first) = self.keyword_entries.get(&name) {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                        sites: vec![first.clone(), declaration_site.clone()],
+                        message: format!(
+                            "keyword `{name}` has more than one active entry; give the entries \
+                             mutually exclusive `#[cfg(...)]` predicates or remove one"
+                        ),
+                    });
+                } else {
+                    self.keyword_entries.insert(name, declaration_site.clone());
+                }
+            }
             let keyword_metadata = AuthoredKeywordMetadata {
                 authored_class: fixed.authored_class,
                 category: fixed.category.map(|category| AdmissionReference {
@@ -8493,6 +8528,9 @@ struct CentralNonTokenMatcherSyntax {
 
 /// Carries the central fixed syntax retained from authored source structure.
 struct CentralFixedSyntax {
+    /// Holds the entry's `#[cfg(...)]` attributes, evaluated against the build configuration
+    /// when the entry is collected. Only `keywords` entries carry them.
+    cfg: Vec<syn::Attribute>,
     /// Preserves the authored name used by generated bindings and diagnostics.
     name: syn::Ident,
     /// Supplies the spelling used to correlate authored source with normalized grammar.
@@ -8903,12 +8941,28 @@ impl Parse for CentralTokensSyntax {
                         AuthoredFixedTokenClass::Punctuation
                     };
                     while !body.is_empty() {
+                        // A keyword entry may carry `#[cfg(...)]`: a keyword that changes
+                        // category between build configurations is two entries with opposite
+                        // predicates. Punctuation entries take no attributes.
+                        let cfg = body.call(syn::Attribute::parse_outer)?;
+                        if let Some(attr) = cfg.iter().find(|attr| {
+                            authored_class == AuthoredFixedTokenClass::Punctuation
+                                || !attr.path().is_ident("cfg")
+                        }) {
+                            let message = if authored_class == AuthoredFixedTokenClass::Keyword {
+                                "`keywords` entries accept only `#[cfg(...)]`"
+                            } else {
+                                "`punctuation` entries accept no attributes"
+                            };
+                            return Err(syn::Error::new(attr.span(), message));
+                        }
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let spelling = body.parse()?;
                         let (category, keyword_flags) = parse_keyword_metadata(&body)?;
                         let pretty_spacing = parse_fixed_pretty_spacing(&body, &spelling)?;
                         fixed.push(CentralFixedSyntax {
+                            cfg,
                             name,
                             spelling,
                             authored_class,
@@ -8923,13 +8977,18 @@ impl Parse for CentralTokensSyntax {
                     } else {
                         &mut flags
                     };
-                    destination.extend(
-                        syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(
-                            &body,
-                        )?,
-                    );
+                    while !body.is_empty() {
+                        reject_entry_attributes(&section, &body)?;
+                        destination.push(body.parse()?);
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error(format!("expected `,` after `{section}` entry")));
+                        }
+                    }
                 } else if section == "admissions" {
                     while !body.is_empty() {
+                        reject_entry_attributes(&section, &body)?;
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=]>()?;
                         let expression = body.parse()?;
@@ -9182,6 +9241,17 @@ fn parse_precedence_block(
     Ok(CentralPrecedenceSyntax { keyword, levels })
 }
 
+/// Rejects an attribute before an entry of a `tokens!` section that has no `cfg` selection.
+///
+/// Only `keywords` entries are configurable; categories, flags and admissions stay the same in
+/// every build configuration.
+fn reject_entry_attributes(section: &syn::Ident, input: ParseStream<'_>) -> syn::Result<()> {
+    if input.peek(Token![#]) {
+        return Err(input.error(format!("`{section}` entries accept no attributes")));
+    }
+    Ok(())
+}
+
 /// Parses the optional `in CATEGORY + flag` keyword metadata tail.
 fn parse_keyword_metadata(
     input: ParseStream<'_>,
@@ -9253,6 +9323,11 @@ fn parse_fixed_pretty_spacing(
     let fork = input.fork();
     fork.parse::<Token![,]>()?;
     if fork.is_empty() {
+        input.parse::<Token![,]>()?;
+        return Ok(PrettySpacing::Auto);
+    }
+    // The next entry may open with `#[cfg(...)]` instead of its name.
+    if fork.peek(Token![#]) {
         input.parse::<Token![,]>()?;
         return Ok(PrettySpacing::Auto);
     }
@@ -11084,6 +11159,163 @@ recursa::ast_node! {
             assert!(report.source_modeled.is_none(), "{kind:?} was non-blocking");
             assert_code(&report, kind, code);
         }
+    }
+
+    #[test]
+    fn keyword_entries_select_their_cfg_active_declaration() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        #[cfg(feature = "since-pg17")]
+        JSON => "json" in RESERVED,
+        #[cfg(not(feature = "since-pg17"))]
+        JSON => "json" in UNRESERVED,
+        #[cfg(feature = "since-pg17")]
+        MERGE_ACTION => "merge_action" in UNRESERVED,
+        OTHER => "other" in UNRESERVED,
+    }
+    admissions { Unreserved = UNRESERVED }
+}
+recursa::ast_node! {
+
+    struct Root {
+        #[lex(pattern = "word", admits(Unreserved))]
+        name: Name,
+    }
+}
+"#;
+        let selected = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let model = completed(report);
+            let name =
+                |id: super::TokenDefinitionId| model.token_definitions[id.index()].name.clone();
+            let fixed = model
+                .token_definitions
+                .iter()
+                .filter(|definition| matches!(definition.kind, TokenDefinitionKind::Fixed(_)))
+                .map(|definition| definition.name.clone())
+                .collect::<Vec<_>>();
+            let admitted = model
+                .token_definitions
+                .iter()
+                .find_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(content) => {
+                        Some(content.admission_set.iter().copied().map(name).collect())
+                    }
+                    TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+                .unwrap_or_else(Vec::new);
+            (fixed, admitted)
+        };
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default()),
+            (
+                vec!["JSON".to_owned(), "OTHER".to_owned()],
+                vec!["JSON".to_owned(), "OTHER".to_owned()]
+            ),
+        );
+        assert_eq!(
+            selected(&CargoCfgSnapshot::default().with_value("feature", "since-pg17")),
+            (
+                vec![
+                    "JSON".to_owned(),
+                    "MERGE_ACTION".to_owned(),
+                    "OTHER".to_owned()
+                ],
+                vec!["MERGE_ACTION".to_owned(), "OTHER".to_owned()],
+            ),
+        );
+    }
+
+    #[test]
+    fn two_active_keyword_entries_with_one_name_are_an_error() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { RESERVED }
+    keywords {
+        #[cfg(feature = "since-pg17")]
+        JSON => "json" in RESERVED,
+        JSON => "json" in RESERVED,
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let inactive = model_with_cfg(source, &CargoCfgSnapshot::default());
+        assert!(
+            inactive.diagnostics.is_empty(),
+            "{:?}",
+            inactive.diagnostics
+        );
+
+        let active = model_with_cfg(
+            source,
+            &CargoCfgSnapshot::default().with_value("feature", "since-pg17"),
+        );
+        assert!(active.source_modeled.is_none());
+        assert_code(
+            &active,
+            SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+            "RCA3123",
+        );
+        let duplicate = active
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("more than one active entry"))
+            .unwrap_or_else(|| panic!("{:?}", active.diagnostics));
+        assert_eq!(duplicate.sites.len(), 2);
+    }
+
+    #[test]
+    fn token_sections_reject_misplaced_entry_attributes() {
+        for (block, message) in [
+            (
+                r#"keywords { #[doc = "no"] JSON => "json" }"#,
+                "`keywords` entries accept only `#[cfg(...)]`",
+            ),
+            (
+                r#"punctuation { #[cfg(unix)] DOT => "." }"#,
+                "`punctuation` entries accept no attributes",
+            ),
+            (
+                r#"categories { #[cfg(unix)] RESERVED }"#,
+                "`categories` entries accept no attributes",
+            ),
+            (
+                r#"flags { #[cfg(unix)] bare_label }"#,
+                "`flags` entries accept no attributes",
+            ),
+            (
+                r#"admissions { #[cfg(unix)] Names = keywords }"#,
+                "`admissions` entries accept no attributes",
+            ),
+        ] {
+            let error = syn::parse_str::<CentralTokensSyntax>(block)
+                .err()
+                .unwrap_or_else(|| panic!("`{block}` parsed"));
+            assert_eq!(error.to_string(), message, "{block}");
+        }
+
+        let report = model_with_cfg(
+            r#"recursa::grammar! { module = crate }
+recursa::tokens! { keywords { #[cfg(feature = 1)] JSON => "json" } }
+recursa::ast_node! {
+    struct Root;
+}
+"#,
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(
+            report.diagnostics.iter().any(
+                |diagnostic| diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+            ),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]

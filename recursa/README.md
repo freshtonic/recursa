@@ -71,6 +71,28 @@ subtractions that remove nothing; duplicate union membership is a warning.
 `#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
 to that generated content-token type.
 
+A `keywords` entry can have `#[cfg(...)]` attributes. Generation evaluates them
+against the build configuration and ignores an inactive entry everywhere: in
+the lexer, in categories and flags, in admission sets and in the generated
+token types. If a keyword changes category between configurations, write two
+entries with opposite predicates:
+
+```rust,ignore
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        #[cfg(feature = "v2")]
+        JSON => "JSON" in RESERVED,
+        #[cfg(not(feature = "v2"))]
+        JSON => "JSON" in UNRESERVED,
+    }
+}
+```
+
+Two active entries with the same name are an error (`RCA3123`). The
+`punctuation`, `categories`, `flags` and `admissions` entries accept no
+attributes.
+
 Use `optional(TOKENS...)` inside the sole `#[tok(...)]` sequence for fixed
 syntax that should be accepted but erased from the AST. Use a separate
 `#[presence(TOKENS...)]` on an unqualified `bool` field when the AST must retain
