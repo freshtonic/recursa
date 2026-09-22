@@ -540,14 +540,19 @@ fn write_standalone_svg(directory: &Path, name: &str, svg: &str) {
 /// build configuration and ignores an inactive entry everywhere. A keyword that changes category
 /// between configurations is two entries with opposite predicates; two active entries with the
 /// same name are an error. A name in a `precedence` level may also carry `#[cfg(...)]`; the
-/// analyzer removes an inactive name from its level, and a level with no active name. `punctuation`,
-/// `categories`, `flags` and `admissions` entries accept no attributes. This macro emits nothing,
-/// so rustc never evaluates these attributes itself.
+/// analyzer removes an inactive name from its level, and a level with no active name. A
+/// `matchers`, `literals` or `lexer_tokens` entry may carry `#[cfg(...)]` and `#[cfg_attr(...)]`
+/// in addition to `#[node(...)]`; the analyzer ignores an inactive entry everywhere. A lexer rule
+/// that changes between configurations is two entries with opposite predicates; two active entries
+/// with the same name in these sections are an error. A `lookahead` entry may carry `#[cfg(...)]`;
+/// the analyzer ignores an inactive entry. `punctuation`, `categories`, `flags`,
+/// `admissions`, `ignore` and `trivia` entries accept no attributes. This macro emits nothing, so
+/// rustc never evaluates these attributes itself.
 ///
 /// Closed source-backed matchers are declared centrally in `matchers { ... }` and bound by a
 /// same-named content-token field using `#[lex(matcher)]`. The supported constructors are
 /// `same_delimiter(opener = r"...")`, `nested(opener = "...", closer = "...")`,
-/// `next_exclusion(pattern = r"...", excluded = r"...")`,
+/// `next_exclusion(pattern = r"...", excluded = r"...")` (`excluded` is optional),
 /// `operator_run(characters = "...", fences = ["..."], trailing = "...", qualifying = "...")`,
 /// and `physical_line(prefix = r"...")`. `physical_line` includes the first LF, CRLF, or CR
 /// terminator after its prefix, or extends to EOF when no terminator remains. The same vocabulary
