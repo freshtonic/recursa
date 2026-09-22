@@ -539,8 +539,10 @@ fn write_standalone_svg(directory: &Path, name: &str, svg: &str) {
 /// A `keywords` entry may carry `#[cfg(...)]` attributes. The analyzer evaluates them against the
 /// build configuration and ignores an inactive entry everywhere. A keyword that changes category
 /// between configurations is two entries with opposite predicates; two active entries with the
-/// same name are an error. `punctuation`, `categories`, `flags` and `admissions` entries accept no
-/// attributes. This macro emits nothing, so rustc never evaluates these attributes itself.
+/// same name are an error. A name in a `precedence` level may also carry `#[cfg(...)]`; the
+/// analyzer removes an inactive name from its level, and a level with no active name. `punctuation`,
+/// `categories`, `flags` and `admissions` entries accept no attributes. This macro emits nothing,
+/// so rustc never evaluates these attributes itself.
 ///
 /// Closed source-backed matchers are declared centrally in `matchers { ... }` and bound by a
 /// same-named content-token field using `#[lex(matcher)]`. The supported constructors are

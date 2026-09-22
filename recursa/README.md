@@ -93,6 +93,30 @@ Two active entries with the same name are an error (`RCA3123`). The
 `punctuation`, `categories`, `flags` and `admissions` entries accept no
 attributes.
 
+A name in a level of the `precedence` block can also have `#[cfg(...)]`
+attributes. Generation evaluates them against the build configuration and
+removes an inactive name from its level. If all names of a level are inactive,
+generation removes the level. Use the same predicate as the token's `keywords`
+entry:
+
+```rust,ignore
+recursa::tokens! {
+    keywords {
+        RANGE => "RANGE",
+        #[cfg(feature = "v2")]
+        PATH => "PATH",
+    }
+    precedence {
+        nonassoc(bp = 110) { RANGE, #[cfg(feature = "v2")] PATH },
+    }
+}
+```
+
+An active name that refers to an inactive token is an error (`RCA3133`), and so
+is a `#[parse(prec = NAME)]` that refers to an inactive name. A name can occur
+only one time in the block, whatever its predicate. Thus a name cannot move to
+a different level in a different configuration.
+
 Use `optional(TOKENS...)` inside the sole `#[tok(...)]` sequence for fixed
 syntax that should be accepted but erased from the AST. Use a separate
 `#[presence(TOKENS...)]` on an unqualified `bool` field when the AST must retain
