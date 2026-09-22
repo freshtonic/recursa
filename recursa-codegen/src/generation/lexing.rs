@@ -807,7 +807,14 @@ fn render_machine_attribute(
                 priority = #priority
             )]
         ),
-        Some(ClosedMatcher::NextExclusion { pattern, excluded }) => {
+        Some(ClosedMatcher::NextExclusion {
+            pattern,
+            excluded: None,
+        }) => quote!(#[regex(#pattern, allow_greedy = true, priority = #priority)]),
+        Some(ClosedMatcher::NextExclusion {
+            pattern,
+            excluded: Some(excluded),
+        }) => {
             let ranges = exclusion_scalar_ranges(excluded)?;
             let starts = ranges.iter().map(|&(start, _)| start);
             let ends = ranges.iter().map(|&(_, end)| end);

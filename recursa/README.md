@@ -117,6 +117,65 @@ is a `#[parse(prec = NAME)]` that refers to an inactive name. A name can occur
 only one time in the block, whatever its predicate. Thus a name cannot move to
 a different level in a different configuration.
 
+An entry of the `matchers`, `literals` or `lexer_tokens` section can also have
+`#[cfg(...)]` and `#[cfg_attr(...)]` attributes. Generation evaluates them
+against the build configuration and ignores an inactive entry everywhere: in
+the lexer, in the generated token types and in admission sets. The other
+attributes of an active entry, for example `#[node(omit(Arbitrary))]`, stay in
+effect. If a lexer rule changes between configurations, write two entries with
+the same name and opposite predicates:
+
+```rust,ignore
+recursa::tokens! {
+    matchers {
+        #[cfg(feature = "v2")]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        #[cfg(not(feature = "v2"))]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+"),
+    }
+}
+```
+
+The `excluded` argument of `next_exclusion` is optional. Without it, the
+matcher accepts each match of its pattern, whatever scalar follows.
+
+Two active entries with the same name in these three sections are an error
+(`RCA3110`). A `#[lex(matcher)]` field whose matcher is inactive is also an
+error. The `ignore` and `trivia` entries accept no attributes.
+
+A `lookahead` entry can also have `#[cfg(...)]` attributes. Generation ignores
+an inactive entry, so two entries with the same merged name and opposite
+predicates are permitted. Use the same predicate as the tokens that the entry
+names: an active entry that names an inactive token is an error (`RCA3132`).
+Gate each reference to the merged name with the same predicate as the entry.
+
+```rust,ignore
+recursa::tokens! {
+    keywords {
+        #[cfg(feature = "v2")]
+        FORMAT => "FORMAT",
+        #[cfg(feature = "v2")]
+        JSON => "JSON",
+    }
+    lookahead {
+        #[cfg(feature = "v2")]
+        FORMAT_LA = FORMAT before { JSON },
+    }
+}
+```
+
+A `next_exclusion` matcher can also limit a numeric value. Write a pattern that
+matches only the permitted values. For a longer value, the pattern matches only
+a prefix, the next digit is excluded, and the lexer reports `RCA4004`. For
+example, this pattern accepts `$0` to `$2147483647`:
+
+```rust,ignore
+Param => next_exclusion(
+    pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])",
+    excluded = r"[0-9]"
+),
+```
+
 Use `optional(TOKENS...)` inside the sole `#[tok(...)]` sequence for fixed
 syntax that should be accepted but erased from the AST. Use a separate
 `#[presence(TOKENS...)]` on an unqualified `bool` field when the AST must retain
