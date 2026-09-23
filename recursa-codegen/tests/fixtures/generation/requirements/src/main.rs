@@ -20,19 +20,17 @@ fn describe(requirement: Option<recursa::Requirement>) -> String {
     )
 }
 
-/// Lexes and parses one complete query through the generated public API.
-fn parse(source: &str) -> recursa::Parsed<'_, grammar::Query<'_>> {
+/// Parses one source and reports its minimum, then the first requirement above `floor`.
+///
+/// No wrapper type is named here, so this function is the same for an ordinary parse and for
+/// an arena parse: both wrappers answer the two questions with the same two methods, and both
+/// keep the span, because both scan from their own root occurrence cursor.
+fn report(source: &str, floor: Configuration) -> String {
     let lexed = grammar::lex(source);
     assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
     let mut input = lexed.input();
     let parsed = grammar::Query::parse_spanned(&mut input).expect("fixture source parses");
     assert!(input.is_eof(), "fixture source is complete: {source}");
-    parsed
-}
-
-/// Parses one source and reports its minimum, then the first requirement above `floor`.
-fn report(source: &str, floor: Configuration) -> String {
-    let parsed = parse(source);
     format!(
         "{} | {}",
         describe(parsed.minimum_requirement()),
@@ -40,8 +38,25 @@ fn report(source: &str, floor: Configuration) -> String {
     )
 }
 
+/// Reports the minimum of the detached value, which answers the same question with no span.
+///
+/// This is the one place the two AST storages differ: an ordinary parse gives up its AST with
+/// [`recursa::Parsed::into_ast`], while an arena parse lends it with
+/// [`recursa::ArenaParsed::ast`].
+fn detached(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    let mut input = lexed.input();
+    let parsed = grammar::Query::parse_spanned(&mut input).expect("fixture source parses");
+    #[cfg(not(feature = "arena-ast"))]
+    let minimum = parsed.into_ast().minimum_requirement();
+    #[cfg(feature = "arena-ast")]
+    let minimum = parsed.ast().minimum_requirement();
+    describe(minimum)
+}
+
 const MISSING_ALIAS: &str = "select * from (select * from t)";
 const NEARBY: &str = "select * from (select * from t) where nearby x";
+const NEARBY_SECOND: &str = "select * from t where x, nearby y";
 
 fn main() {
     println!("build={}", Configuration::BUILD.name());
@@ -64,8 +79,7 @@ fn main() {
     // From v2 the alias is optional, so its absence is what needs v2.
     if Configuration::BUILD >= Configuration::V2 {
         println!("missing_alias={}", report(MISSING_ALIAS, Configuration::V1));
-        let detached = parse(MISSING_ALIAS).into_ast();
-        println!("detached={}", describe(detached.minimum_requirement()));
+        println!("detached={}", detached(MISSING_ALIAS));
     }
 
     // A v3 variant outranks the v2 absence, but the absence is still the first construct
@@ -73,6 +87,12 @@ fn main() {
     if Configuration::BUILD >= Configuration::V3 {
         println!("nearby={}", report(NEARBY, Configuration::V1));
         println!("nearby_above_v2={}", report(NEARBY, Configuration::V2));
+        // The gated variant is the second item of the filter repetition, so its span comes
+        // from the item ordinal, not from the repetition itself.
+        println!(
+            "nearby_second={}",
+            report(NEARBY_SECOND, Configuration::V1)
+        );
         // A repetition field records once, at the element, when it holds a value.
         println!(
             "columns={}",

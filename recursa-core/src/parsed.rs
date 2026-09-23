@@ -140,6 +140,40 @@ impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
     }
 }
 
+impl<F> ArenaParsed<'_, F>
+where
+    F: ArenaAstFamily,
+    for<'arena> F::Ast<'arena>: crate::requirement::Requires,
+{
+    /// Returns the lowest configuration whose grammar accepts this value, with the span of the
+    /// first construct, in source order, that sets it.
+    ///
+    /// `None` means the grammar's baseline configuration accepts the whole value. This is the
+    /// arena counterpart of [`Parsed::minimum_requirement`], and it keeps the span for the same
+    /// reason: the scan starts from the root occurrence cursor rather than from a detached one.
+    pub fn minimum_requirement(&self) -> Option<crate::requirement::Requirement> {
+        crate::requirement::scan_from_cursor(
+            self.ast(),
+            self.view_cursor(),
+            crate::requirement::minimum_scan(),
+        )
+    }
+
+    /// Returns the first construct, in source order, whose requirement is above `floor`.
+    ///
+    /// This is the arena counterpart of [`Parsed::requirement_above`].
+    pub fn requirement_above(
+        &self,
+        floor: crate::requirement::Configuration,
+    ) -> Option<crate::requirement::Requirement> {
+        crate::requirement::scan_from_cursor(
+            self.ast(),
+            self.view_cursor(),
+            crate::requirement::above_scan(floor),
+        )
+    }
+}
+
 #[cfg(feature = "explorer")]
 impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
     /// Exposes the typed root and occurrence cursor to the erased Explorer ABI.
