@@ -257,9 +257,12 @@ let rejected = parsed.requirement_above(grammar::Configuration::V1.id());
 ```
 
 Each answer is a `Requirement` with the gate's configuration, site, message data, citation and
-the extent of the construct. `Requires::minimum_requirement` and
+the extent of the construct. An `arena_ast` grammar answers the same two questions with the
+same two methods on its `ArenaParsed`, and keeps the span in the same way, so a consumer reads
+the extent whichever storage the grammar declares. `Requires::minimum_requirement` and
 `Requires::requirement_above` answer the same questions for a detached value and report no
-span. A gate on a `tokens!` entry removes its entry and records nothing: two same-named
+span, because a span lives in the parse provenance and not in the value. A gate on a `tokens!`
+entry removes its entry and records nothing: two same-named
 lexical entries under opposite predicates are, by design, not distinguishable in a parsed
 value. See the [design note](../docs/configuration-requirements.md).
 

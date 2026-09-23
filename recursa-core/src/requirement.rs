@@ -253,7 +253,8 @@ pub trait Requires {
     ///
     /// `None` means the baseline configuration accepts the whole value. The span is present
     /// only when the value came from a parse that retained provenance; use
-    /// [`crate::Parsed::minimum_requirement`] to keep it.
+    /// [`crate::Parsed::minimum_requirement`], or
+    /// [`crate::ArenaParsed::minimum_requirement`] for an arena AST, to keep it.
     fn minimum_requirement(&self) -> Option<Requirement> {
         let mut scan = RequirementScan::minimum();
         self.scan_requirements(ViewCursor::detached(), &mut scan);
@@ -283,12 +284,12 @@ pub(crate) fn scan_from_cursor<T: Requires + ?Sized>(
     scan.answer()
 }
 
-/// Starts a minimum scan. Used by `Parsed`.
+/// Starts a minimum scan. Used by `Parsed` and `ArenaParsed`.
 pub(crate) const fn minimum_scan() -> RequirementScan {
     RequirementScan::minimum()
 }
 
-/// Starts a first-above scan. Used by `Parsed`.
+/// Starts a first-above scan. Used by `Parsed` and `ArenaParsed`.
 pub(crate) const fn above_scan(floor: Configuration) -> RequirementScan {
     RequirementScan::above(floor)
 }
