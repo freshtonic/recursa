@@ -30,6 +30,8 @@ mod output;
 mod parse;
 /// Parsed provenance, occurrence views, and generated parsing protocol.
 mod parsed;
+/// Declared build-configuration requirements recorded by generation.
+mod requirement;
 /// Structured Pretty rendering and source maps.
 mod pretty;
 /// Checked source byte ranges.
@@ -52,6 +54,7 @@ pub use parsed::{
     ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
+pub use requirement::{Configuration, Requirement, RequirementNote, RequirementScan, Requires};
 pub use span::{OffsetOverflow, Span};
 pub use visitor::{
     TotalVisitor, TotalVisitorMut, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
@@ -197,7 +200,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        35,
+        36,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -305,7 +308,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            35,
+            36,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

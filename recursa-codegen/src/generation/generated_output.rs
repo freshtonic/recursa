@@ -1247,6 +1247,7 @@ pub(super) fn render_root(
         public_exports: trivia_exports,
     } = render_trivia_root_fragments(plan, facade);
     let visit_events = render_visit_events(plan);
+    let configurations = render_configurations(plan);
     let flat_owner = render_flat_owner(plan)?;
     let flat_traversal = render_flat_traversal(plan)?;
     let explorer_schema = plan
@@ -1871,6 +1872,7 @@ pub(super) fn render_root(
         #content_token_optional_trait_helpers
         #arbitrary_seed_module
         #visit_events
+        #configurations
         #flat_owner
         #flat_traversal
         #explorer_schema

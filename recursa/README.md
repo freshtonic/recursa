@@ -164,6 +164,109 @@ recursa::tokens! {
 }
 ```
 
+## Declared build configurations
+
+A `cfg` predicate removes an element and is then forgotten, so a build knows what it accepts
+but cannot say which configuration a parsed value needs. A declared gate keeps both halves.
+Name the configurations in the root declaration, in ascending order, and give each one after
+the first its Cargo feature:
+
+```rust,ignore
+recursa::grammar! {
+    module = crate::grammar,
+    configurations(v1, v2 = feature("since-v2"), v3 = feature("since-v3")),
+    derives(Requires),
+}
+```
+
+The first name is the baseline, which every build admits. The enabled features must form a
+prefix of the list, because a configuration includes every earlier one; otherwise generation
+reports `RCA1017`. The highest enabled name is the configuration the build states, and
+generation emits a `Configuration` enum with `ALL`, `BUILD`, `name()`, `id()` and
+`from_id(...)` into the grammar module.
+
+`#[config(since = NAME)]` removes its element from a build that excludes it, exactly as
+`#[cfg(...)]` does, and records that the element needs `NAME`. `#[config(before = NAME)]` only
+removes. Both bounds may appear together. The gate is accepted on an `ast_node!` struct, enum,
+field or variant, and on a `tokens!` keyword, matcher, literal, lexer token, lookahead entry
+or precedence name.
+
+```rust,ignore
+recursa::tokens! {
+    keywords {
+        #[config(since = v3)]
+        NEARBY => "nearby" in RESERVED,
+    }
+    precedence {
+        nonassoc(bp = 100) { OTHER, #[config(since = v3)] NEARBY },
+    }
+}
+
+recursa::ast_node! {
+    pub enum Filter {
+        Plain(PlainFilter),
+        #[config(since = v3)]
+        Nearby(NearbyFilter),
+    }
+}
+```
+
+`#[config_attr(BOUNDS, META, ...)]` gates attributes rather than the element, the way
+`cfg_attr` does. Use it for a scoped LR resolution, or for an alternative `#[tok(...)]`:
+
+```rust,ignore
+#[config_attr(
+    since = v2,
+    parse(lr_conflict(action = reduce, against = SelectClause::Json, lookahead = { RPAREN }, expect = 1))
+)]
+```
+
+A gate may carry three opaque strings plus the citation of the source that justifies it:
+
+```rust,ignore
+#[config(
+    since = v2,
+    on = absent,
+    code = "42601",
+    message = "subquery in FROM must have an alias",
+    hint = "For example, FROM (SELECT ...) [AS] foo.",
+    cite = "gram.y REL_15_19, table_ref: select_with_parens opt_alias_clause",
+)]
+pub alias: Option<Alias>,
+#[config(before = v2)]
+pub alias: Alias,
+```
+
+`on = absent` says that the requirement belongs to the **absence** of a value, which is what a
+newer configuration means when it makes something optional. It applies to an `Option<T>`
+field, a repetition field, and a `#[presence(...)]` `bool` field. The two opposite predicates
+give each configuration its own field type, exactly as two `keywords` entries do.
+
+With `Requires` in `derives(...)`, a parsed value answers two questions:
+
+```rust,ignore
+let parsed = grammar::Query::parse_spanned(&mut input)?;
+
+// The lowest configuration whose grammar accepts the value, and the span of the first
+// construct in source order that sets it.
+let minimum = parsed.minimum_requirement();
+
+// The first construct, in source order, whose requirement is above a target older than
+// this build. This is the construct that target rejects first.
+let rejected = parsed.requirement_above(grammar::Configuration::V1.id());
+```
+
+Each answer is a `Requirement` with the gate's configuration, site, message data, citation and
+the extent of the construct. `Requires::minimum_requirement` and
+`Requires::requirement_above` answer the same questions for a detached value and report no
+span. A gate on a `tokens!` entry removes its entry and records nothing: two same-named
+lexical entries under opposite predicates are, by design, not distinguishable in a parsed
+value. See the [design note](../docs/configuration-requirements.md).
+
+`#[cfg(...)]` and `#[cfg_attr(...)]` keep working everywhere they work today, so a grammar
+mixes both while it migrates. A `config` gate in a grammar that declares no
+`configurations(...)` list is an error.
+
 A `next_exclusion` matcher can also limit a numeric value. Write a pattern that
 matches only the permitted values. For a longer value, the pattern matches only
 a prefix, the next digit is excluded, and the lexer reports `RCA4004`. For

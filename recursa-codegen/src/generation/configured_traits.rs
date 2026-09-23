@@ -503,6 +503,12 @@ pub(super) fn render_node_configured_traits(
     {
         implementations.push(render_node_visit(plan, node, true));
     }
+    if node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Requires)
+    {
+        implementations.push(render_node_requires(plan, node, node_index));
+    }
     quote!(#(#implementations)*)
 }
 
