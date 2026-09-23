@@ -108,6 +108,9 @@ removes an inactive name from its level, and removes a level that has no active
 name. The checks on the block shape (ascending `bp`, one or more names in each
 level, each name one time only) apply to the block as written, in all
 configurations. An active name that refers to an inactive token is an error.
+A `#[config(since = NAME)]` gate is accepted in the same place and removes a
+name in the same way; see
+[declared build configurations](configuration-requirements.md).
 
 ### Restricted expressions
 

@@ -572,6 +572,8 @@ pub(crate) enum ConfiguredTraitRecipe {
     Visit,
     /// Identifies the visit mut authored-source form.
     VisitMut,
+    /// Identifies the declared build-configuration requirement authored-source form.
+    Requires,
     /// Identifies the arbitrary authored-source form.
     Arbitrary,
     /// Identifies the serialize authored-source form.
@@ -1178,16 +1180,29 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
     let resolved_field_positions = resolved_field_positions(&input.resolved);
     let mut diagnostics = Vec::new();
+    // Resolution already proved the scale; rebuild it here so a `config` gate on a `tokens!`
+    // entry evaluates exactly as one on a declaration does.
+    let declared_configurations = &input.resolved.build_inputs.configurations;
+    let scaled_cfg = if declared_configurations.is_empty() {
+        input.cfg.clone()
+    } else {
+        match crate::source_syntax::resolve_configuration_scale(declared_configurations, input.cfg)
+        {
+            Ok(scale) => input.cfg.clone().with_configurations(scale),
+            Err(_) => input.cfg.clone(),
+        }
+    };
+    let cfg = &scaled_cfg;
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
-    tokens.collect_fixed_definitions(&input.resolved, input.cfg, &mut diagnostics);
+    tokens.collect_fixed_definitions(&input.resolved, cfg, &mut diagnostics);
     tokens.compile_named_admissions(
         input.resolved.configuration.syntax.text_equivalence,
         &mut diagnostics,
     );
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
-        cfg: input.cfg,
+        cfg,
         semantic_facts,
         trait_planner,
         nodes: Vec::new(),
@@ -9067,10 +9082,10 @@ impl Parse for CentralTokensSyntax {
                         let cfg = body.call(syn::Attribute::parse_outer)?;
                         if let Some(attr) = cfg.iter().find(|attr| {
                             authored_class == AuthoredFixedTokenClass::Punctuation
-                                || !attr.path().is_ident("cfg")
+                                || !is_gate_attribute(attr)
                         }) {
                             let message = if authored_class == AuthoredFixedTokenClass::Keyword {
-                                "`keywords` entries accept only `#[cfg(...)]`"
+                                "`keywords` entries accept only `#[cfg(...)]` and `#[config(...)]`"
                             } else {
                                 "`punctuation` entries accept no attributes"
                             };
@@ -9126,10 +9141,10 @@ impl Parse for CentralTokensSyntax {
                         // A filter may carry `#[cfg(...)]`: a filter whose tokens exist only in
                         // some build configurations is gated with them.
                         let cfg = body.call(syn::Attribute::parse_outer)?;
-                        if let Some(attr) = cfg.iter().find(|attr| !attr.path().is_ident("cfg")) {
+                        if let Some(attr) = cfg.iter().find(|attr| !is_gate_attribute(attr)) {
                             return Err(syn::Error::new(
                                 attr.span(),
-                                "`lookahead` entries accept only `#[cfg(...)]`",
+                                "`lookahead` entries accept only `#[cfg(...)]` and `#[config(...)]`",
                             ));
                         }
                         let merged = syn::Ident::parse_any(&body)?;
@@ -9335,10 +9350,10 @@ fn parse_precedence_block(
             // A name may carry `#[cfg(...)]`: a token that exists in some build
             // configurations only is named at its level under the same predicate.
             let cfg = members.call(syn::Attribute::parse_outer)?;
-            if let Some(attr) = cfg.iter().find(|attr| !attr.path().is_ident("cfg")) {
+            if let Some(attr) = cfg.iter().find(|attr| !is_gate_attribute(attr)) {
                 return Err(syn::Error::new(
                     attr.span(),
-                    "precedence level names accept only `#[cfg(...)]`",
+                    "precedence level names accept only `#[cfg(...)]` and `#[config(...)]`",
                 ));
             }
             let name = syn::Ident::parse_any(&members)?;
@@ -9376,6 +9391,14 @@ fn parse_precedence_block(
         }
     }
     Ok(CentralPrecedenceSyntax { keyword, levels })
+}
+
+/// Reports whether one authored attribute is a build-configuration gate.
+///
+/// A gate is either an ordinary `#[cfg(...)]` predicate or the declared `#[config(...)]` form
+/// that also records its requirement.
+fn is_gate_attribute(attribute: &syn::Attribute) -> bool {
+    attribute.path().is_ident("cfg") || attribute.path().is_ident("config")
 }
 
 /// Rejects an attribute before an entry of a `tokens!` section that has no `cfg` selection.
@@ -9813,12 +9836,14 @@ pub(crate) fn configured_trait_recipe(
         "Pretty" if bare => Some(ConfiguredTraitRecipe::Pretty),
         "Visit" if bare => Some(ConfiguredTraitRecipe::Visit),
         "VisitMut" if bare => Some(ConfiguredTraitRecipe::VisitMut),
+        "Requires" if bare => Some(ConfiguredTraitRecipe::Requires),
         "Arbitrary" if bare => Some(ConfiguredTraitRecipe::Arbitrary),
         "Serialize" | "serde::Serialize" => Some(ConfiguredTraitRecipe::Serialize),
         "Deserialize" | "serde::Deserialize" => Some(ConfiguredTraitRecipe::Deserialize),
         _ if text == format!("{facade}::Pretty") => Some(ConfiguredTraitRecipe::Pretty),
         _ if text == format!("{facade}::Visit") => Some(ConfiguredTraitRecipe::Visit),
         _ if text == format!("{facade}::VisitMut") => Some(ConfiguredTraitRecipe::VisitMut),
+        _ if text == format!("{facade}::Requires") => Some(ConfiguredTraitRecipe::Requires),
         _ if text == format!("{facade}::Arbitrary") => Some(ConfiguredTraitRecipe::Arbitrary),
         _ => None,
     }
@@ -11368,6 +11393,88 @@ recursa::ast_node! {
     }
 
     #[test]
+    fn config_gates_select_the_same_entries_that_cfg_would() {
+        let source = r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2"), v3 = feature("since-v3")),
+}
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        #[config(since = v2)]
+        JSON => "json" in RESERVED,
+        #[config(before = v2)]
+        JSON => "json" in UNRESERVED,
+        #[config(since = v3)]
+        NEWEST => "newest" in UNRESERVED,
+        #[config(since = v2, before = v3)]
+        ONLY_V2 => "only_v2" in UNRESERVED,
+        OTHER => "other" in UNRESERVED,
+    }
+    precedence {
+        nonassoc(bp = 100) { OTHER, #[config(since = v3)] NEWEST },
+    }
+    admissions { Unreserved = UNRESERVED }
+}
+recursa::ast_node! {
+    struct Root {
+        #[lex(pattern = "word", admits(Unreserved))]
+        name: Name,
+    }
+}
+"#;
+        let fixed = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            completed(report)
+                .token_definitions
+                .iter()
+                .filter(|definition| matches!(definition.kind, TokenDefinitionKind::Fixed(_)))
+                .map(|definition| definition.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fixed(&CargoCfgSnapshot::default()),
+            vec!["JSON".to_owned(), "OTHER".to_owned()],
+        );
+        assert_eq!(
+            fixed(&CargoCfgSnapshot::default().with_value("feature", "since-v2")),
+            vec!["JSON".to_owned(), "ONLY_V2".to_owned(), "OTHER".to_owned()],
+        );
+        assert_eq!(
+            fixed(
+                &CargoCfgSnapshot::default()
+                    .with_value("feature", "since-v2")
+                    .with_value("feature", "since-v3")
+            ),
+            vec!["JSON".to_owned(), "NEWEST".to_owned(), "OTHER".to_owned()],
+        );
+    }
+
+    #[test]
+    fn a_config_gate_needs_a_declared_configuration_list() {
+        let source = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { UNRESERVED }
+    keywords {
+        #[config(since = v2)]
+        JSON => "json" in UNRESERVED,
+    }
+}
+recursa::ast_node! {
+    struct Root;
+}
+"#;
+        let report = model(source);
+        assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidConfiguration,
+            "RCA3101",
+        );
+    }
+
+    #[test]
     fn two_active_keyword_entries_with_one_name_are_an_error() {
         let source = r#"recursa::grammar! { module = crate }
 recursa::tokens! {
@@ -11598,7 +11705,7 @@ recursa::ast_node! {
         for (block, message) in [
             (
                 r#"keywords { #[doc = "no"] JSON => "json" }"#,
-                "`keywords` entries accept only `#[cfg(...)]`",
+                "`keywords` entries accept only `#[cfg(...)]` and `#[config(...)]`",
             ),
             (
                 r#"punctuation { #[cfg(unix)] DOT => "." }"#,
@@ -11618,7 +11725,7 @@ recursa::ast_node! {
             ),
             (
                 r#"lookahead { #[doc = "no"] A_LA = A before { B } }"#,
-                "`lookahead` entries accept only `#[cfg(...)]`",
+                "`lookahead` entries accept only `#[cfg(...)]` and `#[config(...)]`",
             ),
         ] {
             let error = syn::parse_str::<CentralTokensSyntax>(block)
@@ -12412,6 +12519,176 @@ recursa::ast_node! {
     }
 
     #[test]
+    fn config_gates_select_declaration_items_fields_and_variants() {
+        let source = r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2"), v3 = feature("since-v3")),
+}
+recursa::tokens! { punctuation { PLUS => "+", STAR => "*" } }
+recursa::ast_node! {
+    struct Root {
+        head: Leaf,
+        #[config(since = v2)]
+        tail: Option<Leaf>,
+    }
+}
+recursa::ast_node! {
+    enum Leaf {
+        Plus(Plus),
+        #[config(since = v3)]
+        Star(Star),
+    }
+}
+recursa::ast_node! {
+    struct Plus {
+        #[presence(PLUS)]
+        mark: bool,
+    }
+}
+recursa::ast_node! {
+    #[config(since = v3)]
+    struct Star {
+        #[presence(STAR)]
+        mark: bool,
+    }
+}
+"#;
+        let shape = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            let model = completed(report);
+            model
+                .nodes
+                .iter()
+                .map(|node| {
+                    let parts = match &node.body {
+                        super::NodeBody::Struct(elements)
+                        | super::NodeBody::Presence(elements) => elements.len(),
+                        super::NodeBody::Enum(variants) => variants.len(),
+                    };
+                    (node.name.clone(), parts)
+                })
+                .collect::<Vec<_>>()
+        };
+        let baseline = shape(&CargoCfgSnapshot::default());
+        assert!(
+            !baseline.iter().any(|(name, _)| name == "Star"),
+            "{baseline:?}",
+        );
+        assert_eq!(
+            baseline
+                .iter()
+                .find_map(|(name, parts)| (name == "Root").then_some(*parts)),
+            Some(1),
+        );
+        assert_eq!(
+            baseline
+                .iter()
+                .find_map(|(name, parts)| (name == "Leaf").then_some(*parts)),
+            Some(1),
+        );
+
+        let newest = shape(
+            &CargoCfgSnapshot::default()
+                .with_value("feature", "since-v2")
+                .with_value("feature", "since-v3"),
+        );
+        assert!(newest.iter().any(|(name, _)| name == "Star"), "{newest:?}");
+        assert_eq!(
+            newest
+                .iter()
+                .find_map(|(name, parts)| (name == "Root").then_some(*parts)),
+            Some(2),
+        );
+        assert_eq!(
+            newest
+                .iter()
+                .find_map(|(name, parts)| (name == "Leaf").then_some(*parts)),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn config_attr_selects_lr_conflict_declarations() {
+        let source = r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2")),
+}
+recursa::tokens! { keywords { ORDER => "order" } punctuation { RPAREN => ")" } }
+recursa::ast_node! {
+    #[config_attr(
+        since = v2,
+        parse(lr_conflict(action = reduce, against = SelectClause::Json, lookahead = { RPAREN }, expect = 1))
+    )]
+    #[config_attr(
+        before = v2,
+        parse(lr_conflict(action = shift, against = SelectClause::Simple, lookahead = { ORDER }, expect = 2))
+    )]
+    struct DirectSubquery;
+}
+recursa::ast_node! {
+    enum SelectClause {
+        Simple,
+        #[config(since = v2)]
+        Json,
+    }
+}
+"#;
+        let resolutions = |cfg: &CargoCfgSnapshot| {
+            let report = model_with_cfg(source, cfg);
+            assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+            completed(report)
+                .lr_conflict_resolutions
+                .into_iter()
+                .map(|resolution| (resolution.action, resolution.expected))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            resolutions(&CargoCfgSnapshot::default()),
+            [(super::LrConflictAction::Shift, 2)]
+        );
+        assert_eq!(
+            resolutions(&CargoCfgSnapshot::default().with_value("feature", "since-v2")),
+            [(super::LrConflictAction::Reduce, 1)]
+        );
+    }
+
+    #[test]
+    fn an_invalid_config_gate_or_configuration_list_is_reported() {
+        let grammar = |list: &str, gate: &str| {
+            format!(
+                r#"recursa::grammar! {{ module = crate, configurations({list}), }}
+recursa::tokens! {{
+    categories {{ UNRESERVED }}
+    keywords {{
+        {gate}
+        JSON => "json" in UNRESERVED,
+    }}
+}}
+recursa::ast_node! {{
+    struct Root;
+}}
+"#
+            )
+        };
+        let ordered = r#"v1, v2 = feature("since-v2"), v3 = feature("since-v3")"#;
+        // An unknown configuration name, inverted bounds, and a gate with no bound at all.
+        for gate in [
+            "#[config(since = v9)]",
+            "#[config(since = v3, before = v2)]",
+            "#[config(code = \"42601\")]",
+        ] {
+            let report = model_with_cfg(&grammar(ordered, gate), &CargoCfgSnapshot::default());
+            assert!(report.source_modeled.is_none(), "{gate} was accepted");
+            assert_code(
+                &report,
+                SourceModelDiagnosticKind::InvalidConfiguration,
+                "RCA3101",
+            );
+        }
+    }
+
+    #[test]
     fn restricted_expressions_lower_to_their_admitted_base_variants() {
         let report = model(
             r#"recursa::grammar! { module = crate }
@@ -12849,7 +13126,7 @@ recursa::ast_node! {
         .unwrap_or_else(|| panic!("a `doc` attribute on a precedence name parsed"));
         assert_eq!(
             error.to_string(),
-            "precedence level names accept only `#[cfg(...)]`"
+            "precedence level names accept only `#[cfg(...)]` and `#[config(...)]`"
         );
 
         // The duplicate rule reads the authored block: two names with opposite predicates
