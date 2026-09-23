@@ -1,0 +1,19 @@
+[package]
+name = "recursa-generated-requirements"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+build = "build.rs"
+
+[features]
+default = []
+since-v2 = []
+since-v3 = ["since-v2"]
+
+[dependencies]
+recursa = { path = "{{RECURSA}}", features = ["spans"] }
+
+[build-dependencies]
+recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["spans"] }
+
+[workspace]

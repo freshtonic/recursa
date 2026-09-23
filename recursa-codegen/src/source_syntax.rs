@@ -30,6 +30,230 @@ pub(crate) struct CargoCfgSnapshot {
     flags: BTreeSet<String>,
     /// Enabled values grouped by Cargo configuration key.
     values: BTreeMap<String, BTreeSet<String>>,
+    /// Resolved configuration scale declared by the root grammar, when one exists.
+    configurations: Option<std::sync::Arc<ConfigurationScale>>,
+}
+
+impl CargoCfgSnapshot {
+    /// Attaches the resolved configuration scale used by `config` gates.
+    pub(crate) fn with_configurations(mut self, scale: ConfigurationScale) -> Self {
+        self.configurations = Some(std::sync::Arc::new(scale));
+        self
+    }
+
+    /// Returns the resolved configuration scale, when the grammar declares one.
+    pub(crate) fn configurations(&self) -> Option<&ConfigurationScale> {
+        self.configurations.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The grammar's ordered named configurations together with the one this build states.
+///
+/// The names come from the root `grammar!` `configurations(...)` list, in ascending order.
+/// `active` is the index of the highest name whose Cargo feature is enabled, so it is the
+/// configuration that this build reproduces.
+pub(crate) struct ConfigurationScale {
+    /// Declared names in ascending order.
+    pub(crate) names: Vec<String>,
+    /// Index of the configuration that this build states.
+    pub(crate) active: usize,
+}
+
+impl ConfigurationScale {
+    /// Returns the ordinal of one declared name.
+    pub(crate) fn index(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|declared| declared == name)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One entry of the root `grammar!` `configurations(...)` list.
+pub(crate) struct ConfigurationSyntax {
+    /// Authored name, which a `config` gate refers to.
+    pub(crate) name: syn::Ident,
+    /// Cargo feature that enables this configuration; the first entry has none.
+    pub(crate) feature: Option<syn::LitStr>,
+    /// Authored range of the name.
+    pub(crate) range: Range<u32>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// One authored `#[config(...)]` declaration.
+///
+/// The gate both removes its element from a build that the range excludes and, for a `since`
+/// bound, records the requirement that generation publishes.
+pub(crate) struct ConfigGate {
+    /// Lowest configuration that admits the element; `None` means the baseline admits it.
+    pub(crate) since: Option<String>,
+    /// First configuration that no longer admits the element.
+    pub(crate) before: Option<String>,
+    /// Whether the requirement belongs to the absence of the value rather than its presence.
+    pub(crate) on_absent: bool,
+    /// Opaque diagnostic code carried to the consumer.
+    pub(crate) code: Option<String>,
+    /// Opaque message carried to the consumer.
+    pub(crate) message: Option<String>,
+    /// Opaque hint carried to the consumer.
+    pub(crate) hint: Option<String>,
+    /// Citation of the source that justifies the gate.
+    pub(crate) citation: Option<String>,
+}
+
+impl ConfigGate {
+    /// Reads one `config(...)` meta without resolving it against a build configuration.
+    pub(crate) fn from_meta(meta: &Meta) -> Result<Self, ConfigurationError> {
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "config must use parentheses",
+            ));
+        };
+        let entries = Punctuated::<Meta, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        let mut gate = Self::default();
+        for entry in &entries {
+            let Meta::NameValue(pair) = entry else {
+                return Err(configuration_error(
+                    entry.span(),
+                    "config accepts only `key = value` entries",
+                ));
+            };
+            let key = pair
+                .path
+                .get_ident()
+                .ok_or_else(|| configuration_error(pair.span(), "config key must be a name"))?
+                .unraw()
+                .to_string();
+            match key.as_str() {
+                "since" | "before" => {
+                    let name = configuration_name(&pair.value)?;
+                    let slot = if key == "since" {
+                        &mut gate.since
+                    } else {
+                        &mut gate.before
+                    };
+                    if slot.is_some() {
+                        return Err(configuration_error(
+                            pair.span(),
+                            format!("duplicate config {key} bound"),
+                        ));
+                    }
+                    *slot = Some(name);
+                }
+                "on" => {
+                    let name = configuration_name(&pair.value)?;
+                    match name.as_str() {
+                        "absent" => gate.on_absent = true,
+                        "present" => gate.on_absent = false,
+                        _ => {
+                            return Err(configuration_error(
+                                pair.span(),
+                                "config `on` accepts only `present` or `absent`",
+                            ));
+                        }
+                    }
+                }
+                "code" | "message" | "hint" | "cite" => {
+                    let text = literal_text(&pair.value)?;
+                    let slot = match key.as_str() {
+                        "code" => &mut gate.code,
+                        "message" => &mut gate.message,
+                        "hint" => &mut gate.hint,
+                        _ => &mut gate.citation,
+                    };
+                    if slot.is_some() {
+                        return Err(configuration_error(
+                            pair.span(),
+                            format!("duplicate config {key} entry"),
+                        ));
+                    }
+                    *slot = Some(text);
+                }
+                other => {
+                    return Err(configuration_error(
+                        pair.span(),
+                        format!("unsupported config entry `{other}`"),
+                    ));
+                }
+            }
+        }
+        if gate.since.is_none() && gate.before.is_none() {
+            return Err(configuration_error(
+                meta.span(),
+                "config requires `since` or `before`",
+            ));
+        }
+        Ok(gate)
+    }
+
+    /// Reports whether the build configuration admits the gated element.
+    pub(crate) fn admits(&self, meta: &Meta, cfg: &CargoCfgSnapshot) -> Result<bool, ConfigurationError> {
+        let Some(scale) = cfg.configurations() else {
+            return Err(configuration_error(
+                meta.span(),
+                "config requires a `configurations(...)` list in the root grammar declaration",
+            ));
+        };
+        let bound = |name: &Option<String>| match name {
+            None => Ok(None),
+            Some(name) => scale.index(name).map(Some).ok_or_else(|| {
+                configuration_error(meta.span(), format!("unknown configuration `{name}`"))
+            }),
+        };
+        let since = bound(&self.since)?;
+        let before = bound(&self.before)?;
+        if let (Some(since), Some(before)) = (since, before)
+            && since >= before
+        {
+            return Err(configuration_error(
+                meta.span(),
+                "config `since` must name a lower configuration than `before`",
+            ));
+        }
+        Ok(since.is_none_or(|since| since <= scale.active)
+            && before.is_none_or(|before| scale.active < before))
+    }
+}
+
+/// Reads a bare name written as the value of a `config` entry.
+fn configuration_name(value: &Expr) -> Result<String, ConfigurationError> {
+    match value {
+        Expr::Path(path)
+            if path.qself.is_none()
+                && path.attrs.is_empty()
+                && path.path.get_ident().is_some() =>
+        {
+            Ok(path
+                .path
+                .get_ident()
+                .expect("the guard checked for one identifier")
+                .unraw()
+                .to_string())
+        }
+        other => Err(configuration_error(
+            other.span(),
+            "config expects a configuration name",
+        )),
+    }
+}
+
+/// Reads a string literal written as the value of a `config` entry.
+fn literal_text(value: &Expr) -> Result<String, ConfigurationError> {
+    match value {
+        Expr::Lit(literal) => match &literal.lit {
+            Lit::Str(text) => Ok(text.value()),
+            other => Err(configuration_error(
+                other.span(),
+                "config expects a string literal",
+            )),
+        },
+        other => Err(configuration_error(
+            other.span(),
+            "config expects a string literal",
+        )),
+    }
 }
 
 impl CargoCfgSnapshot {
@@ -182,6 +406,8 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) spans: CaptureMode,
     /// Grammar-wide configured-trait selections in authored order.
     pub(crate) derives: Vec<Path>,
+    /// Ordered named configurations that a `config` gate refers to.
+    pub(crate) configurations: Vec<ConfigurationSyntax>,
     /// Whether generation should publish railroad diagrams.
     pub(crate) diagrams: bool,
     /// Whether generated semantic boxes and vectors borrow one parse-owned bump arena.
@@ -625,6 +851,7 @@ impl Parse for GrammarConfigSyntax {
         let mut invalid_keyword_matching = None;
         let mut spans = None;
         let mut derives = None;
+        let mut configurations = None;
         let mut diagrams = false;
         let mut arena_ast = false;
         let mut flat = false;
@@ -641,6 +868,11 @@ impl Parse for GrammarConfigSyntax {
                         .into_iter()
                         .collect(),
                 );
+            } else if key == "configurations" {
+                reject_duplicate(&configurations, key.span(), "configurations")?;
+                let content;
+                syn::parenthesized!(content in input);
+                configurations = Some(parse_configurations(&content)?);
             } else if key == "diagrams" {
                 if diagrams {
                     return Err(syn::Error::new(key.span(), "duplicate diagrams setting"));
@@ -732,6 +964,7 @@ impl Parse for GrammarConfigSyntax {
             // Optional preserves the pre-configuration generated API behavior.
             spans: spans.unwrap_or(CaptureMode::Optional),
             derives: derives.unwrap_or_default(),
+            configurations: configurations.unwrap_or_default(),
             diagrams,
             arena_ast,
             flat,
@@ -739,6 +972,112 @@ impl Parse for GrammarConfigSyntax {
             framing,
         })
     }
+}
+
+/// Resolves the declared configuration list against the build's Cargo features.
+///
+/// The enabled features must form a prefix of the list, because a configuration includes every
+/// earlier one. The highest enabled entry is the configuration that the build states.
+pub(crate) fn resolve_configuration_scale(
+    declared: &[ConfigurationSyntax],
+    cfg: &CargoCfgSnapshot,
+) -> Result<ConfigurationScale, ConfigurationError> {
+    let mut active = 0usize;
+    let mut enabled = Vec::with_capacity(declared.len());
+    for entry in declared {
+        let on = match &entry.feature {
+            None => true,
+            Some(feature) => cfg
+                .value("feature", &feature.value())
+                .map_err(|failure| cfg_lookup_error(failure, feature.span(), "feature"))?,
+        };
+        enabled.push(on);
+    }
+    for (index, on) in enabled.iter().copied().enumerate() {
+        if on {
+            if index != active {
+                return Err(ConfigurationError {
+                    kind: ConfigurationErrorKind::Malformed,
+                    range: declared[index].range.clone(),
+                    message: format!(
+                        "configuration `{}` is enabled while `{}` is not; each configuration \
+                         feature must enable every earlier one",
+                        declared[index].name,
+                        declared[active].name,
+                    ),
+                });
+            }
+            active = index + 1;
+        }
+    }
+    Ok(ConfigurationScale {
+        names: declared
+            .iter()
+            .map(|entry| entry.name.unraw().to_string())
+            .collect(),
+        active: active.saturating_sub(1),
+    })
+}
+
+/// Reads the ordered `configurations(...)` list of the root grammar declaration.
+///
+/// The first entry is the baseline and takes no feature: every build admits it. Each later
+/// entry names the Cargo feature that enables it, so the existing feature layout keeps working
+/// without change.
+fn parse_configurations(input: ParseStream<'_>) -> syn::Result<Vec<ConfigurationSyntax>> {
+    let mut configurations = Vec::new();
+    while !input.is_empty() {
+        let name: syn::Ident = input.call(syn::Ident::parse_any)?;
+        let range = span_range(name.span());
+        let feature = if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            let key: syn::Ident = input.parse()?;
+            if key != "feature" {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "a configuration selects a Cargo feature: write `name = feature(\"...\")`",
+                ));
+            }
+            let content;
+            syn::parenthesized!(content in input);
+            Some(content.parse::<syn::LitStr>()?)
+        } else {
+            None
+        };
+        if configurations.is_empty() && feature.is_some() {
+            return Err(syn::Error::new(
+                name.span(),
+                "the first configuration is the baseline and takes no feature",
+            ));
+        }
+        if !configurations.is_empty() && feature.is_none() {
+            return Err(syn::Error::new(
+                name.span(),
+                "every configuration after the first names its Cargo feature",
+            ));
+        }
+        if configurations
+            .iter()
+            .any(|entry: &ConfigurationSyntax| entry.name == name)
+        {
+            return Err(syn::Error::new(
+                name.span(),
+                format!("duplicate configuration `{name}`"),
+            ));
+        }
+        configurations.push(ConfigurationSyntax {
+            name,
+            feature,
+            range,
+        });
+        if !input.is_empty() {
+            input.parse::<Token![,]>()?;
+        }
+    }
+    if configurations.len() < 2 {
+        return Err(input.error("a configurations list needs a baseline and at least one more"));
+    }
+    Ok(configurations)
 }
 
 /// Rejects a repeated configuration key at the second authored span.
@@ -868,6 +1207,49 @@ fn apply_meta(
         };
         if evaluate_cfg(predicate, cfg)? {
             for nested in nested.iter().skip(1) {
+                apply_meta(nested, cfg, active, output)?;
+                if !*active {
+                    break;
+                }
+            }
+        }
+    } else if meta.path().is_ident("config") {
+        // A `config` gate removes its element exactly as a `cfg` does. An active gate stays in
+        // the meta list, because the source model reads it again to record the requirement.
+        *active &= ConfigGate::from_meta(meta)?.admits(meta, cfg)?;
+        if *active {
+            output.push(meta.clone());
+        }
+    } else if meta.path().is_ident("config_attr") {
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "config_attr must use parentheses",
+            ));
+        };
+        let nested = Punctuated::<Meta, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        let bounds = nested
+            .iter()
+            .take_while(|entry| matches!(entry, Meta::NameValue(_)))
+            .count();
+        if bounds == 0 {
+            return Err(configuration_error(
+                meta.span(),
+                "config_attr requires a `since` or `before` bound",
+            ));
+        }
+        let predicate = Meta::List(syn::MetaList {
+            path: syn::parse_quote!(config),
+            delimiter: syn::MacroDelimiter::Paren(syn::token::Paren(meta.span())),
+            tokens: {
+                let entries = nested.iter().take(bounds);
+                quote::quote!(#(#entries),*)
+            },
+        });
+        if ConfigGate::from_meta(&predicate)?.admits(meta, cfg)? {
+            for nested in nested.iter().skip(bounds) {
                 apply_meta(nested, cfg, active, output)?;
                 if !*active {
                     break;

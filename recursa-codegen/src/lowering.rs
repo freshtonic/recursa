@@ -138,6 +138,10 @@ pub(crate) struct BuildInputs {
     pub(crate) flat: bool,
     /// Grammar-wide Pretty defaults.
     pub(crate) pretty: PrettyDefaults,
+    /// Ordered named configurations that a `config` gate refers to.
+    pub(crate) configurations: Vec<crate::source_syntax::ConfigurationSyntax>,
+    /// Index of the configuration that this build states.
+    pub(crate) configuration_active: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

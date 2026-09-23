@@ -28,8 +28,10 @@ precedence, in bison's exact terms; see
 [declared precedence](declared-precedence.md). Scoped conflict resolutions name source-level rules and
 lookaheads, never generated state numbers, and must match exactly the cells
 they claim. To gate a resolution on a build configuration, write it as
-`#[cfg_attr(PREDICATE, parse(lr_conflict(...)))]`. Generation ignores an
-inactive resolution. An active resolution that matches no cell is still an
+`#[cfg_attr(PREDICATE, parse(lr_conflict(...)))]`, or, with a declared
+configuration list, `#[config_attr(since = NAME, parse(lr_conflict(...)))]`
+(see [declared build configurations](configuration-requirements.md)).
+Generation ignores an inactive resolution. An active resolution that matches no cell is still an
 error. Text predicates remain an unsupported grammar construct until they
 have a useful LR lowering. A future IELR or canonical-LR mode would be a
 single grammar-level construction choice, never a second runtime parser.

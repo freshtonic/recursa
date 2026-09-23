@@ -222,6 +222,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "greedy"
                         | "omit"
                         | "restricts"
+                        | "config"
                 )
             )
         })

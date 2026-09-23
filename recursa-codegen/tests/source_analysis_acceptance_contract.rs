@@ -13,12 +13,13 @@ const FIXTURES: [(&str, &str); 6] = [
     ("cskw", "crate::cskw"),
 ];
 
-const REQUIRED_IDS: [&str; 14] = [
+const REQUIRED_IDS: [&str; 15] = [
     "M3-NORM-001",
     "M3-DISC-001",
     "M3-RESOLVE-001",
     "M3-RESOLVE-002",
     "M3-LANG-001",
+    "M3-LANG-002",
     "M3-MATERIAL-001",
     "M3-LEX-001",
     "M3-DIAG-001",
@@ -30,12 +31,13 @@ const REQUIRED_IDS: [&str; 14] = [
     "M3-CI-001",
 ];
 
-const KNOWN_EVIDENCE: [&str; 14] = [
+const KNOWN_EVIDENCE: [&str; 15] = [
     "cargo test -p recursa-codegen --test normalized_analysis recursive_container_shape_preserves_box_placement_and_optional_vec1_cardinality --locked",
     "cargo test -p recursa-codegen discovery::tests::cargo_1_88_invalidation_covers_edits_failures_candidates_and_cfg_switches --locked",
     "cargo test -p recursa-codegen resolution::tests::resolves_anchored_local_paths_self_and_the_closed_catalog --locked",
     "cargo test -p recursa-codegen resolution::tests::synthesizes_module_local_content_token_bindings_with_one_semantic_identity --locked",
     "cargo test -p recursa-codegen source_model::tests::lowers_positional_tokens_and_presence_nodes_in_source_order --locked",
+    "cargo test -p recursa-codegen --test generated_requirements --locked",
     "cargo test -p recursa-codegen materialization::tests::arithmetic_generic_application_reaches_successful_semantic_analysis --locked",
     "cargo test -p recursa-codegen lexical::tests::contextual_keyword_projection_is_stable_under_source_permutations --locked",
     "cargo test -p recursa-codegen source_analysis_tests::tests::diagnostic_phases_collect_independent_failures_and_suppress_downstream_phases --locked",

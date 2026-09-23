@@ -32,7 +32,7 @@ use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
 };
 use crate::source_syntax::{
-    CaptureMode, CargoCfgSnapshot, GrammarConfigSyntax, capture_override,
+    CaptureMode, CargoCfgSnapshot, GrammarConfigSyntax, capture_override, resolve_configuration_scale,
     configured_attribute_metas as configured_metas, item_attributes as item_attrs, path_text,
     span_range,
 };
@@ -932,6 +932,29 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
             resolved: None,
         };
     };
+    // The configuration scale must exist before any declaration is filtered, because a `config`
+    // gate removes its element exactly as a `cfg` does.
+    let mut scaled_cfg = input.cfg.clone();
+    let mut configuration_active = 0usize;
+    if !configuration.syntax.configurations.is_empty() {
+        match resolve_configuration_scale(&configuration.syntax.configurations, input.cfg) {
+            Ok(scale) => {
+                configuration_active = scale.active;
+                scaled_cfg = scaled_cfg.with_configurations(scale);
+            }
+            Err(error) => diagnostics.push(ResolutionDiagnostic {
+                kind: ResolutionDiagnosticKind::InvalidGrammarConfig,
+                module: Some(input.tree.inclusions[0].id),
+                logical_module: Some(input.tree.inclusions[0].logical_path.clone()),
+                path: input.tree.files[input.tree.inclusions[0].source.index()]
+                    .path
+                    .clone(),
+                range: Some(error.range),
+                message: error.message,
+            }),
+        }
+    }
+    let cfg = &scaled_cfg;
     let build_inputs = BuildInputs {
         discovery: input.discovery_inputs,
         module_anchor: anchor.clone(),
@@ -942,6 +965,8 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         arena_ast: configuration.syntax.arena_ast,
         flat: configuration.syntax.flat,
         pretty: configuration.syntax.pretty,
+        configurations: configuration.syntax.configurations.clone(),
+        configuration_active,
     };
     let mut declaration_origins = BTreeMap::new();
     let mut items = BTreeMap::new();
@@ -952,7 +977,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
             source_items.get(&inclusion.id).map_or(&[], Vec::as_slice),
             &facade.ident,
             configuration.syntax.arena_ast,
-            input.cfg,
+            cfg,
             macro_aliases.get(&inclusion.id).unwrap_or(&BTreeSet::new()),
         );
         for error in expansion.errors {
@@ -975,7 +1000,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         inclusion.items = items.get(&inclusion.id).cloned().unwrap_or_default();
     }
     let mut resolver = Resolver {
-        cfg: input.cfg,
+        cfg,
         build_inputs,
         configuration,
         tree,
@@ -4495,6 +4520,44 @@ recursa::ast_node! {
             &TempDir::new().unwrap(),
             "recursa::grammar! { module = self::sql }",
             &["RCA1017"],
+        );
+    }
+
+    #[test]
+    fn rca1017_reports_a_configuration_list_whose_features_are_not_a_prefix() {
+        // A configuration includes every earlier one, so its feature must enable them too.
+        let package = TempDir::new().unwrap();
+        write(
+            package.path(),
+            "grammar/root.rs",
+            r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2"), v3 = feature("since-v3")),
+}
+"#,
+        );
+        let mut cargo = Vec::new();
+        let error = analyze_source_tree(
+            SourceAnalysisInput::new(
+                package.path(),
+                Path::new("grammar/root.rs"),
+                RustEdition::Rust2024,
+                CargoCfgSnapshot::default().with_value("feature", "since-v3"),
+            ),
+            &mut cargo,
+        )
+        .expect_err("a non-prefix configuration selection must fail before generation");
+        assert!(
+            error
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code().as_str() == "RCA1017"),
+            "{:?}",
+            error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str())
+                .collect::<Vec<_>>(),
         );
     }
 

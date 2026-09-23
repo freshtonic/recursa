@@ -133,6 +133,26 @@ _Avoid_: Persistent ID registry, implicit positional coupling
 One complete, successfully published logical output produced from a lowered grammar under a matching emitter and protocol.
 _Avoid_: Generated file, lowered grammar
 
+**Build configuration**:
+One name of the grammar's ordered `configurations(...)` list. A later name is a later, more demanding configuration, and it includes every earlier one. The first name is the baseline, which every build admits; each later name selects one Cargo feature.
+_Avoid_: Version, feature flag, target release
+
+**Stated configuration**:
+The highest build configuration whose feature the build enables. It is what the build reproduces, and generation publishes it as `Configuration::BUILD`.
+_Avoid_: Current version, active feature set
+
+**Configuration gate**:
+A `#[config(since = NAME)]` or `#[config(before = NAME)]` declaration that removes its element from a build the range excludes, exactly as the `cfg` it replaces, and, for a `since` bound, records that the element needs that configuration.
+_Avoid_: Version gate, cfg predicate
+
+**Configuration requirement**:
+The lowest build configuration whose grammar accepts one construct, together with the construct's site, its opaque code, message and hint, and the citation of the source that justifies the gate.
+_Avoid_: Minimum version, error message
+
+**Requirement ceiling**:
+The highest configuration requirement reachable through one Node type, computed by generation as a fixpoint over the type graph. A scan skips a subtree whose ceiling cannot change its answer.
+_Avoid_: Maximum version, subtree cache
+
 **Reuse index**:
 The per-`OUT_DIR` record, keyed by the discovered grammar source, configuration, and generator, that names the published Generation and its warnings so an unchanged grammar re-selects that Generation without analysis.
 _Avoid_: Generation cache, incremental analysis
