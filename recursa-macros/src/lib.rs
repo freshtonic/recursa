@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Item, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 35;
+const PRIVATE_PROTOCOL: u32 = 36;
 
 /// Reports the retired concrete-Node authoring surface.
 ///
@@ -90,8 +90,14 @@ pub fn ast_node(input: TokenStream) -> TokenStream {
         {
             continue;
         }
+        // Only `recursa-codegen` knows the grammar's configuration scale, so a `#[config(...)]`
+        // gate cannot be evaluated here. An excluded declaration simply has no generated body,
+        // and the loader stays silent instead of reporting a missing one.
+        let config_gated = attributes
+            .iter()
+            .any(|attribute| attribute.path().is_ident("config"));
         let conditional = attributes.into_iter().filter_map(conditional_gate);
-        let loader = load_declared_node(&ident);
+        let loader = load_declared_node(&ident, config_gated);
         output.extend(quote! {
             #(#conditional)*
             #loader
@@ -138,7 +144,7 @@ fn project_cfg_meta(meta: syn::Meta) -> Option<syn::Meta> {
 }
 
 /// Resolves one declaration identifier to its matching generated Node payload.
-fn load_declared_node(ident: &syn::Ident) -> proc_macro2::TokenStream {
+fn load_declared_node(ident: &syn::Ident, config_gated: bool) -> proc_macro2::TokenStream {
     let span = ident.span();
     let start = span.start();
     let file = span
@@ -167,6 +173,7 @@ fn load_declared_node(ident: &syn::Ident) -> proc_macro2::TokenStream {
             __recursa_load_node!(#ident, #loader_anchor);
         },
         LoaderStatus::RootUnavailable => proc_macro2::TokenStream::new(),
+        LoaderStatus::NodeUnavailable if config_gated => proc_macro2::TokenStream::new(),
         LoaderStatus::NodeUnavailable => quote! {
             compile_error!("error[RCA9002]: selected Generation has no readable body for this Node");
         },
@@ -548,6 +555,12 @@ fn write_standalone_svg(directory: &Path, name: &str, svg: &str) {
 /// the analyzer ignores an inactive entry. `punctuation`, `categories`, `flags`,
 /// `admissions`, `ignore` and `trivia` entries accept no attributes. This macro emits nothing, so
 /// rustc never evaluates these attributes itself.
+///
+/// Every entry that accepts `#[cfg(...)]` also accepts `#[config(since = NAME)]` and
+/// `#[config(before = NAME)]`, where `NAME` comes from the root declaration's
+/// `configurations(...)` list. A `config` gate removes its entry exactly as a `cfg` does, and a
+/// `since` bound also records the requirement that a generated `Requires` implementation
+/// reports.
 ///
 /// Closed source-backed matchers are declared centrally in `matchers { ... }` and bound by a
 /// same-named content-token field using `#[lex(matcher)]`. The supported constructors are

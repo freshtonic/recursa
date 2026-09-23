@@ -873,6 +873,32 @@ impl<T: Node> Parsed<'_, T> {
     }
 }
 
+impl<T: crate::requirement::Requires> Parsed<'_, T> {
+    /// Returns the lowest configuration whose grammar accepts this value, with the span of the
+    /// first construct, in source order, that sets it.
+    ///
+    /// `None` means the grammar's baseline configuration accepts the whole value.
+    pub fn minimum_requirement(&self) -> Option<crate::requirement::Requirement> {
+        crate::requirement::scan_from_cursor(
+            &self.ast,
+            self.origin.view_cursor(),
+            crate::requirement::minimum_scan(),
+        )
+    }
+
+    /// Returns the first construct, in source order, whose requirement is above `floor`.
+    pub fn requirement_above(
+        &self,
+        floor: crate::requirement::Configuration,
+    ) -> Option<crate::requirement::Requirement> {
+        crate::requirement::scan_from_cursor(
+            &self.ast,
+            self.origin.view_cursor(),
+            crate::requirement::above_scan(floor),
+        )
+    }
+}
+
 #[cfg(feature = "explorer")]
 impl<T> Parsed<'_, T> {
     /// Exposes the typed root and occurrence cursor to the erased Explorer ABI.
@@ -1009,6 +1035,14 @@ fn empty_pretty_provenance() -> crate::pretty::PrettyProvenance {
 }
 
 impl<'view> ViewCursor<'view> {
+    /// Constructs a cursor for a value that carries no parse provenance.
+    ///
+    /// Every span taken through such a cursor is `None`, so a scan over a detached value still
+    /// reports its requirements and reports no extents.
+    pub fn detached() -> Self {
+        Self::absent()
+    }
+
     /// Constructs a cursor with no source provenance.
     fn absent() -> Self {
         Self {

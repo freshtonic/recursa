@@ -82,6 +82,8 @@ pub(super) struct EmissionPlan {
     pub(super) capabilities: Vec<FacadeCapability>,
     /// Frozen grammar-structured rendering plan.
     pub(super) pretty: PrettyEmissionPlan,
+    /// Declared build-configuration requirements and their per-Node ceilings.
+    pub(super) requirements: RequirementPlan,
     #[cfg(feature = "diagrams")]
     /// Optional semantic railroad topology when diagram generation is enabled.
     pub(super) diagrams: Option<DiagramPlan>,
@@ -962,6 +964,8 @@ impl EmissionPlan {
         } else {
             ";flat=false"
         });
+        let requirements = plan_requirements(resolved, &nodes);
+        canonical.push_str(&format!(";requirements={requirements:?}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
@@ -989,6 +993,7 @@ impl EmissionPlan {
             private_abi,
             capabilities,
             pretty,
+            requirements,
             #[cfg(feature = "diagrams")]
             diagrams,
             explorer,

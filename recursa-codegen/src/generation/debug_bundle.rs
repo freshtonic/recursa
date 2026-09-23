@@ -349,6 +349,10 @@ pub(super) fn render_debug_capability_fragments(
                     format!("configured:{}:VisitMut", node.semantic_key),
                     render_node_visit(plan, node, true),
                 ),
+                ConfiguredTraitRecipe::Requires => (
+                    format!("configured:{}:Requires", node.semantic_key),
+                    render_node_requires(plan, node, index),
+                ),
             };
             fragments.push((name, body.to_string()));
         }
