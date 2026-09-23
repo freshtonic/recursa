@@ -1,5 +1,9 @@
+// The scaffolder writes this template to `src/grammar.rs` and replaces `{{AST}}` with the AST
+// storage under test: nothing for ordinary nested storage, or `arena_ast,` for an arena AST.
+// One grammar therefore serves both storages, and both answer the same questions.
 recursa::grammar! {
     module = crate::grammar,
+    {{AST}}
     configurations(v1, v2 = feature("since-v2"), v3 = feature("since-v3")),
     derives(Requires),
     keyword_matching = ascii_insensitive,
@@ -28,11 +32,12 @@ recursa::tokens! {
 }
 
 recursa::ast_node! {
-    /// `SELECT * FROM <source> [WHERE <name>]`.
+    /// `SELECT * FROM <source> [WHERE <filter>, ...]`.
     pub struct Query {
         #[tok(SELECT, STAR, FROM, this)]
         pub source: TableRef,
-        pub filter: Option<Filter>,
+        #[tok(WHERE, this)]
+        pub filter: Option<FilterList>,
     }
 }
 
@@ -95,27 +100,30 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `WHERE <name>`, and from `v3` also `WHERE NEARBY <name>`.
+    /// One or more filters after `WHERE`.
+    ///
+    /// A gated filter therefore sits inside a repetition, which is where the scan must add the
+    /// item ordinal to the cursor before it records a span.
+    pub struct FilterList {
+        #[sep(COMMA)]
+        pub filters: one_or_many!(Filter),
+    }
+}
+
+recursa::ast_node! {
+    /// One filter: a bare name, and from `v3` also `NEARBY <name>`.
     pub enum Filter {
-        Plain(PlainFilter),
+        Plain(TableName),
         #[config(since = v3)]
         Nearby(NearbyFilter),
     }
 }
 
 recursa::ast_node! {
-    /// `WHERE <name>`.
-    pub struct PlainFilter {
-        #[tok(WHERE, this)]
-        pub name: TableName,
-    }
-}
-
-recursa::ast_node! {
-    /// `WHERE NEARBY <name>`, added in `v3`.
+    /// `NEARBY <name>`, added in `v3`.
     #[config(since = v3)]
     pub struct NearbyFilter {
-        #[tok(WHERE, NEARBY, this)]
+        #[tok(NEARBY, this)]
         pub name: TableName,
     }
 }

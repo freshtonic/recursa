@@ -157,8 +157,11 @@ pub trait Requires {
 ```
 
 `Parsed<T>` has the same two methods, and they keep the span, because a span lives in parse
-provenance and not in the value. The trait's own methods answer for a detached value and
-report no span.
+provenance and not in the value. `ArenaParsed<F>` has the same pair, for the same reason: an
+`arena_ast` grammar returns that wrapper instead, and a consumer of such a grammar needs the
+extent just as much. Both wrappers run the one shared scan from their own root occurrence
+cursor, so neither holds a second copy of the walk. The trait's own methods answer for a
+detached value and report no span.
 
 A `Requirement` carries the static note and the extent of the construct.
 
