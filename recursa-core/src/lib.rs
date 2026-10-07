@@ -101,7 +101,7 @@ pub mod __private {
     };
     pub use crate::flat::{
         FlatNode, Handle, List, List1, ListItem, ListScratch, ListStore, OpenList, SharedPool,
-        SideTable, Text, TextPool, TypedPool,
+        SideTable, Text, TextPool, TypedPool, run_extent as flat_run_extent,
     };
     pub use crate::flat_owner::{FlatPool, FlatStorage};
     pub use crate::flat_visit::{
@@ -136,6 +136,10 @@ pub mod __private {
         ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor, parse, parse_arena,
         parse_arena_spanned, parse_arena_without_spans, parse_flat_with,
         parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
+    };
+    pub use crate::requirement::{
+        above_scan as requirement_above_scan, minimum_scan as requirement_minimum_scan,
+        scan_root as requirement_scan_root,
     };
     pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
@@ -200,7 +204,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        36,
+        37,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -308,7 +312,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            36,
+            37,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

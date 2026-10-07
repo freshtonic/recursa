@@ -1250,6 +1250,7 @@ pub(super) fn render_root(
     let configurations = render_configurations(plan);
     let flat_owner = render_flat_owner(plan)?;
     let flat_traversal = render_flat_traversal(plan)?;
+    let flat_requires = render_flat_requires(plan)?;
     let explorer_schema = plan
         .explorer
         .as_ref()
@@ -1875,6 +1876,7 @@ pub(super) fn render_root(
         #configurations
         #flat_owner
         #flat_traversal
+        #flat_requires
         #explorer_schema
         #explorer_lex
 

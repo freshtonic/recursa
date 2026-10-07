@@ -236,7 +236,7 @@ fn flat_type_argument_types(ty: &Type) -> Vec<Type> {
 ///
 /// A pattern names a variant through the enum's own path, and Rust infers the type arguments from
 /// the matched value, so the pattern path drops them.
-fn flat_pattern_path(ty: &Type) -> Result<syn::Path, String> {
+pub(super) fn flat_pattern_path(ty: &Type) -> Result<syn::Path, String> {
     let Type::Path(path) = ty else {
         return Err("a flat Node type is always a path type".to_owned());
     };

@@ -25,6 +25,7 @@ fn describe(requirement: Option<recursa::Requirement>) -> String {
 /// No wrapper type is named here, so this function is the same for an ordinary parse and for
 /// an arena parse: both wrappers answer the two questions with the same two methods, and both
 /// keep the span, because both scan from their own root occurrence cursor.
+#[cfg(not(feature = "flat-ast"))]
 fn report(source: &str, floor: Configuration) -> String {
     let lexed = grammar::lex(source);
     assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
@@ -38,11 +39,31 @@ fn report(source: &str, floor: Configuration) -> String {
     )
 }
 
+/// Reports the same two answers from a Flat AST, which holds no nested value at all.
+///
+/// The owner answers with the same two methods. The walk reads the pools, and each extent is the
+/// one the parse retained for the Node, the text, or the run.
+#[cfg(feature = "flat-ast")]
+fn report(source: &str, floor: Configuration) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    let parsed = grammar::Query::parse_flat(&mut input).expect("fixture source parses");
+    assert!(input.is_eof(), "fixture source is complete: {source}");
+    assert!(parsed.has_spans(), "a flat parse of the fixture keeps spans");
+    format!(
+        "{} | {}",
+        describe(parsed.minimum_requirement()),
+        describe(parsed.requirement_above(floor.id())),
+    )
+}
+
 /// Reports the minimum of the detached value, which answers the same question with no span.
 ///
-/// This is the one place the two AST storages differ: an ordinary parse gives up its AST with
+/// This is the one place the AST storages differ: an ordinary parse gives up its AST with
 /// [`recursa::Parsed::into_ast`], while an arena parse lends it with
-/// [`recursa::ArenaParsed::ast`].
+/// [`recursa::ArenaParsed::ast`]. A `flat` grammar still parses into a nested value, so the flat
+/// build reports this line from such a parse.
 fn detached(source: &str) -> String {
     let lexed = grammar::lex(source);
     let mut input = lexed.input();
