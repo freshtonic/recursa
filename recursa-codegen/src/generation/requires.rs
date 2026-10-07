@@ -22,7 +22,7 @@ pub(super) struct RequirementRecord {
     /// Ordinal of the lowest configuration that admits the construct.
     configuration: u16,
     /// Whether the requirement belongs to the absence of the value.
-    absent: bool,
+    pub(super) absent: bool,
     /// Opaque code carried to the consumer.
     code: Option<String>,
     /// Opaque message carried to the consumer.
@@ -44,11 +44,11 @@ pub(super) struct RequirementPlan {
     /// Ordinal of the configuration this build states.
     pub(super) active: u16,
     /// Requirement of one whole Node type.
-    nodes: BTreeMap<NodeId, RequirementRecord>,
+    pub(super) nodes: BTreeMap<NodeId, RequirementRecord>,
     /// Requirement of one enum variant.
-    variants: BTreeMap<ResolvedVariantId, RequirementRecord>,
+    pub(super) variants: BTreeMap<ResolvedVariantId, RequirementRecord>,
     /// Requirement of one field, keyed by owner and construction position.
-    fields: BTreeMap<FieldKey, RequirementRecord>,
+    pub(super) fields: BTreeMap<FieldKey, RequirementRecord>,
     /// Highest requirement reachable through each Node type.
     ceilings: BTreeMap<NodeId, u16>,
 }
@@ -60,7 +60,7 @@ impl RequirementPlan {
     }
 
     /// Returns the highest requirement reachable through one Node type.
-    fn ceiling(&self, node: NodeId) -> u16 {
+    pub(super) fn ceiling(&self, node: NodeId) -> u16 {
         self.ceilings.get(&node).copied().unwrap_or(0)
     }
 
@@ -229,7 +229,10 @@ fn compute_ceilings(plan: &mut RequirementPlan, nodes: &[NodeParsePlan]) {
 }
 
 /// Collects the static notes of one Node while its scan body is rendered.
-struct NoteBuilder<'plan> {
+///
+/// [`super::flat_requires`] builds its own table with the same type, so the two walks name every
+/// site identically: one owner prefix, one suffix per site, one note constructor.
+pub(super) struct NoteBuilder<'plan> {
     /// Facade path used by every generated reference.
     facade: &'plan Ident,
     /// Identifier of the per-Node note table.
@@ -242,7 +245,28 @@ struct NoteBuilder<'plan> {
     notes: Vec<proc_macro2::TokenStream>,
 }
 
-impl NoteBuilder<'_> {
+impl<'plan> NoteBuilder<'plan> {
+    /// Starts one Node's table of notes.
+    pub(super) fn new(
+        facade: &'plan Ident,
+        table: Ident,
+        names: &'plan [String],
+        owner: String,
+    ) -> Self {
+        Self {
+            facade,
+            table,
+            names,
+            owner,
+            notes: Vec::new(),
+        }
+    }
+
+    /// Returns the note constructors collected so far, in emission order.
+    pub(super) fn into_notes(self) -> Vec<proc_macro2::TokenStream> {
+        self.notes
+    }
+
     /// Emits one static note and the call that records it at `cursor`.
     fn record(
         &mut self,
@@ -250,6 +274,26 @@ impl NoteBuilder<'_> {
         suffix: &str,
         cursor: &proc_macro2::TokenStream,
     ) -> proc_macro2::TokenStream {
+        let note = self.note(record, suffix);
+        quote!(scan.record(&#note, #cursor);)
+    }
+
+    /// Emits one static note and the call that records it at an extent the caller projected.
+    ///
+    /// This is the flat walk's half of the one difference between the two walks: the extent comes
+    /// from the stores rather than from an occurrence cursor.
+    pub(super) fn record_span(
+        &mut self,
+        record: &RequirementRecord,
+        suffix: &str,
+        span: &proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        let note = self.note(record, suffix);
+        quote!(scan.record_span(&#note, #span);)
+    }
+
+    /// Emits one static note and returns the expression that names it.
+    fn note(&mut self, record: &RequirementRecord, suffix: &str) -> proc_macro2::TokenStream {
         let facade = self.facade;
         let index = self.notes.len();
         let ordinal = record.configuration;
@@ -276,7 +320,7 @@ impl NoteBuilder<'_> {
             )
         });
         let table = &self.table;
-        quote!(scan.record(&#table[#index], #cursor);)
+        quote!(#table[#index])
     }
 }
 
@@ -289,13 +333,12 @@ pub(super) fn render_node_requires(
     let facade = &plan.facade;
     let requirements = &plan.requirements;
     let node_ident = &node.ident;
-    let mut builder = NoteBuilder {
+    let mut builder = NoteBuilder::new(
         facade,
-        table: format_ident!("__RECURSA_REQUIREMENTS_{node_index}"),
-        names: &requirements.configurations,
-        owner: node_ident.unraw().to_string(),
-        notes: Vec::new(),
-    };
+        format_ident!("__RECURSA_REQUIREMENTS_{node_index}"),
+        &requirements.configurations,
+        node_ident.unraw().to_string(),
+    );
     let cursor = quote!(cursor);
     let own = requirements
         .nodes
@@ -357,9 +400,9 @@ pub(super) fn render_node_requires(
     };
     let (impl_generics, type_generics, where_clause) = requires_impl_parts(facade, node);
     let ceiling = requirements.ceiling(node.node);
-    let table = &builder.table;
-    let count = builder.notes.len();
-    let notes = &builder.notes;
+    let table = format_ident!("__RECURSA_REQUIREMENTS_{node_index}");
+    let notes = builder.into_notes();
+    let count = notes.len();
     let declaration = (count != 0).then(|| {
         quote! {
             static #table: [#facade::RequirementNote; #count] = [#(#notes),*];

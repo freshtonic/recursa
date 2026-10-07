@@ -165,6 +165,43 @@ detached value and report no span.
 
 A `Requirement` carries the static note and the extent of the construct.
 
+### The flat form
+
+A `flat` grammar parses into pools of four-byte handles and holds no value of a Node type, so it
+cannot implement the trait. Its `FlatAst` answers the same two questions with the same two
+methods instead:
+
+```rust,ignore
+let flat = Statement::parse_flat(&mut input)?;
+let minimum = flat.minimum_requirement();
+let rejected = flat.requirement_above(grammar::Configuration::Pg15.id());
+```
+
+A `FlatAst`'s root Node is a type parameter, so one generated trait, `FlatRequires`, names the
+walk and the ceiling of that root, exactly as `FlatNodeRef` names its `NodeRef` variant. The
+fold, the ceiling test and the answer are the runtime's own, so the third storage adds no second
+copy of them either, and the generated ceiling is the same literal the nested Node carries.
+
+One thing differs, and it is the projection of the extent. A value walk takes each extent from
+the occurrence sidecar. A flat result has no sidecar: it keeps one span per Node and per text and
+nothing else (`adr/0008-keep-flat-asts-semantic-only.md`), so the flat walk takes each extent
+from the stores. The two agree on every site but one:
+
+| Site | Extent |
+|---|---|
+| A Node, a variant, a present value | The Node's own span, or a content token's text span. |
+| A missing optional value | The span of the Node that holds the field, as in the nested forms. |
+| A repetition | From the first item's start to the last item's end; an empty run has none. |
+| An element with attached fixed syntax | **Differs.** The nested forms report the element, fixed tokens included. The flat form reports the value, because no flat store holds a fixed token. |
+
+A presence field is the same case as the last row: `#[presence(...)]` stores a `bool`, so the
+flat form reports no extent for it at all. The configuration, the site and the message data are
+the same in every row.
+
+Generation also prunes the flat walk at generation time. An application whose ceiling is the
+baseline can hold no requirement, so neither its walk nor the call to it is emitted; the nested
+walk makes the same decision at run time, with one comparison.
+
 ### Why two methods and one walk
 
 The consumer asks two different questions. "What is the lowest configuration that accepts this
