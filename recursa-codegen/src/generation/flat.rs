@@ -21,6 +21,7 @@
 //!   reads that constant for its own size table.
 //! - The opaque traversal items of a Node the root cannot name. [`super::flat_traversal`] renders
 //!   them.
+//! - The requirement walk of a Node the root cannot name. [`super::flat_requires`] renders it.
 //!
 //! The module emits these items at the grammar root:
 //!
@@ -528,6 +529,7 @@ pub(super) fn render_node_flat_items(
         .then(|| render_size_constants(plan, node))
         .transpose()?;
     let opaque = render_node_flat_opaque_items(plan, node)?;
+    let requires = render_node_flat_requires(plan, node)?;
     let pretty = render_node_flat_pretty(plan, node);
     Ok(quote! {
         #declaration
@@ -536,6 +538,7 @@ pub(super) fn render_node_flat_items(
         #storage
         #sizes
         #opaque
+        #requires
         #pretty
     })
 }

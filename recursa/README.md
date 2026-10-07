@@ -258,8 +258,11 @@ let rejected = parsed.requirement_above(grammar::Configuration::V1.id());
 
 Each answer is a `Requirement` with the gate's configuration, site, message data, citation and
 the extent of the construct. An `arena_ast` grammar answers the same two questions with the
-same two methods on its `ArenaParsed`, and keeps the span in the same way, so a consumer reads
-the extent whichever storage the grammar declares. `Requires::minimum_requirement` and
+same two methods on its `ArenaParsed`, and a `flat` grammar with the same two methods on its
+`FlatAst`, so a consumer reads the configuration, the construct and the extent whichever storage
+the grammar declares. A flat result keeps one span per Node and per text rather than an
+occurrence tree, so it reports the extent of a gated element with attached fixed syntax as the
+value's own, which the design note tabulates. `Requires::minimum_requirement` and
 `Requires::requirement_above` answer the same questions for a detached value and report no
 span, because a span lives in the parse provenance and not in the value. A gate on a `tokens!`
 entry removes its entry and records nothing: two same-named

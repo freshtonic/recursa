@@ -6,6 +6,12 @@
 //! one [`Requires`] implementation per Node. A scan over a parsed value answers two questions:
 //! the lowest configuration whose grammar accepts the value, and the first construct, in source
 //! order, whose requirement is above a given configuration.
+//!
+//! Three storages answer them, and this module holds the one fold, the one ceiling test and the
+//! one answer that all three use. A value and an arena-parsed value walk the value itself with
+//! the occurrence cursor. A flat parse holds no such value, so generation walks the stores
+//! instead and records each extent through [`RequirementScan::record_span`]. The walk differs;
+//! nothing below it does.
 
 use crate::parsed::ViewCursor;
 use crate::span::Span;
@@ -212,6 +218,17 @@ impl RequirementScan {
     /// Records one construct's requirement at its occurrence.
     #[doc(hidden)]
     pub fn record(&mut self, note: &'static RequirementNote, cursor: ViewCursor<'_>) {
+        self.record_span(note, cursor.span());
+    }
+
+    /// Records one construct's requirement at an extent the caller projected.
+    ///
+    /// This is the fold itself, and [`Self::record`] is the occurrence-cursor projection in front
+    /// of it. A flat parse keeps one span per Node and no occurrence tree, so its generated walk
+    /// projects the extent out of the stores and records it here. The two forms therefore differ
+    /// in the projection only.
+    #[doc(hidden)]
+    pub fn record_span(&mut self, note: &'static RequirementNote, span: Option<Span>) {
         if self.finished() || note.configuration <= self.floor {
             return;
         }
@@ -219,10 +236,7 @@ impl RequirementScan {
             .best
             .is_none_or(|best| note.configuration > best.configuration());
         if beaten {
-            self.best = Some(Requirement {
-                note,
-                span: cursor.span(),
-            });
+            self.best = Some(Requirement { note, span });
         }
     }
 
@@ -254,7 +268,9 @@ pub trait Requires {
     /// `None` means the baseline configuration accepts the whole value. The span is present
     /// only when the value came from a parse that retained provenance; use
     /// [`crate::Parsed::minimum_requirement`], or
-    /// [`crate::ArenaParsed::minimum_requirement`] for an arena AST, to keep it.
+    /// [`crate::ArenaParsed::minimum_requirement`] for an arena AST, to keep it. A flat parse
+    /// holds no value of this type: its generated `FlatAst` answers the same two questions
+    /// itself, with the extent each Node retained.
     fn minimum_requirement(&self) -> Option<Requirement> {
         let mut scan = RequirementScan::minimum();
         self.scan_requirements(ViewCursor::detached(), &mut scan);
@@ -276,20 +292,39 @@ pub trait Requires {
 pub(crate) fn scan_from_cursor<T: Requires + ?Sized>(
     value: &T,
     cursor: ViewCursor<'_>,
-    mut scan: RequirementScan,
+    scan: RequirementScan,
 ) -> Option<Requirement> {
-    if !scan.skips(T::REQUIREMENT_CEILING) {
-        value.scan_requirements(cursor, &mut scan);
+    scan_root(scan, T::REQUIREMENT_CEILING, |scan| {
+        value.scan_requirements(cursor, scan);
+    })
+}
+
+/// Runs one scan from a root whose walk `walk` supplies, and returns its answer.
+///
+/// Every form reaches its answer through this function: the root's own ceiling decides whether
+/// the walk runs at all, and the scan then reports what it kept. `Parsed` and `ArenaParsed` get
+/// here through [`scan_from_cursor`], which walks the value. A flat parse has no value to walk,
+/// so its generated walk over the stores is the one that arrives here.
+#[doc(hidden)]
+pub fn scan_root(
+    mut scan: RequirementScan,
+    ceiling: Configuration,
+    walk: impl FnOnce(&mut RequirementScan),
+) -> Option<Requirement> {
+    if !scan.skips(ceiling) {
+        walk(&mut scan);
     }
     scan.answer()
 }
 
-/// Starts a minimum scan. Used by `Parsed` and `ArenaParsed`.
-pub(crate) const fn minimum_scan() -> RequirementScan {
+/// Starts a minimum scan. Used by `Parsed`, `ArenaParsed` and a generated flat walk.
+#[doc(hidden)]
+pub const fn minimum_scan() -> RequirementScan {
     RequirementScan::minimum()
 }
 
-/// Starts a first-above scan. Used by `Parsed` and `ArenaParsed`.
-pub(crate) const fn above_scan(floor: Configuration) -> RequirementScan {
+/// Starts a first-above scan. Used by `Parsed`, `ArenaParsed` and a generated flat walk.
+#[doc(hidden)]
+pub const fn above_scan(floor: Configuration) -> RequirementScan {
     RequirementScan::above(floor)
 }

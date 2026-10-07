@@ -1,6 +1,7 @@
 // The scaffolder writes this template to `src/grammar.rs` and replaces `{{AST}}` with the AST
-// storage under test: nothing for ordinary nested storage, or `arena_ast,` for an arena AST.
-// One grammar therefore serves both storages, and both answer the same questions.
+// storage under test: nothing for ordinary nested storage, `arena_ast,` for an arena AST, or
+// `flat,` for a Flat AST. One grammar therefore serves every storage, and all of them answer the
+// same questions.
 recursa::grammar! {
     module = crate::grammar,
     {{AST}}
