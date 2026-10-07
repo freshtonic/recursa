@@ -124,6 +124,17 @@ fn offset_handle(offset: usize, occupied: usize, store: &'static str) -> NonZero
     }
 }
 
+/// Returns the extent that reaches from the first end of a run to its last, when both have one.
+///
+/// A run of handles has no span of its own, because only a Node and a text retain one. The extent
+/// of a repetition is therefore the first item's start and the last item's end, which is what
+/// [`crate::flat::ListStore`]'s own `list_span` reports and what a generated flat requirement
+/// walk reports for a gated repetition. An empty run has no extent at all.
+#[doc(hidden)]
+pub fn run_extent(first: Option<Span>, last: Option<Span>) -> Option<Span> {
+    Span::new(first?.start() as usize, last?.end() as usize).ok()
+}
+
 /// Returns the two words that record `span` beside a shared-pool Node.
 fn span_to_words(span: Span) -> [u32; SPAN_WORDS] {
     [span.start(), span.end()]

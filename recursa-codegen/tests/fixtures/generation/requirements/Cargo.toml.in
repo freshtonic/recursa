@@ -9,9 +9,11 @@ build = "build.rs"
 default = []
 since-v2 = []
 since-v3 = ["since-v2"]
-# States that the scaffolder wrote the `arena_ast` grammar. It reaches no gate; it only tells
-# `main.rs` which wrapper the parse returns, and the scaffolder sets both together.
+# States which AST storage the scaffolder wrote into the grammar root. Neither feature reaches a
+# gate; each one only tells `main.rs` what the parse returns, and the scaffolder sets the grammar
+# and the feature together.
 arena-ast = []
+flat-ast = []
 
 [dependencies]
 recursa = { path = "{{RECURSA}}", features = ["spans"] }

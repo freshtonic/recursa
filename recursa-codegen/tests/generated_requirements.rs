@@ -8,7 +8,7 @@ const FIXTURE: &str = "tests/fixtures/generation/requirements";
 
 /// The AST storage the scaffolded grammar declares.
 ///
-/// One grammar template serves both, because the two parse wrappers answer the same two
+/// One grammar template serves all three, because every parse result answers the same two
 /// questions with the same two methods.
 #[derive(Clone, Copy)]
 enum Ast {
@@ -16,12 +16,15 @@ enum Ast {
     Value,
     /// `arena_ast`: a parse returns `ArenaParsed`.
     Arena,
+    /// `flat`: a parse returns `FlatAst`, whose Nodes live in the pools.
+    Flat,
 }
 
 /// Every line a `v3` build prints, whichever AST storage it holds.
 ///
-/// The arena build is required to print exactly these, so the two storages agree on every
-/// configuration and on every span.
+/// The arena build is required to print exactly these, so the two nested storages agree on every
+/// configuration and on every span. The flat build prints them too, with the one documented
+/// exception below.
 const REPORTED_BY_V3: &[&str] = &[
     "build=v3",
     "scale=v1,v2,v3",
@@ -43,6 +46,18 @@ const REPORTED_BY_V3: &[&str] = &[
     // A repetition field records once, at the element that holds the values.
     "columns=v3@36..42/-/Alias.columns | v3@36..42/-/Alias.columns",
 ];
+
+/// The one line a flat build reports differently, and the only one.
+///
+/// `Alias.columns` is `#[tok(COMMA, this)]`, so the element the value and arena forms record at
+/// covers the comma as well as the list: `36..42`. A flat result keeps one span per Node and per
+/// text and no provenance of a fixed token at all
+/// (`docs/adr/0008-keep-flat-asts-semantic-only.md`), so the extent it can report for the element
+/// is the value's own, `38..42`. The configuration, the site and the message data are the same,
+/// and every other line below, including both shape rules and the gated variant inside the
+/// repetition, is identical.
+const COLUMNS_REPORTED_BY_A_FLAT_V3: &str =
+    "columns=v3@38..42/-/Alias.columns | v3@38..42/-/Alias.columns";
 
 #[test]
 fn a_build_removes_a_config_gated_element_exactly_as_a_cfg_does() {
@@ -75,6 +90,29 @@ fn an_arena_parse_reports_every_requirement_with_the_span_a_value_parse_reports(
     // same configuration and the same extent as the value form: the absence of the alias, the
     // gated variant inside the filter repetition, and the gated optional column list.
     assert_eq!(reported(&output), REPORTED_BY_V3);
+}
+
+#[test]
+fn a_flat_parse_reports_every_requirement_an_arena_parse_reports() {
+    let package = scaffold_fixture(Ast::Flat);
+    let output = run_fixture(&package, Ast::Flat, &["since-v3"]);
+
+    // The walk over the pools records the same notes in the same source order, and takes each
+    // extent out of the stores: a gated item, a gated variant inside a repetition, and an
+    // `on = absent` shape rule all answer exactly what the arena form answers. Only the extent
+    // of an element with attached fixed syntax differs, which
+    // `COLUMNS_REPORTED_BY_A_FLAT_V3` states.
+    let expected = REPORTED_BY_V3
+        .iter()
+        .map(|line| {
+            if line.starts_with("columns=") {
+                COLUMNS_REPORTED_BY_A_FLAT_V3
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reported(&output), expected);
 }
 
 /// Returns the lines the fixture printed, or fails with everything it wrote.
@@ -110,6 +148,7 @@ fn scaffold_fixture(ast: Ast) -> TempDir {
             match ast {
                 Ast::Value => "",
                 Ast::Arena => "arena_ast,",
+                Ast::Flat => "flat,",
             },
         );
     fs::write(package.path().join("src/grammar.rs"), grammar)
@@ -141,8 +180,10 @@ fn toml_path(path: &Path) -> String {
 /// Runs the scaffolded fixture, with the feature that states which grammar it holds.
 fn run_fixture(package: &TempDir, ast: Ast, features: &[&str]) -> Output {
     let mut selected = features.to_vec();
-    if matches!(ast, Ast::Arena) {
-        selected.push("arena-ast");
+    match ast {
+        Ast::Value => {}
+        Ast::Arena => selected.push("arena-ast"),
+        Ast::Flat => selected.push("flat-ast"),
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
