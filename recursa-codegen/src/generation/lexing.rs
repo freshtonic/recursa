@@ -788,25 +788,42 @@ fn render_machine_attribute(
                 quote!(#[regex(#pattern, allow_greedy = true, priority = #priority)])
             }
         },
-        Some(ClosedMatcher::SameDelimiter { opener }) => quote!(
-            #[regex(
-                #opener,
-                callback = #facade::__private::lex_same_delimiter,
-                allow_greedy = true,
-                priority = #priority
-            )]
-        ),
-        Some(ClosedMatcher::Nested { opener, closer }) => quote!(
-            #[token(
-                #opener,
-                callback = |__recursa_lexer| #facade::__private::lex_nested(
-                    __recursa_lexer,
+        Some(ClosedMatcher::SameDelimiter {
+            opener,
+            unterminated,
+        }) => {
+            let to_end_of_input = matches!(unterminated, UnterminatedPolicy::ToEndOfInput);
+            quote!(
+                #[regex(
                     #opener,
-                    #closer,
-                ),
-                priority = #priority
-            )]
-        ),
+                    callback = |__recursa_lexer| #facade::__private::lex_same_delimiter(
+                        __recursa_lexer,
+                        #to_end_of_input,
+                    ),
+                    allow_greedy = true,
+                    priority = #priority
+                )]
+            )
+        }
+        Some(ClosedMatcher::Nested {
+            opener,
+            closer,
+            unterminated,
+        }) => {
+            let to_end_of_input = matches!(unterminated, UnterminatedPolicy::ToEndOfInput);
+            quote!(
+                #[token(
+                    #opener,
+                    callback = |__recursa_lexer| #facade::__private::lex_nested(
+                        __recursa_lexer,
+                        #opener,
+                        #closer,
+                        #to_end_of_input,
+                    ),
+                    priority = #priority
+                )]
+            )
+        }
         Some(ClosedMatcher::NextExclusion {
             pattern,
             excluded: None,
@@ -925,7 +942,7 @@ pub(super) fn render_lexical_machine(
     let mut closed_first_bytes = Vec::new();
     for &index in &closed_indexes {
         let opener = match rules[index].closed_matcher.as_ref() {
-            Some(ClosedMatcher::SameDelimiter { opener }) => opener.clone(),
+            Some(ClosedMatcher::SameDelimiter { opener, .. }) => opener.clone(),
             Some(ClosedMatcher::Nested { opener, .. }) => regex_syntax::escape(opener),
             Some(ClosedMatcher::PhysicalLine { prefix }) => prefix.clone(),
             _ => unreachable!("closed indexes were partitioned by their closed matcher"),

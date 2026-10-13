@@ -383,6 +383,30 @@ nested regions produce opener-anchored lexical errors over the complete
 opener-to-EOF range; generated `LexError::code`, `diagnostic_code`, and `anchor`
 preserve their stable diagnostic identity.
 
+A `same_delimiter` or `nested` matcher may opt into `unterminated =
+to_end_of_input`:
+
+```rust,ignore
+recursa::tokens! {
+    matchers {
+        DollarString => same_delimiter(
+            opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$",
+            unterminated = to_end_of_input
+        ),
+    }
+    ignore {
+        BlockComment => nested(opener = "/*", closer = "*/", unterminated = to_end_of_input),
+    }
+}
+```
+
+When end of input arrives before the closer, the match succeeds instead of
+failing: the token's text and span run from the opener through end of input,
+exactly as a terminated match's token carries its own text and span. Omitted,
+or authored on any other matcher, `unterminated` stays at today's strict
+default. The option on a matcher with no closer, or naming any value other
+than `to_end_of_input`, is a build error.
+
 Authored lexer callbacks, post-lex hooks, and parser postconditions are not
 supported. Source analysis reports their retired syntax with targeted stable
 diagnostics; use closed matchers and named admissions instead.

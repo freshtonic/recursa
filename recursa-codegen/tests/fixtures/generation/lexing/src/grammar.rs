@@ -44,6 +44,15 @@ recursa::tokens! {
     matchers {
         DollarRegion => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
         NestedRegion => nested(opener = "{-", closer = "-}"),
+        TildeRegion => same_delimiter(
+            opener = r"~~[A-Za-z]*~~",
+            unterminated = to_end_of_input
+        ),
+        ToleratedNestedRegion => nested(
+            opener = "<<",
+            closer = ">>",
+            unterminated = to_end_of_input
+        ),
         BoundedNumber => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
         OperatorText => operator_run(
             characters = "-+*/<>=!#%^&|?",
@@ -140,6 +149,10 @@ recursa::ast_node! {
         pub dollar: DollarRegion,
         #[lex(matcher)]
         pub nested: NestedRegion,
+        #[lex(matcher)]
+        pub tilde: TildeRegion,
+        #[lex(matcher)]
+        pub tolerated_nested: ToleratedNestedRegion,
         #[lex(matcher)]
         pub number: BoundedNumber,
         #[lex(matcher)]

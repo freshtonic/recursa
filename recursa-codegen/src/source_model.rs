@@ -317,6 +317,16 @@ pub(crate) enum NonTokenLexerOutcome {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+/// Governs a closed matcher's behavior when end of input arrives before its closer.
+pub(crate) enum UnterminatedPolicy {
+    /// The match fails and is reported at its registered runtime code; today's behavior.
+    #[default]
+    Strict,
+    /// End of input ends the region: the token extends from its opener through end of input.
+    ToEndOfInput,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Closed source-scanning mechanisms accepted by the central token grammar.
 pub(crate) enum ClosedMatcher {
@@ -324,6 +334,8 @@ pub(crate) enum ClosedMatcher {
     SameDelimiter {
         /// Regex pattern that recognizes the complete opening delimiter.
         opener: String,
+        /// Authored behavior when end of input arrives before a matching closer.
+        unterminated: UnterminatedPolicy,
     },
     /// Tracks checked nesting between two fixed delimiters.
     Nested {
@@ -331,6 +343,8 @@ pub(crate) enum ClosedMatcher {
         opener: String,
         /// Nonempty fixed closing delimiter.
         closer: String,
+        /// Authored behavior when end of input arrives before depth returns to zero.
+        unterminated: UnterminatedPolicy,
     },
     /// Rejects a pattern match when the immediately following scalar matches an exclusion.
     NextExclusion {
@@ -363,7 +377,7 @@ impl ClosedMatcher {
     /// Returns the regular-language starter used for overlap analysis and arbitration planning.
     pub(crate) fn starter_pattern(&self) -> String {
         match self {
-            Self::SameDelimiter { opener } => opener.clone(),
+            Self::SameDelimiter { opener, .. } => opener.clone(),
             Self::Nested { opener, .. } => regex_syntax::escape(opener),
             Self::NextExclusion { pattern, .. } => pattern.clone(),
             Self::OperatorRun { characters, .. } => {
@@ -1136,6 +1150,11 @@ pub(crate) enum SourceModelDiagnosticKind {
     DuplicateRejectPair,
     /// A `#[reject(pair(A, B))]` names a variant this build's configuration removed.
     RejectPairConfiguredOut,
+    /// An `unterminated = ...` closed-matcher option is authored on a matcher with no closer to
+    /// reach (anything but `same_delimiter` or `nested`).
+    UnterminatedOptionWithoutCloser,
+    /// An `unterminated = ...` closed-matcher option names a value other than `to_end_of_input`.
+    UnterminatedOptionUnknownValue,
 }
 
 impl SourceModelDiagnosticKind {
@@ -7332,11 +7351,19 @@ impl TokenCatalog {
                 .iter()
                 .find_map(|token| (token.ident == name).then_some(token.id));
             let pattern = content.matcher.matcher.starter_pattern();
+            let mut closed_matcher = content.matcher.matcher;
+            resolve_unterminated_option(
+                resolved,
+                origin,
+                &mut closed_matcher,
+                content.matcher.unterminated_argument,
+                diagnostics,
+            );
             self.central_content.push(CentralContentDefinition {
                 semantic,
                 name,
                 pattern,
-                closed_matcher: Some(content.matcher.matcher),
+                closed_matcher: Some(closed_matcher),
                 priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
                 metas,
@@ -7358,9 +7385,17 @@ impl TokenCatalog {
         self.lexer_records
             .extend(syntax.non_token_matchers.into_iter().map(|record| {
                 let pattern = record.matcher.matcher.starter_pattern();
+                let mut closed_matcher = record.matcher.matcher;
+                resolve_unterminated_option(
+                    resolved,
+                    origin,
+                    &mut closed_matcher,
+                    record.matcher.unterminated_argument,
+                    diagnostics,
+                );
                 NonTokenLexerRecord {
                     pattern,
-                    closed_matcher: Some(record.matcher.matcher),
+                    closed_matcher: Some(closed_matcher),
                     priority: record.matcher.priority,
                     outcome: record.outcome,
                     site: source_site(resolved, origin, span_range(record.name.span())),
@@ -8424,6 +8459,56 @@ fn source_site(
     }
 }
 
+/// Resolves one closed matcher's authored `unterminated` argument against its family.
+///
+/// Only `same_delimiter` and `nested` matchers have a closer to reach, so only they accept the
+/// option, and its only recognized value is `to_end_of_input`. Both mistakes have a distinct
+/// remedy from the generic closed-matcher argument errors `ClosedMatcherSyntax::parse` already
+/// reports, so each gets its own registered code here, where the surrounding grammar's
+/// diagnostic context is available.
+fn resolve_unterminated_option(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    matcher: &mut ClosedMatcher,
+    argument: Option<(String, Span)>,
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) {
+    let Some((value, span)) = argument else {
+        return;
+    };
+    let site = source_site(resolved, origin, span_range(span));
+    let slot = match matcher {
+        ClosedMatcher::SameDelimiter { unterminated, .. }
+        | ClosedMatcher::Nested { unterminated, .. } => unterminated,
+        ClosedMatcher::NextExclusion { .. }
+        | ClosedMatcher::OperatorRun { .. }
+        | ClosedMatcher::PhysicalLine { .. } => {
+            diagnostics.push(
+                SourceModelDiagnosticKind::UnterminatedOptionWithoutCloser.at(
+                    site,
+                    "`unterminated` only applies to a matcher with a closer to reach \
+                 (`same_delimiter` or `nested`); this matcher has none"
+                        .to_owned(),
+                ),
+            );
+            return;
+        }
+    };
+    if value == "to_end_of_input" {
+        *slot = UnterminatedPolicy::ToEndOfInput;
+    } else {
+        diagnostics.push(
+            SourceModelDiagnosticKind::UnterminatedOptionUnknownValue.at(
+                site,
+                format!(
+                    "`unterminated = {value}` is not a recognized value; the only recognized value \
+                 is `unterminated = to_end_of_input`"
+                ),
+            ),
+        );
+    }
+}
+
 /// Renders source order key in canonical order.
 fn canonical_source_order_key(site: &SourceSite) -> SourceOrderKey {
     SourceOrderKey {
@@ -8868,6 +8953,12 @@ struct ClosedMatcherSyntax {
     matcher: ClosedMatcher,
     /// Explicit priority applied after final extent and fixed-spelling precedence.
     priority: Option<u32>,
+    /// Authored `unterminated = <identifier>` argument, kept raw: whether the family accepts it
+    /// and whether its spelling is recognized both need the surrounding grammar's diagnostic
+    /// context, so lowering resolves it at its own registered code once this matcher is
+    /// consumed, exactly as an authored `#[reject(...)]` rule's pairs resolve at the enum that
+    /// owns them.
+    unterminated_argument: Option<(String, Span)>,
 }
 
 /// One named argument supplied to a closed matcher constructor.
@@ -8912,9 +9003,11 @@ impl Parse for ClosedMatcherSyntax {
             }
         }
         let priority = take_matcher_u32(&mut arguments, "priority")?;
+        let unterminated_argument = take_matcher_ident(&mut arguments, "unterminated")?;
         let matcher = match family.to_string().as_str() {
             "same_delimiter" => ClosedMatcher::SameDelimiter {
                 opener: take_matcher_string(&mut arguments, "opener")?,
+                unterminated: UnterminatedPolicy::default(),
             },
             "nested" => {
                 let opener = take_matcher_string(&mut arguments, "opener")?;
@@ -8925,7 +9018,11 @@ impl Parse for ClosedMatcherSyntax {
                         "nested matcher delimiters must be nonempty and distinct",
                     ));
                 }
-                ClosedMatcher::Nested { opener, closer }
+                ClosedMatcher::Nested {
+                    opener,
+                    closer,
+                    unterminated: UnterminatedPolicy::default(),
+                }
             }
             "next_exclusion" => {
                 let pattern = take_matcher_string(&mut arguments, "pattern")?;
@@ -8974,7 +9071,11 @@ impl Parse for ClosedMatcherSyntax {
                 format!("unsupported `{name}` closed-matcher argument"),
             ));
         }
-        Ok(Self { matcher, priority })
+        Ok(Self {
+            matcher,
+            priority,
+            unterminated_argument,
+        })
     }
 }
 
@@ -9006,6 +9107,37 @@ fn matches_one_complete_scalar(pattern: &str) -> bool {
             }
             dfa_accepts_state(&dfa, state)
         })
+}
+
+/// Removes one optional bare-identifier argument from a closed matcher constructor.
+///
+/// Only the shape is checked here: a bare identifier, admitted by every family. Whether the
+/// family accepts the argument at all, and whether the identifier names a recognized value,
+/// both need the surrounding grammar's diagnostic context, so that part of validation happens
+/// once this matcher is consumed during lowering.
+fn take_matcher_ident(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<Option<(String, Span)>> {
+    let Some((_, value)) = arguments.remove(name) else {
+        return Ok(None);
+    };
+    let syn::Expr::Path(syn::ExprPath {
+        path, qself: None, ..
+    }) = &value
+    else {
+        return Err(syn::Error::new(
+            value.span(),
+            format!("closed matcher `{name}` must be a bare identifier"),
+        ));
+    };
+    let Some(ident) = path.get_ident() else {
+        return Err(syn::Error::new(
+            value.span(),
+            format!("closed matcher `{name}` must be a single bare identifier"),
+        ));
+    };
+    Ok(Some((ident.unraw().to_string(), ident.span())))
 }
 
 /// Removes one required string argument from a closed matcher constructor.
@@ -13201,6 +13333,99 @@ recursa::ast_node! {
             &misplaced,
             SourceModelDiagnosticKind::RejectRuleNotEnum,
             "RCA3145",
+        );
+    }
+
+    #[test]
+    fn invalid_unterminated_options_have_structured_diagnostics() {
+        const PRELUDE: &str = "recursa::grammar! { module = crate }\n";
+
+        // A matcher with a closer resolves `unterminated = to_end_of_input` into its typed
+        // policy, whether the closer is fixed (`nested`) or regex-recognized
+        // (`same_delimiter`).
+        let accepted = model(&format!(
+            r#"{PRELUDE}recursa::tokens! {{
+    matchers {{
+        Comment => nested(opener = "/*", closer = "*/", unterminated = to_end_of_input),
+        Tagged => same_delimiter(opener = r"~~[A-Za-z]*~~", unterminated = to_end_of_input),
+    }}
+}}
+recursa::ast_node! {{
+    struct Root;
+}}
+"#
+        ));
+        assert!(
+            accepted.source_modeled.is_some(),
+            "{:?}",
+            accepted.diagnostics
+        );
+        let accepted = completed(accepted);
+        let matcher = |name: &str| {
+            accepted.token_definitions.iter().find_map(|definition| {
+                if definition.name != name {
+                    return None;
+                }
+                match &definition.kind {
+                    TokenDefinitionKind::Content(content) => content.closed_matcher.clone(),
+                    TokenDefinitionKind::LexicalBase(base) => base.closed_matcher.clone(),
+                    TokenDefinitionKind::Fixed(_) => None,
+                }
+            })
+        };
+        assert_eq!(
+            matcher("Comment"),
+            Some(super::ClosedMatcher::Nested {
+                opener: "/*".to_owned(),
+                closer: "*/".to_owned(),
+                unterminated: super::UnterminatedPolicy::ToEndOfInput,
+            }),
+        );
+        assert_eq!(
+            matcher("Tagged"),
+            Some(super::ClosedMatcher::SameDelimiter {
+                opener: r"~~[A-Za-z]*~~".to_owned(),
+                unterminated: super::UnterminatedPolicy::ToEndOfInput,
+            }),
+        );
+
+        // A matcher without a closer has nothing for `unterminated` to extend to end of input.
+        let without_closer = model(&format!(
+            r#"{PRELUDE}recursa::tokens! {{
+    matchers {{
+        Line => physical_line(prefix = r"\\[A-Za-z]+", unterminated = to_end_of_input),
+    }}
+}}
+recursa::ast_node! {{
+    struct Root;
+}}
+"#
+        ));
+        assert!(without_closer.source_modeled.is_none());
+        assert_code(
+            &without_closer,
+            SourceModelDiagnosticKind::UnterminatedOptionWithoutCloser,
+            "RCA3150",
+        );
+
+        // An unrecognized value is reported apart from a missing closer: the two mistakes have
+        // different remedies.
+        let unknown_value = model(&format!(
+            r#"{PRELUDE}recursa::tokens! {{
+    matchers {{
+        Comment => nested(opener = "/*", closer = "*/", unterminated = bogus),
+    }}
+}}
+recursa::ast_node! {{
+    struct Root;
+}}
+"#
+        ));
+        assert!(unknown_value.source_modeled.is_none());
+        assert_code(
+            &unknown_value,
+            SourceModelDiagnosticKind::UnterminatedOptionUnknownValue,
+            "RCA3151",
         );
     }
 
