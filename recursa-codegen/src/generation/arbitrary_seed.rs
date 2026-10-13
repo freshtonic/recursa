@@ -99,10 +99,15 @@ fn render_seed_entry(
     let seed_node = seed_node_plan(plan, node, application);
     let definition = render_seed_type_definition(&seed_node, facade);
     let arbitrary_impl = render_node_arbitrary(plan, &seed_node);
+    // The mirror receives the element type's declared rejection rules too, so a sampled list of
+    // mirrors drops exactly the items the value form drops and materializes into an arena value
+    // that parses back.
+    let rejection_support = super::rejections::render_arbitrary_support(plan, &seed_node);
     let materialize = render_seed_materialize(plan, application, &seed_node, facade);
     quote! {
         #definition
         #arbitrary_impl
+        #rejection_support
         #materialize
     }
 }

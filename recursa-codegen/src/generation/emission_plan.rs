@@ -82,6 +82,8 @@ pub(super) struct EmissionPlan {
     pub(super) capabilities: Vec<FacadeCapability>,
     /// Frozen grammar-structured rendering plan.
     pub(super) pretty: PrettyEmissionPlan,
+    /// Declared rejection rules, keyed by the enum that declares them.
+    pub(super) rejections: RejectionPlan,
     /// Declared build-configuration requirements and their per-Node ceilings.
     pub(super) requirements: RequirementPlan,
     #[cfg(feature = "diagrams")]
@@ -966,6 +968,10 @@ impl EmissionPlan {
         });
         let requirements = plan_requirements(resolved, &nodes);
         canonical.push_str(&format!(";requirements={requirements:?}"));
+        // A rejection rule changes the generated list action and the parse entry point, so the
+        // whole table belongs to the identity of the Generation it produced.
+        let rejections = plan_rejections(resolved, &nodes);
+        canonical.push_str(&format!(";rejections={rejections:?}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
@@ -993,6 +999,7 @@ impl EmissionPlan {
             private_abi,
             capabilities,
             pretty,
+            rejections,
             requirements,
             #[cfg(feature = "diagrams")]
             diagrams,

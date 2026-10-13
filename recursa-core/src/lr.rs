@@ -31,6 +31,7 @@
 
 use crate::input::TokenRecord;
 use crate::parsed::{ContentText, Occurrence, ParseContext, ParsedNode};
+use crate::rejection::Rejection;
 use crate::{ParseError, Span};
 
 pub mod lac;
@@ -71,10 +72,11 @@ pub struct Reduction<'reduction, 'context, 'input, 'arena, A> {
     values: &'reduction mut ValueStack,
     /// The popped frames in right-hand-side order.
     frames: &'reduction [Frame],
-    /// The extent of each popped frame, in the same order, when the parse tracks extents.
+    /// The extent of each popped frame, in the same order, when the parse keeps extents.
     ///
-    /// Flat construction reads it to give a Node the extent of its own rule; nested parsing
-    /// never tracks extents, so the field is `None` there and no extent work runs.
+    /// Flat construction reads it to give a Node the extent of its own rule, and a grammar that
+    /// declares a rejection rule reads it to position the rejection at one list item. A parse
+    /// that asks for neither leaves the field `None` and runs no extent work at all.
     extents: Option<&'reduction [Span]>,
     /// The parse context, for token text and the builder.
     context: &'reduction mut ParseContext<'context, 'input, 'arena, A>,
@@ -194,6 +196,16 @@ impl<'input, 'arena, A> Reduction<'_, '_, 'input, 'arena, A> {
     /// Returns the caller's construction state.
     pub fn builder(&mut self) -> &mut A {
         self.context.builder()
+    }
+
+    /// Turns one declared rejection into the parse failure that reports it.
+    ///
+    /// The generated list action of a repetition whose element type declares rejection rules
+    /// calls this with whatever [`crate::rejection::first_rejection`] found. Both the nested and
+    /// the flat action reach the same error through it, so all three storages report one
+    /// rejection identically.
+    pub fn reject(&self, rejection: Rejection) -> ParseError {
+        self.context.reject(rejection.note(), rejection.span())
     }
 }
 
@@ -381,11 +393,11 @@ fn unexpected_here<A>(
 
 /// The automaton loop proper; `run_transactional` wraps it with the transactional restore.
 ///
-/// A parse that tracks extents ([`ParseContext::tracks_extents`], which only a flat parse asks
-/// for) keeps one more stack beside the state stack: the source extent of each frame. A shift
+/// A parse that keeps extents — a flat parse, and a parse of a grammar that declares a rejection
+/// rule — keeps one more stack beside the state stack: the source extent of each frame. A shift
 /// pushes the shifted token's span and a reduce replaces its popped frames' extents with the
 /// extent that covers them, so the goto frame carries the extent of the whole rule. A reduce
-/// action reads it through [`Reduction::extent`]. Nested parsing never allocates that stack.
+/// action reads it through [`Reduction::extent`]. Every other parse never allocates that stack.
 ///
 /// `tail` tracks whether the current reduction spine requires a following token to belong to the
 /// root FOLLOW. After the last shift, reductions up to acceptance are exactly the spine of last
@@ -419,7 +431,7 @@ where
     });
     // One extent per state-stack frame, or nothing at all when the parse does not track them.
     // The start frame covers no token, so it starts synthetic.
-    let mut extents = context.tracks_extents().then(|| {
+    let mut extents = context.keeps_extents().then(|| {
         let mut extents = Vec::with_capacity(INITIAL_STATE_CAPACITY);
         extents.push(Span::SYNTHETIC);
         extents

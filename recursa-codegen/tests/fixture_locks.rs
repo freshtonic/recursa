@@ -25,6 +25,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "lookahead-precedence/Cargo.core.lock",
         "one-node/Cargo.core.lock",
         "one-node/Cargo.lock",
+        "rejections/Cargo.lock",
         "repetitions/Cargo.core.lock",
         "repetitions/Cargo.lock",
         "table-driven/Cargo.core.lock",

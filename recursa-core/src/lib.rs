@@ -30,10 +30,12 @@ mod output;
 mod parse;
 /// Parsed provenance, occurrence views, and generated parsing protocol.
 mod parsed;
-/// Declared build-configuration requirements recorded by generation.
-mod requirement;
 /// Structured Pretty rendering and source maps.
 mod pretty;
+/// Declared rejections: forbidden pairs of enum variants in one repetition.
+mod rejection;
+/// Declared build-configuration requirements recorded by generation.
+mod requirement;
 /// Checked source byte ranges.
 mod span;
 /// Grammar-independent AST traversal contracts.
@@ -54,6 +56,7 @@ pub use parsed::{
     ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
+pub use rejection::{Rejection, RejectionNote, RejectionPair, RejectionRule};
 pub use requirement::{Configuration, Requirement, RequirementNote, RequirementScan, Requires};
 pub use span::{OffsetOverflow, Span};
 pub use visitor::{
@@ -137,6 +140,10 @@ pub mod __private {
         parse_arena_spanned, parse_arena_without_spans, parse_flat_with,
         parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
     };
+    pub use crate::rejection::{
+        RejectionFilter, RejectionNote, RejectionPair, RejectionRule,
+        first_rejection as first_declared_rejection,
+    };
     pub use crate::requirement::{
         above_scan as requirement_above_scan, minimum_scan as requirement_minimum_scan,
         scan_root as requirement_scan_root,
@@ -204,7 +211,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        37,
+        38,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -312,7 +319,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            37,
+            38,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

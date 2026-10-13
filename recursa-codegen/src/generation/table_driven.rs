@@ -687,9 +687,13 @@ impl TableDrivenRendering {
                 } else {
                     quote!(#facade::Vec1<#ty>)
                 };
+                // The declared rejection rules of the element type run here, where the items the
+                // list has passed and the extent of the item this step adds are both in hand.
+                let rejection = render_nested_list_check(plan, self, *element, rule);
                 quote! {
                     let element = #value;
                     let mut list = unsafe { reduction.pop::<#list_ty>() };
+                    #rejection
                     list.push(element);
                     reduction.push(list);
                 }
@@ -714,6 +718,177 @@ impl TableDrivenRendering {
         };
         Ok(body)
     }
+}
+
+/// Returns the Node plan and application one lowered list element names, when the element is a
+/// Node whose declaration carries rejection rules.
+///
+/// The returned index is the Node's position in the plan, which names its generated rule table
+/// and its tag functions. Both list backends resolve the element the same way, so both reach the
+/// same table.
+pub(super) fn rejection_element<'plan>(
+    plan: &'plan EmissionPlan,
+    lr: &TableDrivenRendering,
+    element: ElementValue,
+) -> Option<(usize, &'plan NodeParsePlan, &'plan NodeApplicationParsePlan)> {
+    if plan.rejections.is_empty() {
+        return None;
+    }
+    let application = lr.application_of_type(element.type_id)?;
+    let (index, node) = plan.nodes.iter().enumerate().find(|(_, node)| {
+        node.parse_applications
+            .iter()
+            .any(|candidate| candidate.application == application)
+    })?;
+    plan.rejections.rules(node.node)?;
+    let application = node
+        .parse_applications
+        .iter()
+        .find(|candidate| candidate.application == application)?;
+    Some((index, node, application))
+}
+
+/// Names one Node's generated rejection rule table.
+pub(super) fn rejection_table_ident(index: usize) -> Ident {
+    format_ident!("__RECURSA_REJECTIONS_{index}")
+}
+
+/// Names one Node's generated nested variant-tag function.
+fn rejection_tag_ident(index: usize) -> Ident {
+    format_ident!("__recursa_reject_tag_{index}")
+}
+
+/// Names one Node's generated flat variant-tag function.
+pub(super) fn rejection_flat_tag_ident(index: usize) -> Ident {
+    format_ident!("__recursa_reject_flat_tag_{index}")
+}
+
+/// Returns a path that names one application type without its generic arguments.
+///
+/// A match arm names a variant through a path, and a path in a pattern carries no generic
+/// arguments, so the pattern drops them and lets inference recover them from the matched value.
+pub(super) fn bare_type_path(ty: &Type) -> Option<proc_macro2::TokenStream> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    let mut path = path.path.clone();
+    if let Some(last) = path.segments.last_mut() {
+        last.arguments = syn::PathArguments::None;
+    }
+    Some(quote!(#path))
+}
+
+/// Replaces every lifetime of a type with the anonymous lifetime.
+///
+/// A generated tag function is a plain free function in the root's parser module. It borrows the
+/// matched value for the call only, so every lifetime the application type carries is elided
+/// rather than named in a generic list the module would have to thread.
+fn elided_type(ty: &Type) -> Type {
+    struct Elide;
+    impl syn::visit_mut::VisitMut for Elide {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            *lifetime = syn::parse_quote!('_);
+        }
+    }
+    let mut ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(&mut Elide, &mut ty);
+    ty
+}
+
+/// Renders the check one nested list step runs over the element type's rejection rules.
+fn render_nested_list_check(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+    element: ElementValue,
+    rule: &Rule,
+) -> proc_macro2::TokenStream {
+    let Some((index, _, _)) = rejection_element(plan, lr, element) else {
+        return quote!();
+    };
+    let Some(last) = rule.rhs.len().checked_sub(1) else {
+        return quote!();
+    };
+    let table = rejection_table_ident(index);
+    let tag = rejection_tag_ident(index);
+    // A list item is held behind the authored `boxed!` layers, so the item reference needs one
+    // more dereference than the owned element value does.
+    let item_derefs = (0..=element.boxes).map(|_| quote!(*)).collect::<Vec<_>>();
+    let element_derefs = (0..element.boxes).map(|_| quote!(*)).collect::<Vec<_>>();
+    let passed = quote! {
+        list.as_slice().iter().map(|__recursa_item| (
+            #tag(&#(#item_derefs)*__recursa_item),
+            ::core::option::Option::None,
+        ))
+    };
+    let added = quote! {
+        (
+            #tag(&#(#element_derefs)*element),
+            reduction.symbol_extent(#last),
+        )
+    };
+    super::rejections::render_check(plan, &table, &passed, &added)
+}
+
+/// Renders the rule tables and tag functions every list check of this grammar names.
+///
+/// Both backends call into the same table, so the table is rendered once in the parser module
+/// that holds both dispatchers. Only an element type a list actually uses gets one.
+fn render_root_rejections(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+) -> Result<proc_macro2::TokenStream, String> {
+    if plan.rejections.is_empty() {
+        return Ok(quote!());
+    }
+    let mut rendered = BTreeMap::new();
+    for (_, rule) in lr.root_rules() {
+        let RuleAction::ListPush { element } = &rule.action else {
+            continue;
+        };
+        let Some((index, node, application)) = rejection_element(plan, lr, *element) else {
+            continue;
+        };
+        if rendered.contains_key(&index) {
+            continue;
+        }
+        let table = rejection_table_ident(index);
+        let mut nested_ty = application.ty.clone();
+        if plan.arena_ast {
+            replace_lifetime(&mut nested_ty, &input_lifetime(), &semantic_lifetime(plan));
+        }
+        let nested_ty = elided_type(&nested_ty);
+        let nested_path = bare_type_path(&nested_ty).ok_or_else(|| {
+            format!(
+                "`{}` declares rejection rules but its application is not a path type",
+                node.ident
+            )
+        })?;
+        let mut items = super::rejections::render_rule_table(plan, node, &table);
+        items.extend(super::rejections::render_tag_function(
+            node,
+            &rejection_tag_ident(index),
+            &quote!(#nested_ty),
+            &nested_path,
+        ));
+        if plan.flat {
+            let flat_ty = super::flat::flat_application_type(plan, node, application)?;
+            let flat_path = bare_type_path(&flat_ty).ok_or_else(|| {
+                format!(
+                    "`{}` declares rejection rules but its flat application is not a path type",
+                    node.ident
+                )
+            })?;
+            items.extend(super::rejections::render_tag_function(
+                node,
+                &rejection_flat_tag_ident(index),
+                &quote!(#flat_ty),
+                &flat_path,
+            ));
+        }
+        rendered.insert(index, items);
+    }
+    let items = rendered.into_values();
+    Ok(quote!(#(#items)*))
 }
 
 /// Renders the sole parser's `__recursa_lr` module, tables, and reduce dispatcher at the
@@ -798,9 +973,12 @@ pub(super) fn render_root_items(
                   `pop` names the type the child rule's action pushed for the same grammar \
                   symbol, spelled through the element's node type or content-token path.";
     let flat_dispatcher = super::table_driven_flat::render_flat_dispatcher(plan, lr)?;
+    let rejections = render_root_rejections(plan, lr)?;
     Ok(quote! {
         #[doc(hidden)]
         pub(crate) mod __recursa_lr {
+            #rejections
+
             pub(crate) static TABLES: #facade::__private::LrTables = #facade::__private::LrTables::new(
                 #end_marker, #pact, #table, #check, #defact, #pgoto, #defgoto, #r1, #r2, #value_pops,
                 #reduce_actions, #expected_atoms, #lookahead, #folds, #tail, #mandatory,
@@ -1001,6 +1179,10 @@ fn render_parse_impl(
     let input_lifetime = input_lifetime();
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
+    // A grammar that declares a rejection rule positions it at one list item, and only the LR
+    // extent stack holds the extent of a reduced nonterminal.
+    let demand_extents = (!plan.rejections.is_empty())
+        .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
     if plan.arena_ast {
         let family_visibility = publicly_materialized.then(|| quote!(pub));
         let arena_lifetime = semantic_lifetime(plan);
@@ -1034,6 +1216,7 @@ fn render_parse_impl(
                 where
                     #input_lifetime: #arena_lifetime,
                 {
+                    #demand_extents
                     #facade::__private::lr_run::<#ty, A, _>(
                         context,
                         &#tables_module::TABLES,
@@ -1058,6 +1241,7 @@ fn render_parse_impl(
             fn parse<'arena>(
                 context: &mut #facade::__private::ParseContext<'_, #input_lifetime, 'arena, A>,
             ) -> Result<#facade::__private::ParsedNode<'arena, Self>, #facade::ParseError> {
+                #demand_extents
                 #facade::__private::lr_run::<Self, A, _>(
                     context,
                     &#tables_module::TABLES,

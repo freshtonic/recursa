@@ -685,6 +685,11 @@ struct PooledApplication {
     field: Ident,
     /// Accessor name step three uses to append a Node during a reduce.
     accessor: Ident,
+    /// Read accessor name, emitted only for a Node whose declaration carries rejection rules.
+    ///
+    /// A pool nothing reads gets no read accessor, so generated code stays free of an item the
+    /// crate never names.
+    read_accessor: Option<Ident>,
     /// Authored display name of the pooled application, used only in documentation.
     name: String,
     /// Concrete flat element type stored by the pool.
@@ -699,6 +704,10 @@ fn pooled_applications(plan: &EmissionPlan) -> Result<Vec<PooledApplication>, St
             pooled.push(PooledApplication {
                 field: format_ident!("pool_{}", application.parse_index),
                 accessor: format_ident!("pool_{}_mut", application.parse_index),
+                read_accessor: plan
+                    .rejections
+                    .rules(node.node)
+                    .map(|_| format_ident!("pool_{}", application.parse_index)),
                 name: flat_type_ident(&node.ident).to_string(),
                 ty: flat_application_type(plan, node, application)?,
             });
@@ -796,15 +805,53 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         let field = &pool.field;
         quote!(#field: self.#field)
     });
+    // A grammar with no rejection rule reads neither store during a reduce, so neither reader is
+    // emitted and generated code names no item it never uses.
+    let rejection_readers = (!plan.rejections.is_empty()).then(|| {
+        quote! {
+            /// Reads the shared pool during one reduce action.
+            ///
+            /// A declared rejection rule reads the variant of an item a list already holds, which
+            /// is a match on the pooled value and materializes nothing
+            /// (`docs/declared-rejections.md`).
+            #[doc(hidden)]
+            pub(crate) fn shared(&self) -> &#facade::__private::SharedPool {
+                &self.shared
+            }
+
+            /// Reads the list scratch stack during one reduce action.
+            ///
+            /// A declared rejection rule reads the handles of the items the open list has passed.
+            #[doc(hidden)]
+            pub(crate) fn scratch(&self) -> &#facade::__private::ListScratch {
+                &self.scratch
+            }
+        }
+    });
     let pool_accessors = pooled.iter().map(|pool| {
         let (field, accessor, ty) = (&pool.field, &pool.accessor, &pool.ty);
         let doc = format!(" Borrows the `{}` pool for one reduce action.", pool.name);
+        let read = pool.read_accessor.as_ref().map(|read| {
+            let doc = format!(
+                " Reads the `{}` pool for one reduce action's declared rejection rules.",
+                pool.name,
+            );
+            quote! {
+                #[doc = #doc]
+                #[doc(hidden)]
+                pub(crate) fn #read(&self) -> &#facade::__private::TypedPool<#ty> {
+                    &self.#field
+                }
+            }
+        });
         quote! {
             #[doc = #doc]
             #[doc(hidden)]
             pub(crate) fn #accessor(&mut self) -> &mut #facade::__private::TypedPool<#ty> {
                 &mut self.#field
             }
+
+            #read
         }
     });
     let pool_buffer_fields = pooled.iter().map(|pool| {
@@ -1214,6 +1261,8 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             pub(crate) fn shared_mut(&mut self) -> &mut #facade::__private::SharedPool {
                 &mut self.shared
             }
+
+            #rejection_readers
 
             /// Borrows the list store for one reduce action.
             #[doc(hidden)]

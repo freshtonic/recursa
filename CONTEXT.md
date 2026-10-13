@@ -145,6 +145,14 @@ _Avoid_: Current version, active feature set
 A `#[config(since = NAME)]` or `#[config(before = NAME)]` declaration that removes its element from a build the range excludes, exactly as the `cfg` it replaces, and, for a `since` bound, records that the element needs that configuration.
 _Avoid_: Version gate, cfg predicate
 
+**Rejection rule**:
+A declaration on an enum that names forbidden pairs of its variants, with the code, message, hint and citation of the source that rejects them; any repetition of that enum rejects a parse whose items hold a named pair.
+_Avoid_: Declared validation, conflict rule, validation rule
+
+**Declared rejection**:
+The parse failure a rejection rule produces, positioned at the first item that completes a forbidden pair in source order and carrying the rule's message data.
+_Avoid_: Validation failure, semantic error
+
 **Configuration requirement**:
 The lowest build configuration whose grammar accepts one construct, together with the construct's site, its opaque code, message and hint, and the citation of the source that justifies the gate.
 _Avoid_: Minimum version, error message
