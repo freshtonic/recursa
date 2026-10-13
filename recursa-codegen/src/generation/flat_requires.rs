@@ -135,7 +135,7 @@ fn render_child_walk(
 
 /// Renders the walk of one planned element: its own gate, then its child.
 ///
-/// The shape follows [`super::requires::render_element`] exactly, because the two walks must
+/// The shape follows `super::requires::render_element` exactly, because the two walks must
 /// record the same notes in the same source order. Only the extent and the field access differ: a
 /// flat field holds a handle, and the stores resolve it.
 fn render_flat_element(
