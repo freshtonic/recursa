@@ -758,6 +758,8 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::RejectPairRepeatsVariant => "RCA3147",
         SourceModelDiagnosticKind::DuplicateRejectPair => "RCA3148",
         SourceModelDiagnosticKind::RejectPairConfiguredOut => "RCA3149",
+        SourceModelDiagnosticKind::UnterminatedOptionWithoutCloser => "RCA3150",
+        SourceModelDiagnosticKind::UnterminatedOptionUnknownValue => "RCA3151",
     }
 }
 

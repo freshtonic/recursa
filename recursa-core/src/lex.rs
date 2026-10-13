@@ -230,15 +230,22 @@ where
 }
 
 /// Extends a same-delimiter region through a byte-identical copy of its opener.
+///
+/// `unterminated_to_end_of_input` selects the authored `unterminated = to_end_of_input` opt-in:
+/// when set and no closing copy of the opener remains, the region ends at end of input instead
+/// of failing, and the match carries no failure.
 #[doc(hidden)]
-pub fn lex_same_delimiter<'source, Token>(lexer: &mut logos::Lexer<'source, Token>)
-where
+pub fn lex_same_delimiter<'source, Token>(
+    lexer: &mut logos::Lexer<'source, Token>,
+    unterminated_to_end_of_input: bool,
+) where
     Token: Logos<'source, Source = str, Extras = LexExtras>,
 {
     let delimiter = lexer.slice();
     let body = lexer.remainder();
     match body.find(delimiter) {
         Some(close) => lexer.bump(close + delimiter.len()),
+        None if unterminated_to_end_of_input => lexer.bump(body.len()),
         None => {
             lexer.extras.failure = Some(LexFailure {
                 code: LexDiagnosticCode::UnterminatedSameDelimiter,
@@ -251,11 +258,17 @@ where
 }
 
 /// Extends a region whose fixed opening and closing delimiters may nest.
+///
+/// `unterminated_to_end_of_input` selects the authored `unterminated = to_end_of_input` opt-in:
+/// when set and depth never returns to zero, the region ends at end of input instead of
+/// failing, and the match carries no failure. A broken depth invariant (`checked_add`
+/// overflow) always fails: it is not the region's closer that is missing.
 #[doc(hidden)]
 pub fn lex_nested<'source, Token>(
     lexer: &mut logos::Lexer<'source, Token>,
     opener: &str,
     closer: &str,
+    unterminated_to_end_of_input: bool,
 ) where
     Token: Logos<'source, Source = str, Extras = LexExtras>,
 {
@@ -290,6 +303,10 @@ pub fn lex_nested<'source, Token>(
                 .expect("a nonempty source suffix has one scalar")
                 .len_utf8();
         }
+    }
+    if unterminated_to_end_of_input {
+        lexer.bump(body.len());
+        return;
     }
     lexer.extras.failure = Some(LexFailure {
         code: LexDiagnosticCode::UnterminatedNested,
