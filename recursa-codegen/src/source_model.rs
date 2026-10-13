@@ -7497,8 +7497,8 @@ impl TokenCatalog {
     ///
     /// The declarations are read before they are compiled, because a Node's token positions are
     /// lowered before [`TokenCatalog::compile_lookahead_filters`] validates them; a declaration
-    /// that fails to compile reports its own diagnostic, and its merged kind is reported
-    /// unadmitted by [`SourceModelBuilder::validate_merged_admissions`].
+    /// that fails to compile reports its own diagnostic, and a token position that names its
+    /// merged kind then reads as an unknown token (RCA3106).
     fn admitted_merged_token(&self, name: &str) -> Option<TokenDefinitionId> {
         let filter = self
             .pending_lookaheads
