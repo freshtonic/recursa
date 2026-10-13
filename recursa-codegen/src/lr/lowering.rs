@@ -205,8 +205,7 @@ pub fn lower(
     lowering.lower_types();
     lowering.lower_restrictions();
     lowering.decide_tails();
-    let start_nonterminals = lowering.start_nonterminals();
-    super::lookahead::apply(&mut lowering.lr, grammar, &start_nonterminals);
+    super::lookahead::apply(&mut lowering.lr, grammar);
     lowering.lower_starts();
     super::declared_precedence::apply(&mut lowering.lr, grammar);
     Ok(lowering.lr)
@@ -902,6 +901,18 @@ fn separated_tail_sites(grammar: &GrammarDescription, atom_kinds: &[KindSet]) ->
         .collect()
 }
 
+/// The terminal of the `lookahead { ... }` merged kind a site admits
+/// (`docs/table-driven-parsing.md`, "Lookahead filters"), if the grammar names one there.
+///
+/// The site's target stays the fixed-token type of the kind the filter merges, so the value, the
+/// spelling and the span are the merged token's; only the terminal the automaton shifts changes.
+/// The substitution pass never revisits such a position: its terminal is already a merged kind,
+/// and a merged kind is no filter's source token.
+fn admitted_merged_symbol(site: &crate::ParseSite) -> Option<Symbol> {
+    site.admitted_merged
+        .map(|merged| Symbol::Terminal(TerminalId::new(merged.get() as u32)))
+}
+
 impl<'a> Lowering<'a> {
     /// Creates the terminals and one nonterminal per type that needs one.
     fn new(grammar: &'a GrammarDescription, roles: &'a TypeRoles) -> Self {
@@ -1016,18 +1027,6 @@ impl<'a> Lowering<'a> {
             restrictions,
             active_restriction: None,
         }
-    }
-
-    /// The nonterminals that receive a start rule, in start-type order.
-    fn start_nonterminals(&self) -> Vec<NonterminalId> {
-        self.roles
-            .start_types
-            .iter()
-            .filter_map(|type_id| match self.type_symbols[type_id.index()] {
-                Some(Symbol::Nonterminal(target)) => Some(target),
-                Some(Symbol::Terminal(_)) | None => None,
-            })
-            .collect()
     }
 
     /// Emits the rules of every type that has a nonterminal; an inlined attachment unit has
@@ -1348,17 +1347,26 @@ impl<'a> Lowering<'a> {
         sites
             .iter()
             .map(|site| {
-                self.type_symbols[self.grammar.sites[site.index()].target.index()]
-                    .expect("a fixed-only sequence's sites target fixed tokens, never an inlined attachment")
+                let site = &self.grammar.sites[site.index()];
+                admitted_merged_symbol(site).unwrap_or_else(|| {
+                    self.type_symbols[site.target.index()]
+                        .expect("a fixed-only sequence's sites target fixed tokens, never an inlined attachment")
+                })
             })
             .collect()
     }
 
-    /// The symbol a site's target lowers to: the nonterminal of the authored restricted
-    /// expression the site parses its target through, if it names one, else the target's own
-    /// symbol.
+    /// The symbol a site's target lowers to: the merged kind the grammar admits at this site, if
+    /// it names one, else the nonterminal of the authored restricted expression the site parses
+    /// its target through, if it names one, else the target's own symbol.
     fn site_target_symbol(&mut self, site_id: SiteId) -> Symbol {
         let site = &self.grammar.sites[site_id.index()];
+        if let Some(symbol) = admitted_merged_symbol(site) {
+            // The grammar names a lookahead filter's merged kind here, as `gram.y` writes
+            // `opt_with: WITH | WITH_LA`. The target stays the merged token's own fixed type,
+            // which carries the spelling and the value, so only the terminal changes.
+            return symbol;
+        }
         if let Some(restriction) = site.restriction {
             // The site parses its target through an authored restricted expression: the value
             // is still the base's, so only the symbol changes.

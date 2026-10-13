@@ -513,6 +513,13 @@ pub struct ParseSite {
     /// value has the base's Rust type, but the grammar symbol is the restriction's own
     /// nonterminal. `None` at every ordinary site.
     pub restriction: Option<RestrictionId>,
+    /// The merged kind of a [`LookaheadFilter`] this site admits, because the grammar named that
+    /// merged kind here (`docs/table-driven-parsing.md`, "Lookahead filters"), as `gram.y` writes
+    /// `opt_with: WITH | WITH_LA`. The site's `target` stays the fixed-token type of the kind the
+    /// filter merges, because a merged kind has no spelling, value or span of its own — it is the
+    /// same record read differently — so only the grammar terminal changes. `None` at every site
+    /// that names a token.
+    pub admitted_merged: Option<KindId>,
 }
 
 impl ParseSite {
@@ -529,12 +536,20 @@ impl ParseSite {
             declaration,
             container,
             restriction: None,
+            admitted_merged: None,
         }
     }
 
     /// Parses this site's target through one restricted expression.
     pub const fn with_restriction(mut self, restriction: Option<RestrictionId>) -> Self {
         self.restriction = restriction;
+        self
+    }
+
+    /// Admits one lookahead filter's merged kind at this site in place of the token the filter
+    /// merges, which stays this site's target.
+    pub const fn with_admitted_merged(mut self, merged: Option<KindId>) -> Self {
+        self.admitted_merged = merged;
         self
     }
 }
