@@ -1155,6 +1155,13 @@ pub(crate) enum SourceModelDiagnosticKind {
     UnterminatedOptionWithoutCloser,
     /// An `unterminated = ...` closed-matcher option names a value other than `to_end_of_input`.
     UnterminatedOptionUnknownValue,
+    /// A field-level `#[tok(..., this, ...)]` attaches to a `Vec`, `Vec1`, or `Option`-wrapped
+    /// repeated field without saying whether the author means the element-wise reading (each
+    /// repetition gets its own fixed tokens) or the container reading (the fixed tokens wrap the
+    /// whole list once). `this_each` confirms the element-wise reading explicitly; the container
+    /// reading needs the fixed tokens moved to the struct or variant, or onto a dedicated wrapper
+    /// Node.
+    ElementWiseAttachmentOnRepeatedField,
 }
 
 impl SourceModelDiagnosticKind {
@@ -3906,40 +3913,7 @@ impl SourceModelBuilder<'_> {
 
     /// Derives the field has repetition from the retained source model and its correlations.
     fn field_has_repetition(&self, field: ResolvedFieldId) -> Option<bool> {
-        fn repeated(builder: &SourceModelBuilder<'_>, ty: &ResolvedType) -> Option<bool> {
-            match &ty.kind {
-                ResolvedTypeKind::Semantic {
-                    target, arguments, ..
-                } => match target {
-                    SemanticTarget::Catalog(CatalogType::Vec | CatalogType::Vec1) => Some(true),
-                    SemanticTarget::Catalog(CatalogType::Box | CatalogType::Option) => arguments
-                        .iter()
-                        .filter_map(|argument| match argument {
-                            ResolvedGenericArgument::Type(ty) => Some(ty),
-                            ResolvedGenericArgument::Lifetime(_)
-                            | ResolvedGenericArgument::Unsupported(_) => None,
-                        })
-                        .next()
-                        .and_then(|ty| repeated(builder, ty)),
-                    SemanticTarget::TypeAlias(alias) => builder
-                        .resolved
-                        .type_aliases
-                        .get(alias.index())
-                        .filter(|candidate| candidate.id == *alias)
-                        .and_then(|alias| alias.target.as_ref())
-                        .and_then(|ty| repeated(builder, ty)),
-                    SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Some(false),
-                    SemanticTarget::GenericParameter(_) => None,
-                },
-                ResolvedTypeKind::Group(inner)
-                | ResolvedTypeKind::Parenthesized(inner)
-                | ResolvedTypeKind::Reference(inner) => repeated(builder, inner),
-                ResolvedTypeKind::FixedTokenPresence
-                | ResolvedTypeKind::Tuple(_)
-                | ResolvedTypeKind::Unsupported => Some(false),
-            }
-        }
-        repeated(self, &self.resolved_field(field).ty)
+        resolved_type_is_repeated(&self.resolved, &self.resolved_field(field).ty)
     }
 
     /// Derives Pretty lexical patterns, optionally retaining fixed-token languages.
@@ -7577,7 +7551,7 @@ impl TokenCatalog {
                     site: group_site,
                 });
             }
-            TokenSequenceEntry::This(_) => return None,
+            TokenSequenceEntry::This { .. } => return None,
         };
         let token_use = self.record_use(definition, TokenUseRole::FixedElement, site.clone());
         Some(GrammarElement::FixedToken {
@@ -8053,7 +8027,7 @@ impl PositionalTokenPlanner {
             }
         };
         if let Some(span) = sequence.0.iter().find_map(|entry| match entry {
-            TokenSequenceEntry::This(span) => Some(*span),
+            TokenSequenceEntry::This { span, .. } => Some(*span),
             TokenSequenceEntry::Optional { span, .. } => Some(*span),
             TokenSequenceEntry::Definition(_) | TokenSequenceEntry::Reference(_) => None,
         }) {
@@ -8152,7 +8126,10 @@ impl PositionalTokenPlanner {
             .0
             .iter()
             .filter_map(|entry| match entry {
-                TokenSequenceEntry::This(span) => Some(*span),
+                TokenSequenceEntry::This {
+                    span,
+                    explicit_each,
+                } => Some((*span, *explicit_each)),
                 TokenSequenceEntry::Definition(_)
                 | TokenSequenceEntry::Reference(_)
                 | TokenSequenceEntry::Optional { .. } => None,
@@ -8163,7 +8140,7 @@ impl PositionalTokenPlanner {
                 kind: SourceModelDiagnosticKind::MultipleThisAnchors,
                 sites: this_sites
                     .iter()
-                    .map(|span| source_site(resolved, origin, span_range(*span)))
+                    .map(|(span, _)| source_site(resolved, origin, span_range(*span)))
                     .collect(),
                 message: "a #[tok(...)] sequence may contain at most one `this`".to_owned(),
             });
@@ -8172,7 +8149,7 @@ impl PositionalTokenPlanner {
         if !this_sites.is_empty() && body.is_empty() {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::EmptyThisAnchor,
-                sites: vec![source_site(resolved, origin, span_range(this_sites[0]))],
+                sites: vec![source_site(resolved, origin, span_range(this_sites[0].0))],
                 message: "`this` cannot anchor an empty semantic body".to_owned(),
             });
             return body;
@@ -8180,12 +8157,32 @@ impl PositionalTokenPlanner {
 
         if !this_sites.is_empty() {
             if matches!(attachment, TokenAttachment::Field) {
+                let (this_span, this_explicit_each) = this_sites[0];
+                if !this_explicit_each {
+                    let [GrammarElement::SemanticField { resolved_field, .. }] = body.as_slice()
+                    else {
+                        unreachable!("a field attachment owns exactly one semantic element")
+                    };
+                    if field_type_is_repeated(resolved, *resolved_field) == Some(true) {
+                        diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::ElementWiseAttachmentOnRepeatedField,
+                            sites: vec![source_site(resolved, origin, span_range(this_span))],
+                            message: "a field-level #[tok(...)] containing `this` attaches its \
+                                fixed tokens before and after EACH element of this repeated \
+                                field, not once around the whole list; write `this_each` to \
+                                confirm that reading, or move the fixed tokens to the struct or \
+                                variant (or a dedicated wrapper Node) to wrap the whole list once"
+                                .to_owned(),
+                        });
+                        return body;
+                    }
+                }
                 let mut before = Vec::new();
                 let mut after = Vec::new();
                 let mut seen_this = false;
                 for entry in sequence.0 {
                     match entry {
-                        TokenSequenceEntry::This(_) => seen_this = true,
+                        TokenSequenceEntry::This { .. } => seen_this = true,
                         token => {
                             if let Some(element) =
                                 tokens.fixed_element(resolved, diagnostics, origin, token)
@@ -8231,7 +8228,7 @@ impl PositionalTokenPlanner {
             let mut output = Vec::new();
             for entry in sequence.0 {
                 match entry {
-                    TokenSequenceEntry::This(_) => output.extend(body.clone()),
+                    TokenSequenceEntry::This { .. } => output.extend(body.clone()),
                     token => {
                         if let Some(element) =
                             tokens.fixed_element(resolved, diagnostics, origin, token)
@@ -8440,6 +8437,60 @@ fn reject_misplaced_content_declarations(
                 .to_owned(),
         });
     }
+}
+
+/// Derives whether a resolved type repeats its element, looking through `Box`, `Option`, and
+/// type aliases to reach the underlying `Vec`/`Vec1`.
+///
+/// Returns `None` when repetition depends on an unresolved generic parameter.
+fn resolved_type_is_repeated(resolved: &ResolvedSourceGrammar, ty: &ResolvedType) -> Option<bool> {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic {
+            target, arguments, ..
+        } => match target {
+            SemanticTarget::Catalog(CatalogType::Vec | CatalogType::Vec1) => Some(true),
+            SemanticTarget::Catalog(CatalogType::Box | CatalogType::Option) => arguments
+                .iter()
+                .filter_map(|argument| match argument {
+                    ResolvedGenericArgument::Type(ty) => Some(ty),
+                    ResolvedGenericArgument::Lifetime(_)
+                    | ResolvedGenericArgument::Unsupported(_) => None,
+                })
+                .next()
+                .and_then(|ty| resolved_type_is_repeated(resolved, ty)),
+            SemanticTarget::TypeAlias(alias) => resolved
+                .type_aliases
+                .get(alias.index())
+                .filter(|candidate| candidate.id == *alias)
+                .and_then(|alias| alias.target.as_ref())
+                .and_then(|ty| resolved_type_is_repeated(resolved, ty)),
+            SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Some(false),
+            SemanticTarget::GenericParameter(_) => None,
+        },
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => resolved_type_is_repeated(resolved, inner),
+        ResolvedTypeKind::FixedTokenPresence
+        | ResolvedTypeKind::Tuple(_)
+        | ResolvedTypeKind::Unsupported => Some(false),
+    }
+}
+
+/// Derives whether one resolved field's own type repeats its element, by identity lookup against
+/// every Node's flattened field list.
+///
+/// Used where a `SourceModelBuilder`'s cached field-position index is not in scope (field-level
+/// `#[tok(...)]` lowering runs before that index is consulted elsewhere).
+fn field_type_is_repeated(
+    resolved: &ResolvedSourceGrammar,
+    field: ResolvedFieldId,
+) -> Option<bool> {
+    let resolved_field = resolved
+        .nodes
+        .iter()
+        .flat_map(|node| node.fields.iter())
+        .find(|candidate| candidate.id == field)?;
+    resolved_type_is_repeated(resolved, &resolved_field.ty)
 }
 
 /// Derives the source site from the retained source model and its correlations.
@@ -9860,7 +9911,13 @@ enum TokenSequenceEntry {
     /// Identifies the reference authored-source form.
     Reference(syn::Ident),
     /// Identifies the this authored-source form.
-    This(Span),
+    This {
+        /// Locates the authored `this` or `this_each` anchor.
+        span: Span,
+        /// Distinguishes the explicit `this_each` spelling, which confirms the per-element
+        /// reading on a repeated field, from plain `this`.
+        explicit_each: bool,
+    },
     /// Identifies one erased, atomic optional fixed-token group.
     Optional {
         /// Supplies the non-empty unnested fixed-token sequence.
@@ -10078,7 +10135,7 @@ impl Parse for TokenSequence {
                     if nested.0.iter().any(|entry| {
                         matches!(
                             entry,
-                            TokenSequenceEntry::This(_) | TokenSequenceEntry::Optional { .. }
+                            TokenSequenceEntry::This { .. } | TokenSequenceEntry::Optional { .. }
                         )
                     }) {
                         return Err(syn::Error::new(
@@ -10091,7 +10148,15 @@ impl Parse for TokenSequence {
                         span: ident.span(),
                     });
                 } else if ident == "this" {
-                    entries.push(TokenSequenceEntry::This(ident.span()));
+                    entries.push(TokenSequenceEntry::This {
+                        span: ident.span(),
+                        explicit_each: false,
+                    });
+                } else if ident == "this_each" {
+                    entries.push(TokenSequenceEntry::This {
+                        span: ident.span(),
+                        explicit_each: true,
+                    });
                 } else {
                     entries.push(TokenSequenceEntry::Reference(ident));
                 }
@@ -10589,6 +10654,85 @@ recursa::ast_node! {
             .name,
             "!",
         );
+    }
+
+    #[test]
+    fn field_level_this_on_a_repeated_field_requires_this_each_to_confirm_per_element_reading() {
+        // Plain `this` on a repeated field (`Vec`/`Vec1`/`Option`-wrapped) is ambiguous between
+        // wrapping each element and wrapping the whole list once; RCA3152 refuses to guess.
+        let ambiguous = model(
+            r#"recursa::grammar! { module = crate }
+
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("(", this, ")")]
+        #[sep(",")]
+        values: one_or_many!(Leaf),
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
+"#,
+        );
+        assert!(ambiguous.source_modeled.is_none());
+        assert_code(
+            &ambiguous,
+            SourceModelDiagnosticKind::ElementWiseAttachmentOnRepeatedField,
+            "RCA3152",
+        );
+
+        // `this_each` says explicitly that the author means the per-element reading, so the
+        // long-standing element-wise attachment (locked since 9172444) still lowers cleanly.
+        let report = model(
+            r#"recursa::grammar! { module = crate }
+
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("(", this_each, ")")]
+        #[sep(",")]
+        values: one_or_many!(Leaf),
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let confirmed = completed(report);
+        let attachment = confirmed.nodes[0].elements()[0]
+            .attachment()
+            .expect("this_each is retained as a field attachment");
+        assert_eq!(attachment.before.len(), 1);
+        assert_eq!(attachment.after.len(), 1);
+
+        // A non-repeated field (here `Option<Leaf>`) is never ambiguous, so plain `this` is
+        // unaffected by the new diagnostic.
+        let scalar = model(
+            r#"recursa::grammar! { module = crate }
+
+recursa::ast_node! {
+
+    struct Root {
+        #[tok("(", this, ")")]
+        value: Option<Leaf>,
+    }
+}
+
+recursa::ast_node! {
+
+    struct Leaf;
+}
+"#,
+        );
+        assert!(scalar.diagnostics.is_empty(), "{:?}", scalar.diagnostics);
     }
 
     #[test]

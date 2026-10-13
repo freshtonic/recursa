@@ -131,6 +131,56 @@ boxed!(Option<T>)
 
 `Option<zero_or_many!(T)>` and `one_or_many!(zero_or_many!(T))` are rejected.
 
+## Fixed-token attachment on a repeated field
+
+A `#[tok(...)]` sequence containing `this` inserts fixed tokens around the semantic value `this`
+anchors. Placed at struct or variant level, that semantic value is the whole declared body, so the
+fixed tokens wrap the body once, however many repeated elements it contains. Placed on a single
+field, `this` anchors only that field's own value — and when the field is itself repeated
+(`one_or_many!(T)`, `zero_or_many!(T)`, or an `Option<...>` wrapping either), the fixed tokens wrap
+**each element**, not the list as a whole.
+
+The two readings produce different grammars from similar-looking source. Given
+
+```rust,ignore
+ast_node! {
+    #[tok(STRICT, this)]
+    struct Strict {
+        #[sep(",")]
+        values: one_or_many!(boxed!(Item)),
+    }
+}
+```
+
+a struct- or variant-level `#[tok(STRICT, this)]` parses `STRICT a, b, c` — one keyword, once,
+before the entire list. But
+
+```rust,ignore
+ast_node! {
+    struct AttachedMany {
+        #[tok(LBRACKET, this_each, RBRACKET)]
+        #[sep(",")]
+        values: zero_or_many!(boxed!(Item)),
+    }
+}
+```
+
+parses `[a],[b],[c]` — the brackets repeat with every element, because the attachment is on the
+field itself.
+
+Because the two readings are easy to confuse and look identical for a single-element list, a
+field-level `#[tok(...)]` that contains `this` and targets a repeated field requires the explicit
+`this_each` spelling instead of plain `this`. Plain `this` on such a field is rejected with
+`RCA3152`, naming the field and pointing at the two ways to resolve it:
+
+- Write `this_each` to confirm the per-element reading was intended.
+- Move the fixed tokens to the struct or variant (so they wrap the body, and therefore the whole
+  list, once), or introduce a dedicated wrapper Node around the repeated field, to get the
+  once-around-the-list container reading.
+
+`this` is unaffected on a field whose own type is not repeated (including `Option<T>` where `T` is
+not itself repeated); the ambiguity exists only when the field's own declared cardinality repeats.
+
 ## Flat output mapping
 
 A grammar root that declares `flat` gets a second representation beside the nested one. Every

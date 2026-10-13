@@ -461,6 +461,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::invalid_unterminated_options_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3152"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "field_level_this_on_a_repeated_field_requires_this_each_to_confirm_per_element_reading",
+        command: "cargo test -p recursa-codegen source_model::tests::field_level_this_on_a_repeated_field_requires_this_each_to_confirm_per_element_reading --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
