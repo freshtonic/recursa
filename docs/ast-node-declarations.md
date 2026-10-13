@@ -65,6 +65,11 @@ This document is the declaration and nested-output contract.
   explicit Rust derives.
 - Forward ordinary Rust `#[derive(...)]` and its helper attributes, including third-party
   derives. Trait selection is independent of attribute order and follows the conflict rules below.
+- Accept `#[reject(pair(A, B), code = ..., message = ..., cite = ..., hint = ...)]` on an enum
+  declaration, which names forbidden unordered pairs of its variants: every repetition of that
+  enum refuses a list that holds a named pair. The rule is gated only through
+  `#[config_attr(BOUNDS, reject(...))]`. See
+  [declared rejections](declared-rejections.md).
 - Flat AST variant design is out of scope for this session.
 
 The motivating declaration is:

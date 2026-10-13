@@ -14,9 +14,11 @@ use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::visit::Visit as _;
 use syn::visit_mut::VisitMut as _;
-use syn::{Attribute, GenericParam, Item, ItemMacro, Type, Visibility, parse_quote_spanned};
+use syn::{Attribute, GenericParam, Item, ItemMacro, Meta, Type, Visibility, parse_quote_spanned};
 
-use crate::source_syntax::{CargoCfgSnapshot, configured_attribute_metas, span_range};
+use crate::source_syntax::{
+    CargoCfgSnapshot, RejectRuleSyntax, configured_attribute_metas, span_range,
+};
 
 /// Metadata retained when one declaration item replaces its enclosing macro invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +33,12 @@ pub(crate) struct DeclarationOrigin {
     /// (`docs/declared-precedence.md`, "Restricted expressions"), which expands to a type alias
     /// for its base rather than to a Node.
     pub(crate) restriction: Option<DeclarationRestriction>,
+    /// Names of the enum variants this build's configuration removed, in authored order.
+    ///
+    /// A `#[reject(...)]` rule names variants, and a build that removes one must make the author
+    /// gate the rule rather than silently drop it (`docs/declared-rejections.md`). The resolved
+    /// enum holds only its surviving variants, so the removed names are recorded here.
+    pub(crate) removed_variants: Vec<String>,
 }
 
 /// The authored body of one `#[restricts(Base)]` declaration, retained exactly as written so
@@ -79,7 +87,12 @@ pub(crate) struct DeclarationExpansion {
 
 /// Parsed declaration items paired with per-field abstract marker ranges and, for a restricted
 /// expression, the authored `#[restricts(Base)]` body its alias replaced.
-type ParsedDeclarations = Vec<(Item, Vec<Vec<Range<u32>>>, Option<DeclarationRestriction>)>;
+type ParsedDeclarations = Vec<(
+    Item,
+    Vec<Vec<Range<u32>>>,
+    Option<DeclarationRestriction>,
+    Vec<String>,
+)>;
 
 /// Expands every recognized declaration invocation in one logical module.
 #[cfg(test)]
@@ -134,7 +147,7 @@ pub(crate) fn expand_declarations_with_aliases(
         match parse_declaration_items(item_macro, facade, arena_ast, cfg) {
             Ok(items) => {
                 let invocation_range = span_range(item_macro.mac.path.span());
-                for (concrete_item, field_marker_ranges, restriction) in items {
+                for (concrete_item, field_marker_ranges, restriction, removed_variants) in items {
                     let name =
                         item_name(&concrete_item).expect("declaration parser emits named items");
                     let mut emitted_item = concrete_item.clone();
@@ -146,6 +159,7 @@ pub(crate) fn expand_declarations_with_aliases(
                             concrete_item: emitted_item,
                             field_marker_ranges,
                             restriction,
+                            removed_variants,
                         },
                     ));
                     expanded.push(concrete_item);
@@ -197,12 +211,19 @@ fn prepare_emitted_item(item: &mut Item, cfg: &CargoCfgSnapshot) {
 /// source-aware migration diagnostic reaches the author instead of Rust's unknown-attribute
 /// error (`docs/declared-precedence.md`). `flat` selects Flat AST storage for the declaration and
 /// is likewise consumed here, because it never reaches rustc
-/// (`docs/flat-ast-design.md`).
+/// (`docs/flat-ast-design.md`). `reject` is consumed here too, and it is the one consumed
+/// attribute that leaves something behind: one generated documentation line stating the
+/// declaration's rejection rules (`docs/declared-rejections.md`).
 fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapshot) -> bool {
     let Ok(Some(metas)) = configured_attribute_metas(attrs, cfg) else {
         attrs.clear();
         return false;
     };
+    let rejections = metas
+        .iter()
+        .filter(|meta| meta.path().is_ident("reject"))
+        .cloned()
+        .collect::<Vec<_>>();
     *attrs = metas
         .into_iter()
         .filter(|meta| {
@@ -223,12 +244,40 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "omit"
                         | "restricts"
                         | "config"
+                        | "reject"
                 )
             )
         })
         .map(|meta| syn::parse_quote_spanned!(meta.span()=> #[#meta]))
         .collect();
+    attrs.extend(documented_rejection_rules(&rejections));
     true
+}
+
+/// Renders the one generated documentation line that lists a declaration's rejection rules.
+///
+/// A rejection rule is part of what the declared type means, so the rustdoc of the type states
+/// it. Nothing else about generated documentation changes: the rule carries no diagram, no
+/// rendering and no view (`docs/declared-rejections.md`).
+fn documented_rejection_rules(rejections: &[Meta]) -> Option<Attribute> {
+    let rules = rejections
+        .iter()
+        .filter_map(|meta| RejectRuleSyntax::from_meta(meta).ok())
+        .map(|rule| {
+            let pairs = rule
+                .pairs
+                .iter()
+                .map(|pair| format!("`{}` with `{}`", pair.left, pair.right))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{pairs} ({})", rule.message)
+        })
+        .collect::<Vec<_>>();
+    if rules.is_empty() {
+        return None;
+    }
+    let documentation = format!(" Rejection rules: {}.", rules.join("; "));
+    Some(parse_quote_spanned!(Span::call_site()=> #[doc = #documentation]))
 }
 
 /// Filters cfg-inactive fields and configures each retained field attribute list.
@@ -345,11 +394,22 @@ fn parse_declaration_items(
                 "`ast_node!` accepts only struct and enum declarations",
             ));
         }
+        let authored_variants = declared_variant_names(&item);
         if !configure_declaration_item(&mut item, cfg)? {
             continue;
         }
+        let active_variants = declared_variant_names(&item);
+        let removed_variants = authored_variants
+            .into_iter()
+            .filter(|name| !active_variants.contains(name))
+            .collect::<Vec<_>>();
         if let Some(restriction) = restriction_syntax(&item)? {
-            declarations.push((restriction_alias(&item)?, Vec::new(), Some(restriction)));
+            declarations.push((
+                restriction_alias(&item)?,
+                Vec::new(),
+                Some(restriction),
+                removed_variants,
+            ));
             continue;
         }
         let marker_ranges = active_item_fields(&item, cfg)
@@ -357,9 +417,21 @@ fn parse_declaration_items(
             .map(|field| type_marker_ranges(&field.ty))
             .collect();
         prepare_item(&mut item, facade, arena_ast)?;
-        declarations.push((item, marker_ranges, None));
+        declarations.push((item, marker_ranges, None, removed_variants));
     }
     Ok(declarations)
+}
+
+/// Returns the names of one declaration's enum variants, in authored order.
+fn declared_variant_names(item: &Item) -> Vec<String> {
+    match item {
+        Item::Enum(item) => item
+            .variants
+            .iter()
+            .map(|variant| variant.ident.unraw().to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Selects cfg-active declarations, variants, fields, and cfg_attr expansions before validation.
@@ -899,6 +971,61 @@ mod tests {
                 .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>(),
             ["Root"]
+        );
+    }
+
+    #[test]
+    fn rejection_rules_are_stripped_from_the_emitted_type_and_documented_on_it() {
+        let expansion = expand_declarations(
+            &items(
+                r#"recursa::ast_node! {
+                    #[reject(
+                        pair(NotDeferrable, InitiallyDeferred),
+                        message = "constraint declared INITIALLY DEFERRED must be DEFERRABLE",
+                        cite = "gram.y 6114",
+                    )]
+                    #[reject(
+                        pair(NotDeferrable, Deferrable),
+                        pair(InitiallyImmediate, InitiallyDeferred),
+                        message = "conflicting constraint properties",
+                        cite = "gram.y 6121",
+                    )]
+                    pub enum Attr {
+                        NotDeferrable,
+                        Deferrable,
+                        InitiallyImmediate,
+                        InitiallyDeferred,
+                    }
+                }"#,
+            ),
+            "recursa",
+            false,
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(expansion.errors.is_empty(), "{:?}", expansion.errors);
+        let emitted = expansion
+            .origins
+            .iter()
+            .find(|(name, _)| name == "Attr")
+            .expect("the declaration is expanded")
+            .1
+            .concrete_item
+            .to_token_stream()
+            .to_string();
+        // The attribute is grammar-owned, so rustc never sees it; one generated documentation
+        // line states the rules instead (`docs/declared-rejections.md`).
+        assert!(
+            !emitted.contains("reject"),
+            "the emitted type carries no grammar-owned attribute: {emitted}"
+        );
+        assert!(
+            emitted.contains(
+                "Rejection rules: `NotDeferrable` with `InitiallyDeferred` \
+                 (constraint declared INITIALLY DEFERRED must be DEFERRABLE); \
+                 `NotDeferrable` with `Deferrable`, `InitiallyImmediate` with \
+                 `InitiallyDeferred` (conflicting constraint properties)."
+            ),
+            "the emitted type documents every rule and its message: {emitted}"
         );
     }
 

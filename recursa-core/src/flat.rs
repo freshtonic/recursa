@@ -1161,6 +1161,27 @@ impl ListScratch {
         list.len += 1;
     }
 
+    /// Returns the items `list` already holds, in push order.
+    ///
+    /// A generated list action reads them to run the element type's declared rejection rules
+    /// against the items the list has passed (`docs/declared-rejections.md`). The items stay on
+    /// the scratch stack: nothing is copied and nothing is closed.
+    ///
+    /// `H` must be the item type every [`ListScratch::push`] on this list used, exactly as
+    /// [`ListScratch::close`] requires.
+    #[doc(hidden)]
+    pub fn items<H: ListItem>(&self, list: OpenList) -> impl Iterator<Item = H> + '_ {
+        let start = list.start as usize;
+        let end = start + list.len as usize;
+        self.slots[start..end].iter().map(|&raw| {
+            let raw = NonZeroU32::new(raw).expect("a scratch slot always holds a non-zero handle");
+            // SAFETY: `push` wrote every slot of this run from the `raw` value of one `H`, and
+            // the run is still this list's, because only `close` ever shortens the stack.
+            // `ListItem` requires `from_raw` to rebuild the handle that `raw` came from.
+            unsafe { H::from_raw(raw) }
+        })
+    }
+
     /// Copies `list` into `store`, truncates the stack back to the list's start, and returns the
     /// stored run.
     ///

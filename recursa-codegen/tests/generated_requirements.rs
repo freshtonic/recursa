@@ -69,7 +69,12 @@ fn a_build_removes_a_config_gated_element_exactly_as_a_cfg_does() {
     // requirement, because nothing above the baseline survives.
     assert_eq!(
         reported(&output),
-        ["build=v1", "scale=v1,v2,v3", "plain=- | -", "with_alias=- | -"],
+        [
+            "build=v1",
+            "scale=v1,v2,v3",
+            "plain=- | -",
+            "with_alias=- | -"
+        ],
     );
 }
 
@@ -201,7 +206,9 @@ fn run_fixture(package: &TempDir, ast: Ast, features: &[&str]) -> Output {
         .env_remove("RECURSA_DEBUG_DIR")
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", target_dir(package));
-    command.output().expect("run generated requirements fixture")
+    command
+        .output()
+        .expect("run generated requirements fixture")
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {
