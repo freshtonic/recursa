@@ -460,7 +460,11 @@ fn render_element(
             let Some(record) = record else {
                 return quote!();
             };
-            let held = if bound { quote!(*#value) } else { quote!(#value) };
+            let held = if bound {
+                quote!(*#value)
+            } else {
+                quote!(#value)
+            };
             let call = builder.record(&record, &site, &slot);
             if record.absent {
                 quote!(if !#held { #call })
@@ -475,7 +479,9 @@ fn render_element(
             attachment,
             ..
         } => {
-            let semantic_child = attachment.as_ref().map(|attachment| attachment.before.len());
+            let semantic_child = attachment
+                .as_ref()
+                .map(|attachment| attachment.before.len());
             let descend = |cursor: proc_macro2::TokenStream| {
                 semantic_child
                     .map_or_else(|| cursor.clone(), |child| quote!((#cursor).child(#child)))
@@ -542,7 +548,10 @@ fn render_element(
                 .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
             {
                 let reference = render_optional_view_reference(value, wrappers, bound);
-                let walk = guarded(quote!(__recursa_value), descend(quote!((#slot).child(0usize))));
+                let walk = guarded(
+                    quote!(__recursa_value),
+                    descend(quote!((#slot).child(0usize))),
+                );
                 let present = record
                     .as_ref()
                     .filter(|record| !record.absent)
@@ -615,10 +624,9 @@ pub(super) fn render_configurations(plan: &EmissionPlan) -> proc_macro2::TokenSt
     let ordinals = (0..names.len())
         .map(|index| u16::try_from(index).unwrap_or(u16::MAX))
         .collect::<Vec<_>>();
-    let from_arms = variants
-        .iter()
-        .zip(&ordinals)
-        .map(|(variant, ordinal)| quote!(#ordinal => ::core::option::Option::Some(Self::#variant),));
+    let from_arms = variants.iter().zip(&ordinals).map(
+        |(variant, ordinal)| quote!(#ordinal => ::core::option::Option::Some(Self::#variant),),
+    );
     let ordinal_arms = variants
         .iter()
         .zip(&ordinals)

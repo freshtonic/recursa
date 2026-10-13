@@ -83,7 +83,10 @@ fn flat_walk_targets(
                 let path = flat_walk_path(node, application)?;
                 (quote!(#path), true)
             };
-            targets.insert(application.application, FlatWalkTarget { ceiling, call, raw });
+            targets.insert(
+                application.application,
+                FlatWalkTarget { ceiling, call, raw },
+            );
         }
     }
     Ok(targets)
@@ -110,10 +113,9 @@ fn render_child_walk(
     handle: &proc_macro2::TokenStream,
 ) -> Result<proc_macro2::TokenStream, String> {
     let facade = context.facade;
-    let target = context
-        .targets
-        .get(&child)
-        .ok_or_else(|| "a flat child site names a Node application absent from the plan".to_owned())?;
+    let target = context.targets.get(&child).ok_or_else(|| {
+        "a flat child site names a Node application absent from the plan".to_owned()
+    })?;
     if target.ceiling == 0 {
         return Ok(quote!());
     }
@@ -247,10 +249,13 @@ fn render_flat_element(
                 });
             }
             if optional {
-                let present = record.as_ref().filter(|record| !record.absent).map(|record| {
-                    let extent = extent(quote!(__recursa_value));
-                    builder.record_span(record, &site, &quote!(#extent))
-                });
+                let present = record
+                    .as_ref()
+                    .filter(|record| !record.absent)
+                    .map(|record| {
+                        let extent = extent(quote!(__recursa_value));
+                        builder.record_span(record, &site, &quote!(#extent))
+                    });
                 let missing = record
                     .as_ref()
                     .filter(|record| record.absent)
@@ -520,10 +525,10 @@ pub(super) fn render_node_flat_requires(
 fn flat_requires_declared(plan: &EmissionPlan) -> bool {
     plan.flat
         && plan.requirements.is_declared()
-        && plan
-            .nodes
-            .iter()
-            .all(|node| node.configured_traits.contains(&ConfiguredTraitRecipe::Requires))
+        && plan.nodes.iter().all(|node| {
+            node.configured_traits
+                .contains(&ConfiguredTraitRecipe::Requires)
+        })
 }
 
 /// Renders the grammar's flat requirement surface at the grammar root.
@@ -539,7 +544,9 @@ fn flat_requires_declared(plan: &EmissionPlan) -> bool {
 /// reached through `recursa-core`'s own fold, ceiling test and answer.
 /// Phases: collects the walk of every application, renders the public walks, then renders the
 /// trait, its implementations and the owner's methods.
-pub(super) fn render_flat_requires(plan: &EmissionPlan) -> Result<proc_macro2::TokenStream, String> {
+pub(super) fn render_flat_requires(
+    plan: &EmissionPlan,
+) -> Result<proc_macro2::TokenStream, String> {
     if !flat_requires_declared(plan) {
         return Ok(proc_macro2::TokenStream::new());
     }
