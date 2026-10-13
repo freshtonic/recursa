@@ -14,13 +14,13 @@
 //! each flat Node its span. Nested parsing never allocates it.
 //!
 //! The token feed applies the grammar's lookahead filters (`docs/table-driven-parsing.md`,
-//! section 5) at the one place the loop reads a terminal: a record whose kind is a filtered
-//! token, followed by a record whose kind is one of its triggers, is looked up as the merged
-//! terminal while that lookup can shift or reduce. A row whose merged lookup has no explicit
-//! entry or default reduction retains the source terminal, which lets one filtered token serve
-//! grammar contexts with different continuations. Nothing else changes: the record is shifted
-//! as lexed, so a reduce action and the error path see the lexed kind and span, and the trigger
-//! record is read next as itself.
+//! "Lookahead filters") at the one place the loop reads a terminal: a record whose kind is a
+//! filtered token, followed by a record whose kind is one of its triggers, is looked up as the
+//! merged terminal. That substitution is absolute, as bison's `base_yylex` replacement is:
+//! the merged terminal is the only terminal looked up, and a state with no action for it
+//! reports a syntax error on that record rather than retrying the source terminal. Nothing
+//! else changes: the record is shifted as lexed, so a reduce action and the error path see the
+//! lexed kind and span, and the trigger record is read next as itself.
 //!
 //! Three behaviours are decisions of the design document and are pinned by this module's tests:
 //! default reductions are taken before any lookahead is read, so a state that can only reduce
@@ -566,7 +566,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::tables::tests::{FALLBACK_FILTERED_TEXTBOOK, FILTERED_TEXTBOOK, TEXTBOOK};
+    use super::tables::tests::{ABSENT_MERGED_TEXTBOOK, FILTERED_TEXTBOOK, TEXTBOOK};
     use super::*;
     use crate::input::LexResult;
     use crate::{GrammarInfo, ParseErrorKind, Span};
@@ -794,18 +794,37 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_falls_back_to_its_source_terminal_outside_merged_states() {
-        // The filter maps `)` before `+` to `id`, but the state after `(2`
-        // has an explicit action only for `)`. The source-token fallback
-        // closes the group, after which `+3` continues normally.
+    fn a_filtered_token_is_rejected_where_the_merged_terminal_has_no_action() {
+        // The filter maps `)` before `+` to `id`, and no state that shifts `)` shifts the
+        // merged `id`. The lookahead is absolute, so `(2)+3` is a syntax error on the `)`
+        // instead of falling back to the source terminal and closing the group.
         let live = Rc::new(Cell::new(0));
         let lexed = lex("(2)+3");
         let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
         let result = crate::parsed::test_context(&mut input, |context| {
-            run::<Value, _, _>(context, &FALLBACK_FILTERED_TEXTBOOK, 0, 0, evaluate)
+            run::<Value, _, _>(context, &ABSENT_MERGED_TEXTBOOK, 0, 0, evaluate)
                 .map(|node| node.into_parts().0.number)
         });
-        assert_eq!(result.unwrap(), 5);
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ParseErrorKind::UnexpectedToken);
+        assert_eq!(error.span(), Span::new(2, 3).unwrap());
+        assert_eq!(error.found(), Some(")"), "the error names the lexed token");
+        // The expected set is what could continue at that position with `+` still following:
+        // the group's own `)` is excluded, because the feed would merge it again.
+        assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:+", "fixed:*"]);
+        drop(error);
+        assert_eq!(input.cursor(), 0, "a failed parse restores the cursor");
+        assert_eq!(live.get(), 0, "a failed parse drops every partial value");
+
+        // `)` before a token that triggers no filter stays `)`, so the same tables parse
+        // `(2)*3`.
+        let lexed = lex("(2)*3");
+        let mut input = lexed.input_with_builder(&GRAMMAR, live.clone());
+        let result = crate::parsed::test_context(&mut input, |context| {
+            run::<Value, _, _>(context, &ABSENT_MERGED_TEXTBOOK, 0, 0, evaluate)
+                .map(|node| node.into_parts().0.number)
+        });
+        assert_eq!(result.unwrap(), 6);
         assert_eq!(input.cursor(), 5);
         assert_eq!(live.get(), 0);
     }
