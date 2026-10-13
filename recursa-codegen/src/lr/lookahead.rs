@@ -1,4 +1,5 @@
-//! Lookahead-filter substitution over lowered rules (`docs/table-driven-parsing.md`, section 5).
+//! Lookahead-filter substitution over lowered rules (`docs/table-driven-parsing.md`,
+//! "Lookahead filters").
 //!
 //! A `lookahead { MERGED = TOKEN before { TRIGGER, ... } }` declaration makes the table-driven
 //! token feed read `TOKEN` as `MERGED` whenever the next record is a trigger. This pass rewrites
@@ -260,7 +261,7 @@ mod tests {
     use super::super::lowering::{TypeRoles, lower};
     use super::super::precedence::PrecedenceResolver;
     use super::super::report::LrDiagnostic;
-    use super::super::tables::{LrTables, simulate};
+    use super::super::tables::{LrTables, TableAction, simulate};
     use super::super::{LrGrammar, RuleId, TerminalId};
     use crate::materialization::LoweredGrammar;
     use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
@@ -393,6 +394,46 @@ recursa::ast_node! {{
         assert_eq!(original.action, twin.action);
         assert_eq!(original.fold, twin.fold);
         assert_eq!(original.tail, twin.tail);
+    }
+
+    /// Rewrites a lexed terminal sequence the way the runtime token feed does: a filtered token
+    /// immediately before one of its triggers is presented as its merged terminal.
+    ///
+    /// The substitution depends on the pair of records alone, never on the state, so rewriting
+    /// the whole sequence up front is exactly what the parser does record by record. It reads
+    /// the packed `lookahead` triples, the table the runtime decodes.
+    fn feed(tables: &LrTables, lexed: &[TerminalId]) -> Vec<TerminalId> {
+        lexed
+            .iter()
+            .enumerate()
+            .map(|(position, terminal)| {
+                let next = lexed.get(position + 1);
+                tables
+                    .lookahead
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .find(|triple| {
+                        triple[0] == terminal.index() as u32
+                            && next.is_some_and(|next| triple[2] == next.index() as u32)
+                    })
+                    .map_or(*terminal, |triple| TerminalId::new(triple[1]))
+            })
+            .collect()
+    }
+
+    /// The start state of the grammar type named `name`.
+    fn start_state(lowered: &LoweredGrammar, automaton: &Automaton, name: &str) -> u32 {
+        let type_id = lowered
+            .grammar
+            .types
+            .iter()
+            .position(|description| description.name == name)
+            .unwrap_or_else(|| panic!("no grammar type named {name}"));
+        automaton
+            .start_state(crate::TypeId::new(type_id as u32))
+            .unwrap_or_else(|| panic!("{name} has no start state"))
+            .index() as u32
     }
 
     /// Finds a terminal by name.
@@ -862,6 +903,97 @@ recursa::ast_node! {
         assert_eq!(
             trace.reductions.last().map(String::as_str),
             Some("Wrap -> NOT Thing"),
+            "{:?}",
+            trace.reductions
+        );
+    }
+
+    #[test]
+    fn a_merged_kind_absent_from_a_state_is_a_syntax_error_there() {
+        // The filter is absolute, as bison's token replacement is. `Plain -> NOT Name` keeps the
+        // source token, because nothing that follows `NOT` there is a trigger, so the state has
+        // no action for the merged kind at all. `not between` therefore fails on the `not` the
+        // feed presented as `NOT_LA`, the way `gram.y` rejects `COPY t TO STDOUT (FORMAT json)`
+        // for having no `FORMAT_LA` arm in `copy_generic_opt_elem`.
+        let source = small_grammar(
+            r#"recursa::ast_node! {
+
+    pub struct Plain {
+        #[tok(NOT)]
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Test {
+        #[tok(NOT, BETWEEN)]
+        pub name: Name,
+    }
+}
+"#,
+        );
+        let (lowered, result) = lr(&source);
+        let grammar = result.expect("`NOT Name` and `NOT BETWEEN Name` lower");
+        assert_eq!(rules_of(&grammar, "Plain"), ["Plain -> NOT Name"]);
+        assert_eq!(rules_of(&grammar, "Test"), ["Test -> NOT_LA BETWEEN Name"]);
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
+        let tables = LrTables::pack(&grammar, &automaton);
+        let plain = start_state(&lowered, &automaton, "Plain");
+        let test = start_state(&lowered, &automaton, "Test");
+        let (not, not_la) = (terminal(&grammar, "NOT"), terminal(&grammar, "NOT_LA"));
+        let (between, name) = (
+            terminal(&grammar, "BETWEEN"),
+            terminal(&grammar, "NameText"),
+        );
+
+        // The row of `Plain`'s start state shifts the source token and has nothing for the
+        // merged kind; the row of `Test`'s start state is the mirror image.
+        assert!(matches!(
+            tables.action(plain, not.index() as u32),
+            TableAction::Shift(_)
+        ));
+        assert_eq!(
+            tables.action(plain, not_la.index() as u32),
+            TableAction::Error
+        );
+        assert_eq!(tables.action(test, not.index() as u32), TableAction::Error);
+        assert!(matches!(
+            tables.action(test, not_la.index() as u32),
+            TableAction::Shift(_)
+        ));
+
+        // `not between` from `Plain`: the feed presents `NOT_LA`, which the state rejects at the
+        // first token. The source terminal is never retried.
+        let lexed = [not, between];
+        let presented = feed(&tables, &lexed);
+        assert_eq!(presented, [not_la, between]);
+        let error = simulate(&grammar, &tables, plain, &presented)
+            .expect_err("`not between` has no reading as `Plain`");
+        assert_eq!(error.position, 0);
+        assert_eq!(error.state, plain);
+
+        // `not a`, the same context without a trigger, still parses.
+        let lexed = [not, name];
+        let presented = feed(&tables, &lexed);
+        assert_eq!(presented, lexed, "`NOT` before a name is no merge");
+        let trace = simulate(&grammar, &tables, plain, &presented).expect("`not a` parses");
+        assert_eq!(trace.consumed, 2);
+
+        // And the merged kind parses where the grammar admits it.
+        let lexed = [not, between, name];
+        let presented = feed(&tables, &lexed);
+        assert_eq!(presented, [not_la, between, name]);
+        let trace = simulate(&grammar, &tables, test, &presented).expect("`not between a` parses");
+        assert_eq!(trace.consumed, 3);
+        assert_eq!(
+            trace.reductions.last().map(String::as_str),
+            Some("Test -> NOT_LA BETWEEN Name"),
             "{:?}",
             trace.reductions
         );

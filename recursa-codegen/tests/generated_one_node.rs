@@ -454,7 +454,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_38", "protocol_999");
+        .replace("protocol_39", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
