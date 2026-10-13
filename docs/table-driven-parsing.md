@@ -42,6 +42,45 @@ old declarations receive a targeted migration diagnostic. There are no parser
 markers, named parser modules, parser-generic generated interfaces, or
 recursive-descent fallback.
 
+## Lookahead filters
+
+Where one token of lookahead cannot decide the parse, the token grammar may
+declare a lookahead filter: `lookahead { MERGED = TOKEN before { TRIGGER, ... }
+}`. The parser's token feed then presents a `TOKEN` record as `MERGED` whenever
+the record after it is one of the triggers. This is PostgreSQL's `base_yylex`
+filter (`src/backend/parser/parser.c`), which keeps `gram.y` LALR(1) by
+replacing `NOT` with `NOT_LA`, `WITH` with `WITH_LA` and so on.
+
+**The substitution is absolute.** Once the next record is a trigger, the merged
+kind is the only terminal looked up, and a state with no action for it reports a
+syntax error on that record. The source terminal is never retried, exactly as
+bison never retries one: a lookahead token is the token, and a row without it is
+an error. A grammar position that admits the source token where a trigger may
+follow it must therefore admit the merged kind as well, which is why `gram.y`
+writes `opt_with: WITH | WITH_LA`, `any_with: WITH | WITH_LA` and
+`utility_option_name: ... | FORMAT_LA` by hand. The corollary is the reverse too:
+PostgreSQL rejects `COPY t TO STDOUT (FORMAT json)` through release 18 because
+`copy_generic_opt_elem: ColLabel copy_generic_opt_arg` has no `FORMAT_LA` arm,
+and a faithful grammar must reject it as well.
+
+Generation carries the author's burden where it can. Lowering substitutes merged
+kinds into the lowered rules over FIRST and FOLLOW of the unsubstituted grammar:
+a position whose continuations are all triggers becomes the merged kind, a
+position whose continuations mix triggers and others is emitted twice, once per
+kind, and a position no trigger can follow keeps the source token. Because FIRST
+and FOLLOW over-approximate, every position a trigger can reach has its merged
+form, so absoluteness rejects only what the grammar never admitted. Nodes keep
+writing the source token; see
+[the lowering pass](../recursa-codegen/src/lr/lookahead.rs).
+
+The merged kind is a token kind of the grammar that is never lexed and never a
+trigger, it displays as the token it merges, and a shifted record keeps its lexed
+kind and span, so reduce actions, provenance and the error path never see the
+merged kind. An expected set that names it names the spelling the author wrote,
+because the merged kind shares the expected atom of its source token. A
+`precedence` level may name a merged kind, which is how `gram.y` gives
+`NOT_LA LIKE` the precedence of `LIKE`.
+
 ## Acceptance gates
 
 Completion requires all retained Recursa fixtures and examples to use the one

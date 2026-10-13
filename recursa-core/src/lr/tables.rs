@@ -350,35 +350,15 @@ impl DecodedTables {
         self.default_action(state)
     }
 
-    /// Looks up a lexed token after applying a lookahead filter that is
-    /// relevant to this state. The merged terminal keeps any explicit action
-    /// or default reduction. Only an absent merged entry that resolves to the
-    /// row's default syntax error falls back to the source terminal; this lets
-    /// a filter distinguish one grammar context without making the source
-    /// token unusable in unrelated states. An explicit error remains
-    /// authoritative.
+    /// Looks up a lexed token as the terminal the token feed presents for it.
+    ///
+    /// A lookahead filter is absolute, as bison's `base_yylex` replacement is: once the record
+    /// after this one is a trigger, the merged terminal is the only terminal looked up, and a
+    /// state with no action for it is a syntax error. The source terminal is never retried, so a
+    /// grammar that admits the source token where a trigger may follow it must admit the merged
+    /// kind there too, the way `gram.y` writes `opt_with: WITH | WITH_LA`.
     pub fn filtered_action(&self, state: u32, kind: u32, next: Option<u32>) -> TableAction {
-        let merged = self.merged_terminal(kind, next);
-        let action = self.action(state, merged);
-        if merged != kind && action == TableAction::Error && !self.has_explicit_entry(state, merged)
-        {
-            self.action(state, kind)
-        } else {
-            action
-        }
-    }
-
-    /// Reports whether `terminal` has an explicit row entry, including an
-    /// explicitly declared syntax error.
-    fn has_explicit_entry(&self, state: u32, terminal: u32) -> bool {
-        let base = self.pact[state as usize];
-        if base == PACT_NINF {
-            return false;
-        }
-        let slot = i64::from(base) + i64::from(terminal);
-        slot >= 0
-            && (slot as usize) < self.table.len()
-            && self.check[slot as usize] == terminal as i32
+        self.action(state, self.merged_terminal(kind, next))
     }
 
     /// Returns a state's default action: its default reduction, or an error when it has none.
@@ -546,10 +526,10 @@ pub(super) mod tests {
         false,
     );
 
-    /// The textbook tables with `)` filtered to `id` before `+`. States that
-    /// explicitly accept the merged `id` use it; a state that accepts only
-    /// the source `)` must fall back to that source terminal.
-    pub(in crate::lr) static FALLBACK_FILTERED_TEXTBOOK: LrTables = LrTables::new(
+    /// The textbook tables with `)` filtered to `id` before `+`. No state that accepts the
+    /// source `)` accepts the merged `id`, so the filter makes every `)` before `+` a syntax
+    /// error: the lookahead is absolute and the source terminal is never retried.
+    pub(in crate::lr) static ABSENT_MERGED_TEXTBOOK: LrTables = LrTables::new(
         5,
         b"BFFADJABFFAJA",
         b"BPPVTDRFNBBBX",
@@ -625,19 +605,28 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn filtered_actions_use_the_merged_row_only_where_it_is_explicit() {
+    fn a_filtered_action_looks_the_merged_terminal_up_and_only_it() {
         let filtered = FILTERED_TEXTBOOK.decoded();
         assert_eq!(
             filtered.filtered_action(0, 2, Some(3)),
             TableAction::Shift(2),
-            "the start row explicitly accepts merged `id`"
+            "the start row accepts merged `id`"
         );
 
-        let fallback = FALLBACK_FILTERED_TEXTBOOK.decoded();
+        // State 6 shifts the source `)` and has no entry for the merged `id`. The lookahead is
+        // absolute, so the row's answer for `id` stands: a syntax error, not the `)` action.
+        let absent = ABSENT_MERGED_TEXTBOOK.decoded();
+        assert_eq!(absent.action(6, 3), TableAction::Shift(9));
+        assert_eq!(absent.action(6, 4), TableAction::Error);
         assert_eq!(
-            fallback.filtered_action(6, 3, Some(0)),
-            fallback.action(6, 3),
-            "a row without merged `id` retains its source `)` action"
+            absent.filtered_action(6, 3, Some(0)),
+            TableAction::Error,
+            "a row without merged `id` rejects the filtered `)`"
+        );
+        assert_eq!(
+            absent.filtered_action(6, 3, Some(1)),
+            TableAction::Shift(9),
+            "`)` before a token that is no trigger stays `)`"
         );
     }
 
@@ -645,8 +634,8 @@ pub(super) mod tests {
     fn filtered_actions_select_each_disjoint_filter_of_one_source_token() {
         // Source terminal 0 has four disjoint continuations. Two select
         // distinct merged terminals with actions; the third selects an
-        // explicit error. The fourth selects a merged terminal absent from
-        // this row and therefore falls back to the source terminal.
+        // explicit error and the fourth a merged terminal absent from this
+        // row. Neither of the last two retries the source terminal.
         let lookahead = vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7];
         let tables = DecodedTables {
             pact: vec![0],
@@ -680,8 +669,13 @@ pub(super) mod tests {
         );
         assert_eq!(
             tables.filtered_action(0, 0, Some(7)),
+            TableAction::Error,
+            "an absent merged entry is a syntax error, not the source action"
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(9)),
             TableAction::Shift(10),
-            "an absent merged entry falls back to the source terminal"
+            "a continuation that triggers no filter keeps the source terminal"
         );
     }
 

@@ -447,14 +447,31 @@ pub(super) fn application_reduce_actions(
 
 /// Encodes the canonical atom of every token kind, in terminal order, as the atom index plus
 /// one or `0` for a kind without a direct atom.
+///
+/// A merged kind of a `lookahead` declaration takes the atom of the token it merges. The kind
+/// itself is never lexed and its own atom carries the generator's `merged:` label, while an
+/// expected set that names it must read as the spelling the author wrote: a state that can
+/// continue on `WITH_LA` expects the word `with`. Sharing the source atom also keeps the source
+/// terminal and its merged kind one entry of the set rather than two.
 fn expected_atoms(grammar: &crate::GrammarDescription) -> Result<EncodedTable, String> {
     let index = ExpectedAtomIndex::from_grammar(grammar)?;
-    let atoms: Vec<u32> = (0..grammar.kind_count)
+    let mut atoms: Vec<u32> = (0..grammar.kind_count)
         .map(|kind| {
             let kind = u16::try_from(kind).expect("token kinds fit the runtime kind width");
             index.get(KindId::new(kind)).map_or(0, |atom| atom + 1)
         })
         .collect();
+    for filter in &grammar.lookahead_filters {
+        let Some(source) = atoms.get(filter.token.index()).copied() else {
+            return Err("a lookahead filter names a token beyond the grammar width".to_owned());
+        };
+        let Some(merged) = atoms.get_mut(filter.merged.index()) else {
+            return Err(
+                "a lookahead filter names a merged kind beyond the grammar width".to_owned(),
+            );
+        };
+        *merged = source;
+    }
     Ok(EncodedTable::unsigned(&atoms))
 }
 
