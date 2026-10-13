@@ -571,10 +571,14 @@ fn render_flat_root_action(
         }
         RuleAction::ListPush { element } => {
             let value = flat_element(plan, lr, *element, element_span)?.value;
+            // The flat check reads the same rule table the nested check reads, and reports the
+            // same extent: the extent of the element symbol this step consumed.
+            let rejection = render_flat_list_check(plan, lr, *element, rule)?;
             quote! {
                 let __recursa_element = #value;
                 let mut __recursa_open =
                     unsafe { reduction.pop::<#facade::__private::OpenList>() };
+                #rejection
                 let (__recursa_scratch, _) = builder.lists_and_scratch_mut();
                 __recursa_scratch.push(&mut __recursa_open, __recursa_element);
                 reduction.push(__recursa_open);
@@ -595,6 +599,66 @@ fn render_flat_root_action(
         }
     };
     Ok(body)
+}
+
+/// Renders the check one flat list step runs over the element type's rejection rules.
+///
+/// A flat list holds handles, so the variant of an item is a match on the pooled value and
+/// nothing is materialized. The items the list has passed are still on the scratch stack, and
+/// the item this step adds is already in its pool.
+fn render_flat_list_check(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+    element: ElementValue,
+    rule: &Rule,
+) -> Result<proc_macro2::TokenStream, String> {
+    let facade = &plan.facade;
+    let Some((index, node, application)) =
+        super::table_driven::rejection_element(plan, lr, element)
+    else {
+        return Ok(proc_macro2::TokenStream::new());
+    };
+    let Some(last) = rule.rhs.len().checked_sub(1) else {
+        return Ok(proc_macro2::TokenStream::new());
+    };
+    let table = super::table_driven::rejection_table_ident(index);
+    let tag = super::table_driven::rejection_flat_tag_ident(index);
+    let flat_ty = flat_application_type(plan, node, application)?;
+    let (pool, read) = if node.flat.pool {
+        let accessor = format_ident!("pool_{}", application.parse_index);
+        (
+            quote!(builder.#accessor()),
+            quote!(
+                __recursa_pool
+                    .get(__recursa_handle)
+                    .expect("a handle of this parse always addresses its own pool")
+            ),
+        )
+    } else {
+        (
+            quote!(builder.shared()),
+            quote!(__recursa_pool.get::<#flat_ty>(__recursa_handle)),
+        )
+    };
+    let passed = quote! {
+        __recursa_scratch
+            .items::<#facade::__private::Handle<#flat_ty>>(__recursa_open)
+            .map(|__recursa_handle| (#tag(#read), ::core::option::Option::None))
+    };
+    let added = quote! {
+        {
+            let __recursa_handle = __recursa_element;
+            (#tag(#read), reduction.symbol_extent(#last))
+        }
+    };
+    let check = super::rejections::render_check(plan, &table, &passed, &added);
+    Ok(quote! {
+        {
+            let __recursa_scratch = builder.scratch();
+            let __recursa_pool = #pool;
+            #check
+        }
+    })
 }
 
 /// Renders one node application's flat reduce shims, flat reduce methods, and `parse_flat` entry
@@ -690,13 +754,17 @@ fn render_flat_entry_points(
     };
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
+    let demand_extents = (!plan.rejections.is_empty())
+        .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
     let run = |spans: bool| {
+        let demand_extents = &demand_extents;
         quote! {
             #facade::__private::parse_flat_with(
                 &mut input.inner,
                 &#module_anchor::__RECURSA_GRAMMAR,
                 #spans,
                 |context| {
+                    #demand_extents
                     let mut builder = #module_anchor::FlatAstBuilder::new(
                         context.tracks_extents(),
                         context.remaining_tokens(),
@@ -722,12 +790,14 @@ fn render_flat_entry_points(
     // The reusing form differs from `run` in two places only: it takes the caller's buffers when
     // it builds the stores, and it gives them back when the automaton fails.
     let run_reusing = |spans: bool| {
+        let demand_extents = &demand_extents;
         quote! {
             #facade::__private::parse_flat_with(
                 &mut input.inner,
                 &#module_anchor::__RECURSA_GRAMMAR,
                 #spans,
                 |context| {
+                    #demand_extents
                     let capture_spans = context.tracks_extents();
                     let tokens = context.remaining_tokens();
                     let mut builder = match buffers.take() {

@@ -1,0 +1,23 @@
+[package]
+name = "recursa-generated-rejections"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+build = "build.rs"
+
+[features]
+default = []
+since-pg18 = []
+# States which AST storage the scaffolder wrote into the grammar root. Neither feature reaches a
+# rule; each one only tells `main.rs` what the parse returns, and the scaffolder sets the grammar
+# and the feature together.
+arena-ast = []
+flat-ast = []
+
+[dependencies]
+recursa = { path = "{{RECURSA}}", features = ["arbitrary", "spans"] }
+
+[build-dependencies]
+recursa-codegen = { path = "{{RECURSA_CODEGEN}}", features = ["spans"] }
+
+[workspace]

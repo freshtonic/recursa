@@ -752,6 +752,12 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::RestrictedBaseNotEnum => "RCA3137",
         SourceModelDiagnosticKind::RestrictedBaseCycle => "RCA3138",
         SourceModelDiagnosticKind::RestrictedExpressionAsType => "RCA3139",
+        SourceModelDiagnosticKind::MalformedRejectRule => "RCA3144",
+        SourceModelDiagnosticKind::RejectRuleNotEnum => "RCA3145",
+        SourceModelDiagnosticKind::RejectPairUnknownVariant => "RCA3146",
+        SourceModelDiagnosticKind::RejectPairRepeatsVariant => "RCA3147",
+        SourceModelDiagnosticKind::DuplicateRejectPair => "RCA3148",
+        SourceModelDiagnosticKind::RejectPairConfiguredOut => "RCA3149",
     }
 }
 

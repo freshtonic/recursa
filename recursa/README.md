@@ -273,6 +273,45 @@ value. See the [design note](../docs/configuration-requirements.md).
 mixes both while it migrates. A `config` gate in a grammar that declares no
 `configurations(...)` list is an error.
 
+Some rejections a reference parser makes are not grammar shapes but a check over the set of
+items a list holds. `#[reject(...)]` states them on the enum whose variants the list holds:
+
+```rust,ignore
+#[reject(
+    pair(NotDeferrable, InitiallyDeferred),
+    code = "42601",
+    message = "constraint declared INITIALLY DEFERRED must be DEFERRABLE",
+    cite = "gram.y REL_17_11 6114, ConstraintAttributeSpec",
+)]
+#[reject(
+    pair(NotDeferrable, Deferrable),
+    pair(InitiallyImmediate, InitiallyDeferred),
+    code = "42601",
+    message = "conflicting constraint properties",
+    cite = "gram.y REL_17_11 6121, ConstraintAttributeSpec",
+)]
+pub enum ConstraintAttr { NotDeferrable, Deferrable, InitiallyImmediate, InitiallyDeferred }
+```
+
+Every repetition of that enum walks its items in source order, and the first item that completes
+a forbidden pair ends the parse with that rule's message data and the item's own extent. A pair
+is unordered, a variant matches by name, and one variant repeated is admitted. `message` and
+`cite` are required; `code` and `hint` are optional. Gate a rule with
+`#[config_attr(BOUNDS, reject(...))]`.
+
+The failure is a `ParseErrorKind::DeclaredRejection` carrying the rule's note:
+
+```rust,ignore
+if let Err(error) = grammar::Unique::parse_spanned(&mut input) {
+    if let Some(note) = error.rejection() {
+        eprintln!("{}: {} ({})", note.code().unwrap_or("-"), note.message(), note.citation());
+    }
+}
+```
+
+The value, arena and flat parses accept and reject the same sources with the same note and the
+same span. See the [design note](../docs/declared-rejections.md).
+
 A `next_exclusion` matcher can also limit a numeric value. Write a pattern that
 matches only the permitted values. For a longer value, the pattern matches only
 a prefix, the next digit is excluded, and the lexer reports `RCA4004`. For

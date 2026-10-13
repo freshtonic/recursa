@@ -1,0 +1,109 @@
+// The scaffolder writes this template to `src/grammar.rs` and replaces `{{AST}}` with the AST
+// storage under test: nothing for ordinary nested storage, `arena_ast,` for an arena AST, or
+// `flat,` for a Flat AST. One grammar therefore serves every storage, and all three must accept
+// and reject the same sources, with the same note and the same span.
+recursa::grammar! {
+    module = crate::grammar,
+    {{AST}}
+    configurations(pg17, pg18 = feature("since-pg18")),
+    derives(Pretty, Arbitrary),
+    keyword_matching = ascii_insensitive,
+}
+
+recursa::tokens! {
+    trivia {
+        Whitespace => r"[ \t\n\r]+",
+    }
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        UNIQUE => "unique" in RESERVED,
+        CHECK => "check" in RESERVED,
+        NOT => "not" in RESERVED,
+        DEFERRABLE => "deferrable" in RESERVED,
+        INITIALLY => "initially" in RESERVED,
+        IMMEDIATE => "immediate" in RESERVED,
+        DEFERRED => "deferred" in RESERVED,
+        #[config(since = pg18)]
+        ENFORCED => "enforced" in RESERVED,
+    }
+    admissions { Unreserved = UNRESERVED }
+    punctuation {
+        LPAREN => "(",
+        RPAREN => ")",
+    }
+}
+
+recursa::ast_node! {
+    /// `UNIQUE (<name>) <attr>...`, whose attribute list may be empty.
+    pub struct Unique {
+        #[tok(UNIQUE, LPAREN, this, RPAREN)]
+        pub column: ColumnName,
+        pub attrs: zero_or_many!(ConstraintAttr),
+    }
+}
+
+recursa::ast_node! {
+    /// `CHECK <attr>... <name>`, whose attribute list holds at least one attribute.
+    ///
+    /// One rejection rule set therefore covers two repetition forms, because both lower to the
+    /// same non-empty list of the same element type.
+    pub struct Check {
+        #[tok(CHECK)]
+        pub attrs: one_or_many!(ConstraintAttr),
+        pub column: ColumnName,
+    }
+}
+
+recursa::ast_node! {
+    /// One constraint attribute, in any order and any number, as `ConstraintAttributeSpec` is.
+    ///
+    /// The rules below are the `processCASbits` checks: the specific message comes first, so an
+    /// item that completes both pairs reports it rather than the general one.
+    #[reject(
+        pair(NotDeferrable, InitiallyDeferred),
+        code = "42601",
+        message = "constraint declared INITIALLY DEFERRED must be DEFERRABLE",
+        cite = "gram.y REL_17_11 6114, ConstraintAttributeSpec",
+    )]
+    #[reject(
+        pair(NotDeferrable, Deferrable),
+        pair(InitiallyImmediate, InitiallyDeferred),
+        code = "42601",
+        message = "conflicting constraint properties",
+        hint = "Write each constraint property once.",
+        cite = "gram.y REL_17_11 6121, ConstraintAttributeSpec",
+    )]
+    #[config_attr(
+        since = pg18,
+        reject(
+            pair(NotEnforced, Enforced),
+            code = "42601",
+            message = "conflicting enforcement properties",
+            cite = "gram.y REL_18_6, ConstraintAttributeSpec",
+        )
+    )]
+    pub enum ConstraintAttr {
+        #[tok(NOT, DEFERRABLE)]
+        NotDeferrable,
+        #[tok(DEFERRABLE)]
+        Deferrable,
+        #[tok(INITIALLY, IMMEDIATE)]
+        InitiallyImmediate,
+        #[tok(INITIALLY, DEFERRED)]
+        InitiallyDeferred,
+        #[config(since = pg18)]
+        #[tok(ENFORCED)]
+        Enforced,
+        #[config(since = pg18)]
+        #[tok(NOT, ENFORCED)]
+        NotEnforced,
+    }
+}
+
+recursa::ast_node! {
+    /// A bare column name.
+    pub struct ColumnName {
+        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(Unreserved))]
+        pub text: Word,
+    }
+}

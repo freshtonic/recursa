@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::lex::LexDiagnosticCode;
+use crate::rejection::RejectionNote;
 use crate::{ExpectedAtomId, FollowSet, GrammarInfo, Input, Span, TokenKind};
 
 /// A low-level parse failure.
@@ -18,6 +19,8 @@ pub struct ParseError {
     found: Option<TokenKind>,
     /// Symbolic expectations retained in analysis order.
     expected: Vec<ExpectedAtomId>,
+    /// Message data of the rejection rule that refused the parse, for that kind alone.
+    rejection: Option<&'static RejectionNote>,
     /// Static metadata used to render kind and expectation names.
     grammar: &'static GrammarInfo,
 }
@@ -35,6 +38,12 @@ pub enum ParseErrorKind {
     InvalidTokenSpan,
     /// Parser input was produced by different grammar metadata.
     GrammarMismatch,
+    /// A declared rejection rule refused a set of repetition items.
+    ///
+    /// The grammar named this pair of variants as forbidden, with the message data of the source
+    /// that rejects it (`docs/declared-rejections.md`). The failure is a property of the items a
+    /// list holds, not of the next token, so the error names no expectation.
+    DeclaredRejection,
 }
 
 impl ParseErrorKind {
@@ -46,6 +55,7 @@ impl ParseErrorKind {
             Self::LexicalError => "RCA4000",
             Self::InvalidTokenSpan => "RCA4103",
             Self::GrammarMismatch => "RCA4104",
+            Self::DeclaredRejection => "RCA4105",
         }
     }
 }
@@ -94,6 +104,7 @@ impl ParseError {
             anchor,
             found,
             expected: expected.expected().to_vec(),
+            rejection: None,
             grammar: input.grammar(),
         }
     }
@@ -112,6 +123,7 @@ impl ParseError {
             anchor: span,
             found,
             expected: Vec::new(),
+            rejection: None,
             grammar: input.grammar(),
         }
     }
@@ -137,6 +149,30 @@ impl ParseError {
             anchor: span,
             found,
             expected: Vec::new(),
+            rejection: None,
+            grammar: input.grammar(),
+        }
+    }
+
+    /// Reports a set of repetition items that a declared rejection rule refuses.
+    ///
+    /// The span is the extent of the item that completed the forbidden pair, which reproduces
+    /// the position a `gram.y` action reports through `parser_errposition`. A parse that retains
+    /// no span reports [`Span::SYNTHETIC`] instead, and the message data is the same.
+    pub(crate) fn declared_rejection<A>(
+        input: &Input<'_, A>,
+        note: &'static RejectionNote,
+        span: Option<Span>,
+    ) -> Self {
+        let span = span.unwrap_or(Span::SYNTHETIC);
+        Self {
+            kind: ParseErrorKind::DeclaredRejection,
+            lexical_code: None,
+            span,
+            anchor: span,
+            found: None,
+            expected: Vec::new(),
+            rejection: Some(note),
             grammar: input.grammar(),
         }
     }
@@ -147,11 +183,21 @@ impl ParseError {
     }
 
     /// Returns the append-only machine-readable code for this runtime parse failure.
+    ///
+    /// The code is Recursa's own. A declared rejection also carries the grammar's opaque code
+    /// through [`ParseError::rejection`], which is the code a consumer reports.
     pub const fn code(&self) -> &'static str {
         match self.lexical_code {
             Some(code) => code.as_str(),
             None => self.kind.default_code(),
         }
+    }
+
+    /// Returns the message data of the rejection rule that refused this parse.
+    ///
+    /// Only a [`ParseErrorKind::DeclaredRejection`] carries one.
+    pub const fn rejection(&self) -> Option<&'static RejectionNote> {
+        self.rejection
     }
 
     /// Returns the concrete or zero-width failure location.
@@ -186,6 +232,10 @@ impl fmt::Display for ParseError {
             ParseErrorKind::GrammarMismatch => {
                 formatter.write_str("input belongs to a different grammar")
             }
+            ParseErrorKind::DeclaredRejection => match self.rejection {
+                Some(note) => formatter.write_str(note.message()),
+                None => formatter.write_str("declared rejection"),
+            },
             ParseErrorKind::UnexpectedToken => {
                 let found = self
                     .found
