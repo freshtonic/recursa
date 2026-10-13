@@ -1,0 +1,56 @@
+name: Release
+
+# Manual only. Merging to main must not open a release PR, so there is no
+# `push` trigger here. Run "Release" from the Actions tab and choose:
+#   release-pr  opens or updates the PR that bumps versions and changelogs
+#   release     publishes the crates, tags, and creates the GitHub release
+#               for a release PR that has merged
+#
+# Required repository configuration:
+#   - secret CARGO_REGISTRY_TOKEN: a crates.io token with the scopes
+#     publish-new and publish-update
+#   - secret RELEASE_PLZ_TOKEN: a fine-grained personal access token with
+#     contents:write and pull-requests:write on this repository, so the
+#     release PR triggers CI (a PR opened with GITHUB_TOKEN does not)
+#   - Settings > Actions > General: allow GitHub Actions to create and
+#     approve pull requests
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: release-plz command to run
+        required: true
+        type: choice
+        options:
+          - release-pr
+          - release
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    name: release-plz ${{ inputs.command }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # The whole history is needed to compute the next versions and to
+          # release from the latest commit of the release PR.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: ${{ inputs.command }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
