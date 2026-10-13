@@ -1059,6 +1059,245 @@ pub(super) fn generated_pretty_scopes_do_not_emit_callback_boundaries() {
     assert!(nodes.contains("context . repetition_scope_style ("));
 }
 
+/// Joins one inline expressions grammar whose Pretty plan must be refused and returns the
+/// detail the emission seam reports.
+fn expressions_fixture_join_error(source: &str) -> String {
+    let package = tempfile::tempdir().expect("temporary expressions plan fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write expressions plan fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("the expressions plan fixture reaches emission planning");
+    match EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default()) {
+        Ok(_) => panic!("the enclosure proof must refuse this grammar"),
+        Err(detail) => detail,
+    }
+}
+
+/// Asserts one refused plan reports the enclosure proof of `node` as `RCA9105`.
+fn assert_enclosure_proof_refused(detail: &str, node: &str) {
+    assert!(
+        detail.contains(&format!(
+            "Pretty cannot repair precedence for Node `{node}` because its grammar has no atom \
+             that encloses Self between fixed tokens"
+        )),
+        "detail={detail}"
+    );
+    let error = failure(Path::new("grammar.rs"), detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one enclosure-proof failure is required");
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+}
+
+/// The tokens every enclosure-proof fixture below shares: one set operator with a level, both
+/// delimiter pairs, and a `lookahead` filter that merges the close before the operator.
+const ENCLOSURE_TOKENS: &str = r#"recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { UNION => "union" }
+    punctuation { OPEN => "(", CLOSE => ")", LBRACKET => "[", RBRACKET => "]" }
+    lookahead { CLOSE_SELECT_LA = CLOSE before { UNION } }
+    precedence { left(bp = 10) { UNION } }
+}
+
+recursa::ast_node! {
+
+    struct Integer {
+        #[lex(pattern = r"[0-9]+")]
+        value: IntegerText,
+    }
+}
+
+recursa::ast_node! {
+
+    enum ParenthesizedOpen {
+        #[tok(OPEN)]
+        Value,
+    }
+}
+"#;
+
+/// Proves a Node whose arms all render the same fixed syntax is fixed syntax for the enclosure
+/// proof: pg-sql's `ParenthesizedClose: RPAREN | RPAREN_SELECT_LA`, the shape #139 made
+/// necessary at a rule-final token position (#142, freshtonic/pg-sql#87).
+pub(super) fn pretty_grouping_accepts_a_merged_kind_twin_as_fixed_syntax() {
+    let (_package, plan) = joined_expressions_fixture_from(&format!(
+        r#"{ENCLOSURE_TOKENS}
+recursa::ast_node! {{
+
+    enum ParenthesizedClose {{
+        #[tok(CLOSE)]
+        Plain,
+        #[tok(CLOSE_SELECT_LA)]
+        Merged,
+    }}
+}}
+
+recursa::ast_node! {{
+
+    struct ParenthesizedExpr {{
+        open: ParenthesizedOpen,
+        inner: boxed!(Expr),
+        close: ParenthesizedClose,
+    }}
+}}
+
+recursa::ast_node! {{
+
+    enum Expr {{
+        Integer(Integer),
+        Parenthesized(ParenthesizedExpr),
+        Union(boxed!(Self), #[tok(UNION, this)] boxed!(Self)),
+    }}
+}}
+"#
+    ));
+
+    assert_enclosure_spellings(&plan, "Expr", &["("], &[")"]);
+}
+
+/// Proves two atoms that delegate to witnesses rendering the same enclosure are one answer,
+/// which is what the issue's second authoring shape needs: one atom per close kind (#142).
+pub(super) fn pretty_grouping_accepts_agreeing_delegated_enclosure_atoms() {
+    let (_package, plan) = joined_expressions_fixture_from(&format!(
+        r#"{ENCLOSURE_TOKENS}
+recursa::ast_node! {{
+
+    struct PlainParens {{
+        #[tok(OPEN, this, CLOSE)]
+        inner: boxed!(Expr),
+    }}
+}}
+
+recursa::ast_node! {{
+
+    struct MergedParens {{
+        #[tok(OPEN, this, CLOSE_SELECT_LA)]
+        inner: boxed!(Expr),
+    }}
+}}
+
+recursa::ast_node! {{
+
+    enum Expr {{
+        Integer(Integer),
+        Plain(PlainParens),
+        Merged(MergedParens),
+        Union(boxed!(Self), #[tok(UNION, this)] boxed!(Self)),
+    }}
+}}
+"#
+    ));
+
+    assert_enclosure_spellings(&plan, "Expr", &["("], &[")"]);
+}
+
+/// Proves two atoms whose enclosures genuinely differ stay an error: Pretty never picks one of
+/// several disagreeing enclosures silently (#142).
+pub(super) fn pretty_grouping_refuses_disagreeing_delegated_enclosure_atoms() {
+    let detail = expressions_fixture_join_error(&format!(
+        r#"{ENCLOSURE_TOKENS}
+recursa::ast_node! {{
+
+    struct RoundParens {{
+        #[tok(OPEN, this, CLOSE)]
+        inner: boxed!(Expr),
+    }}
+}}
+
+recursa::ast_node! {{
+
+    struct SquareParens {{
+        #[tok(LBRACKET, this, RBRACKET)]
+        inner: boxed!(Expr),
+    }}
+}}
+
+recursa::ast_node! {{
+
+    enum Expr {{
+        Integer(Integer),
+        Round(RoundParens),
+        Square(SquareParens),
+        Union(boxed!(Self), #[tok(UNION, this)] boxed!(Self)),
+    }}
+}}
+"#
+    ));
+
+    assert_enclosure_proof_refused(&detail, "Expr");
+}
+
+/// Proves the fixed-syntax rule compares what a Node renders, not how many arms it has: two
+/// arms that render different syntax leave the Node without fixed syntax (#142).
+pub(super) fn pretty_grouping_refuses_a_close_whose_arms_render_different_syntax() {
+    let detail = expressions_fixture_join_error(&format!(
+        r#"{ENCLOSURE_TOKENS}
+recursa::ast_node! {{
+
+    enum ParenthesizedClose {{
+        #[tok(CLOSE)]
+        Round,
+        #[tok(RBRACKET)]
+        Square,
+    }}
+}}
+
+recursa::ast_node! {{
+
+    struct ParenthesizedExpr {{
+        open: ParenthesizedOpen,
+        inner: boxed!(Expr),
+        close: ParenthesizedClose,
+    }}
+}}
+
+recursa::ast_node! {{
+
+    enum Expr {{
+        Integer(Integer),
+        Parenthesized(ParenthesizedExpr),
+        Union(boxed!(Self), #[tok(UNION, this)] boxed!(Self)),
+    }}
+}}
+"#
+    ));
+
+    assert_enclosure_proof_refused(&detail, "Expr");
+}
+
+/// Asserts the declared-precedence grouping of `node` renders exactly these spellings.
+fn assert_enclosure_spellings(plan: &EmissionPlan, node: &str, before: &[&str], after: &[&str]) {
+    let index = plan
+        .nodes
+        .iter()
+        .position(|planned| planned.semantic_key == node)
+        .unwrap_or_else(|| panic!("fixture has the owning {node}"));
+    let grouping = plan.pretty.nodes[index]
+        .as_ref()
+        .and_then(|behavior| behavior.declared.as_ref())
+        .and_then(|declared| declared.grouping.as_ref())
+        .unwrap_or_else(|| panic!("{node} has proven grouping syntax"));
+    assert_eq!(
+        grouping
+            .before
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        before
+    );
+    assert_eq!(
+        grouping
+            .after
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        after
+    );
+}
+
 pub(super) fn pretty_grouping_follows_a_unique_authored_helper_path() {
     let (_package, plan) = joined_expressions_fixture_from(
         r#"recursa::grammar! { module = crate, derives(Pretty) }

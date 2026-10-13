@@ -1,4 +1,4 @@
-//! The two lookahead-filter fixtures through the sole LR parser (#139).
+//! The three lookahead-filter fixtures through the sole LR parser (#139, #142).
 //!
 //! `lookahead` holds the three shapes the substitution rule distinguishes: a filtered token
 //! inside a rule (`NOT LIKE`, which becomes the merged kind outright), a filtered token whose
@@ -7,8 +7,13 @@
 //! that site, as `gram.y` writes `any_with: WITH | WITH_LA`). `lookahead-precedence` holds
 //! PostgreSQL's window-frame conflict, which only the merged kind's `precedence` level settles.
 //!
-//! Both fixtures lost their driver test at 128a7dc, when the second parser style they compared
-//! was retired. These run the one parser and compare the lines it prints.
+//! `merged-enclosure` holds the shape pg-sql's `ParenthesizedClose` has: a parenthesized atom
+//! whose closing delimiter Node names the merged kind beside the token it merges, under an
+//! expression Node whose declared precedence Pretty repairs with that atom's parentheses
+//! (#142, freshtonic/pg-sql#87).
+//!
+//! The first two fixtures lost their driver test at 128a7dc, when the second parser style they
+//! compared was retired. These run the one parser and compare the lines it prints.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,6 +80,39 @@ fn the_lookahead_precedence_fixture_settles_the_frame_conflict_on_the_merged_kin
         // tie, and a tie at a `nonassoc` level is an error, as it is in PostgreSQL. The parser
         // reaches it as an unexpected token, because the level installed no action for the cell.
         "lr decision no => code=RCA4100",
+    ] {
+        assert!(stdout.contains(line), "fixture lacks {line}\n{stdout}");
+    }
+}
+
+#[test]
+fn the_merged_enclosure_fixture_repairs_precedence_through_a_two_armed_close() {
+    let package = scaffold_fixture("tests/fixtures/generation/merged-enclosure");
+    let output = run_bin(&package, "recursa-generated-merged-enclosure");
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.ends_with("merged-enclosure-ok\n"), "{stdout}");
+
+    for line in [
+        // The merged arm of the two-armed close: `)` before a set operator.
+        "ok \"(a) union b;\" => Statement { query: Union(Parenthesized(ParenthesizedQuery { open: Value, query: Name(",
+        "close: Merged })",
+        "ok \"(a union b) except c;\" => Statement { query: Except(Parenthesized(",
+        // The plain arm, including a nested close no trigger follows.
+        "ok \"((a));\" => Statement { query: Parenthesized(ParenthesizedQuery { open: Value, query: Parenthesized(",
+        // The merged kind exists, is never lexed, and spells like the token it merges, so both
+        // arms of the close render `)`.
+        "merged kind RPAREN_SELECT_LA displays as ) like )",
+        // Every parse renders back to its own source, the merged arm included.
+        "pretty \"(a) union b;\" => \"(a) union b;\"",
+        "pretty \"((a));\" => \"((a));\"",
+        "pretty \"a union b intersect c;\" => \"a union b intersect c;\"",
+        // The repair itself: parentheses the value does not hold, from the enclosure the proof
+        // found in the atom whose close has two arms.
+        "regrouped union => \"a union (b union c)\"",
+        "regrouped intersect => \"(a union b) intersect a\"",
+        // The repaired rendering parses back, and its `)` before `intersect` is the merged arm.
+        "reparsed \"(a union b) intersect a;\" => Statement { query: Intersect(Parenthesized(",
     ] {
         assert!(stdout.contains(line), "fixture lacks {line}\n{stdout}");
     }
