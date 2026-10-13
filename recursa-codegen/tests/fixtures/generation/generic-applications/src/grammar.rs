@@ -95,7 +95,7 @@ recursa::ast_node! {
 recursa::ast_node! {
 
     pub struct Separated<T> {
-        #[tok(LBRACKET, this, RBRACKET)]
+        #[tok(LBRACKET, this_each, RBRACKET)]
         #[sep(AND)]
         pub values: zero_or_many!(T),
     }

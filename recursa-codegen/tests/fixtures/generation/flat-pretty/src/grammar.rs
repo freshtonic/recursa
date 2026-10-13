@@ -359,7 +359,7 @@ recursa::ast_node! {
     #[tok(FILTER, this, SEMI)]
     pub struct Filter {
         pub bangs: one_or_many!(Bang),
-        #[tok(COLON, optional(NOT), this)]
+        #[tok(COLON, optional(NOT), this_each)]
         pub filters: zero_or_many!(Value),
     }
 }
@@ -390,7 +390,7 @@ recursa::ast_node! {
     /// A repeated attachment around every element of a `Vec1<T>`.
     #[derive(Debug, Clone)]
     pub struct Tuple {
-        #[tok(LPAREN, this, RPAREN)]
+        #[tok(LPAREN, this_each, RPAREN)]
         #[sep(PIPE)]
         pub cells: one_or_many!(Value),
     }
