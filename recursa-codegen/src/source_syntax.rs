@@ -189,7 +189,11 @@ impl ConfigGate {
     }
 
     /// Reports whether the build configuration admits the gated element.
-    pub(crate) fn admits(&self, meta: &Meta, cfg: &CargoCfgSnapshot) -> Result<bool, ConfigurationError> {
+    pub(crate) fn admits(
+        &self,
+        meta: &Meta,
+        cfg: &CargoCfgSnapshot,
+    ) -> Result<bool, ConfigurationError> {
         let Some(scale) = cfg.configurations() else {
             return Err(configuration_error(
                 meta.span(),
@@ -217,13 +221,143 @@ impl ConfigGate {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One forbidden pair of variant names written by a `#[reject(...)]` declaration.
+pub(crate) struct RejectPairSyntax {
+    /// Name written first inside `pair(...)`.
+    pub(crate) left: String,
+    /// Name written second inside `pair(...)`.
+    pub(crate) right: String,
+    /// Authored range of the whole `pair(...)` entry.
+    pub(crate) range: Range<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored `#[reject(...)]` declaration: the forbidden pairs of one message.
+///
+/// The declaration carries the message data a configuration gate carries, and `message` and
+/// `cite` are required rather than optional: a rule that rejects a parse must say why and must
+/// name the source that rejects it (`docs/declared-rejections.md`).
+pub(crate) struct RejectRuleSyntax {
+    /// Forbidden pairs in written order.
+    pub(crate) pairs: Vec<RejectPairSyntax>,
+    /// Opaque diagnostic code carried to the consumer.
+    pub(crate) code: Option<String>,
+    /// Opaque message carried to the consumer.
+    pub(crate) message: String,
+    /// Opaque hint carried to the consumer.
+    pub(crate) hint: Option<String>,
+    /// Citation of the source that rejects the pair.
+    pub(crate) citation: String,
+    /// Authored range of the whole declaration.
+    pub(crate) range: Range<u32>,
+}
+
+impl RejectRuleSyntax {
+    /// Reads one `reject(...)` meta into its pairs and its message data.
+    ///
+    /// Only a declaration that cannot be read at all fails here. Every failure that needs the
+    /// enum's resolved variants — an unknown name, a pair of one name, a repeated pair, a
+    /// declaration on something other than an enum — is reported by source-model lowering at its
+    /// own registered code.
+    pub(crate) fn from_meta(meta: &Meta) -> Result<Self, ConfigurationError> {
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "reject must use parentheses",
+            ));
+        };
+        let entries = Punctuated::<Meta, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        let mut pairs = Vec::new();
+        let (mut code, mut message, mut hint, mut citation) = (None, None, None, None);
+        for entry in &entries {
+            match entry {
+                Meta::List(pair) if pair.path.is_ident("pair") => {
+                    pairs.push(reject_pair(pair)?);
+                }
+                Meta::NameValue(assignment) => {
+                    let key = assignment
+                        .path
+                        .get_ident()
+                        .ok_or_else(|| {
+                            configuration_error(assignment.span(), "reject key must be a name")
+                        })?
+                        .unraw()
+                        .to_string();
+                    let slot = match key.as_str() {
+                        "code" => &mut code,
+                        "message" => &mut message,
+                        "hint" => &mut hint,
+                        "cite" => &mut citation,
+                        other => {
+                            return Err(configuration_error(
+                                assignment.span(),
+                                format!("unsupported reject entry `{other}`"),
+                            ));
+                        }
+                    };
+                    if slot.is_some() {
+                        return Err(configuration_error(
+                            assignment.span(),
+                            format!("duplicate reject {key} entry"),
+                        ));
+                    }
+                    *slot = Some(literal_text(&assignment.value)?);
+                }
+                other => {
+                    return Err(configuration_error(
+                        other.span(),
+                        "reject accepts `pair(A, B)` entries and `key = \"value\"` entries only",
+                    ));
+                }
+            }
+        }
+        if pairs.is_empty() {
+            return Err(configuration_error(
+                meta.span(),
+                "reject requires at least one `pair(A, B)`",
+            ));
+        }
+        let message = message
+            .ok_or_else(|| configuration_error(meta.span(), "reject requires a `message` entry"))?;
+        let citation = citation
+            .ok_or_else(|| configuration_error(meta.span(), "reject requires a `cite` entry"))?;
+        Ok(Self {
+            pairs,
+            code,
+            message,
+            hint,
+            citation,
+            range: span_range(meta.span()),
+        })
+    }
+}
+
+/// Reads one `pair(A, B)` entry of a `reject(...)` declaration.
+fn reject_pair(pair: &syn::MetaList) -> Result<RejectPairSyntax, ConfigurationError> {
+    let names = Punctuated::<syn::Ident, Token![,]>::parse_terminated
+        .parse2(pair.tokens.clone())
+        .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+    let [left, right] = names.iter().collect::<Vec<_>>()[..] else {
+        return Err(configuration_error(
+            pair.span(),
+            "reject `pair(...)` names exactly two variants",
+        ));
+    };
+    Ok(RejectPairSyntax {
+        left: left.unraw().to_string(),
+        right: right.unraw().to_string(),
+        range: span_range(pair.span()),
+    })
+}
+
 /// Reads a bare name written as the value of a `config` entry.
 fn configuration_name(value: &Expr) -> Result<String, ConfigurationError> {
     match value {
         Expr::Path(path)
-            if path.qself.is_none()
-                && path.attrs.is_empty()
-                && path.path.get_ident().is_some() =>
+            if path.qself.is_none() && path.attrs.is_empty() && path.path.get_ident().is_some() =>
         {
             Ok(path
                 .path
@@ -1002,8 +1136,7 @@ pub(crate) fn resolve_configuration_scale(
                     message: format!(
                         "configuration `{}` is enabled while `{}` is not; each configuration \
                          feature must enable every earlier one",
-                        declared[index].name,
-                        declared[active].name,
+                        declared[index].name, declared[active].name,
                     ),
                 });
             }

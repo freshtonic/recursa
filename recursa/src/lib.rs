@@ -19,10 +19,10 @@ pub use recursa_core::{
     ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, Configuration,
     DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, FlatNode, Handle,
     HasSpan, List, List1, ListItem, Node, NodeView, OffsetOverflow, Parse, ParseError,
-    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink, Repeated,
-    RepeatedIter, Requirement, RequirementNote, RequirementScan, Requires, SideTable, SourceMap,
-    SourceMapEntry, Span, Text, TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut,
-    Visitor, VisitorMut,
+    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink, Rejection,
+    RejectionNote, RejectionPair, RejectionRule, Repeated, RepeatedIter, Requirement,
+    RequirementNote, RequirementScan, Requires, SideTable, SourceMap, SourceMapEntry, Span, Text,
+    TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, ast_node, grammar, tokens};
 
@@ -48,7 +48,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            37,
+            38,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

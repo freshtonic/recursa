@@ -88,7 +88,7 @@ const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[RuntimeDiagnost
 }];
 
 /// Complete append-only code contract for failures produced while parsing user input.
-const RUNTIME_PARSE_CODES: &[&str] = &["RCA4100", "RCA4101", "RCA4103", "RCA4104"];
+const RUNTIME_PARSE_CODES: &[&str] = &["RCA4100", "RCA4101", "RCA4103", "RCA4104", "RCA4105"];
 
 /// Maps every runtime parse failure code to executable public or core-boundary evidence.
 const RUNTIME_PARSE_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[
@@ -109,6 +109,15 @@ const RUNTIME_PARSE_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[
         command_test_source: "../recursa-core/src/parsed.rs",
         command_test_name: "invalid_generated_record_spans_are_structured_errors",
         command: "cargo test -p recursa-core parsed::tests::invalid_generated_record_spans_are_structured_errors --locked",
+    },
+    RuntimeDiagnosticEvidence {
+        codes: &["RCA4105"],
+        producer_source: "../recursa-core/src/parse.rs",
+        assertion_source: "tests/fixtures/generation/rejections/src/main.rs",
+        assertion_name: "describe",
+        command_test_source: "tests/generated_rejections.rs",
+        command_test_name: "a_rejection_rule_refuses_the_list_a_gram_y_action_refuses",
+        command: "cargo test -p recursa-codegen --test generated_rejections a_rejection_rule_refuses_the_list_a_gram_y_action_refuses --locked",
     },
     RuntimeDiagnosticEvidence {
         codes: &["RCA4104"],
@@ -427,6 +436,15 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_source: "src/source_model.rs",
         test_name: "invalid_restricted_expressions_have_structured_diagnostics",
         command: "cargo test -p recursa-codegen source_model::tests::invalid_restricted_expressions_have_structured_diagnostics --locked",
+    },
+    ProducerEvidence {
+        codes: &[
+            "RCA3144", "RCA3145", "RCA3146", "RCA3147", "RCA3148", "RCA3149",
+        ],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "invalid_rejection_rules_have_structured_diagnostics",
+        command: "cargo test -p recursa-codegen source_model::tests::invalid_rejection_rules_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
         codes: &["RCA3134"],

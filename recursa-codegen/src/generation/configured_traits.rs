@@ -487,6 +487,7 @@ pub(super) fn render_node_configured_traits(
             .contains(&ConfiguredTraitRecipe::Arbitrary)
     {
         implementations.push(render_node_arbitrary(plan, node));
+        implementations.push(super::rejections::render_arbitrary_support(plan, node));
     }
     if plan.pretty.nodes[node_index].is_some() {
         implementations.push(render_node_pretty(plan, node, node_index));
@@ -1113,7 +1114,36 @@ pub(super) fn render_node_arbitrary(
                     ::__recursa_arbitrary_with(input)?
             }
         }
-        SemanticParseProjection::Direct { .. } | SemanticParseProjection::FixedPresence { .. } => {
+        SemanticParseProjection::Direct {
+            terminal,
+            terminal_node,
+            wrappers,
+            ..
+        } => {
+            // A sampled repetition of an element type with declared rejection rules keeps only
+            // the items that parse back, so the sampler runs the parser's own walk over them and
+            // drops every item that would complete a forbidden pair.
+            let sampled = quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?);
+            let rules = terminal_node
+                .filter(|node| plan.rejections.rules(*node).is_some())
+                .map(|_| quote!(<#terminal>::__recursa_rejection_rules()));
+            rules
+                .and_then(|rules| {
+                    // The filter binds the sampled collection to a local, which the plain call
+                    // in field position never did, so the field's own type is named here to keep
+                    // the sampling call inferable.
+                    let field_type = render_wrapped_type(facade, terminal, wrappers);
+                    let typed = quote! {
+                        {
+                            let __recursa_field: #field_type = #sampled;
+                            __recursa_field
+                        }
+                    };
+                    super::rejections::render_arbitrary_filter(facade, wrappers, &rules, typed)
+                })
+                .unwrap_or(sampled)
+        }
+        SemanticParseProjection::FixedPresence { .. } => {
             quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?)
         }
     };

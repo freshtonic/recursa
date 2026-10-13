@@ -200,6 +200,8 @@ pub enum ParseDiagnosticKind {
     GrammarMismatch,
     /// A complete root was followed by additional input.
     TrailingInput,
+    /// A declared rejection rule refused a set of repetition items.
+    DeclaredRejection,
 }
 
 /// One structured lexical or syntax diagnostic from [`Adapter::parse`].
@@ -290,6 +292,7 @@ pub(crate) fn parse_failure_from_error<'input>(
         ParseErrorKind::LexicalError => ParseDiagnosticKind::LexicalError,
         ParseErrorKind::InvalidTokenSpan => ParseDiagnosticKind::InvalidTokenSpan,
         ParseErrorKind::GrammarMismatch => ParseDiagnosticKind::GrammarMismatch,
+        ParseErrorKind::DeclaredRejection => ParseDiagnosticKind::DeclaredRejection,
     };
     ParseFailure {
         source,

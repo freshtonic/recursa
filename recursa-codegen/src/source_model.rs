@@ -30,11 +30,11 @@ use crate::lowering::{
 };
 use crate::resolution::{
     CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
-    ResolvedNodeBody, ResolvedNodeField, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
-    ResolvedVariantId, SemanticTarget, TypeAliasId,
+    ResolvedNode, ResolvedNodeBody, ResolvedNodeField, ResolvedNodeOrigin, ResolvedSourceGrammar,
+    ResolvedType, ResolvedTypeKind, ResolvedVariantId, SemanticTarget, TypeAliasId,
 };
 use crate::source_syntax::{
-    CargoCfgSnapshot, configured_attribute_metas as configured_metas,
+    CargoCfgSnapshot, RejectRuleSyntax, configured_attribute_metas as configured_metas,
     item_attributes as item_attrs, path_text, span_range,
 };
 
@@ -1123,6 +1123,19 @@ pub(crate) enum SourceModelDiagnosticKind {
     /// A restricted expression is used where a type is required, or carries configuration only
     /// a type can carry.
     RestrictedExpressionAsType,
+    /// A `#[reject(...)]` declaration cannot be read: it has no pair, no `message`, no `cite`, a
+    /// repeated key or an unsupported entry.
+    MalformedRejectRule,
+    /// A `#[reject(...)]` declaration sits on something other than an `ast_node!` enum.
+    RejectRuleNotEnum,
+    /// A `#[reject(pair(A, B))]` names a variant the enum does not declare.
+    RejectPairUnknownVariant,
+    /// A `#[reject(pair(A, A))]` names one variant twice, which no list can complete.
+    RejectPairRepeatsVariant,
+    /// Two `#[reject(...)]` rules of one enum name the same unordered pair.
+    DuplicateRejectPair,
+    /// A `#[reject(pair(A, B))]` names a variant this build's configuration removed.
+    RejectPairConfiguredOut,
 }
 
 impl SourceModelDiagnosticKind {
@@ -5075,6 +5088,13 @@ impl SourceModelBuilder<'_> {
                                     "an enum variant",
                                     &mut self.diagnostics,
                                 );
+                                Self::reject_misplaced_reject_rules(
+                                    &self.resolved,
+                                    origin,
+                                    &variant.metas,
+                                    "an enum variant",
+                                    &mut self.diagnostics,
+                                );
                                 self.lower_greedy(origin, &variant.metas);
                                 self.lower_precedence_override(
                                     origin,
@@ -5118,6 +5138,7 @@ impl SourceModelBuilder<'_> {
             );
             let pretty = self.lower_pretty_hints(origin, configured, node.range.clone());
             let flat = self.lower_flat_hints(origin, &node);
+            self.lower_reject_rules(origin, &node);
             self.lower_greedy(origin, configured);
             self.lower_precedence_override(origin, configured, PrecedenceOwner::Type(node.id));
             self.lower_lr_conflict_resolutions(origin, configured, LrRuleOwner::Type(node.id));
@@ -5128,6 +5149,145 @@ impl SourceModelBuilder<'_> {
                 configured_traits,
                 pretty,
                 flat,
+            });
+        }
+    }
+
+    /// Validates every `#[reject(...)]` declaration of one Node against its resolved variants.
+    ///
+    /// A rejection rule is a type-level declaration on an enum
+    /// (`docs/declared-rejections.md`), so every failure here is about the declaration's site or
+    /// about the variant names it writes. The rule table itself is read again during generation,
+    /// which runs only on a model with no error.
+    ///
+    /// A variant this build's configuration removed is reported apart from an unknown name,
+    /// because the two have opposite remedies: an unknown name is a typo, and a removed name
+    /// means the rule itself belongs under a `#[config_attr(...)]` bound.
+    fn lower_reject_rules(&mut self, origin: SourceOrigin, node: &ResolvedNode) {
+        let declarations = node
+            .metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("reject"))
+            .collect::<Vec<_>>();
+        if declarations.is_empty() {
+            return;
+        }
+        let ResolvedNodeBody::Enum { variants } = &node.body else {
+            for meta in declarations {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
+                        self.site(origin, span_range(meta.span())),
+                        format!(
+                            "`#[reject(...)]` names forbidden pairs of enum variants, and `{}` \
+                             is not an enum",
+                            node.ident,
+                        ),
+                    ));
+            }
+            return;
+        };
+        let declared = variants
+            .iter()
+            .map(|variant| variant.ident.clone())
+            .collect::<BTreeSet<_>>();
+        let removed = match &node.origin {
+            ResolvedNodeOrigin::Declaration(declaration) => {
+                declaration.removed_variants.iter().cloned().collect()
+            }
+            ResolvedNodeOrigin::DirectRust => BTreeSet::new(),
+        };
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        for meta in declarations {
+            let rule = match RejectRuleSyntax::from_meta(meta) {
+                Ok(rule) => rule,
+                Err(error) => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                            self.site(origin, error.range.clone()),
+                            format!("`#[reject(...)]` on `{}`: {}", node.ident, error.message),
+                        ));
+                    continue;
+                }
+            };
+            for pair in &rule.pairs {
+                for name in [&pair.left, &pair.right] {
+                    if declared.contains(name) {
+                        continue;
+                    }
+                    let (kind, message) = if removed.contains(name) {
+                        (
+                            SourceModelDiagnosticKind::RejectPairConfiguredOut,
+                            format!(
+                                "`{name}` is a variant of `{}` that this build's configuration \
+                                 removed; gate the rule with `#[config_attr(..., reject(...))]` \
+                                 so the build that holds the variant is the build that rejects \
+                                 the pair",
+                                node.ident,
+                            ),
+                        )
+                    } else {
+                        (
+                            SourceModelDiagnosticKind::RejectPairUnknownVariant,
+                            format!(
+                                "`{name}` is no variant of `{}`; a rejection rule names only \
+                                 variants its own enum declares",
+                                node.ident,
+                            ),
+                        )
+                    };
+                    self.diagnostics
+                        .push(kind.at(self.site(origin, pair.range.clone()), message));
+                }
+                if pair.left == pair.right {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::RejectPairRepeatsVariant.at(
+                            self.site(origin, pair.range.clone()),
+                            format!(
+                                "`pair({}, {})` names one variant twice; a repeated variant is \
+                                 admitted, so such a pair can never be completed",
+                                pair.left, pair.right,
+                            ),
+                        ));
+                    continue;
+                }
+                let unordered = if pair.left <= pair.right {
+                    (pair.left.clone(), pair.right.clone())
+                } else {
+                    (pair.right.clone(), pair.left.clone())
+                };
+                if !seen.insert(unordered) {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::DuplicateRejectPair.at(
+                            self.site(origin, pair.range.clone()),
+                            format!(
+                                "`{}` already rejects `{}` with `{}`; one pair carries one \
+                                 message, so the rules of an enum name each unordered pair once",
+                                node.ident, pair.left, pair.right,
+                            ),
+                        ));
+                }
+            }
+        }
+    }
+
+    /// Rejects a `#[reject(...)]` declaration written below a whole declaration.
+    ///
+    /// A rejection rule belongs to the enum as a type, because every repetition of that enum runs
+    /// it. A variant or a field therefore never carries one.
+    fn reject_misplaced_reject_rules(
+        resolved: &ResolvedSourceGrammar,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        subject: &str,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        for meta in metas.iter().filter(|meta| meta.path().is_ident("reject")) {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::RejectRuleNotEnum,
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                message: format!(
+                    "`#[reject(...)]` belongs on a whole enum declaration, not on {subject}"
+                ),
             });
         }
     }
@@ -5627,6 +5787,13 @@ impl SourceModelBuilder<'_> {
                 &mut self.diagnostics,
             );
             reject_misplaced_flat_hints(
+                &self.resolved,
+                origin,
+                field_configured,
+                "a field",
+                &mut self.diagnostics,
+            );
+            Self::reject_misplaced_reject_rules(
                 &self.resolved,
                 origin,
                 field_configured,
@@ -12562,8 +12729,9 @@ recursa::ast_node! {
                 .iter()
                 .map(|node| {
                     let parts = match &node.body {
-                        super::NodeBody::Struct(elements)
-                        | super::NodeBody::Presence(elements) => elements.len(),
+                        super::NodeBody::Struct(elements) | super::NodeBody::Presence(elements) => {
+                            elements.len()
+                        }
                         super::NodeBody::Enum(variants) => variants.len(),
                     };
                     (node.name.clone(), parts)
@@ -12849,6 +13017,190 @@ recursa::ast_node! {
             &configured,
             SourceModelDiagnosticKind::RestrictedExpressionAsType,
             "RCA3139",
+        );
+    }
+
+    #[test]
+    fn invalid_rejection_rules_have_structured_diagnostics() {
+        const PRELUDE: &str = r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2")),
+}
+recursa::tokens! {
+    punctuation { PLUS => "+", STAR => "*" }
+}
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+"#;
+        let with = |declaration: &str| model(&format!("{PRELUDE}{declaration}"));
+
+        // A readable declaration over declared variants models cleanly.
+        let accepted = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Star), message = "no", cite = "here")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(
+            accepted.source_modeled.is_some(),
+            "{:?}",
+            accepted.diagnostics
+        );
+
+        let malformed = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Star), code = "42601")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(malformed.source_modeled.is_none());
+        assert_code(
+            &malformed,
+            SourceModelDiagnosticKind::MalformedRejectRule,
+            "RCA3144",
+        );
+
+        let not_enum = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Star), message = "no", cite = "here")]
+    pub struct Op {
+        #[tok(PLUS, this)]
+        pub name: Name,
+    }
+}
+"#,
+        );
+        assert!(not_enum.source_modeled.is_none());
+        assert_code(
+            &not_enum,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
+        );
+
+        let unknown = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Missing), message = "no", cite = "here")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(unknown.source_modeled.is_none());
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::RejectPairUnknownVariant,
+            "RCA3146",
+        );
+
+        let repeated = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Plus), message = "no", cite = "here")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(repeated.source_modeled.is_none());
+        assert_code(
+            &repeated,
+            SourceModelDiagnosticKind::RejectPairRepeatsVariant,
+            "RCA3147",
+        );
+
+        // The same unordered pair, written once each way: one pair carries one message.
+        let duplicate = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Star), message = "one", cite = "here")]
+    #[reject(pair(Star, Plus), message = "two", cite = "here")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(duplicate.source_modeled.is_none());
+        assert_code(
+            &duplicate,
+            SourceModelDiagnosticKind::DuplicateRejectPair,
+            "RCA3148",
+        );
+
+        // `Star` exists only from `v2`, and this build states `v1`, so an ungated rule that
+        // names it must be gated rather than silently dropped.
+        let configured_out = with(
+            r#"recursa::ast_node! {
+
+    #[reject(pair(Plus, Star), message = "no", cite = "here")]
+    pub enum Op {
+        #[tok(PLUS)]
+        Plus,
+        #[config(since = v2)]
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(configured_out.source_modeled.is_none());
+        assert_code(
+            &configured_out,
+            SourceModelDiagnosticKind::RejectPairConfiguredOut,
+            "RCA3149",
+        );
+
+        // A rule belongs to the enum as a type, never to one variant or one field.
+        let misplaced = with(
+            r#"recursa::ast_node! {
+
+    pub enum Op {
+        #[reject(pair(Plus, Star), message = "no", cite = "here")]
+        #[tok(PLUS)]
+        Plus,
+        #[tok(STAR)]
+        Star,
+    }
+}
+"#,
+        );
+        assert!(misplaced.source_modeled.is_none());
+        assert_code(
+            &misplaced,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
         );
     }
 

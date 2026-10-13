@@ -1538,6 +1538,14 @@ pub struct ParseContext<'context, 'input, 'arena, A> {
     policy: CapturePolicy,
     /// Root-call capture request.
     request: CaptureRequest,
+    /// Whether generated code asked the LR loop for the extent stack.
+    ///
+    /// A grammar that declares a rejection rule
+    /// (`docs/declared-rejections.md`) positions its rejection at one list item, and the extent
+    /// of a reduced nonterminal lives nowhere else. Such a grammar's generated parse entry point
+    /// asks for the stack through [`ParseContext::demand_extents`]; every other grammar never
+    /// allocates it.
+    extents_demanded: bool,
     /// Builder for validated compact sidecars.
     provenance: ProvenanceCollector<'arena>,
 }
@@ -1556,8 +1564,34 @@ impl<'context, 'input, 'arena, A> ParseContext<'context, 'input, 'arena, A> {
             follow,
             policy,
             request,
+            extents_demanded: false,
             provenance: ProvenanceCollector::new(arena),
         }
+    }
+
+    /// Asks the LR loop to keep one source extent per state-stack frame.
+    ///
+    /// Generated code calls this at the start of a parse of a grammar that declares a rejection
+    /// rule, because such a rule reports the extent of one list item and the extent of a reduced
+    /// nonterminal is not recoverable from the state stack. The call is independent of the
+    /// capture request: accepting or rejecting a parse never depends on the entry point, so the
+    /// position of a declared rejection must not either.
+    pub fn demand_extents(&mut self) {
+        self.extents_demanded = true;
+    }
+
+    /// Reports whether the LR loop keeps the extent stack for this parse.
+    pub(crate) fn keeps_extents(&self) -> bool {
+        self.request.tracks_extents() || (self.extents_demanded && cfg!(feature = "spans"))
+    }
+
+    /// Reports a set of repetition items that a declared rejection rule refuses.
+    pub(crate) fn reject(
+        &self,
+        note: &'static crate::rejection::RejectionNote,
+        span: Option<Span>,
+    ) -> ParseError {
+        ParseError::declared_rejection(self.input, note, span)
     }
 
     /// Returns the complete parse source.
