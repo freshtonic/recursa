@@ -468,6 +468,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::field_level_this_on_a_repeated_field_requires_this_each_to_confirm_per_element_reading --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3153"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "merged_kind_admissions_resolve_in_token_positions_and_nowhere_else",
+        command: "cargo test -p recursa-codegen source_model::tests::merged_kind_admissions_resolve_in_token_positions_and_nowhere_else --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",

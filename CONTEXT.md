@@ -303,10 +303,18 @@ _Avoid_: Token rewrite, scanner hack, two-token lookahead
 **Merged kind**:
 The token kind a lookahead filter presents in place of its source token. It is
 never lexed and never a trigger, it spells like the token it merges, and a
-grammar position that admits the source token where a trigger may follow it
-must admit the merged kind as well. A state with no action for a merged kind
-reports a syntax error on that token; the source terminal is never retried.
+state with no action for it reports a syntax error on that token; the source
+terminal is never retried. A grammar position holds the merged kind only where
+its own rule can put a trigger after it, or where the grammar names the merged
+kind at that site; FOLLOW of the rule's nonterminal never admits one.
 _Avoid_: Lookahead token, _LA alias, filtered token
+
+**Merged-kind admission**:
+A token position that names a merged kind by its declared name
+(`#[tok(WITH_LA)]`), as `gram.y` writes `opt_with: WITH | WITH_LA`. It is the
+only way a rule-final position holds a merged kind. The position keeps the
+merged token's own type, so only the terminal the automaton shifts changes.
+_Avoid_: Twin, _LA arm, admitted token
 
 **Prefix acceptance**:
 A Recursa-parser root accepts once the root type is reduced and the lookahead

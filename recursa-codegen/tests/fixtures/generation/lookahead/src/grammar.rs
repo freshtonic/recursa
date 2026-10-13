@@ -213,3 +213,33 @@ recursa::ast_node! {
         pub text: IdentText,
     }
 }
+
+// merged-admission-start: the lookahead-filter unit tests cut this block together with the
+// `lookahead` declaration, without which the merged kind these rules name does not exist.
+
+recursa::ast_node! {
+    /// gram.y's `any_with: WITH | WITH_LA` shape (gram.y 11692), the one position the
+    /// substitution pass cannot reach: a marker rule that ends in the filtered token, whose own
+    /// rule therefore says nothing about what follows it. The author names the merged kind at the
+    /// site, as gram.y does, and the twin exists because what follows the marker may be a name
+    /// spelled `like` or `between`.
+    #[derive(Debug, Clone)]
+    pub enum AnyNot {
+        #[tok(NOT)]
+        Plain,
+        #[tok(NOT_LA)]
+        Merged,
+    }
+}
+
+recursa::ast_node! {
+    /// `any_not name`: the admission in use, `gram.y`'s `any_with cte_list`.
+    #[derive(Debug, Clone)]
+    #[tok(this, SEMI)]
+    pub struct Marked {
+        pub mark: AnyNot,
+        pub name: Ident,
+    }
+}
+
+// merged-admission-end
