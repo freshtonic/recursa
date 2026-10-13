@@ -53,7 +53,7 @@ use crate::source_model::{
     AttachedFixedSyntax, ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
     NodeBody as SourceNodeBody, PrecedenceKindReference, PrecedenceOwner, PrettyBreak, PrettyGroup,
     PrettyHints, PrettySeparatorPosition, PrettySpacing, PrettyTrailingSeparator,
-    SemanticFieldProjection, SourceModel, TokenDefinitionKind,
+    SemanticFieldProjection, SourceModel, TokenDefinitionKind, UnterminatedPolicy,
 };
 use crate::{PrecedenceAssociativity, PrecedenceLevelId};
 

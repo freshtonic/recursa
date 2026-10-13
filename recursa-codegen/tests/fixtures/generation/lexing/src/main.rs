@@ -608,6 +608,62 @@ fn main() {
         recursa::Span::new(0, 2).unwrap()
     );
 
+    // `unterminated = to_end_of_input` leaves a terminated region unchanged.
+    let tolerated_dollar_terminated = grammar::lex("~~tag~~body~~tag~~");
+    assert_eq!(tolerated_dollar_terminated.errors().count(), 0);
+    let tolerated_dollar_terminated = tolerated_dollar_terminated.tokens().next().unwrap();
+    assert_eq!(
+        tolerated_dollar_terminated.kind(),
+        grammar::TokenKind::TildeRegion
+    );
+    assert_eq!(tolerated_dollar_terminated.text(), "~~tag~~body~~tag~~");
+    assert_eq!(
+        tolerated_dollar_terminated.span(),
+        recursa::Span::new(0, 18).unwrap()
+    );
+
+    // Without a closing copy of the opener, the tolerant region succeeds to end of input
+    // instead of reporting RCA4001: no error, and the token's text and span run from the
+    // opener through end of input.
+    let tolerated_dollar = grammar::lex("~~tag~~body");
+    assert_eq!(tolerated_dollar.errors().count(), 0);
+    let tolerated_dollar = tolerated_dollar.tokens().next().unwrap();
+    assert_eq!(tolerated_dollar.kind(), grammar::TokenKind::TildeRegion);
+    assert_eq!(tolerated_dollar.text(), "~~tag~~body");
+    assert_eq!(
+        tolerated_dollar.span(),
+        recursa::Span::new(0, 11).unwrap()
+    );
+
+    // A tolerant `nested` matcher still honors depth when the closer does exist.
+    let tolerated_nested_terminated = grammar::lex("<<outer <<inner>> tail>>");
+    assert_eq!(tolerated_nested_terminated.errors().count(), 0);
+    let tolerated_nested_terminated = tolerated_nested_terminated.tokens().next().unwrap();
+    assert_eq!(
+        tolerated_nested_terminated.kind(),
+        grammar::TokenKind::ToleratedNestedRegion
+    );
+    assert_eq!(
+        tolerated_nested_terminated.text(),
+        "<<outer <<inner>> tail>>"
+    );
+    assert_eq!(
+        tolerated_nested_terminated.span(),
+        recursa::Span::new(0, 24).unwrap()
+    );
+
+    // Without a closer anywhere, the tolerant nested region succeeds to end of input instead
+    // of reporting RCA4002.
+    let tolerated_nested = grammar::lex("<<outer");
+    assert_eq!(tolerated_nested.errors().count(), 0);
+    let tolerated_nested = tolerated_nested.tokens().next().unwrap();
+    assert_eq!(
+        tolerated_nested.kind(),
+        grammar::TokenKind::ToleratedNestedRegion
+    );
+    assert_eq!(tolerated_nested.text(), "<<outer");
+    assert_eq!(tolerated_nested.span(), recursa::Span::new(0, 7).unwrap());
+
     let declarative = grammar::lex(":NULL :true :FaLsE :'TRUE' :\"FALSE\" !=--comment\n!=-");
     assert_eq!(declarative.errors().count(), 0);
     let declarative = declarative.tokens().collect::<Vec<_>>();

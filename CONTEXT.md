@@ -28,6 +28,10 @@ _Avoid_: Identifier marker, keyword token type
 A centrally declared, generator-owned source scanner selected from the fixed vocabulary of same-delimiter regions, nested regions, next-scalar exclusion, operator runs, and physical-line regions. Its configuration is data in the token grammar; authored callbacks do not define its scanning algorithm.
 _Avoid_: Custom lexer callback, inline scanner
 
+**Unterminated region**:
+A same-delimiter or nested region whose closer never arrives before end of input. By default the match fails; a matcher that opts into `unterminated = to_end_of_input` succeeds instead, with its token running from the opener through end of input.
+_Avoid_: EOF fallback, tolerant lexer mode
+
 **Lexical final extent**:
 The complete byte range proposed by a lexical matcher after applying its closed scanning rules. Arbitration compares final extent before fixed-token status and explicit priority, independently of declaration order.
 _Avoid_: Starter regex length, declaration precedence
