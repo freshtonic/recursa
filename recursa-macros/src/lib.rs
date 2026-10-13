@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Item, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 38;
+const PRIVATE_PROTOCOL: u32 = 39;
 
 /// Reports the retired concrete-Node authoring surface.
 ///

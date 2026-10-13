@@ -292,6 +292,22 @@ The Recursa parser's runtime stack of semantic values only, kept apart from the
 automaton's state stack and from occurrence provenance.
 _Avoid_: Symbol stack, union stack
 
+**Lookahead filter**:
+A token-grammar declaration (`lookahead { MERGED = TOKEN before { TRIGGER, ...
+} }`) that makes the parser's token feed present one lexed token as a distinct
+merged kind whenever the next token is a trigger, so that a grammar needing two
+tokens of lookahead at that point stays LALR(1). The substitution is absolute:
+where the merged kind applies it is the only terminal looked up.
+_Avoid_: Token rewrite, scanner hack, two-token lookahead
+
+**Merged kind**:
+The token kind a lookahead filter presents in place of its source token. It is
+never lexed and never a trigger, it spells like the token it merges, and a
+grammar position that admits the source token where a trigger may follow it
+must admit the merged kind as well. A state with no action for a merged kind
+reports a syntax error on that token; the source terminal is never retried.
+_Avoid_: Lookahead token, _LA alias, filtered token
+
 **Prefix acceptance**:
 A Recursa-parser root accepts once the root type is reduced and the lookahead
 has no shift action; a shiftable lookahead always shifts.
