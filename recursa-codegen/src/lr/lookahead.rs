@@ -5,28 +5,60 @@
 //! token feed read `TOKEN` as `MERGED` whenever the next record is a trigger. This pass rewrites
 //! the lowered rules so that the automaton expects what the feed produces. It runs inside
 //! [`lower`] after every type rule exists and before the start rules
-//! are added, over FIRST and FOLLOW of the *unsubstituted* grammar, because the feed decides on
-//! lexed kinds and a merged kind is never a trigger.
+//! are added, over FIRST of the *unsubstituted* grammar, because the feed decides on lexed kinds
+//! and a merged kind is never a trigger.
 //!
 //! # The substitution rule
 //!
-//! For every rule `A -> α TOKEN β` let `next` be the terminals that can follow `TOKEN`:
-//! `FIRST(β)`, plus `FOLLOW(A)` when `β` is nullable, where FOLLOW is seeded with `$end` for
-//! every grammar type that gets a start state. The decision is the same at every position of
-//! the rule, whether `TOKEN` ends it or not:
+//! For every rule `A -> α TOKEN β` the decision is taken over `FIRST(β)` alone — the terminals
+//! the *same rule* can put after `TOKEN`:
 //!
-//! - `next` holds no trigger: the position keeps `TOKEN`.
-//! - `next` holds only triggers: the position becomes `MERGED`.
-//! - `next` holds both: the position is twinned. The rule is emitted once for `TOKEN` and once
-//!   for each applicable merged kind at that position, as gram.y writes `NOT a_expr |
-//!   NOT_LA a_expr` by hand beside `a_expr NOT_LA LIKE a_expr`. If several disjoint filters merge
-//!   the same source token, every applicable merged kind gets a sibling as well. The twins are
-//!   conflict-free by construction: the automaton chooses between them by the terminal it shifts,
-//!   never by a lookahead, and every state a twin leads to has the items of the state the original
-//!   leads to, so what FOLLOW or FIRST cannot tell apart is decided at run time by the feed, which
-//!   is exactly what the declaration promises. Because every grammar type is an entry point,
-//!   `$end` is in the FOLLOW of every type nonterminal, so a rule of a type that ends in `TOKEN`
-//!   gets its twin whenever a trigger can follow the type at all.
+//! - `FIRST(β)` holds no trigger: the position keeps `TOKEN`.
+//! - `FIRST(β)` holds only triggers and `β` is not nullable: the position becomes `MERGED`, as
+//!   `gram.y` writes `WITH_LA TIME ZONE` and `NULLS_LA FIRST_P`.
+//! - `FIRST(β)` holds a trigger beside another terminal, or `β` is nullable: the position is
+//!   twinned. The rule is emitted once for `TOKEN` and once for each applicable merged kind at
+//!   that position, as gram.y writes `NOT a_expr | NOT_LA a_expr` by hand beside
+//!   `a_expr NOT_LA LIKE a_expr`. If several disjoint filters merge the same source token, every
+//!   applicable merged kind gets a sibling as well. The twins are conflict-free by construction:
+//!   the automaton chooses between them by the terminal it shifts, never by a lookahead, and
+//!   every state a twin leads to has the items of the state the original leads to, so what FIRST
+//!   cannot tell apart is decided at run time by the feed, which is exactly what the declaration
+//!   promises.
+//!
+//! A nullable `β` always keeps the source token because `FIRST(β)` does not describe what
+//! follows the rule when `β` derives nothing; that is `FOLLOW(A)`, and **`FOLLOW` never drives a
+//! substitution** (see "Why FOLLOW is not enough"). A nullable `β` whose `FIRST` holds a trigger
+//! therefore mixes the two: the trigger earns the merged twin, and the empty derivation keeps the
+//! plain one.
+//!
+//! # Why FOLLOW is not enough
+//!
+//! A rule-final `TOKEN` has an empty `β`, so a pass that decided over `FOLLOW(A)` decided over
+//! the terminals that follow `A` *anywhere in the grammar*. For a keyword-admission nonterminal
+//! such as `ColLabelText -> NOT`, `FOLLOW` reaches nearly every trigger, so such a pass derived
+//! `ColLabelText -> NOT_LA`, `ColIdText -> WITHOUT_LA` and `ColLabelText -> FORMAT_LA` — twins
+//! `gram.y` never writes. `gram.y` has no `_LA` token in `unreserved_keyword`,
+//! `col_name_keyword`, `type_func_name_keyword`, `reserved_keyword`, `bare_label_keyword`,
+//! `ColId`, `ColLabel` or `NonReservedWord`; it admits a merged kind only where it names one by
+//! hand. Those FOLLOW-driven twins are what made a pre-19 PostgreSQL build accept
+//! `COPY t TO STDOUT (FORMAT json)` (freshtonic/pg-sql#87). FOLLOW is therefore not consulted at
+//! all: a rule-final `TOKEN` keeps the source token unless the grammar names the merged kind at
+//! that site.
+//!
+//! # Naming a merged kind at a site
+//!
+//! A token position names a merged kind by its declared name — `#[tok(WITH_LA)]`,
+//! `#[tok(NOT_LA, LIKE, this)]` — the way `gram.y` writes `opt_with: WITH | WITH_LA`,
+//! `any_with: WITH | WITH_LA`, `utility_option_name: ... | FORMAT_LA` and
+//! `opt_nulls_order: NULLS_LA FIRST_P`. Such a position carries the merged terminal from
+//! lowering (the LR lowering pass reads the site's admitted merged kind), so this pass never
+//! sees its source token and never revisits it. A name that is neither a token nor a declared
+//! merged kind is RCA3106; a `#[sep(...)]` separator cannot admit one, which is RCA3153.
+//!
+//! A declaration whose merged kind no site ever admits and no `FIRST` ever substitutes is not an
+//! error: the filter still fires at run time, and the merged kind no state has an action for is
+//! a syntax error there — which is what PostgreSQL reports for the same input.
 //!
 //! A twin is a clone of its original: same action, value pops, precedence, fold and tail
 //! decision, so the reduce dispatcher and the renderer treat it as one more rule of the same
@@ -47,7 +79,7 @@
 //! the LR grammar of such a grammar identical to what it was before the pass existed.
 
 use super::automaton::TerminalSet;
-use super::{LrGrammar, NonterminalId, Rule, Symbol, TerminalFilter, TerminalId};
+use super::{LrGrammar, Rule, Symbol, TerminalFilter, TerminalId};
 use crate::GrammarDescription;
 
 /// One filter over LR terminals.
@@ -60,15 +92,9 @@ struct Filter {
 
 /// Applies every lookahead filter of `description` to the rules of `grammar`.
 ///
-/// `start_nonterminals` names the nonterminals that receive a start rule, whose FOLLOW is
-/// seeded with the end marker. The rule list is replaced by the substituted rules with every
-/// twin directly after its original; the grammar's terminal filters are recorded for the
-/// packed tables.
-pub(super) fn apply(
-    grammar: &mut LrGrammar,
-    description: &GrammarDescription,
-    start_nonterminals: &[NonterminalId],
-) {
+/// The rule list is replaced by the substituted rules with every twin directly after its
+/// original; the grammar's terminal filters are recorded for the packed tables.
+pub(super) fn apply(grammar: &mut LrGrammar, description: &GrammarDescription) {
     if description.lookahead_filters.is_empty() {
         return;
     }
@@ -89,7 +115,6 @@ pub(super) fn apply(
 
     let nullable = grammar.nullable_nonterminals();
     let first = first_sets(grammar, &nullable);
-    let follow = follow_sets(grammar, &nullable, &first, start_nonterminals);
     let mut rules = Vec::with_capacity(grammar.rules().len());
     for rule in grammar.rules() {
         let mut substituted = rule.clone();
@@ -105,11 +130,11 @@ pub(super) fn apply(
             if filter_indexes.is_empty() {
                 continue;
             }
-            let (mut next, rest_nullable) =
+            // Only what the same rule puts after the position decides it. A nullable rest
+            // leaves the decision to FOLLOW, which this pass never consults, so the position
+            // keeps the source token for that derivation.
+            let (next, rest_nullable) =
                 first_of_sequence(&rule.rhs[position + 1..], &nullable, &first, width);
-            if rest_nullable {
-                next.union_assign(&follow[rule.lhs.index()]);
-            }
             let mut choices = Vec::new();
             let mut trigger_union = TerminalSet::empty(width);
             for index in filter_indexes {
@@ -122,9 +147,10 @@ pub(super) fn apply(
             if choices.is_empty() {
                 continue;
             }
-            let has_base = next
-                .iter()
-                .any(|candidate| !trigger_union.contains(candidate));
+            let has_base = rest_nullable
+                || next
+                    .iter()
+                    .any(|candidate| !trigger_union.contains(candidate));
             if choices.len() == 1 && !has_base {
                 substituted.rhs[position] = Symbol::Terminal(choices[0]);
             } else {
@@ -216,39 +242,6 @@ fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
     first
 }
 
-/// Computes FOLLOW of every nonterminal, seeding the end marker into every start nonterminal.
-fn follow_sets(
-    grammar: &LrGrammar,
-    nullable: &[bool],
-    first: &[TerminalSet],
-    start_nonterminals: &[NonterminalId],
-) -> Vec<TerminalSet> {
-    let width = grammar.terminal_count();
-    let mut follow = vec![TerminalSet::empty(width); grammar.nonterminal_count()];
-    for start in start_nonterminals {
-        follow[start.index()].insert(grammar.end_marker());
-    }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for rule in grammar.rules() {
-            for (position, symbol) in rule.rhs.iter().enumerate() {
-                let Symbol::Nonterminal(id) = symbol else {
-                    continue;
-                };
-                let (set, rest_nullable) =
-                    first_of_sequence(&rule.rhs[position + 1..], nullable, first, width);
-                changed |= follow[id.index()].union_assign(&set);
-                if rest_nullable {
-                    let lhs_follow = follow[rule.lhs.index()].clone();
-                    changed |= follow[id.index()].union_assign(&lhs_follow);
-                }
-            }
-        }
-    }
-    follow
-}
-
 #[cfg(test)]
 mod tests {
     //! The lookahead-filter tests: the normalized grammar carries the declaration, the
@@ -262,7 +255,7 @@ mod tests {
     use super::super::precedence::PrecedenceResolver;
     use super::super::report::LrDiagnostic;
     use super::super::tables::{LrTables, TableAction, simulate};
-    use super::super::{LrGrammar, RuleId, TerminalId};
+    use super::super::{LrGrammar, NonterminalId, RuleId, TerminalId};
     use crate::materialization::LoweredGrammar;
     use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
 
@@ -276,6 +269,10 @@ mod tests {
     /// while the filter that declares the kind does.
     const MERGED_LEVEL: &str = ", NOT_LA }";
 
+    /// The first and last line of the fixture's merged-kind admission block, whose rules name
+    /// the merged kind and so exist only while the filter that declares it does.
+    const ADMISSION: (&str, &str) = ("// merged-admission-start", "// merged-admission-end");
+
     /// The `NOT BETWEEN` fixture with or without its `lookahead` declaration.
     fn not_between_grammar(lookahead: bool) -> String {
         assert_eq!(FIXTURE.matches(FILTER).count(), 1);
@@ -283,7 +280,17 @@ mod tests {
         if lookahead {
             FIXTURE.to_owned()
         } else {
-            FIXTURE.replace(FILTER, "").replace(MERGED_LEVEL, " }")
+            let start = FIXTURE
+                .find(ADMISSION.0)
+                .expect("the fixture has an admission block");
+            let end = FIXTURE
+                .find(ADMISSION.1)
+                .expect("the fixture's admission block is closed")
+                + ADMISSION.1.len();
+            let without_admission = format!("{}{}", &FIXTURE[..start], &FIXTURE[end..]);
+            without_admission
+                .replace(FILTER, "")
+                .replace(MERGED_LEVEL, " }")
         }
     }
 
@@ -355,7 +362,7 @@ recursa::ast_node! {{
                 )
             });
         grammar
-            .rules_of(super::NonterminalId::new(id as u32))
+            .rules_of(NonterminalId::new(id as u32))
             .iter()
             .map(|rule| grammar.render_rule(*rule))
             .collect()
@@ -1185,7 +1192,13 @@ recursa::ast_node! {
     }
 
     #[test]
-    fn a_token_ending_a_rule_is_twinned_only_when_its_follow_mixes_triggers_and_others() {
+    fn a_rule_final_token_is_never_twinned_by_the_follow_of_its_rule() {
+        // `Negated -> Name NOT` ends in the filtered token, so nothing inside the rule follows
+        // it; what may follow is `FOLLOW(Negated)`, which `Pair` fills with `BETWEEN`, a
+        // trigger. FOLLOW is a property of the whole grammar, not of the site, so it never
+        // admits a merged kind: `gram.y` keeps every `_LA` token out of `ColId`, `ColLabel` and
+        // every keyword category, and admits one only where it names one. `Negated` therefore
+        // keeps `NOT` alone, and `Plain`, whose FOLLOW holds no trigger, is unchanged.
         let source = small_grammar(
             r#"recursa::ast_node! {
 
@@ -1230,12 +1243,7 @@ recursa::ast_node! {
         );
         let (lowered, result) = lr(&source);
         let grammar = result.expect("lowers");
-        // `Negated` is followed by `BETWEEN` (a trigger) and by a name or `$end`: both twins.
-        assert_eq!(
-            rules_of(&grammar, "Negated"),
-            ["Negated -> Name NOT", "Negated -> Name NOT_LA"]
-        );
-        // `Plain` is followed by a name or `$end` only: the token stays.
+        assert_eq!(rules_of(&grammar, "Negated"), ["Negated -> Name NOT"]);
         assert_eq!(rules_of(&grammar, "Plain"), ["Plain -> Name NOT"]);
         let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
         assert!(
@@ -1244,37 +1252,108 @@ recursa::ast_node! {
             automaton.conflicts()
         );
         let tables = LrTables::pack(&grammar, &automaton);
-        let pair = lowered
-            .grammar
-            .types
-            .iter()
-            .position(|description| description.name == "Pair")
-            .expect("Pair");
-        let start = automaton
-            .start_state(crate::TypeId::new(pair as u32))
-            .expect("start")
-            .index() as u32;
+        let start = start_state(&lowered, &automaton, "Pair");
         let name = terminal(&grammar, "NameText");
-        let trace = simulate(
-            &grammar,
-            &tables,
-            start,
-            &[
-                name,
-                terminal(&grammar, "NOT_LA"),
-                terminal(&grammar, "BETWEEN"),
-            ],
-        )
-        .expect("`a not between` parses");
+        let (not, not_la) = (terminal(&grammar, "NOT"), terminal(&grammar, "NOT_LA"));
+
+        // `a not between` is now a syntax error on the `not` the feed merged, exactly where
+        // PostgreSQL reports it, because no rule of this grammar admits `NOT_LA`.
+        let presented = feed(&tables, &[name, not, terminal(&grammar, "BETWEEN")]);
+        assert_eq!(presented, [name, not_la, terminal(&grammar, "BETWEEN")]);
+        let error = simulate(&grammar, &tables, start, &presented)
+            .expect_err("`a not between` has no reading of this grammar");
+        assert_eq!(error.position, 1);
+
+        // `a not b` still parses: no trigger, no merge.
+        let presented = feed(&tables, &[name, not, name]);
+        assert_eq!(presented, [name, not, name]);
+        let trace = simulate(&grammar, &tables, start, &presented).expect("`a not b` parses");
         assert_eq!(trace.consumed, 3);
-        let trace = simulate(
-            &grammar,
-            &tables,
-            start,
-            &[name, terminal(&grammar, "NOT"), name],
-        )
-        .expect("`a not b` parses");
+    }
+
+    #[test]
+    fn a_site_that_names_a_merged_kind_admits_it_there_and_only_there() {
+        // The admission form, `gram.y`'s `opt_with: WITH | WITH_LA`: the token position names
+        // the merged kind by its declared name, so lowering puts the merged terminal there and
+        // the substitution pass never revisits it. `Negated` admits `NOT_LA` and `Plain`, the
+        // same shape written with `NOT`, does not.
+        let source = small_grammar(
+            r#"recursa::ast_node! {
+
+    #[tok(this, NOT_LA)]
+    pub struct Negated {
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Pair {
+        pub left: Negated,
+        pub right: Tail,
+    }
+}
+
+recursa::ast_node! {
+
+    pub enum Tail {
+        Between { mark: BetweenMark },
+        Name { name: Name },
+    }
+}
+
+recursa::ast_node! {
+
+    #[tok(this, NOT)]
+    pub struct Plain {
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+
+    pub struct Other {
+        pub left: Plain,
+        pub right: Name,
+    }
+}
+"#,
+        );
+        let (lowered, result) = lr(&source);
+        let grammar = result.expect("lowers");
+        assert_eq!(rules_of(&grammar, "Negated"), ["Negated -> Name NOT_LA"]);
+        assert_eq!(rules_of(&grammar, "Plain"), ["Plain -> Name NOT"]);
+        let automaton = Automaton::build(&grammar, &NoPrecedence, AutomatonOptions::default());
+        assert!(
+            automaton.conflicts().is_empty(),
+            "{:?}",
+            automaton.conflicts()
+        );
+        let tables = LrTables::pack(&grammar, &automaton);
+        let start = start_state(&lowered, &automaton, "Pair");
+        let name = terminal(&grammar, "NameText");
+        let (not, not_la) = (terminal(&grammar, "NOT"), terminal(&grammar, "NOT_LA"));
+
+        // `a not between` parses through the admission.
+        let presented = feed(&tables, &[name, not, terminal(&grammar, "BETWEEN")]);
+        assert_eq!(presented, [name, not_la, terminal(&grammar, "BETWEEN")]);
+        let trace = simulate(&grammar, &tables, start, &presented).expect("`a not between` parses");
         assert_eq!(trace.consumed, 3);
+        assert!(
+            trace
+                .reductions
+                .iter()
+                .any(|reduction| reduction == "Negated -> Name NOT_LA"),
+            "{:?}",
+            trace.reductions
+        );
+
+        // `a not b` is the error now: the admitted position wants the merged kind, which the
+        // feed only produces before a trigger.
+        let presented = feed(&tables, &[name, not, name]);
+        assert_eq!(presented, [name, not, name]);
+        simulate(&grammar, &tables, start, &presented)
+            .expect_err("`a not b` has no reading of this grammar");
     }
 
     #[test]

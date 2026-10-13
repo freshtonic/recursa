@@ -1087,6 +1087,35 @@ impl Materializer {
             .expect("every source token definition has a lexical KindId correlation")
     }
 
+    /// Resolves the lowered kind of one `lookahead { ... }` merged kind by its declared name.
+    ///
+    /// A merged kind has no token definition, so its [`KindId`](crate::KindId) comes from the
+    /// lexical plan, which plans one merged kind per compiled filter.
+    fn merged_kind_by_name(&self, name: &str) -> crate::KindId {
+        self.lexical_plan()
+            .token_kinds
+            .iter()
+            .find_map(|kind| match &kind.identity {
+                crate::lexical::TokenKindIdentity::Merged(merged) if merged.name == name => {
+                    Some(kind.id)
+                }
+                _ => None,
+            })
+            .expect("every lookahead filter plans one merged kind")
+    }
+
+    /// The merged kind one token use admits at its own position, if the grammar named one there
+    /// (`docs/table-driven-parsing.md`, "Lookahead filters").
+    fn admitted_merged_kind(
+        &self,
+        token_use: &crate::source_model::TokenUse,
+    ) -> Option<crate::KindId> {
+        token_use
+            .admitted_merged
+            .as_deref()
+            .map(|name| self.merged_kind_by_name(name))
+    }
+
     /// Expands seed Nodes transitively and publishes only a complete materialization plan.
     fn run(mut self, lexical_diagnostics: Vec<LexicalDiagnostic>) -> MaterializationReport {
         let seeds = self
@@ -2702,21 +2731,10 @@ impl Materializer {
                         }
                         // A merged kind has no token definition, so its KindId comes from the
                         // lexical plan by the name the `lookahead` filter declares.
-                        crate::source_model::PrecedenceKindReference::Merged(filter) => {
-                            let name = &self.source_model().lookahead_filters[*filter].name;
-                            self.lexical_plan()
-                                .token_kinds
-                                .iter()
-                                .find_map(|kind| match &kind.identity {
-                                    crate::lexical::TokenKindIdentity::Merged(merged)
-                                        if &merged.name == name =>
-                                    {
-                                        Some(kind.id)
-                                    }
-                                    _ => None,
-                                })
-                                .expect("every lookahead filter plans one merged kind")
-                        }
+                        crate::source_model::PrecedenceKindReference::Merged(filter) => self
+                            .merged_kind_by_name(
+                                &self.source_model().lookahead_filters[*filter].name,
+                            ),
                     };
                     if !kinds.contains(&kind) {
                         kinds.push(kind);
@@ -3441,18 +3459,20 @@ impl Materializer {
         role: &str,
         index: usize,
     ) -> SiteId {
-        let (target, container, site) = match syntax {
+        let (target, container, admitted_merged, site) = match syntax {
             MaterializedAttachedFixedSyntax::Required(token_use) => {
                 let token_use = &self.source_model().token_uses[token_use.index()];
                 (
                     fixed_types[&self.kind_for_definition(token_use.definition)],
                     ContainerShape::Direct,
+                    self.admitted_merged_kind(token_use),
                     &token_use.site,
                 )
             }
             MaterializedAttachedFixedSyntax::Optional { tokens, site } => (
                 optional_fixed_types[&(application.id, tokens[0])],
                 ContainerShape::optional(ContainerShape::Direct),
+                None,
                 site,
             ),
         };
@@ -3470,7 +3490,10 @@ impl Materializer {
                 location,
             ),
         ));
-        grammar.push_site(ParseSite::new(owner, target, declaration, container))
+        grammar.push_site(
+            ParseSite::new(owner, target, declaration, container)
+                .with_admitted_merged(admitted_merged),
+        )
     }
 
     /// Projects one authored boolean presence into a fixed-only optional sequence inside a required envelope.
@@ -3500,12 +3523,17 @@ impl Materializer {
                 ),
                 location,
             ));
-            sites.push(grammar.push_site(ParseSite::new(
-                owner,
-                fixed_types[&self.kind_for_definition(token_use.definition)],
-                declaration,
-                ContainerShape::Direct,
-            )));
+            sites.push(
+                grammar.push_site(
+                    ParseSite::new(
+                        owner,
+                        fixed_types[&self.kind_for_definition(token_use.definition)],
+                        declaration,
+                        ContainerShape::Direct,
+                    )
+                    .with_admitted_merged(self.admitted_merged_kind(token_use)),
+                ),
+            );
         };
 
         let mut sequence_sites = Vec::new();
@@ -3598,12 +3626,15 @@ impl Materializer {
                     ),
                     location,
                 ));
-                grammar.push_site(ParseSite::new(
-                    unit.sequence,
-                    fixed_types[&self.kind_for_definition(token_use.definition)],
-                    declaration,
-                    ContainerShape::Direct,
-                ))
+                grammar.push_site(
+                    ParseSite::new(
+                        unit.sequence,
+                        fixed_types[&self.kind_for_definition(token_use.definition)],
+                        declaration,
+                        ContainerShape::Direct,
+                    )
+                    .with_admitted_merged(self.admitted_merged_kind(token_use)),
+                )
             })
             .collect()
     }
@@ -3697,21 +3728,10 @@ impl Materializer {
                         crate::source_model::LrLookaheadReference::Token(definition) => {
                             self.kind_for_definition(*definition)
                         }
-                        crate::source_model::LrLookaheadReference::Merged(filter) => {
-                            let name = &self.source_model().lookahead_filters[*filter].name;
-                            self.lexical_plan()
-                                .token_kinds
-                                .iter()
-                                .find_map(|kind| match &kind.identity {
-                                    crate::lexical::TokenKindIdentity::Merged(merged)
-                                        if &merged.name == name =>
-                                    {
-                                        Some(kind.id)
-                                    }
-                                    _ => None,
-                                })
-                                .expect("every lookahead filter plans one merged kind")
-                        }
+                        crate::source_model::LrLookaheadReference::Merged(filter) => self
+                            .merged_kind_by_name(
+                                &self.source_model().lookahead_filters[*filter].name,
+                            ),
                     })
                     .collect(),
                 expected: resolution.expected,
@@ -3750,12 +3770,15 @@ impl Materializer {
                         format!("{}::element{index}", application.display_name),
                         location,
                     ));
-                    grammar.push_site(ParseSite::new(
-                        owner,
-                        fixed_types[&self.kind_for_definition(token_use.definition)],
-                        declaration,
-                        ContainerShape::Direct,
-                    ))
+                    grammar.push_site(
+                        ParseSite::new(
+                            owner,
+                            fixed_types[&self.kind_for_definition(token_use.definition)],
+                            declaration,
+                            ContainerShape::Direct,
+                        )
+                        .with_admitted_merged(self.admitted_merged_kind(token_use)),
+                    )
                 }
                 MaterializedElement::OptionalFixedTokenGroup { tokens, site, .. } => {
                     let location =

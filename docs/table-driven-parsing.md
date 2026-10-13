@@ -63,14 +63,49 @@ PostgreSQL rejects `COPY t TO STDOUT (FORMAT json)` through release 18 because
 `copy_generic_opt_elem: ColLabel copy_generic_opt_arg` has no `FORMAT_LA` arm,
 and a faithful grammar must reject it as well.
 
-Generation carries the author's burden where it can. Lowering substitutes merged
-kinds into the lowered rules over FIRST and FOLLOW of the unsubstituted grammar:
-a position whose continuations are all triggers becomes the merged kind, a
-position whose continuations mix triggers and others is emitted twice, once per
-kind, and a position no trigger can follow keeps the source token. Because FIRST
-and FOLLOW over-approximate, every position a trigger can reach has its merged
-form, so absoluteness rejects only what the grammar never admitted. Nodes keep
-writing the source token; see
+**A merged kind is admitted only where the grammar names it.** Lowering
+substitutes merged kinds into the lowered rules over FIRST of the unsubstituted
+grammar, which is what the *same rule* can put after the position:
+
+- a position whose rest can only begin with a trigger becomes the merged kind,
+  as `gram.y` writes `WITH_LA TIME ZONE`, `WITHOUT_LA TIME ZONE` and
+  `NULLS_LA FIRST_P`;
+- a position whose rest can begin with a trigger or with something else, which
+  includes every rest that can derive nothing, is emitted twice, once per kind,
+  as `gram.y` writes `a_expr: NOT a_expr | NOT_LA a_expr` by hand;
+- a position no trigger can follow inside its own rule keeps the source token.
+
+FOLLOW never drives a substitution. A rule-final token has nothing after it in
+its own rule, so a pass that consulted FOLLOW decided over the terminals that
+follow the whole nonterminal *anywhere in the grammar*. For a keyword-admission
+rule such as `ColLabelText -> NOT` that reaches nearly every trigger, so such a
+pass derived `ColLabelText -> NOT_LA`, `ColIdText -> WITHOUT_LA` and
+`ColLabelText -> FORMAT_LA` — arms `gram.y` never writes, and the reason a
+pre-19 build accepted `COPY t TO STDOUT (FORMAT json)`. `gram.y` has no `_LA`
+token in `unreserved_keyword`, `col_name_keyword`, `type_func_name_keyword`,
+`reserved_keyword`, `bare_label_keyword`, `ColId`, `ColLabel` or
+`NonReservedWord`.
+
+A rule-final token therefore keeps the source token unless the grammar names the
+merged kind at that site. **A token position names a merged kind by its declared
+name**, `#[tok(WITH_LA)]` or `#[tok(NOT_LA, LIKE, this)]`, the way `gram.y`
+writes `opt_with: WITH | WITH_LA`, `any_with: WITH | WITH_LA`,
+`utility_option_name: ... | FORMAT_LA` and `opt_nulls_order: NULLS_LA FIRST_P`.
+Such a position carries the merged terminal and nothing else; the substitution
+pass never revisits it. The position keeps the merged token's own type, so the
+value, the spelling, the span and the Pretty rendering are that token's — a
+merged kind is the same record read differently, not a second token. A name that
+is neither a token nor a declared merged kind is `RCA3106`. A `#[sep(...)]`
+separator cannot admit a merged kind, because a separator normalizes to a type
+the repetition refers to rather than to a position of its own; naming one there
+is `RCA3153`.
+
+A declaration whose merged kind no site admits and no FIRST substitutes is not
+an error. The filter still fires, and the merged kind no state has an action for
+is a syntax error there, which is the verdict PostgreSQL reaches for the same
+input.
+
+Nodes otherwise keep writing the source token; see
 [the lowering pass](../recursa-codegen/src/lr/lookahead.rs).
 
 The merged kind is a token kind of the grammar that is never lexed and never a
