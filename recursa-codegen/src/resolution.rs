@@ -32,9 +32,9 @@ use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
 };
 use crate::source_syntax::{
-    CaptureMode, CargoCfgSnapshot, GrammarConfigSyntax, capture_override, resolve_configuration_scale,
+    CaptureMode, CargoCfgSnapshot, GrammarConfigSyntax, capture_override,
     configured_attribute_metas as configured_metas, item_attributes as item_attrs, path_text,
-    span_range,
+    resolve_configuration_scale, span_range,
 };
 
 /// Derives the resolution id while resolving typed grammar-semantic references.
