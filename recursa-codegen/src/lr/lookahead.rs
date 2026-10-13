@@ -54,7 +54,7 @@
 //! `opt_nulls_order: NULLS_LA FIRST_P`. Such a position carries the merged terminal from
 //! lowering (the LR lowering pass reads the site's admitted merged kind), so this pass never
 //! sees its source token and never revisits it. A name that is neither a token nor a declared
-//! merged kind is RCA3106; a `#[sep(...)]` separator cannot admit one, which is RCA3152.
+//! merged kind is RCA3106; a `#[sep(...)]` separator cannot admit one, which is RCA3153.
 //!
 //! A declaration whose merged kind no site ever admits and no `FIRST` ever substitutes is not an
 //! error: the filter still fires at run time, and the merged kind no state has an action for is
