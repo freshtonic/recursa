@@ -179,7 +179,8 @@ and by nothing else.
   precedence. This reproduces the current binding-power rule exactly, and the
   existing Pretty goldens are the proof. The requirement that the grammar have
   a grouping atom (an atom that encloses `Self` between fixed tokens) is
-  unchanged.
+  unchanged; see "The enclosure proof" below for what counts as fixed syntax
+  and how one atom is selected.
 - **Diagrams.** A variant renders as the rule the author wrote. The
   `atom`/`prefix`/`infix`/`postfix` role labels and binding powers are
   removed. The precedence table is not rendered on rules.
@@ -192,6 +193,42 @@ and by nothing else.
   whose last symbol is its own left-hand side, or whose reduce is a
   left-recursive continuation, clears it. Existing fixtures that reject `1 2`
   and accept a parsed prefix are the proof.
+
+## The enclosure proof
+
+Pretty repairs precedence by parenthesizing an operand, so a Node with an
+operator variant and a declared level must have a grouping atom: a variant with
+no self-recursive operand in an operator or edge role that encloses the Node
+between fixed syntax on both sides. The atom may reach the Node directly
+(`Parenthesized(#[tok(LPAREN, this, RPAREN)] boxed!(Self))`) or through helper
+Nodes, as pg-sql's `ParenthesizedExpr` reaches `Expr` through
+`ParenthesizedOpen`, `ParenContent` and `ParenthesizedClose`. A Node with an
+operator variant and no proven atom is the build error
+"Pretty cannot repair precedence for Node `N` because its grammar has no atom
+that encloses Self between fixed tokens" (`RCA9105`).
+
+**What counts as fixed syntax.** A helper Node on the path is fixed syntax when
+every one of its variants expands to the *same rendered fixed syntax*: the same
+number of fixed entries, each with the same spelling, the same mechanical
+spacing class and the same placement. The comparison is over what the entries
+render, never over how many arms the Node has and never over the token kinds the
+arms name. A Node that names a `lookahead { ... }` merged kind beside the token
+it merges is therefore still fixed syntax — pg-sql's
+`ParenthesizedClose: RPAREN | RPAREN_SELECT_LA`, gram.y's
+`any_with: WITH | WITH_LA` — because a merged-kind admission keeps the merged
+token's own definition and so both arms carry that token's spelling and spacing.
+Two arms that render different syntax (`)` beside `]`) are not fixed syntax, and
+the Node contributes no enclosure.
+
+**How one atom is selected.** Every atom variant that proves an enclosure is a
+candidate. A candidate that reaches the Node directly outranks one that reaches
+it through a helper, because a direct witness is the enum's own authored
+grouping variant. Among the outranking candidates the enclosure must be
+unanimous, compared as rendered fixed syntax again: several atoms that render
+the same enclosure are one answer, which is what admits one atom per close kind.
+Candidates that disagree leave the Node without grouping syntax and so report
+the error above. Pretty never picks one of several disagreeing enclosures
+silently.
 
 ## Diagnostics
 
