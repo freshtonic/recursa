@@ -986,6 +986,11 @@ pub(crate) struct TokenUse {
     pub(crate) definition: TokenDefinitionId,
     /// Supplies the role used to correlate authored source with normalized grammar.
     pub(crate) role: TokenUseRole,
+    /// The authored name of the `lookahead { ... }` merged kind this use names instead of the
+    /// token's own name, as `gram.y` writes `opt_with: WITH | WITH_LA`. The use keeps the
+    /// definition of the token the filter merges, because a merged kind has no spelling of its
+    /// own; only the LR terminal of the position changes. `None` at a use that names a token.
+    pub(crate) admitted_merged: Option<String>,
     /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
 }
@@ -1155,6 +1160,10 @@ pub(crate) enum SourceModelDiagnosticKind {
     UnterminatedOptionWithoutCloser,
     /// An `unterminated = ...` closed-matcher option names a value other than `to_end_of_input`.
     UnterminatedOptionUnknownValue,
+    /// A position that cannot admit a `lookahead { ... }` merged kind names one: a `#[sep(...)]`
+    /// separator, whose normalized form is a type reference shared by every repetition over the
+    /// same separator rather than one grammar position of its own.
+    MergedKindNotAdmissibleHere,
 }
 
 impl SourceModelDiagnosticKind {
@@ -7509,6 +7518,21 @@ impl TokenCatalog {
         self.fixed_by_name.get(name).copied()
     }
 
+    /// The definition of the token a declared merged kind merges, for a token position that
+    /// names the merged kind.
+    ///
+    /// The declarations are read before they are compiled, because a Node's token positions are
+    /// lowered before [`TokenCatalog::compile_lookahead_filters`] validates them; a declaration
+    /// that fails to compile reports its own diagnostic, and its merged kind is reported
+    /// unadmitted by [`SourceModelBuilder::validate_merged_admissions`].
+    fn admitted_merged_token(&self, name: &str) -> Option<TokenDefinitionId> {
+        let filter = self
+            .pending_lookaheads
+            .iter()
+            .find(|filter| filter.merged.name == name)?;
+        self.fixed_definition(&filter.token.name)
+    }
+
     /// Derives the record use from the retained source model and its correlations.
     fn record_use(
         &mut self,
@@ -7516,11 +7540,24 @@ impl TokenCatalog {
         role: TokenUseRole,
         site: SourceSite,
     ) -> TokenUseId {
+        self.record_admitting_use(definition, role, None, site)
+    }
+
+    /// Records one use that names a `lookahead { ... }` merged kind in place of the token the
+    /// filter merges, which stays the use's definition.
+    fn record_admitting_use(
+        &mut self,
+        definition: TokenDefinitionId,
+        role: TokenUseRole,
+        admitted_merged: Option<String>,
+        site: SourceSite,
+    ) -> TokenUseId {
         let id = TokenUseId::next(self.uses.len());
         self.uses.push(TokenUse {
             id,
             definition,
             role,
+            admitted_merged,
             site,
         });
         id
@@ -7534,27 +7571,38 @@ impl TokenCatalog {
         origin: SourceOrigin,
         token: TokenSequenceEntry,
     ) -> Option<GrammarElement> {
-        let (definition, site) = match token {
+        let (definition, admitted_merged, site) = match token {
             TokenSequenceEntry::Definition(spelling) => {
                 let site = source_site(resolved, origin, span_range(spelling.span()));
                 let name = spelling.value();
                 let definition = self
                     .fixed_definition(&name)
                     .expect("fixed definitions are collected before uses");
-                (definition, site)
+                (definition, None, site)
             }
             TokenSequenceEntry::Reference(ident) => {
                 let site = source_site(resolved, origin, span_range(ident.span()));
                 let name = ident.unraw().to_string();
-                let Some(definition) = self.fixed_definition(&name) else {
-                    diagnostics.push(SourceModelDiagnostic {
-                        kind: SourceModelDiagnosticKind::UnresolvedFixedToken,
-                        sites: vec![site],
-                        message: format!("fixed token `{name}` has no string definition"),
-                    });
-                    return None;
-                };
-                (definition, site)
+                match self.fixed_definition(&name) {
+                    Some(definition) => (definition, None, site),
+                    // No token carries the name, so the position admits a merged kind when a
+                    // `lookahead { ... }` declaration declares one by that name, the way
+                    // `gram.y` writes `opt_with: WITH | WITH_LA`. The use keeps the merged
+                    // token's own definition: the record is that token, read differently.
+                    None => match self.admitted_merged_token(&name) {
+                        Some(definition) => (definition, Some(name), site),
+                        None => {
+                            diagnostics.push(SourceModelDiagnostic {
+                                kind: SourceModelDiagnosticKind::UnresolvedFixedToken,
+                                sites: vec![site],
+                                message: format!(
+                                    "`{name}` is neither a fixed token with a string definition                                      nor a merged kind of a `lookahead {{ ... }}` declaration"
+                                ),
+                            });
+                            return None;
+                        }
+                    },
+                }
             }
             TokenSequenceEntry::Optional { tokens, span } => {
                 let group_site = source_site(resolved, origin, span_range(span));
@@ -7579,7 +7627,12 @@ impl TokenCatalog {
             }
             TokenSequenceEntry::This(_) => return None,
         };
-        let token_use = self.record_use(definition, TokenUseRole::FixedElement, site.clone());
+        let token_use = self.record_admitting_use(
+            definition,
+            TokenUseRole::FixedElement,
+            admitted_merged,
+            site.clone(),
+        );
         Some(GrammarElement::FixedToken {
             id: GrammarElementId::next(0),
             token_use,
@@ -7968,10 +8021,26 @@ impl SeparatorPlanner {
             ),
         };
         let Some(definition) = tokens.fixed_definition(&name) else {
+            // A separator is normalized to a type the repetition refers to, not to a grammar
+            // position of its own, so there is nowhere to record an admission; `gram.y` never
+            // separates a repetition by an `_LA` token either.
+            let kind = if tokens.admitted_merged_token(&name).is_some() {
+                SourceModelDiagnosticKind::MergedKindNotAdmissibleHere
+            } else {
+                SourceModelDiagnosticKind::UnresolvedFixedToken
+            };
+            let message = match kind {
+                SourceModelDiagnosticKind::MergedKindNotAdmissibleHere => format!(
+                    "`{name}` is a merged kind of a `lookahead {{ ... }}` declaration, which a                      `#[sep(...)]` separator cannot admit; name the token the filter merges"
+                ),
+                _ => format!(
+                    "`{name}` is neither a fixed token with a string definition nor a merged                      kind of a `lookahead {{ ... }}` declaration"
+                ),
+            };
             diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::UnresolvedFixedToken,
+                kind,
                 sites: vec![site],
-                message: format!("fixed token `{name}` has no string definition"),
+                message,
             });
             return None;
         };
@@ -13426,6 +13495,98 @@ recursa::ast_node! {{
             &unknown_value,
             SourceModelDiagnosticKind::UnterminatedOptionUnknownValue,
             "RCA3151",
+        );
+    }
+
+    #[test]
+    fn merged_kind_admissions_resolve_in_token_positions_and_nowhere_else() {
+        const PRELUDE: &str = r#"recursa::grammar! { module = crate }
+recursa::tokens! {
+    keywords { NOT => "not", LIKE => "like" }
+    punctuation { COMMA => "," }
+    lookahead { NOT_LA = NOT before { LIKE } }
+}
+"#;
+
+        // A token position names the merged kind by its declared name, the way `gram.y` writes
+        // `opt_with: WITH | WITH_LA`. The use keeps the definition of the token the filter
+        // merges, because the record is that token read differently.
+        let admitted = model(&format!(
+            r#"{PRELUDE}recursa::ast_node! {{
+
+    #[tok(NOT_LA, LIKE)]
+    struct Root;
+}}
+"#
+        ));
+        assert!(
+            admitted.source_modeled.is_some(),
+            "{:?}",
+            admitted.diagnostics
+        );
+        let admitted = completed(admitted);
+        let by_name = |name: &str| {
+            admitted
+                .token_definitions
+                .iter()
+                .find(|definition| definition.name == name)
+                .map(|definition| definition.id)
+                .unwrap_or_else(|| panic!("no token definition named {name}"))
+        };
+        let admissions = admitted
+            .token_uses
+            .iter()
+            .filter(|token_use| token_use.admitted_merged.is_some())
+            .map(|token_use| (token_use.definition, token_use.admitted_merged.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(admissions, [(by_name("NOT"), Some("NOT_LA".to_owned()))]);
+
+        // A name that is neither a token nor a declared merged kind names both possibilities.
+        let unknown = model(&format!(
+            r#"{PRELUDE}recursa::ast_node! {{
+
+    #[tok(WITH_LA)]
+    struct Root;
+}}
+"#
+        ));
+        assert!(unknown.source_modeled.is_none());
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::UnresolvedFixedToken,
+            "RCA3106",
+        );
+        assert!(
+            unknown.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains("`WITH_LA`")
+                    && diagnostic.message.contains("merged kind")
+            }),
+            "{:?}",
+            unknown.diagnostics
+        );
+
+        // A `#[sep(...)]` separator normalizes to a type the repetition refers to, not to a
+        // grammar position of its own, so it cannot carry an admission.
+        let separator = model(&format!(
+            r#"{PRELUDE}recursa::ast_node! {{
+
+    struct Root {{
+        #[sep(NOT_LA)]
+        items: zero_or_many!(Item),
+    }}
+}}
+recursa::ast_node! {{
+
+    #[tok(LIKE)]
+    struct Item;
+}}
+"#
+        ));
+        assert!(separator.source_modeled.is_none());
+        assert_code(
+            &separator,
+            SourceModelDiagnosticKind::MergedKindNotAdmissibleHere,
+            "RCA3152",
         );
     }
 

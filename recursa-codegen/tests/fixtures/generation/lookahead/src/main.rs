@@ -176,6 +176,23 @@ macro_rules! drive {
             "a lexing result never holds the merged kind: {lexed_kinds:?}"
         );
         println!("{tag} lexed {:?}", lexed_kinds);
+
+        // The admission in use, `gram.y`'s `any_with: WITH | WITH_LA`: `AnyNot` names the merged
+        // kind at the site, so `not between` reduces the merged arm and `not a` the plain one.
+        // The rule is final, so no FIRST set reaches the trigger; only the admission admits it.
+        for source in ["not between;", "not like;", "not a;"] {
+            let lexed = grammar::lex(source);
+            let mut input = $input(&lexed);
+            let spanned = grammar::Marked::parse_spanned(&mut input).expect("a marked name parses with capture");
+            println!("{tag} marked pretty {source:?} => {:?}", spanned.render());
+            let mut input = $input(&lexed);
+            let parsed = grammar::Marked::parse(&mut input).expect("a marked name parses");
+            println!(
+                "{tag} marked {source:?} => {:?} cursor={}",
+                parsed.into_ast(),
+                input.cursor()
+            );
+        }
         // merged-kind-evidence-end
 
         let source = "a not b; c not between 1 and 2; between";
