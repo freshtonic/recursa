@@ -128,7 +128,7 @@ impl LexTokenIndex for OperatorToken {
 #[derive(Clone, Copy, Debug, Logos)]
 #[logos(extras = LexExtras)]
 enum OperatorClosedToken {
-    #[token("/*", callback = |lexer| lex_nested(lexer, "/*", "*/"), priority = 3)]
+    #[token("/*", callback = |lexer| lex_nested(lexer, "/*", "*/", false), priority = 3)]
     BlockComment,
     #[regex("--", callback = lex_physical_line, allow_greedy = true, priority = 4)]
     LineComment,

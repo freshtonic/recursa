@@ -454,6 +454,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::malformed_lr_conflict_declarations_are_structured_errors --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3150", "RCA3151"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "invalid_unterminated_options_have_structured_diagnostics",
+        command: "cargo test -p recursa-codegen source_model::tests::invalid_unterminated_options_have_structured_diagnostics --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
