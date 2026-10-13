@@ -98,7 +98,7 @@ merged kind is the same record read differently, not a second token. A name that
 is neither a token nor a declared merged kind is `RCA3106`. A `#[sep(...)]`
 separator cannot admit a merged kind, because a separator normalizes to a type
 the repetition refers to rather than to a position of its own; naming one there
-is `RCA3152`.
+is `RCA3153`.
 
 A declaration whose merged kind no site admits and no FIRST substitutes is not
 an error. The filter still fires, and the merged kind no state has an action for

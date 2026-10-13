@@ -461,7 +461,7 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::invalid_unterminated_options_have_structured_diagnostics --locked",
     },
     ProducerEvidence {
-        codes: &["RCA3152"],
+        codes: &["RCA3153"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "merged_kind_admissions_resolve_in_token_positions_and_nowhere_else",

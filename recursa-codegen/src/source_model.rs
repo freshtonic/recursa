@@ -13586,7 +13586,7 @@ recursa::ast_node! {{
         assert_code(
             &separator,
             SourceModelDiagnosticKind::MergedKindNotAdmissibleHere,
-            "RCA3152",
+            "RCA3153",
         );
     }
 
