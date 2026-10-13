@@ -760,6 +760,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::RejectPairConfiguredOut => "RCA3149",
         SourceModelDiagnosticKind::UnterminatedOptionWithoutCloser => "RCA3150",
         SourceModelDiagnosticKind::UnterminatedOptionUnknownValue => "RCA3151",
+        SourceModelDiagnosticKind::ElementWiseAttachmentOnRepeatedField => "RCA3152",
     }
 }
 

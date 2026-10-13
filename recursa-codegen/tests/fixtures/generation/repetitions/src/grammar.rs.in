@@ -301,7 +301,7 @@ recursa::ast_node! {
 
     pub struct HintAttachedMany {
         pub before: Marker,
-        #[tok(ATTACH_OPEN, TIGHT_OPEN, MANY, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
+        #[tok(ATTACH_OPEN, TIGHT_OPEN, MANY, this_each, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
         #[pretty(break_before = hard, break_after = hard)]
         pub values: zero_or_many!(boxed!(Item)),
         pub after: Marker,
@@ -312,7 +312,7 @@ recursa::ast_node! {
 
     pub struct AttachedMaybeMany {
         pub before: Marker,
-        #[tok(ATTACH_OPEN, TIGHT_OPEN, MAYBE, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
+        #[tok(ATTACH_OPEN, TIGHT_OPEN, MAYBE, this_each, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
         #[pretty(break_before = hard, break_after = hard)]
         pub values: Option<boxed!(one_or_many!(boxed!(Item)))>,
         pub after: Marker,
@@ -323,7 +323,7 @@ recursa::ast_node! {
 
     #[tok(MARKS, this)]
     pub struct AttachedLeadingPretty {
-        #[tok(LBRACKET, this, RBRACKET)]
+        #[tok(LBRACKET, this_each, RBRACKET)]
         #[sep(COMMA, trailing)]
         #[pretty(separator = leading, trailing_separator = always)]
         pub values: zero_or_many!(boxed!(Item)),
@@ -334,7 +334,7 @@ recursa::ast_node! {
 
     #[tok(MARKS, this)]
     pub struct AttachedTrailingPretty {
-        #[tok(LBRACKET, this, RBRACKET)]
+        #[tok(LBRACKET, this_each, RBRACKET)]
         #[sep(COMMA, trailing)]
         #[pretty(separator = trailing, trailing_separator = never)]
         pub values: zero_or_many!(boxed!(Item)),
@@ -344,7 +344,7 @@ recursa::ast_node! {
 recursa::ast_node! {
 
     pub struct AttachedProgram {
-        #[tok(LBRACKET, this, RBRACKET)]
+        #[tok(LBRACKET, this_each, RBRACKET)]
         #[sep(SEMICOLON)]
         pub values: zero_or_many!(MixedCapture),
     }
@@ -479,7 +479,7 @@ recursa::ast_node! {
 
     #[tok(ATTACHED_MANY, this)]
     pub struct AttachedMany {
-        #[tok(LBRACKET, this, RBRACKET)]
+        #[tok(LBRACKET, this_each, RBRACKET)]
         #[sep(COMMA, trailing)]
         pub values: zero_or_many!(boxed!(Item)),
     }
@@ -489,7 +489,7 @@ recursa::ast_node! {
 
     #[tok(ATTACHED_NONEMPTY, this)]
     pub struct AttachedNonEmpty {
-        #[tok(LBRACE, this, RBRACE)]
+        #[tok(LBRACE, this_each, RBRACE)]
         #[sep(COMMA, trailing)]
         pub values: Option<one_or_many!(boxed!(Item))>,
     }
