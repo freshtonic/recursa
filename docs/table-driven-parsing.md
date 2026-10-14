@@ -116,6 +116,74 @@ because the merged kind shares the expected atom of its source token. A
 `precedence` level may name a merged kind, which is how `gram.y` gives
 `NOT_LA LIKE` the precedence of `LIKE`.
 
+## End-marker reduce/reduce
+
+Every grammar type is a parsing entry point, so the construction has one start
+rule per type and the end marker lands in the FOLLOW of every nonterminal that
+can end some root. No rule shifts the end marker, so that never makes a
+shift/reduce conflict. It does make reduce/reduce conflicts on the end marker,
+between rules that can each end a root and that one LALR(1) state holds because
+they share an LR(0) core.
+
+Such a conflict is settled by declaration order — the earliest-declared rule
+wins, as in bison — rather than reported, when both of these hold:
+
+- the end marker is the one lookahead of the state those rules still contest; and
+- every competing reduction **wraps one thing**: a *token-wrapper rule*, whose
+  reduce yields the token just popped (`ColIdText -> IDENT` beside
+  `TypeFunctionNameText -> IDENT`, an admission-set member or a content token),
+  or a *unit rule* `A -> B` of a grammar type — one right-hand-side symbol,
+  that symbol a value-carrying nonterminal, so the reduce wraps the one value
+  `B` built (`Expr -> SelectWithParens` beside
+  `SelectClause -> SelectWithParens`, gram.y's `select_with_parens` factoring).
+
+The choice is recorded for the automaton dump, which prints it beside the state
+and counts it in a line of its own, and it is not counted as a conflict.
+
+**Why it is safe.** Every complete item of such a state has its dot at position
+one, so the symbol that reached the state is the whole right-hand side of every
+competitor: the competitors differ in their left-hand side alone, never in what
+they pop. The end marker is the lookahead only when the parse is ending — at
+the end of input, or at a token no continuation of any competitor accepts,
+where every choice fails at that same token. So the choice decides nothing but
+which wrapper a prefix parse yields when the input stops after the wrapped
+symbol. The end-marker cell is the only cell the rule writes: every
+continuation terminal keeps its explicit action, so a terminal one root accepts
+and another does not still reduces its own rule, and a root that continues past
+the wrapper still reduces the right one.
+
+**Still contested, not merely shared.** What the argument asks of every other
+lookahead is an explicit action, so the first condition reads the conflicts that
+remain, not the raw LALR(1) lookahead sets. A cell that declared precedence or a
+scoped `lr_conflict` declaration settled carries an explicit action already; a
+cell those two leave contested is a hard error, and the whole reduce/reduce is
+then reported on every cell it occupies, the end marker included. That division
+is what the rule exists for. pg-sql's `Expr -> SelectWithParens` beside
+`SelectClause -> SelectWithParens` compete on `RPAREN`, `RPAREN_SELECT_LA` and
+`RETURNING` as well, and a declaration names those three. The end marker is the
+one cell it cannot name, because a scoped lookahead may only be a token or a
+merged kind.
+
+**Its limit.** The choice is exact for each root context in which the
+earliest-declared rule can end the parse. A root context that can end only in a
+later-declared rule takes the earlier one at the end of input and then finds no
+action, which reports an unexpected end of input. That is an LALR(1) merge
+artefact of the per-type start rules, and its remedy is declaration order.
+
+**What stays a conflict.** A reduction that wraps more than one symbol is never
+settled this way. Nor is a unit rule whose left-hand side is not a grammar type:
+a helper nonterminal's reduce/reduce stays reported so that the per-site helper
+copy pass still sees it, and a helper copy and a declared restriction are
+excluded for the same reason.
+
+A **mixed** competition between a token wrapper and a unit rule cannot arise,
+because a complete item at dot one fixes the symbol that reached the state and a
+terminal is not a nonterminal; the rule admits each competitor on its own merits
+all the same. A **chain** of unit rules (`A -> B` with `B -> C`) never competes
+with itself for the same reason, but it does produce successive resolutions: the
+goto taken after the chosen reduce can land in another state whose one contested
+cell is the end marker, and that state settles in its own right.
+
 ## Acceptance gates
 
 Completion requires all retained Recursa fixtures and examples to use the one
