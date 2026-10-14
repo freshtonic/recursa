@@ -86,6 +86,33 @@ fn type_named(lowered: &LoweredGrammar, name: &str) -> crate::TypeId {
 }
 
 #[test]
+fn the_merged_enclosure_fixture_is_conflict_free_with_its_two_armed_close() {
+    // The grammar Pretty's enclosure proof reads in #142: the close of the grouping atom names
+    // the merged kind beside the token it merges, so the automaton chooses between the arms by
+    // the terminal the feed produced and never by a lookahead.
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation/merged-enclosure");
+    let lowered = lowered_tree(&fixture, "src/grammar.rs");
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the fixture has no text predicate");
+    assert_eq!(
+        rules_of(&grammar, "grammar::QueryClose"),
+        [
+            "grammar::QueryClose -> RPAREN",
+            "grammar::QueryClose -> RPAREN_SELECT_LA",
+        ],
+        "both close arms survive lowering, and neither is a substitution twin"
+    );
+    let precedence = PrecedenceResolver::new(&grammar).expect("the resolver is infallible");
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:#?}",
+        automaton.conflicts()
+    );
+}
+
+#[test]
 fn arith_operator_variants_lower_to_plain_rules_with_declared_levels() {
     let (_, grammar) = lr_fixture("arith");
     let expr = grammar

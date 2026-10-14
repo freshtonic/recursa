@@ -390,6 +390,23 @@ A member of a declared precedence level that names no token and exists only so
 that a Node or variant override can take that level.
 _Avoid_: Pseudo-token, UMINUS token
 
+**Grouping atom**:
+The variant of a declared-precedence Node that encloses the Node itself between
+fixed syntax on both sides, which is what lets Pretty repair precedence by
+parenthesizing an operand the authored syntax would otherwise reparse
+differently. Pretty proves one such atom per Node, directly or through helper
+Nodes, and a Node with an operator variant and no proven atom is a build error.
+_Avoid_: Paren variant, bracket rule
+
+**Rendered fixed syntax**:
+What a helper Node contributes to a grouping atom's enclosure: the sequence of
+fixed entries it renders, each with its spelling, mechanical spacing class and
+placement. Two variants are the same fixed syntax when their sequences are
+equal under that comparison, which is why a merged-kind admission beside its
+source token stays fixed syntax and why the arms' token kinds never enter the
+comparison.
+_Avoid_: Delimiter kind, token identity, single-variant helper
+
 **Restricted expression**:
 An authored Node that accepts a subset of another expression Node's productions
 so that an interior operand cannot consume a token that also closes the enclosing
