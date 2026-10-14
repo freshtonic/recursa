@@ -4,6 +4,11 @@
 //! that compete on the end marker and are settled by declaration order. The documented limit is
 //! the bare `FuncName` root at the end of input, where the declaration-order rule picks the
 //! wrapper that cannot complete that root.
+//!
+//! The fixture also holds the unit-rule shape of the same end-marker rule (#143), modelled on
+//! pg-sql's `Expr -> SelectWithParens` beside `SelectClause -> SelectWithParens`: `ParenContent`
+//! derives either, so the one state that completes `SelectWithParens` holds both unit rules with
+//! the end marker as their single shared lookahead, and declaration order takes `Expr`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +40,21 @@ fn sole_lr_parser_handles_follow_pollution_and_reports_the_documented_wrapper_li
         "ok Expr \"foo\" => Column(ColumnRef { name: ColId {",
         "ok Expr \"foo()\" => Call(FuncCall { name: TypeFunctionName {",
         "ok FuncName \"foo.bar\" => Qualified(QualifiedName { first: ColId {",
+        // The unit-rule shape (#143). The `Expr` entry yields an `Expr`, and the inner `)`
+        // reduces the later-declared unit rule, because `)` keeps its own explicit action.
+        "ok Expr \"((1))\" => Sub(SelectWithParens { inner: Parens(SelectWithParens { inner: Simple(X {",
+        // gram.y's motivating example for factoring `select_with_parens`: the extra parentheses
+        // belong to the query, so the `union` still has a `select_clause` on its left.
+        "ok SelectClause \"(((1)) union 1)\" => Parens(SelectWithParens { inner: Union(UnionSelect { left: Parens(SelectWithParens { inner: Parens(SelectWithParens { inner: Simple(X {",
+        // The type that derives either side is where the two compete. A prefix parse that ends
+        // at the wrapper yields the earliest-declared type, `Expr`.
+        "ok ParenContent \"(1)\" => Value(Sub(SelectWithParens { inner: Simple(X {",
+        // `,` continues only an `Expr`, so it keeps reducing the earlier rule explicitly.
+        "ok ParenContent \"((1), (1))\" => Value(Row(RowExpr { first: Sub(SelectWithParens {",
+        // Nothing else moved: a bare atom is still only a `SelectClause`, and a name only an
+        // `Expr`.
+        "ok ParenContent \"1\" => Query(Simple(X {",
+        "ok ParenContent \"foo\" => Value(Column(ColumnRef { name: ColId {",
     ] {
         assert!(stdout.contains(line), "parser lacks {line}\n{stdout}");
     }
@@ -46,6 +66,17 @@ fn sole_lr_parser_handles_follow_pollution_and_reports_the_documented_wrapper_li
         stdout.contains("err FuncName \"foo\" => code=RCA4101 kind=UnexpectedEof span=Span { start: 3, end: 3 } found=None cursor=0 expected=["),
         "{stdout}"
     );
+
+    // Every new sentence round-trips through Pretty.
+    for (label, source) in [
+        ("Expr", "((1))"),
+        ("SelectClause", "(((1)) union 1)"),
+        ("ParenContent", "(1)"),
+        ("ParenContent", "((1), (1))"),
+    ] {
+        let line = format!("pretty {label} {source:?} => {source:?}\n");
+        assert!(stdout.contains(&line), "parser lacks {line}\n{stdout}");
+    }
 
     assert!(
         stdout.contains("prov Statement \"a 1 c\" => captured"),

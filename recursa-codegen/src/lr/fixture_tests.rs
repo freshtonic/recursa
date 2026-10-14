@@ -1174,3 +1174,53 @@ fn the_precedence_fixture_has_no_conflicts_and_records_every_family_as_resolved(
     assert!(dump.contains("resolved by precedence (shift)."), "{dump}");
     assert!(dump.ends_with("No conflicts.\n"), "{dump}");
 }
+
+#[test]
+fn the_follow_pollution_fixture_settles_its_unit_rule_pair_on_the_end_marker() {
+    // #143: `Expr -> SelectWithParens` beside `SelectClause -> SelectWithParens`, two unit rules
+    // of two grammar types that `ParenContent` derives. The one state that completes
+    // `SelectWithParens` holds both with the end marker as their single shared lookahead, so
+    // declaration order takes `Expr` and the pair is no conflict. The two conflicts that remain
+    // are the `#125` shared-helper artefact the per-site copy pass removes later.
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation/follow-pollution");
+    let lowered = lowered_tree(&fixture, "src/grammar.rs");
+    let roles = TypeRoles::from_lowered(&lowered);
+    let grammar = lower(&lowered.grammar, &roles).expect("the fixture has no text predicate");
+    let precedence = PrecedenceResolver::new(&grammar).expect("the resolver is infallible");
+    let automaton = Automaton::build(&grammar, &precedence, AutomatonOptions::default());
+    let settled: Vec<(Vec<String>, String)> = automaton
+        .end_marker_resolutions()
+        .iter()
+        .map(|resolution| {
+            (
+                resolution
+                    .rules
+                    .iter()
+                    .map(|rule| grammar.render_rule(*rule))
+                    .collect(),
+                grammar.render_rule(resolution.chosen),
+            )
+        })
+        .collect();
+    assert_eq!(
+        settled.last().expect("the unit-rule pair is settled"),
+        &(
+            vec![
+                "grammar::Expr -> grammar::SelectWithParens".to_owned(),
+                "grammar::SelectClause -> grammar::SelectWithParens".to_owned(),
+            ],
+            "grammar::Expr -> grammar::SelectWithParens".to_owned(),
+        ),
+        "{settled:#?}"
+    );
+    assert!(
+        automaton
+            .conflicts()
+            .iter()
+            .all(|conflict| conflict.merge_artefact
+                && matches!(conflict.kind, ConflictKind::ReduceReduce { .. })),
+        "{:#?}",
+        automaton.conflicts()
+    );
+}
