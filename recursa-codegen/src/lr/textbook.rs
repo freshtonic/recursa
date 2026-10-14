@@ -5,7 +5,7 @@ use super::automaton::{
     Resolution, StateId, canonical_build_count, reset_canonical_build_count,
 };
 use super::grammar::{LrGrammar, TextbookGrammar};
-use super::report::automaton_dump;
+use super::report::{REDUCE_REDUCE, automaton_dump, conflict_diagnostics};
 use super::tables::{LrTables, PACT_NINF};
 
 /// Dragon book figure 4.1: `E -> E + T | T`, `T -> T * F | F`, `F -> ( E ) | id`.
@@ -646,6 +646,341 @@ fn wrapper_conflicts_that_also_exist_on_a_real_terminal_stay_conflicts() {
             .conflicts()
             .iter()
             .all(|conflict| matches!(conflict.kind, ConflictKind::ReduceReduce { .. }))
+    );
+}
+
+/// pg-sql's `Expr -> SelectWithParens` beside `SelectClause -> SelectWithParens` (#143): two unit
+/// rules of two grammar types over the one parenthesized-query Node. Every grammar type is a
+/// parsing entry point, and `ParenContent` derives either type, so its start state predicts both
+/// and the goto on `SelectWithParens` reaches the one LR(0) state
+/// `{Expr -> SelectWithParens ., SelectClause -> SelectWithParens .}`, whose merged lookaheads
+/// hold the end marker for both reductions. `d` continues only an `Expr` and `e` only a
+/// `SelectClause`, so the end marker is the single shared lookahead.
+fn unit_rule_grammar() -> LrGrammar {
+    let mut grammar = TextbookGrammar::new(&["(", ")", "d", "e", "y"]);
+    grammar.rule("Expr", "SelectWithParens");
+    grammar.rule("SelectClause", "SelectWithParens");
+    grammar.rule("SelectWithParens", "( SelectClause )");
+    grammar.rule("SelectClause", "y");
+    grammar.rule("ParenContent", "Expr");
+    grammar.rule("ParenContent", "Expr d");
+    grammar.rule("ParenContent", "SelectClause");
+    grammar.rule("ParenContent", "SelectClause e");
+    for root in ["Expr", "SelectClause", "ParenContent"] {
+        grammar.start(root);
+    }
+    grammar.finish()
+}
+
+#[test]
+fn end_marker_conflicts_between_unit_rules_are_settled_by_declaration_order() {
+    let grammar = unit_rule_grammar();
+    let automaton = build(&grammar);
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
+
+    // The one merged state records the resolution; the earliest-declared unit rule wins.
+    let expr_of_parens = super::grammar::RuleId::new(0);
+    let select_clause_of_parens = super::grammar::RuleId::new(1);
+    let [resolution] = automaton.end_marker_resolutions() else {
+        panic!("one resolution: {:?}", automaton.end_marker_resolutions());
+    };
+    assert_eq!(
+        resolution.rules,
+        vec![expr_of_parens, select_clause_of_parens]
+    );
+    assert_eq!(resolution.chosen, expr_of_parens);
+    let state = &automaton.states()[resolution.state.index()];
+    let kernel: Vec<String> = state
+        .kernel()
+        .iter()
+        .map(|item| item.render(&grammar))
+        .collect();
+    assert_eq!(
+        kernel,
+        [
+            "Expr -> SelectWithParens .",
+            "SelectClause -> SelectWithParens ."
+        ]
+    );
+
+    // Every continuation terminal keeps its own explicit action: only `$end` was decided, so the
+    // terminal that continues an `Expr` and the one that continues a `SelectClause` each reduce
+    // their own rule.
+    let terminal = |name: &str| {
+        (0..grammar.terminal_count())
+            .map(|index| super::grammar::TerminalId::new(index as u32))
+            .find(|terminal| grammar.terminal_name(*terminal) == name)
+            .unwrap()
+    };
+    assert_eq!(
+        state.actions()[&grammar.end_marker()],
+        Action::Reduce(expr_of_parens)
+    );
+    assert_eq!(
+        state.actions()[&terminal("d")],
+        Action::Reduce(expr_of_parens)
+    );
+    assert_eq!(
+        state.actions()[&terminal("e")],
+        Action::Reduce(select_clause_of_parens)
+    );
+    assert_eq!(state.default_reduction(), Some(expr_of_parens));
+
+    // The dump renders the resolution and counts no conflict.
+    let dump = automaton_dump(&grammar, &automaton);
+    assert!(dump.contains(
+        "    Conflict between rules 0 and 1 resolved on $end by declaration order (reduce using rule 0).\n"
+    ), "{dump}");
+    assert!(
+        dump.contains(
+            "No conflicts.\n1 reduce/reduce conflicts on $end resolved by declaration order.\n"
+        ),
+        "{dump}"
+    );
+
+    // Each entry point still yields its own type: its start state reaches a one-item state, so
+    // the resolution never touches it.
+    let reductions = |root, input: &[&str]| reductions_of(&grammar, &automaton, root, input);
+    assert_eq!(
+        reductions("Expr", &["(", "y", ")"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "Expr -> SelectWithParens"
+        ]
+    );
+    assert_eq!(
+        reductions("SelectClause", &["(", "y", ")"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "SelectClause -> SelectWithParens"
+        ]
+    );
+    // A root that continues past the wrapper reduces the right unit rule on its own continuation
+    // terminal, whichever of the two it belongs to.
+    assert_eq!(
+        reductions("ParenContent", &["(", "y", ")", "d"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "Expr -> SelectWithParens",
+            "ParenContent -> Expr d"
+        ]
+    );
+    assert_eq!(
+        reductions("ParenContent", &["(", "y", ")", "e"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "SelectClause -> SelectWithParens",
+            "ParenContent -> SelectClause e"
+        ]
+    );
+    // A prefix parse that ends at the wrapper yields the earliest-declared type.
+    assert_eq!(
+        reductions("ParenContent", &["(", "y", ")"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "Expr -> SelectWithParens",
+            "ParenContent -> Expr"
+        ]
+    );
+}
+
+#[test]
+fn a_chain_of_unit_rules_settles_each_state_it_reaches_in_its_own_right() {
+    // `A -> B` beside `B -> C` never competes with itself: a complete item at dot one fixes the
+    // symbol that reached the state, so the two rules complete in different states. A chain does
+    // produce successive resolutions, one per state the goto after the chosen reduce reaches.
+    let mut grammar = TextbookGrammar::new(&["(", ")", "y"]);
+    grammar.rule("Expr", "SelectWithParens");
+    grammar.rule("SelectClause", "SelectWithParens");
+    grammar.rule("SelectWithParens", "( SelectClause )");
+    grammar.rule("SelectClause", "y");
+    grammar.rule("ParenContent", "Expr");
+    grammar.rule("Target", "Expr");
+    grammar.rule("Top", "ParenContent");
+    grammar.rule("Top", "Target");
+    grammar.rule("Top", "SelectClause");
+    for root in ["Top", "Expr", "SelectClause"] {
+        grammar.start(root);
+    }
+    let grammar = grammar.finish();
+    let automaton = build(&grammar);
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
+    let settled: Vec<(Vec<String>, String)> = automaton
+        .end_marker_resolutions()
+        .iter()
+        .map(|resolution| {
+            (
+                resolution
+                    .rules
+                    .iter()
+                    .map(|rule| grammar.render_rule(*rule))
+                    .collect(),
+                grammar.render_rule(resolution.chosen),
+            )
+        })
+        .collect();
+    assert_eq!(
+        settled,
+        [
+            (
+                vec![
+                    "ParenContent -> Expr".to_owned(),
+                    "Target -> Expr".to_owned()
+                ],
+                "ParenContent -> Expr".to_owned()
+            ),
+            (
+                vec![
+                    "Expr -> SelectWithParens".to_owned(),
+                    "SelectClause -> SelectWithParens".to_owned()
+                ],
+                "Expr -> SelectWithParens".to_owned()
+            ),
+        ]
+    );
+    // One parse walks both: the wrapper settles as an `Expr`, and the goto after it settles the
+    // second link as a `ParenContent`.
+    assert_eq!(
+        reductions_of(&grammar, &automaton, "Top", &["(", "y", ")"]).unwrap(),
+        [
+            "SelectClause -> y",
+            "SelectWithParens -> ( SelectClause )",
+            "Expr -> SelectWithParens",
+            "ParenContent -> Expr",
+            "Top -> ParenContent"
+        ]
+    );
+}
+
+#[test]
+fn unit_rule_conflicts_that_also_exist_on_a_real_terminal_stay_conflicts() {
+    // The same two unit rules, with one continuation terminal that follows either type: the
+    // reduce/reduce exists on `d` as well as on `$end`, so neither cell is settled and both are
+    // reported as RCA0401.
+    let mut grammar = TextbookGrammar::new(&["(", ")", "d", "y"]);
+    grammar.rule("Expr", "SelectWithParens");
+    grammar.rule("SelectClause", "SelectWithParens");
+    grammar.rule("SelectWithParens", "( SelectClause )");
+    grammar.rule("SelectClause", "y");
+    grammar.rule("ParenContent", "Expr");
+    grammar.rule("ParenContent", "Expr d");
+    grammar.rule("ParenContent", "SelectClause");
+    grammar.rule("ParenContent", "SelectClause d");
+    grammar.start("ParenContent");
+    let grammar = grammar.finish();
+    let automaton = build(&grammar);
+    assert!(automaton.end_marker_resolutions().is_empty());
+    let lookaheads: Vec<&str> = automaton
+        .conflicts()
+        .iter()
+        .map(|conflict| grammar.terminal_name(conflict.lookahead))
+        .collect();
+    assert_eq!(lookaheads, ["d", "$end"]);
+    let reported: Vec<(&str, String)> = conflict_diagnostics(&grammar, &automaton)
+        .into_iter()
+        .map(|diagnostic| (diagnostic.code, diagnostic.message))
+        .collect();
+    assert_eq!(
+        reported,
+        [
+            (
+                REDUCE_REDUCE,
+                "reduce/reduce conflict in state 4 on lookahead `d`".to_owned()
+            ),
+            (
+                REDUCE_REDUCE,
+                "reduce/reduce conflict in state 4 on lookahead `$end`".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_authored_resolution_on_the_shared_terminal_leaves_the_end_marker_to_declaration_order() {
+    // pg-sql's real shape (#143, freshtonic/pg-sql#87): the two unit rules also compete on real
+    // terminals, which a scoped `lr_conflict` declaration can name. Once it has settled those
+    // cells, the end marker is the one lookahead left contested — and the one no declaration can
+    // name — so declaration order takes it and the state reports nothing.
+    let mut textbook = TextbookGrammar::new(&["(", ")", "d", "y"]);
+    textbook.rule("Expr", "SelectWithParens");
+    textbook.rule("SelectClause", "SelectWithParens");
+    textbook.rule("SelectWithParens", "( SelectClause )");
+    textbook.rule("SelectClause", "y");
+    textbook.rule("ParenContent", "Expr");
+    textbook.rule("ParenContent", "Expr d");
+    textbook.rule("ParenContent", "SelectClause");
+    textbook.rule("ParenContent", "SelectClause d");
+    textbook.start("ParenContent");
+    let grammar = textbook.finish();
+    let mut automaton = Automaton::build(
+        &grammar,
+        &NoPrecedence,
+        AutomatonOptions {
+            check_merge_artefacts: false,
+            ..AutomatonOptions::default()
+        },
+    );
+    assert!(automaton.end_marker_resolutions().is_empty());
+    let type_of = |name: &str| {
+        let id = grammar.nonterminal_by_name(name).expect("a declared type");
+        match &grammar.nonterminal(id).origin {
+            super::grammar::NonterminalOrigin::Type(type_id) => *type_id,
+            other => panic!("{name} is {other:?}"),
+        }
+    };
+    automaton
+        .apply_scoped_resolutions(
+            &grammar,
+            &[crate::LrConflictResolution {
+                owners: vec![crate::LrRuleOwner::Type(type_of("SelectClause"))],
+                against: vec![crate::LrRuleOwner::Type(type_of("Expr"))],
+                action: crate::LrConflictAction::Reduce,
+                lookaheads: vec![crate::KindId::new(2)],
+                expected: 1,
+            }],
+        )
+        .expect("the declaration names the one `d` cell");
+    assert!(
+        automaton.conflicts().is_empty(),
+        "{:?}",
+        automaton.conflicts()
+    );
+    let [scoped] = automaton.scoped_resolutions() else {
+        panic!("one scoped resolution");
+    };
+    assert_eq!(grammar.terminal_name(scoped.lookahead), "d");
+    assert_eq!(
+        grammar.render_rule(scoped.reduced.expect("a reduce winner")),
+        "SelectClause -> SelectWithParens"
+    );
+    let [end] = automaton.end_marker_resolutions() else {
+        panic!(
+            "one end-marker resolution: {:?}",
+            automaton.end_marker_resolutions()
+        );
+    };
+    assert_eq!(end.state, scoped.state, "the same state holds both cells");
+    assert_eq!(
+        grammar.render_rule(end.chosen),
+        "Expr -> SelectWithParens",
+        "declaration order takes the earlier rule on $end alone"
+    );
+    assert_eq!(
+        automaton.states()[end.state.index()].actions()[&grammar.end_marker()],
+        Action::Reduce(end.chosen)
     );
 }
 

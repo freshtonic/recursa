@@ -351,6 +351,16 @@ trailing-separator forms. Its rules carry the element type and `Box` layers
 their reduce actions need.
 _Avoid_: Synthetic node, bison `opt_` rule
 
+**End-marker resolution**:
+A reduce/reduce conflict on the end marker that LR construction settles by
+declaration order instead of reporting, because the end marker is the one
+lookahead of its state the competitors still contest and each competitor wraps a
+single symbol: a token-wrapper rule or a unit rule of a grammar type. It decides
+only which wrapper a prefix parse yields; every continuation terminal keeps its
+own explicit action, whether the grammar, declared precedence or a scoped
+resolution gave it one.
+_Avoid_: Default reduce, EOF conflict, bison tie-break
+
 **Helper copy**:
 A copy of a shared helper nonterminal (`opt(X)@site`) that LR construction
 makes for one co-occurrence class of the helper's use sites when the shared
