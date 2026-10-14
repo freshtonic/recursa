@@ -20,6 +20,10 @@ mod tests {
     focused_case!(authored_pretty_authority_rejects_emitted_declaration_corruption);
     focused_case!(pretty_recursion_uses_typed_node_identity_not_the_final_path_segment);
     focused_case!(pretty_grouping_follows_a_unique_authored_helper_path);
+    focused_case!(pretty_grouping_accepts_a_merged_kind_twin_as_fixed_syntax);
+    focused_case!(pretty_grouping_accepts_agreeing_delegated_enclosure_atoms);
+    focused_case!(pretty_grouping_refuses_disagreeing_delegated_enclosure_atoms);
+    focused_case!(pretty_grouping_refuses_a_close_whose_arms_render_different_syntax);
     focused_case!(pretty_grouping_survives_a_witnessless_cyclic_sibling_variant);
     focused_case!(pretty_grouping_ignores_a_witnessed_cycle_behind_a_half_open_context);
     focused_case!(pretty_variants_are_typechecked_in_isolated_helpers);
@@ -439,7 +443,17 @@ impl<'a> PrettyGroupingAnalyzer<'a> {
         Some(fixed)
     }
 
-    /// Expands a single-path, non-recursive fixed-only helper Node.
+    /// Expands a non-recursive helper Node that renders exactly one fixed sequence.
+    ///
+    /// Every variant must expand to the same *rendered* fixed syntax: the same number of fixed
+    /// entries, each with the same spelling, the same mechanical spacing class and the same
+    /// placement. Equal rendering, not one variant and not equal token kinds, is the test,
+    /// because the enclosure proof needs only the text the enclosure renders. A Node that names
+    /// a `lookahead { ... }` merged kind beside the token it merges — pg-sql's
+    /// `ParenthesizedClose: RPAREN | RPAREN_SELECT_LA`, gram.y's `any_with: WITH | WITH_LA`
+    /// (#139) — is therefore still fixed syntax: such a position resolves to the definition of
+    /// the merged token, so both arms carry that token's spelling and spacing, and the merged
+    /// kind is the same record read differently (#142).
     fn fixed_only_node(&mut self, node: NodeId) -> Option<Vec<PrettyAttachedFixedBehavior>> {
         if let Some(fixed) = self.fixed_memo.get(&node) {
             return fixed.clone();
@@ -447,16 +461,28 @@ impl<'a> PrettyGroupingAnalyzer<'a> {
         if !self.fixed_active.insert(node) {
             return None;
         }
-        let fixed = self
-            .syntax
-            .nodes
-            .get(&node)
-            .filter(|variants| variants.len() == 1)
-            .map(|variants| variants[0].clone())
-            .and_then(|elements| self.fixed_only_elements(&elements));
+        let fixed = self.fixed_only_variants(node);
         self.fixed_active.remove(&node);
         self.fixed_memo.insert(node, fixed.clone());
         fixed
+    }
+
+    /// Expands every variant of one helper Node to the one fixed sequence they all render.
+    ///
+    /// A Node with no variant at all, a variant that is not fixed-only, or two variants whose
+    /// rendered fixed syntax differs leaves the Node without fixed syntax.
+    fn fixed_only_variants(&mut self, node: NodeId) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+        let variants = self.syntax.nodes.get(&node)?;
+        let mut agreed: Option<Vec<PrettyAttachedFixedBehavior>> = None;
+        for elements in variants {
+            let expansion = self.fixed_only_elements(elements)?;
+            match &agreed {
+                Some(previous) if *previous != expansion => return None,
+                Some(_) => {}
+                None => agreed = Some(expansion),
+            }
+        }
+        agreed
     }
 
     /// Expands one helper sequence containing only required fixed syntax.
@@ -1118,7 +1144,8 @@ fn emitted_pretty_declared_behavior(
 ///
 /// `is_atom` selects, in declaration variant order, every variant with no self-recursive operand playing an operator
 /// role or a declared-precedence first/last-symbol role, since only such a variant can be the
-/// grouping atom that lets Pretty repair precedence with parentheses.
+/// grouping atom that lets Pretty repair precedence with parentheses. [`agreed_grouping`] decides
+/// between the proven candidates.
 pub(super) fn pretty_grouping(
     owner: NodeId,
     declaration_variants: &[VariantParsePlan],
@@ -1142,13 +1169,35 @@ pub(super) fn pretty_grouping(
         })
         .filter_map(|elements| analyzer.grouping(owner, &elements))
         .collect::<Vec<_>>();
-    if let Some(direct) = candidates.iter().find(|candidate| !candidate.delegated) {
-        return Some(direct.grouping.clone());
+    agreed_grouping(&candidates)
+}
+
+/// Selects the one enclosure every proven candidate atom agrees on.
+///
+/// A candidate that reaches the recursive owner directly outranks one that reaches it through a
+/// helper Node, because a direct witness is the enum's own authored grouping variant. Among the
+/// outranking candidates the enclosure must be unanimous: equal `before` and `after` sequences,
+/// compared by what they render — spelling, mechanical spacing class and placement — rather than
+/// by the atom or the token kind they come from. Two atoms that delegate to witnesses rendering
+/// the same enclosure are therefore one answer, which is what lets an atom name a `lookahead`
+/// merged kind in a sibling arm, while atoms that disagree leave the Node without grouping
+/// syntax and `pretty_declared_behavior` reports the enclosure-proof error. Pretty never picks
+/// one of several disagreeing enclosures silently (#142).
+fn agreed_grouping(candidates: &[PrettyGroupingWitness]) -> Option<PrettyGrouping> {
+    let has_direct = candidates.iter().any(|candidate| !candidate.delegated);
+    let mut agreed: Option<&PrettyGrouping> = None;
+    for candidate in candidates {
+        // With no direct candidate every candidate is delegated, so this discards nothing.
+        if has_direct && candidate.delegated {
+            continue;
+        }
+        match agreed {
+            Some(previous) if *previous != candidate.grouping => return None,
+            Some(_) => {}
+            None => agreed = Some(&candidate.grouping),
+        }
     }
-    let [delegated] = candidates.as_slice() else {
-        return None;
-    };
-    Some(delegated.grouping.clone())
+    agreed.cloned()
 }
 
 /// Projects source-order parse elements into fixed and semantic rendering behavior.
@@ -1751,7 +1800,8 @@ fn authoritative_pretty_declared_behavior(
 /// Reconstructs explicit grouping delimiters from authored syntax.
 ///
 /// `is_atom` selects, in declaration variant order, every variant with no self-recursive operand playing an operator
-/// role or a declared-precedence first/last-symbol role.
+/// role or a declared-precedence first/last-symbol role. [`agreed_grouping`] decides between the
+/// proven candidates, exactly as the emitted model does.
 pub(super) fn authoritative_pretty_grouping(
     resolved_node: &ResolvedNode,
     variant_elements: &[&[GrammarElement]],
@@ -1777,13 +1827,7 @@ pub(super) fn authoritative_pretty_grouping(
             candidates.push(grouping);
         }
     }
-    if let Some(direct) = candidates.iter().find(|candidate| !candidate.delegated) {
-        return Ok(Some(direct.grouping.clone()));
-    }
-    let [delegated] = candidates.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(delegated.grouping.clone()))
+    Ok(agreed_grouping(&candidates))
 }
 
 /// Reconstructs ordered element rendering behavior from authored Node shapes.

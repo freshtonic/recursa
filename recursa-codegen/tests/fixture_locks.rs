@@ -23,6 +23,7 @@ fn checked_fixture_locks_use_workspace_preloaded_registry_packages() {
         "lexing/Cargo.lock",
         "lookahead/Cargo.core.lock",
         "lookahead-precedence/Cargo.core.lock",
+        "merged-enclosure/Cargo.core.lock",
         "one-node/Cargo.core.lock",
         "one-node/Cargo.lock",
         "rejections/Cargo.lock",
