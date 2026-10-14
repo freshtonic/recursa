@@ -18,16 +18,20 @@
 //! One start rule per grammar type puts the end marker in the FOLLOW of every nonterminal that
 //! can end some root. That never makes a shift/reduce conflict, because no rule shifts the end
 //! marker; it makes reduce/reduce conflicts on the end marker alone between rules that can each
-//! end a root, merged into one LALR(1) state by their shared LR(0) core. When every such rule is
-//! a token wrapper (`ColIdText -> IDENT .` beside `TypeFunctionNameText -> IDENT .`) and the
-//! competitors share no other lookahead, the construction takes the earliest-declared rule, as
-//! bison does, records an [`EndMarkerResolution`], and does not count a conflict; see
-//! [`EndMarkerResolution`] for why that is safe and where its limit is.
+//! end a root, merged into one LALR(1) state by their shared LR(0) core. When every such rule
+//! wraps one thing — a token wrapper (`ColIdText -> IDENT .` beside
+//! `TypeFunctionNameText -> IDENT .`) or a unit rule of a grammar type
+//! (`Expr -> SelectWithParens .` beside `SelectClause -> SelectWithParens .`) — and the end
+//! marker is the one cell of the state those rules still contest, the construction takes the
+//! earliest-declared rule, as bison does, records an [`EndMarkerResolution`], and does not count
+//! a conflict; see [`EndMarkerResolution`] for why that is safe and where its limit is.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
-use super::grammar::{LrGrammar, NonterminalId, RuleAction, RuleId, Symbol, TerminalId};
+use super::grammar::{
+    LrGrammar, NonterminalId, NonterminalOrigin, RuleAction, RuleId, Symbol, TerminalId,
+};
 use crate::profile::Span;
 use crate::{LrConflictAction, LrConflictResolution, LrRuleOwner, TypeId};
 
@@ -382,25 +386,63 @@ pub struct ScopedConflictResolution {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One reduce/reduce conflict on the end marker between token-wrapper rules that declaration
-/// order settled (`docs/table-driven-parsing.md`, section 3). It is not a conflict: the tables
-/// carry the earliest-declared rule and the dump records the choice.
+/// One reduce/reduce conflict on the end marker between wrapping rules that declaration order
+/// settled (`docs/table-driven-parsing.md`, "End-marker reduce/reduce"). It is not a conflict:
+/// the tables carry the earliest-declared rule and the dump records the choice.
 ///
-/// The rule applies when every competing reduction is a [`RuleAction::Token`] rule (an
-/// admission-set member or a content token, whose reduce yields the token just popped) and the
-/// competitors share no lookahead other than the end marker. The end marker is the lookahead
-/// only when the parse is ending: at the end of input, or at a token no continuation of either
-/// wrapper accepts, where every choice fails at that same token. So the choice decides only
-/// which wrapper a prefix parse yields when the input stops after the wrapper; the explicit
-/// action of every continuation terminal is untouched, so a root that continues past the wrapper
-/// still reduces the right one. The choice is exact for each root context in which the
-/// earliest-declared wrapper can end the parse. A root context that can end only in a
-/// later-declared wrapper is an LALR(1) merge artefact of the per-type start rules, and its remedy
-/// is declaration order.
+/// The rule applies when the end marker is the one lookahead of the state still contested
+/// between the competitors, and every competing reduction wraps one thing
+/// (`settles_on_the_end_marker`):
+///
+/// - a **token-wrapper rule**, a [`RuleAction::Token`] rule (an admission-set member or a
+///   content token, whose reduce yields the token just popped); or
+/// - a **unit rule** `A -> B` of a grammar type: one right-hand-side symbol, that symbol a
+///   value-carrying nonterminal, so the reduce pops exactly the value `B` built and wraps it as
+///   an `A`.
+///
+/// The safety argument is one argument for both shapes. Every complete item of such a state has
+/// its dot at position one, so the symbol that reached the state is the whole right-hand side of
+/// every competitor: the competitors differ in their left-hand side alone, never in what they
+/// pop. The end marker is the lookahead only when the parse is ending: at the end of input, or
+/// at a token no continuation of any competitor accepts, where every choice fails at that same
+/// token. So the choice decides only which wrapper a prefix parse yields when the input stops
+/// after the wrapped symbol; the explicit action of every continuation terminal is untouched, so
+/// a root that continues past the wrapper still reduces the right one — a continuation terminal
+/// one root accepts and another does not keeps its own action, and the end-marker cell is the
+/// only cell this rule writes.
+///
+/// What the argument asks of every other lookahead is an explicit action, which is why the guard
+/// (`settled_by_declaration_order`) reads the conflicts that remain rather than the raw
+/// lookahead sets. A cell that precedence or an authored scoped `lr_conflict` declaration
+/// settled carries one; a cell those two leave contested is a hard error, and the whole
+/// reduce/reduce is then reported on every cell it occupies, the end marker included. That is
+/// also how the rule meets its consumer: pg-sql's `Expr -> SelectWithParens` beside
+/// `SelectClause -> SelectWithParens` compete on `RPAREN`, `RPAREN_SELECT_LA` and `RETURNING`
+/// too, and those three a declaration can name. The end marker is the one it cannot, because a
+/// scoped lookahead may only be a token or a merged kind.
+///
+/// The choice is exact for each root context in which the earliest-declared rule can end the
+/// parse. A root context that can end only in a later-declared rule is an LALR(1) merge artefact
+/// of the per-type start rules, and its remedy is declaration order.
+///
+/// Two consequences of that shared right-hand side are worth naming. A **mixed** competition
+/// between a token wrapper and a unit rule cannot arise: a token wrapper's one symbol is a
+/// terminal and a unit rule's is a nonterminal, so the two can never be complete in one state.
+/// `settles_on_the_end_marker` admits each competitor on its own merits all the same, so a
+/// mixed state would be settled if the construction ever produced one. A **chain** of unit rules
+/// (`A -> B` with `B -> C`) likewise never competes with itself, for the same reason: the two
+/// rules complete in different states. It does produce successive resolutions — the goto taken
+/// after the chosen reduce can land in another state whose one contested cell is the end marker,
+/// and that state settles by declaration order in its own right.
+///
+/// The left-hand side of a unit rule must be a grammar type, so a helper nonterminal's
+/// reduce/reduce stays reported and the per-site helper copy pass
+/// ([`NonterminalOrigin::HelperCopy`]) still sees it; a helper copy and a declared restriction
+/// are excluded for the same reason.
 pub struct EndMarkerResolution {
     /// The state in which the reductions competed.
     pub state: StateId,
-    /// The competing token-wrapper rules in ascending order.
+    /// The competing wrapper rules in ascending order.
     pub rules: Vec<RuleId>,
     /// The earliest-declared rule, which the tables carry.
     pub chosen: RuleId,
@@ -522,7 +564,6 @@ impl Automaton {
         let mut states = Vec::with_capacity(lr0.states.len());
         let mut conflicts = Vec::new();
         let mut resolved = Vec::new();
-        let mut end_resolutions = Vec::new();
         for (index, built) in lr0.states.iter().enumerate() {
             let id = StateId::new(index as u32);
             let reductions: Vec<Reduction> = built
@@ -537,7 +578,6 @@ impl Automaton {
             let resolved_state = resolve_actions(grammar, resolver, id, built, &reductions);
             conflicts.extend(resolved_state.conflicts);
             resolved.extend(resolved_state.resolved);
-            end_resolutions.extend(resolved_state.end_resolutions);
             let actions = resolved_state.actions;
             let default_reduction = choose_default_reduction(grammar, &actions);
             states.push(State {
@@ -564,9 +604,10 @@ impl Automaton {
             conflicts,
             resolved,
             scoped_resolutions: Vec::new(),
-            end_resolutions,
+            end_resolutions: Vec::new(),
             merge_check: MergeArtefactCheck::Disabled,
         };
+        automaton.settle_end_marker_conflicts(grammar);
         drop(_stage);
         if options.check_merge_artefacts {
             automaton.classify_merge_artefacts(grammar, options);
@@ -793,10 +834,67 @@ impl Automaton {
             .into_iter()
             .map(|(_, _, resolution)| resolution)
             .collect();
+        // A declaration that settles a cell makes the end marker the only lookahead left
+        // contested in its state, which declaration order can then take.
+        self.settle_end_marker_conflicts(grammar);
         for state in &mut self.states {
             state.default_reduction = choose_default_reduction(grammar, &state.actions);
         }
         Ok(())
+    }
+
+    /// Settles every end-marker reduce/reduce that declaration order can take, recording an
+    /// [`EndMarkerResolution`] for each and dropping it from the reported conflicts.
+    ///
+    /// It runs once the whole automaton exists, and again after
+    /// [`Self::apply_scoped_resolutions`] has removed the cells authored declarations settle,
+    /// because a settled cell is an explicit action rather than a shared conflict.
+    fn settle_end_marker_conflicts(&mut self, grammar: &LrGrammar) {
+        let end = grammar.end_marker();
+        let mut settled = BTreeSet::new();
+        let mut resolutions = Vec::new();
+        for (index, conflict) in self.conflicts.iter().enumerate() {
+            if conflict.lookahead != end {
+                continue;
+            }
+            let ConflictKind::ReduceReduce { rules } = &conflict.kind else {
+                continue;
+            };
+            let others: Vec<&Conflict> = self
+                .conflicts
+                .iter()
+                .filter(|other| other.state == conflict.state && other.lookahead != end)
+                .collect();
+            if !settled_by_declaration_order(grammar, rules, &others) {
+                continue;
+            }
+            let mut rules = rules.clone();
+            rules.sort_unstable();
+            let chosen = rules[0];
+            resolutions.push(EndMarkerResolution {
+                state: conflict.state,
+                rules,
+                chosen,
+            });
+            settled.insert(index);
+        }
+        if settled.is_empty() {
+            return;
+        }
+        for resolution in resolutions {
+            let state = &mut self.states[resolution.state.index()];
+            state.actions.insert(end, Action::Reduce(resolution.chosen));
+            state.default_reduction = choose_default_reduction(grammar, &state.actions);
+            self.end_resolutions.push(resolution);
+        }
+        self.conflicts = self
+            .conflicts
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, conflict)| (!settled.contains(&index)).then_some(conflict))
+            .collect();
+        self.end_resolutions
+            .sort_by_key(|resolution| resolution.state);
     }
 }
 
@@ -1124,15 +1222,13 @@ struct ResolvedActions {
     conflicts: Vec<Conflict>,
     /// The shift/reduce conflicts the resolver settled.
     resolved: Vec<ResolvedConflict>,
-    /// The reduce/reduce conflict on the end marker that declaration order settled, if any.
-    end_resolutions: Vec<EndMarkerResolution>,
 }
 
 /// Resolves the actions of one state and records its conflicts and its resolved conflicts.
 ///
-/// After the resolver has seen every shift/reduce pair, a reduce/reduce conflict on the end
-/// marker between token-wrapper rules that share no other lookahead is settled by declaration
-/// order; the earliest rule is already the action the bison default policy left in the table.
+/// The reduce/reduce conflict on the end marker is left standing here; whether declaration order
+/// settles it is decided once the whole automaton exists, by
+/// [`Automaton::settle_end_marker_conflicts`].
 fn resolve_actions(
     grammar: &LrGrammar,
     resolver: &dyn ConflictResolver,
@@ -1219,62 +1315,62 @@ fn resolve_actions(
         }
     }
     resolved.sort_by_key(|conflict| (conflict.lookahead, conflict.reduce));
-
-    let end = grammar.end_marker();
-    let mut end_resolutions = Vec::new();
-    let settled_by_declaration_order = conflicts.get(&end).is_some_and(|conflict| {
-        let ConflictKind::ReduceReduce { rules } = &conflict.kind else {
-            return false;
-        };
-        rules
-            .iter()
-            .all(|rule| matches!(grammar.rule(*rule).action, RuleAction::Token { .. }))
-            && shares_only_the_end_marker(reductions, rules, end)
-    });
-    if settled_by_declaration_order {
-        let conflict = conflicts
-            .remove(&end)
-            .expect("the end-marker conflict was just seen");
-        let ConflictKind::ReduceReduce { mut rules } = conflict.kind else {
-            unreachable!("only a reduce/reduce conflict is settled by declaration order");
-        };
-        rules.sort_unstable();
-        let chosen = rules[0];
-        actions.insert(end, Action::Reduce(chosen));
-        end_resolutions.push(EndMarkerResolution {
-            state: id,
-            rules,
-            chosen,
-        });
-    }
     ResolvedActions {
         actions,
         conflicts: conflicts.into_values().collect(),
         resolved,
-        end_resolutions,
     }
 }
 
-/// Reports whether the competing rules of one state share no lookahead other than the end
-/// marker, so that their conflict exists on the end marker alone.
-fn shares_only_the_end_marker(reductions: &[Reduction], rules: &[RuleId], end: TerminalId) -> bool {
-    let lookaheads = |rule: RuleId| {
-        &reductions
-            .iter()
-            .find(|reduction| reduction.rule == rule)
-            .expect("a competing rule is a reduction of its state")
-            .lookaheads
-    };
-    for (index, left) in rules.iter().enumerate() {
-        for right in &rules[index + 1..] {
-            let mut shared = lookaheads(*left).intersection(lookaheads(*right));
-            shared.remove(end);
-            if !shared.is_empty() {
-                return false;
-            }
-        }
+/// Reports whether one competing reduction may be settled by declaration order on the end
+/// marker (see [`EndMarkerResolution`]): a token-wrapper rule, or a unit rule of a grammar type.
+///
+/// A unit rule is `A -> B`: one right-hand-side symbol, that symbol a nonterminal, and that
+/// nonterminal value-carrying, so reducing pops exactly the value `B` built and wraps it as an
+/// `A`. The left-hand side must be a grammar type, so a helper's own reduce/reduce stays
+/// reported and the per-site helper copy pass still sees it; a helper copy and a declared
+/// restriction are excluded for the same reason.
+fn settles_on_the_end_marker(grammar: &LrGrammar, rule: RuleId) -> bool {
+    let rule = grammar.rule(rule);
+    if matches!(rule.action, RuleAction::Token { .. }) {
+        return true;
     }
-    true
+    matches!(rule.rhs.as_slice(), [Symbol::Nonterminal(_)])
+        && rule.value_pops == 1
+        && matches!(
+            grammar.nonterminal(rule.lhs).origin,
+            NonterminalOrigin::Type(_)
+        )
+}
+
+/// Reports whether an end-marker reduce/reduce between `rules` is settled by declaration order
+/// (see [`EndMarkerResolution`]): every competitor wraps one symbol, and no other lookahead of
+/// the same state still holds a reduce/reduce between two or more of them.
+///
+/// `others` are the conflicts of that state that stand on another lookahead. The guard reads the
+/// conflicts that remain rather than the raw lookahead sets, because a cell that precedence or an
+/// authored scoped declaration settled carries an explicit action, which is exactly what the
+/// safety argument asks of every lookahead but the end marker. A cell those two leave contested
+/// is a hard error, and the whole reduce/reduce is then reported on every cell it occupies.
+fn settled_by_declaration_order(
+    grammar: &LrGrammar,
+    rules: &[RuleId],
+    others: &[&Conflict],
+) -> bool {
+    rules
+        .iter()
+        .all(|rule| settles_on_the_end_marker(grammar, *rule))
+        && !others.iter().any(|conflict| match &conflict.kind {
+            ConflictKind::ReduceReduce { rules: competing } => {
+                competing
+                    .iter()
+                    .filter(|rule| rules.contains(rule))
+                    .take(2)
+                    .count()
+                    == 2
+            }
+            ConflictKind::ShiftReduce { .. } => false,
+        })
 }
 
 /// Chooses the default reduction: the reduce whose lookahead holds the end marker if any, else
