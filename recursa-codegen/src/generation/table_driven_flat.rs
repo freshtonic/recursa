@@ -561,8 +561,11 @@ fn render_flat_root_action(
         }
         RuleAction::ListFirst { element } => {
             let value = flat_element(plan, lr, *element, element_span)?.value;
+            // A text rule refuses one item on its own, so it runs on the first item too.
+            let rejection = render_flat_list_check(plan, lr, *element, rule, true)?;
             quote! {
                 let __recursa_element = #value;
+                #rejection
                 let (__recursa_scratch, _) = builder.lists_and_scratch_mut();
                 let mut __recursa_open = __recursa_scratch.open();
                 __recursa_scratch.push(&mut __recursa_open, __recursa_element);
@@ -573,7 +576,7 @@ fn render_flat_root_action(
             let value = flat_element(plan, lr, *element, element_span)?.value;
             // The flat check reads the same rule table the nested check reads, and reports the
             // same extent: the extent of the element symbol this step consumed.
-            let rejection = render_flat_list_check(plan, lr, *element, rule)?;
+            let rejection = render_flat_list_check(plan, lr, *element, rule, false)?;
             quote! {
                 let __recursa_element = #value;
                 let mut __recursa_open =
@@ -603,14 +606,17 @@ fn render_flat_root_action(
 
 /// Renders the check one flat list step runs over the element type's rejection rules.
 ///
-/// A flat list holds handles, so the variant of an item is a match on the pooled value and
-/// nothing is materialized. The items the list has passed are still on the scratch stack, and
-/// the item this step adds is already in its pool.
+/// A flat list holds handles, so the key of an item is a match on the pooled value, and a
+/// classified item reads its identifier text out of the pools and the text pool; nothing is
+/// materialized. The items the list has passed are still on the scratch stack, and the item this
+/// step adds is already in its pool. The first step of a list holds no passed item, so only an
+/// element type with a rule that refuses one item on its own renders a check there.
 fn render_flat_list_check(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
     element: ElementValue,
     rule: &Rule,
+    first: bool,
 ) -> Result<proc_macro2::TokenStream, String> {
     let facade = &plan.facade;
     let Some((index, node, application)) =
@@ -618,47 +624,100 @@ fn render_flat_list_check(
     else {
         return Ok(proc_macro2::TokenStream::new());
     };
+    if first
+        && !plan
+            .rejections
+            .rules(node.node)
+            .is_some_and(|rules| rules.refuses_single_items())
+    {
+        return Ok(proc_macro2::TokenStream::new());
+    }
     let Some(last) = rule.rhs.len().checked_sub(1) else {
         return Ok(proc_macro2::TokenStream::new());
     };
     let table = super::table_driven::rejection_table_ident(index);
-    let tag = super::table_driven::rejection_flat_tag_ident(index);
     let flat_ty = flat_application_type(plan, node, application)?;
-    let (pool, read) = if node.flat.pool {
-        let accessor = format_ident!("pool_{}", application.parse_index);
-        (
-            quote!(builder.#accessor()),
-            quote!(
-                __recursa_pool
-                    .get(__recursa_handle)
+    let flat_path = super::table_driven::bare_type_path(&flat_ty).ok_or_else(|| {
+        format!(
+            "`{}` declares rejection rules but its flat application is not a path type",
+            node.ident
+        )
+    })?;
+    let read_pool = |target: NodeId, handle: proc_macro2::TokenStream| {
+        let (planned, application, ty) = flat_node(plan, target)?;
+        Ok(if planned.flat.pool {
+            let accessor = format_ident!("pool_{}", application.parse_index);
+            quote! {
+                builder
+                    .#accessor()
+                    .get(#handle)
                     .expect("a handle of this parse always addresses its own pool")
-            ),
-        )
-    } else {
-        (
-            quote!(builder.shared()),
-            quote!(__recursa_pool.get::<#flat_ty>(__recursa_handle)),
-        )
+            }
+        } else {
+            quote!(builder.shared().get::<#ty>(#handle))
+        })
     };
-    let passed = quote! {
-        __recursa_scratch
-            .items::<#facade::__private::Handle<#flat_ty>>(__recursa_open)
-            .map(|__recursa_handle| (#tag(#read), ::core::option::Option::None))
+    let flat_path_of = |target: NodeId| {
+        let (planned, _, ty) = flat_node(plan, target)?;
+        super::table_driven::bare_type_path(&ty).ok_or_else(|| {
+            format!(
+                "`{}` is read by a rejection key but its flat application is not a path type",
+                planned.ident
+            )
+        })
+    };
+    let key = super::rejections::render_flat_key_closure(
+        plan,
+        node,
+        &flat_ty,
+        &flat_path,
+        &read_pool,
+        &flat_path_of,
+    )?;
+    let read = read_pool(node.node, quote!(__recursa_handle))?;
+    let passed = if first {
+        quote!(::core::iter::empty())
+    } else {
+        quote! {
+            builder
+                .scratch()
+                .items::<#facade::__private::Handle<#flat_ty>>(__recursa_open)
+                .map(|__recursa_handle| (__recursa_key(#read), ::core::option::Option::None))
+        }
     };
     let added = quote! {
         {
             let __recursa_handle = __recursa_element;
-            (#tag(#read), reduction.symbol_extent(#last))
+            (__recursa_key(#read), reduction.symbol_extent(#last))
         }
     };
     let check = super::rejections::render_check(plan, &table, &passed, &added);
     Ok(quote! {
         {
-            let __recursa_scratch = builder.scratch();
-            let __recursa_pool = #pool;
+            let __recursa_key = #key;
             #check
         }
     })
+}
+
+/// Returns the plan, the single application and the flat type of one Node a flat key reads.
+fn flat_node(
+    plan: &EmissionPlan,
+    target: NodeId,
+) -> Result<(&NodeParsePlan, &NodeApplicationParsePlan, Type), String> {
+    let planned = plan
+        .nodes
+        .iter()
+        .find(|candidate| candidate.node == target)
+        .ok_or_else(|| "a Node a rejection key reads has no frozen parse plan".to_owned())?;
+    let [application] = planned.parse_applications.as_slice() else {
+        return Err(format!(
+            "`{}` is read by a rejection key but has more than one application",
+            planned.ident
+        ));
+    };
+    let ty = flat_application_type(plan, planned, application)?;
+    Ok((planned, application, ty))
 }
 
 /// Renders one node application's flat reduce shims, flat reduce methods, and `parse_flat` entry

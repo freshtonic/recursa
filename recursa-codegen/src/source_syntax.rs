@@ -222,7 +222,7 @@ impl ConfigGate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One forbidden pair of variant names written by a `#[reject(...)]` declaration.
+/// One forbidden pair of labels written by a `#[reject(...)]` declaration.
 pub(crate) struct RejectPairSyntax {
     /// Name written first inside `pair(...)`.
     pub(crate) left: String,
@@ -233,28 +233,114 @@ pub(crate) struct RejectPairSyntax {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One authored `#[reject(...)]` declaration: the forbidden pairs of one message.
+/// The one test a `#[reject(...)]` declaration makes.
+///
+/// One declaration carries one message, so it makes one kind of test: any number of forbidden
+/// pairs, one `once` set, or one text rule (`docs/declared-rejections.md`).
+pub(crate) enum RejectCheckSyntax {
+    /// `pair(A, B), pair(C, D), ...`: forbidden unordered pairs of labels, in written order.
+    Pairs(Vec<RejectPairSyntax>),
+    /// `once(A, B, ...)`: at most one item whose label is in the set.
+    Once {
+        /// Labels of the set, in written order.
+        labels: Vec<String>,
+        /// Authored range of the `once(...)` entry.
+        range: Range<u32>,
+    },
+    /// `one_of(V, "a", ...)` or `not_in(V, "a", ...)`: an item of variant `V` is refused when its
+    /// folded text is (`one_of`) or is not (`not_in`) one of the texts.
+    Text {
+        /// `true` for `not_in`, `false` for `one_of`.
+        negated: bool,
+        /// Name of the classified variant whose items the rule reads.
+        variant: String,
+        /// Texts in written order.
+        texts: Vec<String>,
+        /// Authored range of the entry.
+        range: Range<u32>,
+    },
+}
+
+impl RejectCheckSyntax {
+    /// Every label this check names, with the authored range of the entry that names it.
+    ///
+    /// A text rule names a variant rather than a label, and is reported apart.
+    pub(crate) fn labels(&self) -> Vec<(&str, Range<u32>)> {
+        match self {
+            Self::Pairs(pairs) => pairs
+                .iter()
+                .flat_map(|pair| {
+                    [
+                        (pair.left.as_str(), pair.range.clone()),
+                        (pair.right.as_str(), pair.range.clone()),
+                    ]
+                })
+                .collect(),
+            Self::Once { labels, range } => labels
+                .iter()
+                .map(|label| (label.as_str(), range.clone()))
+                .collect(),
+            Self::Text { .. } => Vec::new(),
+        }
+    }
+
+    /// Renders the check for the one generated documentation line of its enum.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Pairs(pairs) => pairs
+                .iter()
+                .map(|pair| format!("`{}` with `{}`", pair.left, pair.right))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Self::Once { labels, .. } => format!(
+                "more than one of {}",
+                labels
+                    .iter()
+                    .map(|label| format!("`{label}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Text {
+                negated,
+                variant,
+                texts,
+                ..
+            } => format!(
+                "`{variant}` named {}{}",
+                if *negated { "other than " } else { "" },
+                texts
+                    .iter()
+                    .map(|text| format!("`{text}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored `#[reject(...)]` declaration: one test and its message data.
 ///
 /// The declaration carries the message data a configuration gate carries, and `message` and
 /// `cite` are required rather than optional: a rule that rejects a parse must say why and must
 /// name the source that rejects it (`docs/declared-rejections.md`).
 pub(crate) struct RejectRuleSyntax {
-    /// Forbidden pairs in written order.
-    pub(crate) pairs: Vec<RejectPairSyntax>,
+    /// The test the rule makes.
+    pub(crate) check: RejectCheckSyntax,
     /// Opaque diagnostic code carried to the consumer.
     pub(crate) code: Option<String>,
     /// Opaque message carried to the consumer.
     pub(crate) message: String,
     /// Opaque hint carried to the consumer.
     pub(crate) hint: Option<String>,
-    /// Citation of the source that rejects the pair.
+    /// Citation of the source that rejects the item.
     pub(crate) citation: String,
     /// Authored range of the whole declaration.
     pub(crate) range: Range<u32>,
 }
 
 impl RejectRuleSyntax {
-    /// Reads one `reject(...)` meta into its pairs and its message data.
+    /// Reads one `reject(...)` meta into its test and its message data.
     ///
     /// Only a declaration that cannot be read at all fails here. Every failure that needs the
     /// enum's resolved variants — an unknown name, a pair of one name, a repeated pair, a
@@ -271,11 +357,30 @@ impl RejectRuleSyntax {
             .parse2(list.tokens.clone())
             .map_err(|error| configuration_error(error.span(), error.to_string()))?;
         let mut pairs = Vec::new();
+        let mut single: Option<RejectCheckSyntax> = None;
         let (mut code, mut message, mut hint, mut citation) = (None, None, None, None);
         for entry in &entries {
             match entry {
                 Meta::List(pair) if pair.path.is_ident("pair") => {
                     pairs.push(reject_pair(pair)?);
+                }
+                Meta::List(entry)
+                    if entry.path.is_ident("once")
+                        || entry.path.is_ident("one_of")
+                        || entry.path.is_ident("not_in") =>
+                {
+                    if single.is_some() {
+                        return Err(configuration_error(
+                            entry.span(),
+                            "reject makes one test: write one `once(...)`, `one_of(...)` or \
+                             `not_in(...)` per declaration",
+                        ));
+                    }
+                    single = Some(if entry.path.is_ident("once") {
+                        reject_once(entry)?
+                    } else {
+                        reject_text(entry, entry.path.is_ident("not_in"))?
+                    });
                 }
                 Meta::NameValue(assignment) => {
                     let key = assignment
@@ -309,23 +414,36 @@ impl RejectRuleSyntax {
                 other => {
                     return Err(configuration_error(
                         other.span(),
-                        "reject accepts `pair(A, B)` entries and `key = \"value\"` entries only",
+                        "reject accepts `pair(A, B)`, `once(A, ...)`, `one_of(V, \"text\", ...)`, \
+                         `not_in(V, \"text\", ...)` and `key = \"value\"` entries only",
                     ));
                 }
             }
         }
-        if pairs.is_empty() {
-            return Err(configuration_error(
-                meta.span(),
-                "reject requires at least one `pair(A, B)`",
-            ));
-        }
+        let check = match (single, pairs.is_empty()) {
+            (Some(_), false) => {
+                return Err(configuration_error(
+                    meta.span(),
+                    "reject makes one test: `pair(...)` entries do not combine with `once(...)`, \
+                     `one_of(...)` or `not_in(...)` in one declaration",
+                ));
+            }
+            (Some(check), true) => check,
+            (None, false) => RejectCheckSyntax::Pairs(pairs),
+            (None, true) => {
+                return Err(configuration_error(
+                    meta.span(),
+                    "reject requires a `pair(A, B)`, `once(A, ...)`, `one_of(V, ...)` or \
+                     `not_in(V, ...)` entry",
+                ));
+            }
+        };
         let message = message
             .ok_or_else(|| configuration_error(meta.span(), "reject requires a `message` entry"))?;
         let citation = citation
             .ok_or_else(|| configuration_error(meta.span(), "reject requires a `cite` entry"))?;
         Ok(Self {
-            pairs,
+            check,
             code,
             message,
             hint,
@@ -343,7 +461,7 @@ fn reject_pair(pair: &syn::MetaList) -> Result<RejectPairSyntax, ConfigurationEr
     let [left, right] = names.iter().collect::<Vec<_>>()[..] else {
         return Err(configuration_error(
             pair.span(),
-            "reject `pair(...)` names exactly two variants",
+            "reject `pair(...)` names exactly two labels",
         ));
     };
     Ok(RejectPairSyntax {
@@ -351,6 +469,196 @@ fn reject_pair(pair: &syn::MetaList) -> Result<RejectPairSyntax, ConfigurationEr
         right: right.unraw().to_string(),
         range: span_range(pair.span()),
     })
+}
+
+/// Reads one `once(A, ...)` entry of a `reject(...)` declaration.
+fn reject_once(entry: &syn::MetaList) -> Result<RejectCheckSyntax, ConfigurationError> {
+    let names = Punctuated::<syn::Ident, Token![,]>::parse_terminated
+        .parse2(entry.tokens.clone())
+        .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+    if names.is_empty() {
+        return Err(configuration_error(
+            entry.span(),
+            "reject `once(...)` names at least one label",
+        ));
+    }
+    Ok(RejectCheckSyntax::Once {
+        labels: names.iter().map(|name| name.unraw().to_string()).collect(),
+        range: span_range(entry.span()),
+    })
+}
+
+/// Reads one `one_of(V, "a", ...)` or `not_in(V, "a", ...)` entry of a `reject(...)` declaration.
+fn reject_text(
+    entry: &syn::MetaList,
+    negated: bool,
+) -> Result<RejectCheckSyntax, ConfigurationError> {
+    let operands = Punctuated::<Expr, Token![,]>::parse_terminated
+        .parse2(entry.tokens.clone())
+        .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+    let mut operands = operands.iter();
+    let variant = operands
+        .next()
+        .and_then(|operand| match operand {
+            Expr::Path(path) if path.qself.is_none() => path.path.get_ident().cloned(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            configuration_error(
+                entry.span(),
+                "a text rule names its classified variant first, then its texts",
+            )
+        })?;
+    let texts = operands.map(literal_text).collect::<Result<Vec<_>, _>>()?;
+    if texts.is_empty() {
+        return Err(configuration_error(
+            entry.span(),
+            "a text rule names at least one text",
+        ));
+    }
+    Ok(RejectCheckSyntax::Text {
+        negated,
+        variant: variant.unraw().to_string(),
+        texts,
+        range: span_range(entry.span()),
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One text mapping of a `#[classify(...)]` declaration: `text("path", Path)`.
+pub(crate) struct ClassifyTextSyntax {
+    /// Folded text the mapping reads.
+    pub(crate) text: String,
+    /// Label an item with that folded text counts as.
+    pub(crate) label: String,
+    /// Authored range of the `text(...)` entry.
+    pub(crate) range: Range<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored `#[classify(Variant.field, fold = path, text("...", Label), ...)]` declaration.
+///
+/// The declaration reads the identifier `field` of one variant's struct payload, folds its source
+/// text with the consumer's `fold` function, and lets an item whose folded text a mapping names
+/// count as that mapping's label for the enum's rejection rules
+/// (`docs/declared-rejections.md`).
+pub(crate) struct ClassifySyntax {
+    /// Name of the classified variant.
+    pub(crate) variant: String,
+    /// Name of the identifier field of the variant's struct payload.
+    pub(crate) field: String,
+    /// Path of the consumer's fold function, `fn(&str) -> Option<impl AsRef<str>>`.
+    pub(crate) fold: syn::Path,
+    /// Text mappings in written order.
+    pub(crate) texts: Vec<ClassifyTextSyntax>,
+    /// Authored range of the whole declaration.
+    pub(crate) range: Range<u32>,
+}
+
+impl ClassifySyntax {
+    /// Reads one `classify(...)` meta.
+    ///
+    /// Only a declaration that cannot be read at all fails here; a name that needs the enum's
+    /// resolved variants is reported by source-model lowering.
+    pub(crate) fn from_meta(meta: &Meta) -> Result<Self, ConfigurationError> {
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "classify must use parentheses",
+            ));
+        };
+        let entries = Punctuated::<Expr, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        let mut entries = entries.iter();
+        let (variant, field) = entries
+            .next()
+            .and_then(|first| match first {
+                Expr::Field(access) => {
+                    let Expr::Path(base) = access.base.as_ref() else {
+                        return None;
+                    };
+                    let syn::Member::Named(field) = &access.member else {
+                        return None;
+                    };
+                    let variant = base.path.get_ident()?;
+                    Some((variant.unraw().to_string(), field.unraw().to_string()))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                configuration_error(
+                    meta.span(),
+                    "classify names the classified field first, as `Variant.field`",
+                )
+            })?;
+        let mut fold = None;
+        let mut texts = Vec::new();
+        for entry in entries {
+            match entry {
+                Expr::Assign(assign) if matches!(assign.left.as_ref(), Expr::Path(path) if path.path.is_ident("fold")) =>
+                {
+                    let Expr::Path(path) = assign.right.as_ref() else {
+                        return Err(configuration_error(
+                            assign.right.span(),
+                            "classify `fold` names a function path",
+                        ));
+                    };
+                    if fold.replace(path.path.clone()).is_some() {
+                        return Err(configuration_error(
+                            assign.span(),
+                            "duplicate classify fold entry",
+                        ));
+                    }
+                }
+                Expr::Call(call) if matches!(call.func.as_ref(), Expr::Path(path) if path.path.is_ident("text")) =>
+                {
+                    let [text, label] = call.args.iter().collect::<Vec<_>>()[..] else {
+                        return Err(configuration_error(
+                            call.span(),
+                            "classify `text(...)` names one text and one label",
+                        ));
+                    };
+                    let label = match label {
+                        Expr::Path(path) if path.qself.is_none() => path.path.get_ident().cloned(),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        configuration_error(
+                            label.span(),
+                            "classify `text(...)` maps to a label name",
+                        )
+                    })?;
+                    texts.push(ClassifyTextSyntax {
+                        text: literal_text(text)?,
+                        label: label.unraw().to_string(),
+                        range: span_range(call.span()),
+                    });
+                }
+                other => {
+                    return Err(configuration_error(
+                        other.span(),
+                        "classify accepts `fold = path` and `text(\"...\", Label)` entries only",
+                    ));
+                }
+            }
+        }
+        let fold = fold
+            .ok_or_else(|| configuration_error(meta.span(), "classify requires a `fold` entry"))?;
+        if texts.is_empty() {
+            return Err(configuration_error(
+                meta.span(),
+                "classify requires at least one `text(\"...\", Label)` entry",
+            ));
+        }
+        Ok(Self {
+            variant,
+            field,
+            fold,
+            texts,
+            range: span_range(meta.span()),
+        })
+    }
 }
 
 /// Reads a bare name written as the value of a `config` entry.

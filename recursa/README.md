@@ -293,11 +293,26 @@ items a list holds. `#[reject(...)]` states them on the enum whose variants the 
 pub enum ConstraintAttr { NotDeferrable, Deferrable, InitiallyImmediate, InitiallyDeferred }
 ```
 
-Every repetition of that enum walks its items in source order, and the first item that completes
-a forbidden pair ends the parse with that rule's message data and the item's own extent. A pair
-is unordered, a variant matches by name, and one variant repeated is admitted. `message` and
+Every repetition of that enum walks its items in source order, and the first item that a rule
+refuses ends the parse with that rule's message data and the item's own extent. A pair is
+unordered, a variant matches by name, and one variant repeated is admitted. `message` and
 `cite` are required; `code` and `hint` are optional. Gate a rule with
 `#[config_attr(BOUNDS, reject(...))]`.
+
+`once(A, ...)` admits at most one item of a set: a second `A`, or `A` beside another member, is
+refused. A `#[classify(...)]` declaration lets an item count as another label by the folded text
+of its identifier field, and the text rules `one_of` and `not_in` refuse one item by that text:
+
+```rust,ignore
+#[classify(Named.name, fold = crate::ident::fold_name, text("path", Path), text("default", Default))]
+#[reject(once(Path), message = "only one PATH value per column is allowed", cite = "...")]
+#[reject(once(NotNull, Null), message = "conflicting or redundant NULL / NOT NULL declarations", cite = "...")]
+#[reject(not_in(Named, "path", "default"), message = "unrecognized column option", cite = "...")]
+pub enum ColumnOption { Path(Value), Default(Value), NotNull, Null, Named(NamedOption) }
+```
+
+`fold` is the consumer's function, `fn(&str) -> Option<impl AsRef<str>>`, because the consumer
+owns its scanner's folding rules.
 
 The failure is a `ParseErrorKind::DeclaredRejection` carrying the rule's note:
 
