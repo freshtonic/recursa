@@ -400,6 +400,13 @@ pub(super) fn render_node_requires(
     };
     let (impl_generics, type_generics, where_clause) = requires_impl_parts(facade, node);
     let ceiling = requirements.ceiling(node.node);
+    // A ceiling at the baseline says no construct below this Node carries a requirement, and
+    // `RequirementScan::skips` is true for every subtree whose ceiling is at or below the
+    // floor, which is never below the baseline. The scan therefore never reaches a
+    // construct here, and the body is empty: about sixty percent of a grammar's Nodes have
+    // this ceiling, and each full body cost the type checker and borrow checker a few
+    // milliseconds for nothing.
+    let body = if ceiling == 0 { quote!() } else { body };
     let table = format_ident!("__RECURSA_REQUIREMENTS_{node_index}");
     let notes = builder.into_notes();
     let count = notes.len();

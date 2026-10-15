@@ -754,90 +754,29 @@ fn render_flat_entry_points(
     };
     let start_state = start.start_state;
     let accept_rule = start.accept_rule;
-    let demand_extents = (!plan.rejections.is_empty())
-        .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
-    let run = |spans: bool| {
-        let demand_extents = &demand_extents;
-        quote! {
-            #facade::__private::parse_flat_with(
-                &mut input.inner,
-                &#module_anchor::__RECURSA_GRAMMAR,
-                #spans,
-                |context| {
-                    #demand_extents
-                    let mut builder = #module_anchor::FlatAstBuilder::new(
-                        context.tracks_extents(),
-                        context.remaining_tokens(),
-                    );
-                    let root = #facade::__private::lr_run_flat::<
-                        #facade::__private::Handle<#flat_ty>,
-                        A,
-                        _,
-                        _,
-                    >(
-                        context,
-                        &#tables_module::TABLES,
-                        #start_state,
-                        #accept_rule,
-                        &mut builder,
-                        #tables_module::__recursa_reduce_flat,
-                    )?;
-                    Ok(builder.finish(root))
-                },
-            )
+    // The bodies live once per crate in the tables module (`render_flat_dispatcher`): one
+    // generic entry per form, keyed by this Node's `__RecursaFlatEntry` impl. A closure body
+    // on every Node cost the type checker and borrow checker about four seconds of a
+    // fifty-second compile for a grammar of 1,500 Nodes, with nothing but the type path and
+    // two table indices varying between the copies.
+    let spanned = quote!(#tables_module::__recursa_parse_flat::<Self, A>(input, true));
+    let without_spans = quote!(#tables_module::__recursa_parse_flat::<Self, A>(input, false));
+    let spanned_reusing =
+        quote!(#tables_module::__recursa_parse_flat_reusing::<Self, A>(input, buffers, true));
+    let without_spans_reusing =
+        quote!(#tables_module::__recursa_parse_flat_reusing::<Self, A>(input, buffers, false));
+    let entry = quote! {
+        impl<#input_lifetime> #tables_module::__RecursaFlatEntry<#input_lifetime> for #nested_ty {
+            type Flat = #flat_ty;
+            const START_STATE: u32 = #start_state;
+            const ACCEPT_RULE: u32 = #accept_rule;
         }
     };
-    // The reusing form differs from `run` in two places only: it takes the caller's buffers when
-    // it builds the stores, and it gives them back when the automaton fails.
-    let run_reusing = |spans: bool| {
-        let demand_extents = &demand_extents;
-        quote! {
-            #facade::__private::parse_flat_with(
-                &mut input.inner,
-                &#module_anchor::__RECURSA_GRAMMAR,
-                #spans,
-                |context| {
-                    #demand_extents
-                    let capture_spans = context.tracks_extents();
-                    let tokens = context.remaining_tokens();
-                    let mut builder = match buffers.take() {
-                        Some(recycled) => #module_anchor::FlatAstBuilder::from_buffers(
-                            recycled,
-                            capture_spans,
-                            tokens,
-                        ),
-                        None => #module_anchor::FlatAstBuilder::new(capture_spans, tokens),
-                    };
-                    match #facade::__private::lr_run_flat::<
-                        #facade::__private::Handle<#flat_ty>,
-                        A,
-                        _,
-                        _,
-                    >(
-                        context,
-                        &#tables_module::TABLES,
-                        #start_state,
-                        #accept_rule,
-                        &mut builder,
-                        #tables_module::__recursa_reduce_flat,
-                    ) {
-                        Ok(root) => Ok(builder.finish(root)),
-                        Err(error) => {
-                            *buffers = Some(builder.recycle());
-                            Err(error)
-                        }
-                    }
-                },
-            )
-        }
-    };
-    let spanned = run(true);
-    let without_spans = run(false);
-    let spanned_reusing = run_reusing(true);
-    let without_spans_reusing = run_reusing(false);
     let result =
         quote!(Result<#module_anchor::FlatAst<#input_lifetime, #flat_ty>, #facade::ParseError>);
     quote! {
+        #entry
+
         impl #impl_generics #nested_ty {
             /// Parses this Node into a Flat AST, with one span per Node and per text.
             ///
@@ -989,7 +928,109 @@ pub(super) fn render_flat_dispatcher(
     let root_functions = root_actions
         .iter()
         .filter_map(|(_, function)| function.as_ref());
+    let module_anchor = &plan.module_anchor;
+    let demand_extents = (!plan.rejections.is_empty())
+        .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
+    let entries = quote! {
+        /// The flat parse entry of one root Node: its flat type and its start tables. Every
+        /// root Node implements it, and the four `parse_flat*` methods of each Node call the
+        /// two generic entries below with it, so the parse bodies exist once per crate.
+        pub(crate) trait __RecursaFlatEntry<#input_lifetime> {
+            type Flat: #facade::__private::FlatNode;
+            const START_STATE: u32;
+            const ACCEPT_RULE: u32;
+        }
+
+        #[doc(hidden)]
+        pub(crate) fn __recursa_parse_flat<#input_lifetime, N, A>(
+            input: &mut #module_anchor::Input<#input_lifetime, A>,
+            spans: bool,
+        ) -> Result<#module_anchor::FlatAst<#input_lifetime, N::Flat>, #facade::ParseError>
+        where
+            N: __RecursaFlatEntry<#input_lifetime>,
+        {
+            #facade::__private::parse_flat_with(
+                &mut input.inner,
+                &#module_anchor::__RECURSA_GRAMMAR,
+                spans,
+                |context| {
+                    #demand_extents
+                    let mut builder = #module_anchor::FlatAstBuilder::new(
+                        context.tracks_extents(),
+                        context.remaining_tokens(),
+                    );
+                    let root = #facade::__private::lr_run_flat::<
+                        #facade::__private::Handle<N::Flat>,
+                        A,
+                        _,
+                        _,
+                    >(
+                        context,
+                        &TABLES,
+                        N::START_STATE,
+                        N::ACCEPT_RULE,
+                        &mut builder,
+                        __recursa_reduce_flat,
+                    )?;
+                    Ok(builder.finish(root))
+                },
+            )
+        }
+
+        /// The reusing form differs from `__recursa_parse_flat` in two places only: it takes
+        /// the caller's buffers when it builds the stores, and it gives them back when the
+        /// automaton fails.
+        #[doc(hidden)]
+        pub(crate) fn __recursa_parse_flat_reusing<#input_lifetime, N, A>(
+            input: &mut #module_anchor::Input<#input_lifetime, A>,
+            buffers: &mut Option<#module_anchor::FlatBuffers>,
+            spans: bool,
+        ) -> Result<#module_anchor::FlatAst<#input_lifetime, N::Flat>, #facade::ParseError>
+        where
+            N: __RecursaFlatEntry<#input_lifetime>,
+        {
+            #facade::__private::parse_flat_with(
+                &mut input.inner,
+                &#module_anchor::__RECURSA_GRAMMAR,
+                spans,
+                |context| {
+                    #demand_extents
+                    let capture_spans = context.tracks_extents();
+                    let tokens = context.remaining_tokens();
+                    let mut builder = match buffers.take() {
+                        Some(recycled) => #module_anchor::FlatAstBuilder::from_buffers(
+                            recycled,
+                            capture_spans,
+                            tokens,
+                        ),
+                        None => #module_anchor::FlatAstBuilder::new(capture_spans, tokens),
+                    };
+                    match #facade::__private::lr_run_flat::<
+                        #facade::__private::Handle<N::Flat>,
+                        A,
+                        _,
+                        _,
+                    >(
+                        context,
+                        &TABLES,
+                        N::START_STATE,
+                        N::ACCEPT_RULE,
+                        &mut builder,
+                        __recursa_reduce_flat,
+                    ) {
+                        Ok(root) => Ok(builder.finish(root)),
+                        Err(error) => {
+                            *buffers = Some(builder.recycle());
+                            Err(error)
+                        }
+                    }
+                },
+            )
+        }
+    };
     Ok(quote! {
+        #entries
+
         #[doc = #SAFETY]
         #[allow(clippy::manual_range_patterns)]
         #[inline(always)]
