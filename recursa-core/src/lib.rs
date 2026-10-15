@@ -32,7 +32,7 @@ mod parse;
 mod parsed;
 /// Structured Pretty rendering and source maps.
 mod pretty;
-/// Declared rejections: forbidden pairs of enum variants in one repetition.
+/// Declared rejections: the items one repetition of an enum may not hold together.
 mod rejection;
 /// Declared build-configuration requirements recorded by generation.
 mod requirement;
@@ -56,7 +56,7 @@ pub use parsed::{
     ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
-pub use rejection::{Rejection, RejectionNote, RejectionPair, RejectionRule};
+pub use rejection::{Rejection, RejectionKey, RejectionNote, RejectionPair, RejectionRule};
 pub use requirement::{Configuration, Requirement, RequirementNote, RequirementScan, Requires};
 pub use span::{OffsetOverflow, Span};
 pub use visitor::{
@@ -141,7 +141,7 @@ pub mod __private {
         parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
     };
     pub use crate::rejection::{
-        RejectionFilter, RejectionNote, RejectionPair, RejectionRule,
+        RejectionFilter, RejectionKey, RejectionNote, RejectionPair, RejectionRule,
         first_rejection as first_declared_rejection,
     };
     pub use crate::requirement::{
@@ -211,7 +211,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        40,
+        41,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -319,7 +319,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            40,
+            41,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

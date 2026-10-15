@@ -1,9 +1,15 @@
 //! Declared rejections: the static rule table and the one walk every parse form runs.
 //!
-//! A rejection rule is a type-level declaration on an enum that names forbidden unordered pairs
-//! of its variants together with the code, message, hint and citation of the source that rejects
-//! them. Every repetition whose element type is that enum runs the rule set as the list is built,
-//! and the first item that completes a forbidden pair ends the parse with a declared rejection.
+//! A rejection rule is a type-level declaration on an enum that names the items a repetition of
+//! that enum may not hold together, together with the code, message, hint and citation of the
+//! source that rejects them. Every repetition whose element type is that enum runs the rule set as
+//! the list is built, and the first item that a rule refuses ends the parse with a declared
+//! rejection.
+//!
+//! A rule refuses an item in one of three ways. A forbidden pair refuses the second of two
+//! classes; a `once` set refuses a second item of the set; a text rule refuses one item of one
+//! variant by the folded text of its identifier field. An item's class is its variant, unless a
+//! classification maps its folded text to another variant or to a text label.
 //!
 //! The message data is the data a configuration gate carries
 //! ([`crate::RequirementNote`]), because both answer the same consumer question: which source
@@ -11,8 +17,8 @@
 //!
 //! Three storages run the rule set, and this module holds the one walk all three use. A value
 //! parse and an arena parse share one generated list action; a flat parse has a parallel one.
-//! Both hand `first_rejection` the same thing: the variant tag of every item in source order,
-//! with the extent of the item that the step just added. Nothing below that differs.
+//! Both hand `first_rejection` the same thing: the key of every item in source order, with the
+//! extent of the item that the step just added. Nothing below that differs.
 
 use crate::span::Span;
 
@@ -31,7 +37,7 @@ pub struct RejectionNote {
     message: &'static str,
     /// Opaque hint supplied by the rule.
     hint: Option<&'static str>,
-    /// Citation of the source that rejects the pair.
+    /// Citation of the source that rejects the item.
     citation: &'static str,
 }
 
@@ -74,21 +80,61 @@ impl RejectionNote {
         self.hint
     }
 
-    /// The citation of the source that rejects the pair.
+    /// The citation of the source that rejects the item.
     pub const fn citation(&self) -> &'static str {
         self.citation
     }
 }
 
-/// One forbidden pair of variants, as the two generated variant tags.
+/// The text index of an item that has no folded text a rule names.
 ///
-/// The pair is unordered: a list rejects whether the left variant or the right one comes first.
-/// A variant matches by name only, so a payload never takes part in the test.
+/// A key whose text is this value takes part in no `one_of` rule and in every `not_in` rule of its
+/// variant: an item with no folded text, or with one that no rule names, is outside every set.
+pub(crate) const NO_TEXT: u32 = u32::MAX;
+
+/// What the walk knows about one item: its variant, its class and its folded text.
+///
+/// Every number is generated. `variant` is the item's position in its authored enum. `class` is
+/// the label the rules see: the variant itself, or the label a classification maps the item's
+/// folded text to. `text` is the position of the folded text in the enum's text table, or
+/// `NO_TEXT`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RejectionKey {
+    /// Tag of the item's own variant.
+    variant: u32,
+    /// Tag of the label the rules see for the item.
+    class: u32,
+    /// Index of the item's folded text in the enum's text table, or `NO_TEXT`.
+    text: u32,
+}
+
+impl RejectionKey {
+    /// Builds the key of one item. Generated code is the only caller.
+    #[doc(hidden)]
+    pub const fn new(variant: u32, class: u32, text: u32) -> Self {
+        Self {
+            variant,
+            class,
+            text,
+        }
+    }
+
+    /// Builds the key of an item that no classification reads: its class is its variant.
+    #[doc(hidden)]
+    pub const fn plain(variant: u32) -> Self {
+        Self::new(variant, variant, NO_TEXT)
+    }
+}
+
+/// One forbidden pair of classes, as the two generated tags.
+///
+/// The pair is unordered: a list rejects whether the left class or the right one comes first.
+/// A class matches by tag only, so a payload never takes part in the test.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RejectionPair {
-    /// Tag of the variant written first.
+    /// Tag of the class written first.
     left: u32,
-    /// Tag of the variant written second.
+    /// Tag of the class written second.
     right: u32,
 }
 
@@ -100,29 +146,110 @@ impl RejectionPair {
     }
 }
 
-/// One declared rejection rule: the forbidden pairs of one authored attribute and their note.
+/// The test one rule makes at one item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RejectionCheck {
+    /// The item completes one of these unordered pairs with a class the walk has passed.
+    Pairs(&'static [RejectionPair]),
+    /// The item's class is in this set, and the walk has already passed a class of the set.
+    Once(&'static [u32]),
+    /// The item is of this variant, and its folded text is one of these texts.
+    TextIn {
+        /// Tag of the variant whose items the rule reads.
+        variant: u32,
+        /// Indexes of the refused texts in the enum's text table.
+        texts: &'static [u32],
+    },
+    /// The item is of this variant, and its folded text is none of these texts.
+    TextNotIn {
+        /// Tag of the variant whose items the rule reads.
+        variant: u32,
+        /// Indexes of the admitted texts in the enum's text table.
+        texts: &'static [u32],
+    },
+}
+
+/// One declared rejection rule: the test of one authored attribute and its note.
 ///
-/// One attribute carries one message and any number of pairs, so the pairs of a rule share a
-/// note. A Node's rules keep their authored order, and the pairs of a rule keep theirs, because
-/// the first pair that a list completes decides the message the parse reports.
+/// One attribute carries one message, so every pair of a rule shares a note. A Node's rules keep
+/// their authored order, and the pairs of a rule keep theirs, because the first rule that refuses
+/// an item decides the message the parse reports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RejectionRule {
-    /// Forbidden pairs in written order.
-    pairs: &'static [RejectionPair],
-    /// Message data every pair of this rule carries.
+    /// The test this rule makes.
+    check: RejectionCheck,
+    /// Message data the rule carries.
     note: RejectionNote,
 }
 
 impl RejectionRule {
-    /// Builds one rule. Generated code is the only caller.
+    /// Builds a rule of forbidden pairs. Generated code is the only caller.
     #[doc(hidden)]
     pub const fn new(pairs: &'static [RejectionPair], note: RejectionNote) -> Self {
-        Self { pairs, note }
+        Self {
+            check: RejectionCheck::Pairs(pairs),
+            note,
+        }
+    }
+
+    /// Builds a rule that admits at most one item of a set of classes. Generated code is the only
+    /// caller.
+    #[doc(hidden)]
+    pub const fn once(classes: &'static [u32], note: RejectionNote) -> Self {
+        Self {
+            check: RejectionCheck::Once(classes),
+            note,
+        }
+    }
+
+    /// Builds a rule that refuses an item of one variant whose folded text is one of `texts`.
+    /// Generated code is the only caller.
+    #[doc(hidden)]
+    pub const fn text_in(variant: u32, texts: &'static [u32], note: RejectionNote) -> Self {
+        Self {
+            check: RejectionCheck::TextIn { variant, texts },
+            note,
+        }
+    }
+
+    /// Builds a rule that refuses an item of one variant whose folded text is none of `texts`.
+    /// Generated code is the only caller.
+    #[doc(hidden)]
+    pub const fn text_not_in(variant: u32, texts: &'static [u32], note: RejectionNote) -> Self {
+        Self {
+            check: RejectionCheck::TextNotIn { variant, texts },
+            note,
+        }
     }
 
     /// The message data of this rule.
     pub const fn note(&self) -> &RejectionNote {
         &self.note
+    }
+
+    /// Reports whether this rule refuses `key`, given the classes the walk has passed.
+    fn refuses(&self, key: RejectionKey, seen: &SeenTags) -> bool {
+        match self.check {
+            RejectionCheck::Pairs(pairs) => pairs.iter().any(|pair| {
+                let partner = if pair.left == key.class {
+                    pair.right
+                } else if pair.right == key.class {
+                    pair.left
+                } else {
+                    return false;
+                };
+                seen.contains(partner)
+            }),
+            RejectionCheck::Once(classes) => {
+                classes.contains(&key.class) && classes.iter().any(|class| seen.contains(*class))
+            }
+            RejectionCheck::TextIn { variant, texts } => {
+                key.variant == variant && texts.contains(&key.text)
+            }
+            RejectionCheck::TextNotIn { variant, texts } => {
+                key.variant == variant && !texts.contains(&key.text)
+            }
+        }
     }
 }
 
@@ -131,7 +258,7 @@ impl RejectionRule {
 pub struct Rejection {
     /// Message data of the rule that rejected the list.
     note: &'static RejectionNote,
-    /// Extent of the item that completed the forbidden pair, when the parse retained spans.
+    /// Extent of the item that a rule refused, when the parse retained spans.
     span: Option<Span>,
 }
 
@@ -141,16 +268,17 @@ impl Rejection {
         self.note
     }
 
-    /// The extent of the item that completed the forbidden pair.
+    /// The extent of the item that a rule refused.
     pub const fn span(&self) -> Option<Span> {
         self.span
     }
 }
 
-/// The variant tags one walk has already passed.
+/// The class tags one walk has already passed.
 ///
-/// A tag is a variant's position in its authored enum, so the common enum fits one word and the
-/// overflow vector stays empty and unallocated.
+/// A class tag is a variant's position in its authored enum, or a text label numbered after the
+/// variants, so the common enum fits one word and the overflow vector stays empty and
+/// unallocated.
 struct SeenTags {
     /// One bit per tag below 64.
     low: u64,
@@ -186,14 +314,13 @@ impl SeenTags {
     }
 }
 
-/// One list's rule set and the variants it has already passed.
+/// One list's rule set and the classes it has already passed.
 ///
 /// This is the state of the walk, and it is the whole semantics of a rejection rule: it
 /// reproduces the incremental check a `gram.y` action makes over a bit set. At each item the
-/// filter tests the rules in authored order and, inside each rule, the pairs in written order,
-/// against the variants of the items before it. The first pair a rule completes answers, so a
-/// specific message beats a general one when both complete at the same item and the specific rule
-/// is written first.
+/// filter tests the rules in authored order against the item's key and the classes of the items
+/// before it. The first rule that refuses the item answers, so a specific message beats a general
+/// one when both refuse the same item and the specific rule is written first.
 ///
 /// A parse runs it through `first_rejection` and stops at the answer. `Arbitrary` sampling runs
 /// it through [`RejectionFilter::admits`] and drops the item instead, so a sampled value always
@@ -202,7 +329,7 @@ impl SeenTags {
 pub struct RejectionFilter {
     /// Rules of the element type, in authored order.
     rules: &'static [RejectionRule],
-    /// Variant tags the filter has already passed.
+    /// Class tags the filter has already passed.
     seen: SeenTags,
 }
 
@@ -216,24 +343,13 @@ impl RejectionFilter {
         }
     }
 
-    /// Returns the note of the first rule one item completes, and records the item otherwise.
+    /// Returns the note of the first rule that refuses one item, and records the item otherwise.
     #[doc(hidden)]
-    pub fn refused(&mut self, tag: u32) -> Option<&'static RejectionNote> {
-        for rule in self.rules {
-            for pair in rule.pairs {
-                let partner = if pair.left == tag {
-                    pair.right
-                } else if pair.right == tag {
-                    pair.left
-                } else {
-                    continue;
-                };
-                if self.seen.contains(partner) {
-                    return Some(&rule.note);
-                }
-            }
+    pub fn refused(&mut self, key: RejectionKey) -> Option<&'static RejectionNote> {
+        if let Some(rule) = self.rules.iter().find(|rule| rule.refuses(key, &self.seen)) {
+            return Some(&rule.note);
         }
-        self.seen.insert(tag);
+        self.seen.insert(key.class);
         None
     }
 
@@ -242,8 +358,8 @@ impl RejectionFilter {
     /// This is [`RejectionFilter::refused`] read the other way round. Generated `Arbitrary`
     /// sampling keeps an item exactly while this answers `true`.
     #[doc(hidden)]
-    pub fn admits(&mut self, tag: u32) -> bool {
-        self.refused(tag).is_none()
+    pub fn admits(&mut self, key: RejectionKey) -> bool {
+        self.refused(key).is_none()
     }
 }
 
@@ -254,11 +370,11 @@ impl RejectionFilter {
 #[doc(hidden)]
 pub fn first_rejection<I>(items: I, rules: &'static [RejectionRule]) -> Option<Rejection>
 where
-    I: IntoIterator<Item = (u32, Option<Span>)>,
+    I: IntoIterator<Item = (RejectionKey, Option<Span>)>,
 {
     let mut filter = RejectionFilter::new(rules);
-    for (tag, span) in items {
-        if let Some(note) = filter.refused(tag) {
+    for (key, span) in items {
+        if let Some(note) = filter.refused(key) {
             return Some(Rejection { note, span });
         }
     }
@@ -305,13 +421,23 @@ mod tests {
     ];
 
     /// Builds one item sequence whose last item carries the only span.
-    fn items(tags: &[u32]) -> Vec<(u32, Option<Span>)> {
-        let last = tags.len().saturating_sub(1);
-        tags.iter()
+    fn items(tags: &[u32]) -> Vec<(RejectionKey, Option<Span>)> {
+        keyed(
+            &tags
+                .iter()
+                .map(|tag| RejectionKey::plain(*tag))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Builds one item sequence of explicit keys whose last item carries the only span.
+    fn keyed(keys: &[RejectionKey]) -> Vec<(RejectionKey, Option<Span>)> {
+        let last = keys.len().saturating_sub(1);
+        keys.iter()
             .enumerate()
-            .map(|(index, tag)| {
+            .map(|(index, key)| {
                 let span = (index == last).then(|| Span::new(index, index + 1).unwrap());
-                (*tag, span)
+                (*key, span)
             })
             .collect()
     }
@@ -369,9 +495,12 @@ mod tests {
         // Three conflicts are present; the answer is the earliest one in source order.
         let rejection = first_rejection(
             [
-                (NOT_DEFERRABLE, Span::new(0, 1).ok()),
-                (DEFERRABLE, Span::new(2, 3).ok()),
-                (INITIALLY_DEFERRED, Span::new(4, 5).ok()),
+                (RejectionKey::plain(NOT_DEFERRABLE), Span::new(0, 1).ok()),
+                (RejectionKey::plain(DEFERRABLE), Span::new(2, 3).ok()),
+                (
+                    RejectionKey::plain(INITIALLY_DEFERRED),
+                    Span::new(4, 5).ok(),
+                ),
             ],
             &RULES,
         )
@@ -393,7 +522,7 @@ mod tests {
             INITIALLY_IMMEDIATE,
         ]
         .into_iter()
-        .filter(|tag| filter.admits(*tag))
+        .filter(|tag| filter.admits(RejectionKey::plain(*tag)))
         .collect::<Vec<_>>();
         // `NOT DEFERRABLE` conflicts with the `DEFERRABLE` already kept, so it goes; the two
         // later items then conflict with nothing that survived.
@@ -414,5 +543,155 @@ mod tests {
         assert!(first_rejection(items(&[70, 7]), &WIDE).is_some());
         assert!(first_rejection(items(&[7, 70]), &WIDE).is_some());
         assert!(first_rejection(items(&[70, 70]), &WIDE).is_none());
+    }
+
+    /// The option list of `xmltable_column_el` (gram.y REL_17_11 14000-14090): variants `Path`,
+    /// `Default`, `NotNull`, `Null` and `Named`, where `Named` is `IDENT b_expr` and its folded
+    /// text `path` or `default` makes it count as the keyword arm of the same name.
+    mod options {
+        use super::*;
+
+        pub(super) const PATH: u32 = 0;
+        pub(super) const DEFAULT: u32 = 1;
+        pub(super) const NOT_NULL: u32 = 2;
+        pub(super) const NULL: u32 = 3;
+        pub(super) const NAMED: u32 = 4;
+
+        /// Text table: `path`, `default`, `__pg__is_not_null`.
+        pub(super) const TEXT_PATH: u32 = 0;
+        pub(super) const TEXT_DEFAULT: u32 = 1;
+        pub(super) const TEXT_RESERVED: u32 = 2;
+
+        static ONCE_PATH: [u32; 1] = [PATH];
+        static ONCE_DEFAULT: [u32; 1] = [DEFAULT];
+        static ONCE_NULLABILITY: [u32; 2] = [NOT_NULL, NULL];
+        static RESERVED: [u32; 1] = [TEXT_RESERVED];
+        static KNOWN: [u32; 2] = [TEXT_PATH, TEXT_DEFAULT];
+
+        pub(super) static RULES: [RejectionRule; 5] = [
+            RejectionRule::text_in(
+                NAMED,
+                &RESERVED,
+                RejectionNote::new(
+                    "XmlColumnOption",
+                    Some("42601"),
+                    "option name cannot be used in XMLTABLE",
+                    None,
+                    "test",
+                ),
+            ),
+            RejectionRule::once(
+                &ONCE_PATH,
+                RejectionNote::new(
+                    "XmlColumnOption",
+                    Some("42601"),
+                    "only one PATH value per column is allowed",
+                    None,
+                    "test",
+                ),
+            ),
+            RejectionRule::once(
+                &ONCE_DEFAULT,
+                RejectionNote::new(
+                    "XmlColumnOption",
+                    Some("42601"),
+                    "only one DEFAULT value is allowed",
+                    None,
+                    "test",
+                ),
+            ),
+            RejectionRule::once(
+                &ONCE_NULLABILITY,
+                RejectionNote::new(
+                    "XmlColumnOption",
+                    Some("42601"),
+                    "conflicting or redundant NULL / NOT NULL declarations",
+                    None,
+                    "test",
+                ),
+            ),
+            RejectionRule::text_not_in(
+                NAMED,
+                &KNOWN,
+                RejectionNote::new(
+                    "XmlColumnOption",
+                    Some("42601"),
+                    "unrecognized column option",
+                    None,
+                    "test",
+                ),
+            ),
+        ];
+
+        /// `IDENT b_expr` whose folded text the classification maps to `class`.
+        pub(super) fn named(class: u32, text: u32) -> RejectionKey {
+            RejectionKey::new(NAMED, class, text)
+        }
+    }
+
+    fn message(keys: &[RejectionKey]) -> Option<&'static str> {
+        first_rejection(keyed(keys), &options::RULES).map(|rejection| rejection.note().message())
+    }
+
+    #[test]
+    fn once_admits_one_item_of_its_set_in_any_order() {
+        use options::*;
+        let plain = RejectionKey::plain;
+        assert_eq!(message(&[plain(NULL), plain(DEFAULT), plain(PATH)]), None);
+        assert_eq!(message(&[plain(NOT_NULL), plain(PATH)]), None);
+        assert_eq!(
+            message(&[plain(PATH), plain(PATH)]),
+            Some("only one PATH value per column is allowed")
+        );
+        // A set of two classes refuses a repeat of either member and the second member alike.
+        assert_eq!(
+            message(&[plain(NOT_NULL), plain(NOT_NULL)]),
+            Some("conflicting or redundant NULL / NOT NULL declarations")
+        );
+        assert_eq!(
+            message(&[plain(NULL), plain(NOT_NULL)]),
+            Some("conflicting or redundant NULL / NOT NULL declarations")
+        );
+    }
+
+    #[test]
+    fn a_classified_item_counts_as_the_class_its_text_maps_to() {
+        use options::*;
+        let plain = RejectionKey::plain;
+        assert_eq!(message(&[named(PATH, TEXT_PATH)]), None);
+        assert_eq!(
+            message(&[plain(PATH), named(PATH, TEXT_PATH)]),
+            Some("only one PATH value per column is allowed")
+        );
+        assert_eq!(
+            message(&[named(DEFAULT, TEXT_DEFAULT), plain(DEFAULT)]),
+            Some("only one DEFAULT value is allowed")
+        );
+    }
+
+    #[test]
+    fn a_text_rule_refuses_one_item_even_when_it_is_the_first() {
+        use options::*;
+        assert_eq!(
+            message(&[named(NAMED, NO_TEXT)]),
+            Some("unrecognized column option")
+        );
+        // The specific text rule is written first, so it answers before the general one.
+        assert_eq!(
+            message(&[named(NAMED, TEXT_RESERVED)]),
+            Some("option name cannot be used in XMLTABLE")
+        );
+        // A text rule reads one variant only.
+        assert_eq!(message(&[RejectionKey::new(PATH, PATH, NO_TEXT)]), None);
+    }
+
+    #[test]
+    fn the_filter_drops_an_item_a_text_rule_refuses() {
+        use options::*;
+        let mut filter = RejectionFilter::new(&options::RULES);
+        assert!(!filter.admits(named(NAMED, NO_TEXT)));
+        assert!(filter.admits(named(PATH, TEXT_PATH)));
+        assert!(!filter.admits(RejectionKey::plain(PATH)));
+        assert!(filter.admits(RejectionKey::plain(NULL)));
     }
 }

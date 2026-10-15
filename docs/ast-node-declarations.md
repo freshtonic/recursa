@@ -67,8 +67,12 @@ This document is the declaration and nested-output contract.
   derives. Trait selection is independent of attribute order and follows the conflict rules below.
 - Accept `#[reject(pair(A, B), code = ..., message = ..., cite = ..., hint = ...)]` on an enum
   declaration, which names forbidden unordered pairs of its variants: every repetition of that
-  enum refuses a list that holds a named pair. The rule is gated only through
-  `#[config_attr(BOUNDS, reject(...))]`. See
+  enum refuses a list that holds a named pair. `once(A, ...)` in place of the pairs admits at
+  most one item of a set, and `one_of(V, "text", ...)` or `not_in(V, "text", ...)` refuses one
+  item of variant `V` by the folded text of its identifier. Accept
+  `#[classify(V.field, fold = path, text("text", Label), ...)]` on the same enum, which names that
+  identifier field, the consumer's fold function, and the label an item with that folded text
+  counts as. Both are gated only through `#[config_attr(BOUNDS, ...)]`. See
   [declared rejections](declared-rejections.md).
 - Flat AST variant design is out of scope for this session.
 

@@ -970,7 +970,7 @@ impl EmissionPlan {
         canonical.push_str(&format!(";requirements={requirements:?}"));
         // A rejection rule changes the generated list action and the parse entry point, so the
         // whole table belongs to the identity of the Generation it produced.
-        let rejections = plan_rejections(resolved, &nodes);
+        let rejections = plan_rejections(resolved, &nodes)?;
         canonical.push_str(&format!(";rejections={rejections:?}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {

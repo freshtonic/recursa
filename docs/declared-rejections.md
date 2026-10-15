@@ -2,7 +2,11 @@
 
 Status: accepted design, 2026-10-13. Raised by
 [freshtonic/recursa#138](https://github.com/freshtonic/recursa/issues/138), for the consumer
-[freshtonic/pg-sql#86](https://github.com/freshtonic/pg-sql/issues/86).
+[freshtonic/pg-sql#86](https://github.com/freshtonic/pg-sql/issues/86). Extended 2026-10-15 by
+[freshtonic/recursa#141](https://github.com/freshtonic/recursa/issues/141), for the consumers
+[freshtonic/pg-sql#85](https://github.com/freshtonic/pg-sql/issues/85) and
+[freshtonic/pg-sql#87](https://github.com/freshtonic/pg-sql/issues/87): `once`, classifications
+and text rules ([Sets, classifications and text rules](#sets-classifications-and-text-rules)).
 
 Some rejections a raw parser makes are not grammar shapes. They are checks in a `gram.y` action
 that look at the set of items a list holds. `ConstraintAttributeSpec` (gram.y REL_17_11
@@ -53,7 +57,89 @@ an error, exactly as it is for `config`.
 A pair is unordered: a list is refused whether the left variant or the right one comes first. A
 variant matches by name, so a payload never takes part in the test. One variant repeated is
 admitted, because PostgreSQL admits `DEFERRABLE DEFERRABLE`; a pair of one name twice is therefore
-an authoring error rather than a rule no list can complete.
+an authoring error rather than a rule no list can complete. A rule that must refuse a repeat says
+so with `once(...)` ([below](#sets-classifications-and-text-rules)), so a repeat is refused only
+where a declaration names it.
+
+## Sets, classifications and text rules
+
+`xmltable_column_el` (gram.y REL_17_11 14000-14090) needs three more things than
+`ConstraintAttributeSpec` does. Its option list holds options in any order, and its action then
+refuses a second PATH, a second DEFAULT and a second nullability, the same option written twice
+included. An option may be the keyword arm or `IDENT b_expr`, and the action reads the name of the
+identifier: `path` and `default` count as the keyword arms, and every other name is refused as an
+"unrecognized column option". A derived grammar cannot say any of the three with shapes or pairs.
+
+### `once`
+
+```rust,ignore
+#[reject(once(NotNull, Null), code = "42601", message = "conflicting or redundant NULL / NOT NULL declarations", cite = "...")]
+```
+
+`once(A, B, ...)` admits at most one item whose label is in the set: the second such item is
+refused, whether it repeats a member or names another one. **Decision (2026-10-15):** this
+reverses the choice above that a repeat is admitted, but only for the rules that name a `once`
+set. Every other rule keeps admitting repeats, `DEFERRABLE DEFERRABLE` stays accepted, and
+`pair(A, A)` stays the authoring error `RCA3147`, whose message now points to `once(A)`. A
+declaration makes one test, so `pair(...)` entries and a `once(...)` do not share one
+declaration.
+
+### Classification
+
+```rust,ignore
+#[classify(Named.name, fold = crate::ident::fold_name, text("path", Path), text("default", Default))]
+```
+
+A classification names one variant and the identifier field of its payload, the consumer's fold
+function, and a list of folded texts with the label each one counts as. The variant must hold
+exactly one non-generic struct Node, and the field must be a content token or a non-generic enum
+whose every variant holds one content token (a token wrapper such as pg-sql's `IdentOnly`).
+Generation checks that shape, because it is known only once the Nodes are planned.
+
+The fold function is the consumer's, because the scanner's folding rules are the consumer's:
+pg-sql downcases an unquoted name and keeps a quoted one, as `scan.l` does. Its type is
+`fn(&str) -> Option<impl AsRef<str>>`; `None` means the text has no folded form.
+
+A **label** is a variant name or a name a classification maps a text to. A label that is no
+variant of this build is a **text label**, numbered after the variants. That is what lets one
+rule serve every build: before PostgreSQL 17 `PATH` is no keyword and the enum has no `Path`
+variant, so `text("path", Path)` makes `Path` a text label, and `once(Path)` refuses a second
+`"path"` there exactly as it refuses `PATH` beside `"path"` from 17. A rule that names a removed
+variant which no classification maps a text to is still `RCA3149`.
+
+An item's **class** is the label the rules see: the variant itself, or the label its folded text
+maps to. Pairs and `once` sets compare classes.
+
+### Text rules
+
+```rust,ignore
+#[reject(not_in(Named, "path", "default"), code = "42601", message = "unrecognized column option", cite = "...")]
+#[config_attr(since = pg15, reject(one_of(Named, "__pg__is_not_null"), ...))]
+```
+
+`one_of(V, "a", ...)` refuses an item of variant `V` whose folded text is one of the texts, and
+`not_in(V, ...)` refuses one whose folded text is none of them, an item with no folded text
+included. `V` must carry a classification, which says where its text is and how to fold it.
+Unlike a pair or a set, a text rule refuses one item on its own, so the check also runs at the
+first step of a list for an element type that declares one; an element type with no text rule
+renders no check there, and its generated code is unchanged.
+
+### The key
+
+The walk reads one **key** per item: its variant tag, its class tag, and the index of its folded
+text in the enum's text table (classification texts first, then rule texts), or none. Generated
+code computes the key and the runtime compares integers, so the walk never sees text. The
+nested key reads the field through the payload; the flat key reads the payload and the wrapper
+out of their pools and the text out of the text pool, so nothing is materialized and all three
+storages still accept and reject the same sources with the same note and span.
+
+### Order and a known difference
+
+`gram.y` runs the `IDENT b_expr` check (`__pg__is_not_null`) when the option is reduced and the
+`xmltable_column_el` checks when the whole list is, so with two errors in one list PostgreSQL
+reports the reserved name first. The walk checks each item as the list grows, so it reports the
+first refused item in source order. Both refuse the same lists; only the message of a list with
+two errors can differ.
 
 ## Version gating
 
@@ -82,8 +168,9 @@ is made to write the bound.
 Every repetition field whose element type is the enum — `Vec`, `zero_or_many!`, `one_or_many!`, a
 separated list, whatever forms the grammar has — walks its items in source order. At item `i` the
 walk tests the rules in authored order and, inside each rule, the pairs in written order, against
-the variants of items `0..i`. The first pair a rule completes ends the parse with that rule's
-message data and **the full extent of item `i`** as the error span.
+the classes of items `0..i`. The first rule that refuses item `i` ends the parse with that rule's
+message data and **the full extent of item `i`** as the error span. Without a classification an
+item's class is its variant.
 
 That is `processCASbits` and `parser_errposition(@2)` reproduced: the specific message wins over
 the general one when an item completes a pair of each, because the specific rule is written first;
@@ -147,9 +234,10 @@ build without the `spans` feature reports `Span::SYNTHETIC`, and the message dat
 ## Sampling
 
 `Arbitrary` samples a repetition as one call against the field's type. After the call, generated
-code runs the parser's own walk over the sampled items and drops every item that would complete a
-forbidden pair, so a sampled value always parses back. The first item of a list completes nothing,
-because a pair never names one variant twice, so a `one_or_many!` field stays non-empty.
+code runs the parser's own walk over the sampled items and drops every item a rule refuses, so a
+sampled value always parses back. A text rule can refuse every item of a sampled
+`one_or_many!` list, and then the sampler answers `arbitrary::Error::IncorrectFormat`: those input
+bytes describe no value.
 
 The arena form samples its seed mirror and then materializes it, and the mirror receives the same
 filter from the same rendering, so the two forms drop the same items. A flat grammar has no
@@ -168,6 +256,16 @@ New authoring diagnostics, with new codes:
 | `RCA3148` | Two rules of one enum name the same unordered pair. |
 | `RCA3149` | A `pair(...)` names a variant this build's configuration removed; gate the rule. |
 
+The extension reuses these codes for its own forms: `RCA3144` for a `classify(...)` that cannot be
+read or a declaration that mixes `pair(...)` with another test, `RCA3145` for a `classify(...)`
+that is not on an enum, `RCA3146` for an unknown label or variant, `RCA3147` for `once(A, A)`,
+and `RCA3149` for a removed variant that no classification maps a text to. It adds two:
+
+| Code | Failure |
+|---|---|
+| `RCA3154` | A variant is classified twice, or one classification maps one text twice. |
+| `RCA3155` | A text rule names a variant that no classification of the enum classifies. |
+
 A rule on an enum that no repetition field uses is accepted silently. It costs nothing, and a
 grammar under migration reaches that state on the way to its first list.
 
@@ -175,6 +273,7 @@ grammar under migration reaches that state on the way to its first list.
 
 Diagrams, `Pretty`, `Visit` and the Explorer are untouched: a rejection rule constrains which
 values a parse produces, not what a value holds or how it renders. The one generated addition to
-documentation is a single rustdoc line on the enum listing its rules and their messages. No ADR:
+documentation is a single rustdoc line on the enum listing its rules, their messages and its
+classifications. No ADR:
 the declaration adds authoring surface and a runtime failure class, and changes no decision this
 project recorded.
