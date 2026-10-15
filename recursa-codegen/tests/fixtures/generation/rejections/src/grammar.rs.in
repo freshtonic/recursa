@@ -25,6 +25,11 @@ recursa::tokens! {
         DEFERRED => "deferred" in RESERVED,
         #[config(since = pg18)]
         ENFORCED => "enforced" in RESERVED,
+        COLUMN => "column" in RESERVED,
+        DEFAULT => "default" in RESERVED,
+        NULL => "null" in RESERVED,
+        #[config(since = pg18)]
+        PATH => "path" in RESERVED,
     }
     admissions { Unreserved = UNRESERVED }
     punctuation {
@@ -101,9 +106,107 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A bare column name.
+    /// A column name: a word or a quoted identifier. It shares the option name's pattern, as
+    /// every identifier token of one grammar does, so the lexer has one decision to make.
     pub struct ColumnName {
-        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*", admits(Unreserved))]
+        #[lex(pattern = r#""[^"]+"|[A-Za-z_][A-Za-z0-9_]*"#, admits(Unreserved))]
         pub text: Word,
+    }
+}
+
+recursa::ast_node! {
+    /// `COLUMN <name> <option>...`, whose option list is `xmltable_column_option_list`: options
+    /// in any order, each one at most once.
+    pub struct Column {
+        #[tok(COLUMN)]
+        pub name: ColumnName,
+        pub options: one_or_many!(ColumnOption),
+    }
+}
+
+recursa::ast_node! {
+    /// One column option, as `xmltable_column_option_el` is.
+    ///
+    /// `IDENT b_expr` names an option by its folded text, and the `xmltable_column_el` action
+    /// reads that text: `path` and `default` count as the keyword arms of the same name, and
+    /// `is_not_null` counts as nullability. From the newer build `PATH` is a keyword with its own
+    /// arm, and the name `__pg__is_not_null` is refused by the `IDENT b_expr` action itself.
+    #[classify(
+        Named.name,
+        fold = crate::fold_name,
+        text("path", Path),
+        text("default", Default),
+        text("is_not_null", NotNull),
+    )]
+    #[config_attr(
+        since = pg18,
+        reject(
+            one_of(Named, "__pg__is_not_null"),
+            code = "42601",
+            message = "option name cannot be used in XMLTABLE",
+            cite = "gram.y REL_17_11 14098, xmltable_column_option_el",
+        )
+    )]
+    #[reject(
+        once(Path),
+        code = "42601",
+        message = "only one PATH value per column is allowed",
+        cite = "gram.y REL_17_11 14047, xmltable_column_el",
+    )]
+    #[reject(
+        once(Default),
+        code = "42601",
+        message = "only one DEFAULT value is allowed",
+        cite = "gram.y REL_17_11 14038, xmltable_column_el",
+    )]
+    #[reject(
+        once(NotNull, Null),
+        code = "42601",
+        message = "conflicting or redundant NULL / NOT NULL declarations",
+        cite = "gram.y REL_17_11 14056, xmltable_column_el",
+    )]
+    #[reject(
+        not_in(Named, "path", "default", "is_not_null"),
+        code = "42601",
+        message = "unrecognized column option",
+        cite = "gram.y REL_17_11 14065, xmltable_column_el",
+    )]
+    pub enum ColumnOption {
+        #[config(since = pg18)]
+        #[tok(PATH, this)]
+        Path(Value),
+        #[tok(DEFAULT, this)]
+        Default(Value),
+        #[tok(NOT, NULL)]
+        NotNull,
+        #[tok(NULL)]
+        Null,
+        Named(NamedOption),
+    }
+}
+
+recursa::ast_node! {
+    /// `IDENT b_expr`: an option named by an identifier.
+    pub struct NamedOption {
+        pub name: OptionName,
+        pub value: Value,
+    }
+}
+
+recursa::ast_node! {
+    /// An option name: a word or a quoted identifier, as `IDENT` is.
+    pub enum OptionName {
+        Text(
+            #[lex(pattern = r#""[^"]+"|[A-Za-z_][A-Za-z0-9_]*"#, admits(Unreserved))]
+            OptionNameText,
+        ),
+    }
+}
+
+recursa::ast_node! {
+    /// A quoted option value.
+    pub struct Value {
+        #[lex(pattern = r"'[^']*'")]
+        pub text: ValueText,
     }
 }

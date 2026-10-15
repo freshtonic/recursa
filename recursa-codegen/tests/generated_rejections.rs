@@ -53,13 +53,52 @@ const REJECTED_BY_PG18: &[&str] = &[
     // The `config_attr`-gated rule exists in this build, because its variants do.
     "gated=RCA4105/42601/conflicting enforcement properties/gram.y REL_18_6, \
      ConstraintAttributeSpec/20..32",
+    // An option list in any order is accepted, and an identifier whose folded text a
+    // classification names counts as that option: `path` (a keyword in this build), `"path"`,
+    // and the older nullability name `is_not_null`.
+    "column_path=ok",
+    "column_quoted_path=ok",
+    "column_any_order=ok",
+    "column_legacy_nullability=ok",
+    // A text rule refuses one option on its own, so the first option of a list is refused too.
+    // The position is the option's own extent: `foo 'x'` at 9..16.
+    "column_unknown=RCA4105/42601/unrecognized column option/gram.y REL_17_11 14065, \
+     xmltable_column_el/9..16",
+    "column_unknown_later=RCA4105/42601/unrecognized column option/gram.y REL_17_11 14065, \
+     xmltable_column_el/14..21",
+    // `once` refuses the second option of its set, whichever spelling either one has.
+    "column_two_paths=RCA4105/42601/only one PATH value per column is allowed/gram.y REL_17_11 \
+     14047, xmltable_column_el/18..28",
+    "column_two_defaults=RCA4105/42601/only one DEFAULT value is allowed/gram.y REL_17_11 14038, \
+     xmltable_column_el/21..34",
+    // A set of two labels refuses a repeat of one member and the other member alike.
+    "column_redundant_null=RCA4105/42601/conflicting or redundant NULL / NOT NULL \
+     declarations/gram.y REL_17_11 14056, xmltable_column_el/14..18",
+    "column_conflicting_null=RCA4105/42601/conflicting or redundant NULL / NOT NULL \
+     declarations/gram.y REL_17_11 14056, xmltable_column_el/14..22",
+    "column_legacy_conflict=RCA4105/42601/conflicting or redundant NULL / NOT NULL \
+     declarations/gram.y REL_17_11 14056, xmltable_column_el/25..29",
+    // The gated text rule is written first, so it answers before the general one.
+    "reserved=RCA4105/42601/option name cannot be used in XMLTABLE/gram.y REL_17_11 14098, \
+     xmltable_column_option_el/9..32",
 ];
 
-/// The sampling line a storage with its own sampler prints.
-const SAMPLED: &str = "sampled=64 samples parse back";
+/// The line the older build reports for the reserved name: no gated rule exists there, so the
+/// general text rule reports it as unrecognized.
+const RESERVED_BEFORE_PG18: &str = "reserved=RCA4105/42601/unrecognized column option/gram.y \
+     REL_17_11 14065, xmltable_column_el/9..32";
 
-/// The sampling line a storage with no sampler of its own prints.
-const NOT_SAMPLED: &str = "sampled=not sampled";
+/// The sampling lines a storage with its own sampler prints.
+///
+/// A sampled option list drops every option a rule refuses, and a list whose every option is
+/// refused describes no value, so fewer columns than seeds survive; every survivor parses back.
+const SAMPLED: &[&str] = &[
+    "sampled=64 samples parse back",
+    "sampled_columns=58 samples parse back",
+];
+
+/// The sampling lines a storage with no sampler of its own prints.
+const NOT_SAMPLED: &[&str] = &["sampled=not sampled", "sampled_columns=not sampled"];
 
 #[test]
 fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
@@ -67,7 +106,7 @@ fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
     let output = run_fixture(&package, Ast::Value, &["since-pg18"]);
 
     let mut expected = REJECTED_BY_PG18.to_vec();
-    expected.push(SAMPLED);
+    expected.extend(SAMPLED);
     let reported = reported(&output);
     assert_eq!(reported, expected);
     // Every rejection reports Recursa's own runtime code for the failure class, beside the
@@ -77,7 +116,7 @@ fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
             .iter()
             .filter(|line| line.contains("RCA4105"))
             .count()
-            == 7,
+            == 15,
         "every declared rejection of the fixture reports RCA4105: {reported:?}"
     );
 }
@@ -100,16 +139,31 @@ fn a_build_that_lacks_the_gated_variants_lacks_the_gated_rule() {
         gated.starts_with("gated=RCA4100/"),
         "a build without the gated variants rejects the source as unexpected input: {gated}"
     );
-    for line in REJECTED_BY_PG18
-        .iter()
-        .filter(|line| !line.starts_with("build=") && !line.starts_with("gated="))
-    {
+    for line in REJECTED_BY_PG18.iter().filter(|line| {
+        !line.starts_with("build=") && !line.starts_with("gated=") && !line.starts_with("reserved=")
+    }) {
         assert!(
             reported.contains(line),
             "the older build reports every ungated rule unchanged, missing: {line}"
         );
     }
-    assert!(reported.contains(&SAMPLED));
+    // The `PATH` keyword is gated too, but an unquoted `path` is then an identifier whose folded
+    // text the classification maps to the same label, so the option lines above do not change.
+    assert!(
+        reported.contains(&RESERVED_BEFORE_PG18),
+        "the older build reports the reserved name as unrecognized: {reported:?}"
+    );
+    assert!(reported.contains(&SAMPLED[0]));
+    // The older build samples another option set, so another number of columns survives; every
+    // one of them still parses back.
+    let columns = reported
+        .iter()
+        .find(|line| line.starts_with("sampled_columns="))
+        .expect("the fixture always reports the column sampling line");
+    assert!(
+        columns.ends_with(" samples parse back") && !columns.contains("=0 "),
+        "every sampled column of the older build parses back: {columns}"
+    );
 }
 
 #[test]
@@ -120,7 +174,7 @@ fn an_arena_parse_rejects_what_a_value_parse_rejects_with_the_same_note_and_span
     // The value form and the arena form share one generated list action, so there is nothing
     // left that could differ.
     let mut expected = REJECTED_BY_PG18.to_vec();
-    expected.push(NOT_SAMPLED);
+    expected.extend(NOT_SAMPLED);
     assert_eq!(reported(&output), expected);
 }
 
@@ -133,7 +187,7 @@ fn a_flat_parse_rejects_what_an_arena_parse_rejects_with_the_same_note_and_span(
     // element symbol the step consumed, which is the extent the nested action reports. Every
     // line therefore matches, span included.
     let mut expected = REJECTED_BY_PG18.to_vec();
-    expected.push(NOT_SAMPLED);
+    expected.extend(NOT_SAMPLED);
     assert_eq!(reported(&output), expected);
 }
 

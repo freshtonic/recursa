@@ -685,7 +685,8 @@ struct PooledApplication {
     field: Ident,
     /// Accessor name step three uses to append a Node during a reduce.
     accessor: Ident,
-    /// Read accessor name, emitted only for a Node whose declaration carries rejection rules.
+    /// Read accessor name, emitted only for a Node a declared rejection rule reads: an enum with
+    /// rules, or the payload or identifier wrapper of a classified variant.
     ///
     /// A pool nothing reads gets no read accessor, so generated code stays free of an item the
     /// crate never names.
@@ -706,8 +707,8 @@ fn pooled_applications(plan: &EmissionPlan) -> Result<Vec<PooledApplication>, St
                 accessor: format_ident!("pool_{}_mut", application.parse_index),
                 read_accessor: plan
                     .rejections
-                    .rules(node.node)
-                    .map(|_| format_ident!("pool_{}", application.parse_index)),
+                    .reads_pool(node.node)
+                    .then(|| format_ident!("pool_{}", application.parse_index)),
                 name: flat_type_ident(&node.ident).to_string(),
                 ty: flat_application_type(plan, node, application)?,
             });
@@ -825,6 +826,20 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             #[doc(hidden)]
             pub(crate) fn scratch(&self) -> &#facade::__private::ListScratch {
                 &self.scratch
+            }
+        }
+    });
+    // A classification reads the text of an item's identifier during a reduce, so only a grammar
+    // that classifies a variant emits the text reader.
+    let text_reader = plan.rejections.reads_texts().then(|| {
+        quote! {
+            /// Reads the text pool during one reduce action.
+            ///
+            /// A declared classification folds the text of an item's identifier
+            /// (`docs/declared-rejections.md`).
+            #[doc(hidden)]
+            pub(crate) fn texts(&self) -> &#facade::__private::TextPool<'__recursa_input> {
+                &self.texts
             }
         }
     });
@@ -1263,6 +1278,8 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             }
 
             #rejection_readers
+
+            #text_reader
 
             /// Borrows the list store for one reduce action.
             #[doc(hidden)]

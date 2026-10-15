@@ -75,6 +75,30 @@ fn check(source: &str) -> String {
     }
 }
 
+/// Parses one `COLUMN` with its option list and reports `ok` or the failure.
+#[cfg(not(feature = "flat-ast"))]
+fn column(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Column::parse_spanned(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `COLUMN` with its option list into a Flat AST.
+#[cfg(feature = "flat-ast")]
+fn column(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Column::parse_flat(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
 /// Samples values and reports whether every one of them parses back.
 ///
 /// A sampled repetition drops every item that would complete a forbidden pair, so a rendered
@@ -101,6 +125,39 @@ fn sampled_round_trips() -> String {
         }
     }
     format!("{rendered} samples parse back")
+}
+
+/// Samples columns and reports whether every sample the bytes describe parses back.
+///
+/// A sampled option list drops every option a rule refuses, and a list whose every option is
+/// refused describes no value, so the count is whatever survives; every survivor must parse.
+#[cfg(not(any(feature = "arena-ast", feature = "flat-ast")))]
+fn sampled_columns_round_trip() -> String {
+    use recursa::Arbitrary as _;
+    use recursa::Pretty as _;
+
+    let mut rendered = 0_usize;
+    for seed in 0_u8..64 {
+        let bytes = [seed, seed.wrapping_mul(13), seed ^ 0x3c, seed.wrapping_add(9), seed];
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        let Ok(value) = grammar::Column::arbitrary(&mut input) else {
+            continue;
+        };
+        let text = recursa::Parsed::synthetic(value).render();
+        let lexed = grammar::lex(text.as_str());
+        let mut parse_input = lexed.input();
+        match grammar::Column::parse_spanned(&mut parse_input) {
+            Ok(_) => rendered += 1,
+            Err(error) => return format!("{text:?} => {}", describe(&error)),
+        }
+    }
+    format!("{rendered} samples parse back")
+}
+
+/// A grammar whose AST holds no sampler of its own reports that it sampled nothing.
+#[cfg(any(feature = "arena-ast", feature = "flat-ast"))]
+fn sampled_columns_round_trip() -> String {
+    "not sampled".to_owned()
 }
 
 /// A grammar whose AST holds no sampler of its own reports that it sampled nothing.
@@ -152,5 +209,42 @@ fn main() {
     // The gated rule exists only where its variants do.
     println!("gated={}", unique("unique (a) enforced not enforced"));
 
+    // An option list in any order, and the identifier spellings that count as an option.
+    println!("column_path={}", column("column a path 'x'"));
+    println!("column_quoted_path={}", column("column a \"path\" 'x'"));
+    println!(
+        "column_any_order={}",
+        column("column a not null default 'd' \"path\" 'x'")
+    );
+    println!("column_legacy_nullability={}", column("column a is_not_null 'x'"));
+
+    // A text rule refuses one option on its own, the first one of a list included.
+    println!("column_unknown={}", column("column a foo 'x'"));
+    println!("column_unknown_later={}", column("column a null foo 'x'"));
+
+    // `once` refuses a second option of its set, whichever spelling either one has.
+    println!(
+        "column_two_paths={}",
+        column("column a path 'x' \"path\" 'y'")
+    );
+    println!(
+        "column_two_defaults={}",
+        column("column a default 'x' \"default\" 'y'")
+    );
+    println!("column_redundant_null={}", column("column a null null"));
+    println!("column_conflicting_null={}", column("column a null not null"));
+    println!(
+        "column_legacy_conflict={}",
+        column("column a is_not_null 'x' null")
+    );
+
+    // The gated text rule exists only in the newer build; the older one reports the name as
+    // unrecognized.
+    println!(
+        "reserved={}",
+        column("column a \"__pg__is_not_null\" 'x'")
+    );
+
     println!("sampled={}", sampled_round_trips());
+    println!("sampled_columns={}", sampled_columns_round_trip());
 }

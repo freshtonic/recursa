@@ -34,8 +34,9 @@ use crate::resolution::{
     ResolvedType, ResolvedTypeKind, ResolvedVariantId, SemanticTarget, TypeAliasId,
 };
 use crate::source_syntax::{
-    CargoCfgSnapshot, RejectRuleSyntax, configured_attribute_metas as configured_metas,
-    item_attributes as item_attrs, path_text, span_range,
+    CargoCfgSnapshot, ClassifySyntax, RejectCheckSyntax, RejectRuleSyntax,
+    configured_attribute_metas as configured_metas, item_attributes as item_attrs, path_text,
+    span_range,
 };
 
 #[derive(Clone, Debug)]
@@ -1155,6 +1156,11 @@ pub(crate) enum SourceModelDiagnosticKind {
     DuplicateRejectPair,
     /// A `#[reject(pair(A, B))]` names a variant this build's configuration removed.
     RejectPairConfiguredOut,
+    /// A `#[classify(...)]` declaration classifies one variant twice, or maps one text twice.
+    DuplicateClassification,
+    /// A `#[reject(one_of(V, ...))]` or `#[reject(not_in(V, ...))]` names a variant that no
+    /// `#[classify(...)]` declaration of the enum classifies.
+    TextRuleWithoutClassification,
     /// An `unterminated = ...` closed-matcher option is authored on a matcher with no closer to
     /// reach (anything but `same_delimiter` or `nested`).
     UnterminatedOptionWithoutCloser,
@@ -5166,11 +5172,9 @@ impl SourceModelBuilder<'_> {
     /// because the two have opposite remedies: an unknown name is a typo, and a removed name
     /// means the rule itself belongs under a `#[config_attr(...)]` bound.
     fn lower_reject_rules(&mut self, origin: SourceOrigin, node: &ResolvedNode) {
-        let declarations = node
-            .metas
-            .iter()
-            .filter(|meta| meta.path().is_ident("reject"))
-            .collect::<Vec<_>>();
+        let is_rule =
+            |meta: &&Meta| meta.path().is_ident("reject") || meta.path().is_ident("classify");
+        let declarations = node.metas.iter().filter(is_rule).collect::<Vec<_>>();
         if declarations.is_empty() {
             return;
         }
@@ -5180,8 +5184,9 @@ impl SourceModelBuilder<'_> {
                     .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
                         self.site(origin, span_range(meta.span())),
                         format!(
-                            "`#[reject(...)]` names forbidden pairs of enum variants, and `{}` \
+                            "`#[{}(...)]` reads the items of a repetition of an enum, and `{}` \
                              is not an enum",
+                            meta.path().get_ident().map(ToString::to_string).unwrap_or_default(),
                             node.ident,
                         ),
                     ));
@@ -5192,14 +5197,99 @@ impl SourceModelBuilder<'_> {
             .iter()
             .map(|variant| variant.ident.clone())
             .collect::<BTreeSet<_>>();
-        let removed = match &node.origin {
+        let removed: BTreeSet<String> = match &node.origin {
             ResolvedNodeOrigin::Declaration(declaration) => {
                 declaration.removed_variants.iter().cloned().collect()
             }
             ResolvedNodeOrigin::DirectRust => BTreeSet::new(),
         };
+        // A name a rule or a classification gives as a variant: an unknown name is a typo, and a
+        // removed name means the declaration belongs under a `#[config_attr(...)]` bound.
+        let unknown_variant = |name: &str,
+                               what: &str|
+         -> Option<(SourceModelDiagnosticKind, String)> {
+            if declared.contains(name) {
+                return None;
+            }
+            Some(if removed.contains(name) {
+                (
+                    SourceModelDiagnosticKind::RejectPairConfiguredOut,
+                    format!(
+                        "`{name}` is a variant of `{}` that this build's configuration removed; \
+                         gate the {what} with `#[config_attr(...)]` so the build that holds the \
+                         variant is the build that reads it",
+                        node.ident,
+                    ),
+                )
+            } else {
+                (
+                    SourceModelDiagnosticKind::RejectPairUnknownVariant,
+                    format!(
+                        "`{name}` is no variant of `{}`; a {what} names only variants its own \
+                         enum declares",
+                        node.ident,
+                    ),
+                )
+            })
+        };
+
+        // Classifications first: they define the text labels the rules may name.
+        let mut classified: BTreeSet<String> = BTreeSet::new();
+        let mut text_labels: BTreeSet<String> = BTreeSet::new();
+        for meta in declarations
+            .iter()
+            .filter(|meta| meta.path().is_ident("classify"))
+        {
+            let classify = match ClassifySyntax::from_meta(meta) {
+                Ok(classify) => classify,
+                Err(error) => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                            self.site(origin, error.range.clone()),
+                            format!("`#[classify(...)]` on `{}`: {}", node.ident, error.message),
+                        ));
+                    continue;
+                }
+            };
+            if let Some((kind, message)) = unknown_variant(&classify.variant, "classification") {
+                self.diagnostics
+                    .push(kind.at(self.site(origin, classify.range.clone()), message));
+                continue;
+            }
+            if !classified.insert(classify.variant.clone()) {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::DuplicateClassification.at(
+                        self.site(origin, classify.range.clone()),
+                        format!(
+                            "`{}` already classifies `{}`; one variant has one classification",
+                            node.ident, classify.variant,
+                        ),
+                    ));
+                continue;
+            }
+            let mut texts = BTreeSet::new();
+            for text in &classify.texts {
+                if !texts.insert(text.text.clone()) {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::DuplicateClassification.at(
+                            self.site(origin, text.range.clone()),
+                            format!(
+                                "`{}` maps the text `{}` twice; one text counts as one label",
+                                classify.variant, text.text,
+                            ),
+                        ));
+                }
+                if !declared.contains(&text.label) {
+                    text_labels.insert(text.label.clone());
+                }
+            }
+        }
+
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-        for meta in declarations {
+        for meta in declarations
+            .iter()
+            .filter(|meta| meta.path().is_ident("reject"))
+        {
             let rule = match RejectRuleSyntax::from_meta(meta) {
                 Ok(rule) => rule,
                 Err(error) => {
@@ -5211,62 +5301,83 @@ impl SourceModelBuilder<'_> {
                     continue;
                 }
             };
-            for pair in &rule.pairs {
-                for name in [&pair.left, &pair.right] {
-                    if declared.contains(name) {
-                        continue;
-                    }
-                    let (kind, message) = if removed.contains(name) {
-                        (
-                            SourceModelDiagnosticKind::RejectPairConfiguredOut,
-                            format!(
-                                "`{name}` is a variant of `{}` that this build's configuration \
-                                 removed; gate the rule with `#[config_attr(..., reject(...))]` \
-                                 so the build that holds the variant is the build that rejects \
-                                 the pair",
-                                node.ident,
-                            ),
-                        )
-                    } else {
-                        (
-                            SourceModelDiagnosticKind::RejectPairUnknownVariant,
-                            format!(
-                                "`{name}` is no variant of `{}`; a rejection rule names only \
-                                 variants its own enum declares",
-                                node.ident,
-                            ),
-                        )
-                    };
-                    self.diagnostics
-                        .push(kind.at(self.site(origin, pair.range.clone()), message));
-                }
-                if pair.left == pair.right {
-                    self.diagnostics
-                        .push(SourceModelDiagnosticKind::RejectPairRepeatsVariant.at(
-                            self.site(origin, pair.range.clone()),
-                            format!(
-                                "`pair({}, {})` names one variant twice; a repeated variant is \
-                                 admitted, so such a pair can never be completed",
-                                pair.left, pair.right,
-                            ),
-                        ));
+            // A label is a variant or a text label a classification maps a text to.
+            for (name, range) in rule.check.labels() {
+                if text_labels.contains(name) {
                     continue;
                 }
-                let unordered = if pair.left <= pair.right {
-                    (pair.left.clone(), pair.right.clone())
-                } else {
-                    (pair.right.clone(), pair.left.clone())
-                };
-                if !seen.insert(unordered) {
+                if let Some((kind, message)) = unknown_variant(name, "rejection rule") {
                     self.diagnostics
-                        .push(SourceModelDiagnosticKind::DuplicateRejectPair.at(
-                            self.site(origin, pair.range.clone()),
-                            format!(
-                                "`{}` already rejects `{}` with `{}`; one pair carries one \
-                                 message, so the rules of an enum name each unordered pair once",
-                                node.ident, pair.left, pair.right,
+                        .push(kind.at(self.site(origin, range), message));
+                }
+            }
+            match &rule.check {
+                RejectCheckSyntax::Pairs(pairs) => {
+                    for pair in pairs {
+                        if pair.left == pair.right {
+                            self.diagnostics.push(
+                                SourceModelDiagnosticKind::RejectPairRepeatsVariant.at(
+                                    self.site(origin, pair.range.clone()),
+                                    format!(
+                                        "`pair({}, {})` names one label twice; a pair never \
+                                         refuses a repeat, so write `once({})` to admit at most \
+                                         one item of it",
+                                        pair.left, pair.right, pair.left,
+                                    ),
+                                ),
+                            );
+                            continue;
+                        }
+                        let unordered = if pair.left <= pair.right {
+                            (pair.left.clone(), pair.right.clone())
+                        } else {
+                            (pair.right.clone(), pair.left.clone())
+                        };
+                        if !seen.insert(unordered) {
+                            self.diagnostics.push(
+                                SourceModelDiagnosticKind::DuplicateRejectPair.at(
+                                    self.site(origin, pair.range.clone()),
+                                    format!(
+                                        "`{}` already rejects `{}` with `{}`; one pair carries \
+                                         one message, so the rules of an enum name each \
+                                         unordered pair once",
+                                        node.ident, pair.left, pair.right,
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                }
+                RejectCheckSyntax::Once { labels, range } => {
+                    let mut unique = BTreeSet::new();
+                    for label in labels {
+                        if !unique.insert(label) {
+                            self.diagnostics.push(
+                                SourceModelDiagnosticKind::RejectPairRepeatsVariant.at(
+                                    self.site(origin, range.clone()),
+                                    format!("`once(...)` names `{label}` twice"),
+                                ),
+                            );
+                        }
+                    }
+                }
+                RejectCheckSyntax::Text { variant, range, .. } => {
+                    if let Some((kind, message)) = unknown_variant(variant, "text rule") {
+                        self.diagnostics
+                            .push(kind.at(self.site(origin, range.clone()), message));
+                    } else if !classified.contains(variant) {
+                        self.diagnostics.push(
+                            SourceModelDiagnosticKind::TextRuleWithoutClassification.at(
+                                self.site(origin, range.clone()),
+                                format!(
+                                    "a text rule reads the folded text of `{variant}`, and no \
+                                     `#[classify({variant}.field, ...)]` of `{}` says which \
+                                     field holds it or how to fold it",
+                                    node.ident,
+                                ),
                             ),
-                        ));
+                        );
+                    }
                 }
             }
         }
@@ -5283,12 +5394,20 @@ impl SourceModelBuilder<'_> {
         subject: &str,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        for meta in metas.iter().filter(|meta| meta.path().is_ident("reject")) {
+        for meta in metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("reject") || meta.path().is_ident("classify"))
+        {
+            let name = meta
+                .path()
+                .get_ident()
+                .map(ToString::to_string)
+                .unwrap_or_default();
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::RejectRuleNotEnum,
                 sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: format!(
-                    "`#[reject(...)]` belongs on a whole enum declaration, not on {subject}"
+                    "`#[{name}(...)]` belongs on a whole enum declaration, not on {subject}"
                 ),
             });
         }
@@ -13542,6 +13661,163 @@ recursa::ast_node! {
 "#,
         );
         assert!(misplaced.source_modeled.is_none());
+        assert_code(
+            &misplaced,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
+        );
+    }
+
+    #[test]
+    fn invalid_classifications_and_text_rules_have_structured_diagnostics() {
+        const PRELUDE: &str = r#"recursa::grammar! {
+    module = crate,
+    configurations(v1, v2 = feature("since-v2")),
+}
+recursa::tokens! {
+    punctuation { PLUS => "+", STAR => "*" }
+}
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+"#;
+        let with = |declaration: &str| model(&format!("{PRELUDE}{declaration}"));
+        let option = |attributes: &str| {
+            with(&format!(
+                r#"recursa::ast_node! {{
+
+    {attributes}
+    pub enum Opt {{
+        #[tok(PLUS)]
+        Plus,
+        #[config(since = v2)]
+        #[tok(STAR)]
+        Star,
+        Named(Name),
+    }}
+}}
+"#
+            ))
+        };
+
+        // `Star` is removed in this build, but a classification maps a text to the label `Star`,
+        // so `once(Star)` names a text label and needs no gate.
+        let accepted = option(
+            r#"#[classify(Named.text, fold = crate::fold, text("star", Star))]
+    #[reject(once(Star), message = "one star", cite = "here")]
+    #[reject(once(Plus, Star), message = "one of them", cite = "here")]
+    #[reject(one_of(Named, "reserved"), message = "reserved", cite = "here")]
+    #[reject(not_in(Named, "star"), message = "unknown", cite = "here")]"#,
+        );
+        assert!(
+            accepted.source_modeled.is_some(),
+            "{:?}",
+            accepted.diagnostics
+        );
+
+        let no_fold = option(r#"#[classify(Named.text, text("star", Star))]"#);
+        assert_code(
+            &no_fold,
+            SourceModelDiagnosticKind::MalformedRejectRule,
+            "RCA3144",
+        );
+        let mixed =
+            option(r#"#[reject(pair(Plus, Named), once(Plus), message = "no", cite = "here")]"#);
+        assert_code(
+            &mixed,
+            SourceModelDiagnosticKind::MalformedRejectRule,
+            "RCA3144",
+        );
+
+        let on_struct = with(
+            r#"recursa::ast_node! {
+
+    #[classify(Named.text, fold = crate::fold, text("star", Star))]
+    pub struct Op {
+        #[tok(PLUS, this)]
+        pub name: Name,
+    }
+}
+"#,
+        );
+        assert_code(
+            &on_struct,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
+        );
+
+        let unknown =
+            option(r#"#[classify(Missing.text, fold = crate::fold, text("star", Star))]"#);
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::RejectPairUnknownVariant,
+            "RCA3146",
+        );
+        let unknown_label = option(r#"#[reject(once(Missing), message = "no", cite = "here")]"#);
+        assert_code(
+            &unknown_label,
+            SourceModelDiagnosticKind::RejectPairUnknownVariant,
+            "RCA3146",
+        );
+
+        let repeated = option(r#"#[reject(once(Plus, Plus), message = "no", cite = "here")]"#);
+        assert_code(
+            &repeated,
+            SourceModelDiagnosticKind::RejectPairRepeatsVariant,
+            "RCA3147",
+        );
+
+        // No classification maps a text to `Star`, so `once(Star)` names the removed variant.
+        let configured_out = option(r#"#[reject(once(Star), message = "no", cite = "here")]"#);
+        assert_code(
+            &configured_out,
+            SourceModelDiagnosticKind::RejectPairConfiguredOut,
+            "RCA3149",
+        );
+
+        let classified_twice = option(
+            r#"#[classify(Named.text, fold = crate::fold, text("star", Star))]
+    #[classify(Named.text, fold = crate::fold, text("plus", Plus))]"#,
+        );
+        assert_code(
+            &classified_twice,
+            SourceModelDiagnosticKind::DuplicateClassification,
+            "RCA3154",
+        );
+        let text_twice = option(
+            r#"#[classify(Named.text, fold = crate::fold, text("star", Star), text("star", Plus))]"#,
+        );
+        assert_code(
+            &text_twice,
+            SourceModelDiagnosticKind::DuplicateClassification,
+            "RCA3154",
+        );
+
+        let unclassified =
+            option(r#"#[reject(not_in(Named, "star"), message = "no", cite = "here")]"#);
+        assert_code(
+            &unclassified,
+            SourceModelDiagnosticKind::TextRuleWithoutClassification,
+            "RCA3155",
+        );
+
+        // A classification belongs to the enum as a type, never to one variant.
+        let misplaced = with(
+            r#"recursa::ast_node! {
+
+    pub enum Opt {
+        #[classify(Named.text, fold = crate::fold, text("star", Plus))]
+        #[tok(PLUS)]
+        Plus,
+        Named(Name),
+    }
+}
+"#,
+        );
         assert_code(
             &misplaced,
             SourceModelDiagnosticKind::RejectRuleNotEnum,

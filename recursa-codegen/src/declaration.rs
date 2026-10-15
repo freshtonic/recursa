@@ -17,7 +17,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{Attribute, GenericParam, Item, ItemMacro, Meta, Type, Visibility, parse_quote_spanned};
 
 use crate::source_syntax::{
-    CargoCfgSnapshot, RejectRuleSyntax, configured_attribute_metas, span_range,
+    CargoCfgSnapshot, ClassifySyntax, RejectRuleSyntax, configured_attribute_metas, span_range,
 };
 
 /// Metadata retained when one declaration item replaces its enclosing macro invocation.
@@ -211,9 +211,9 @@ fn prepare_emitted_item(item: &mut Item, cfg: &CargoCfgSnapshot) {
 /// source-aware migration diagnostic reaches the author instead of Rust's unknown-attribute
 /// error (`docs/declared-precedence.md`). `flat` selects Flat AST storage for the declaration and
 /// is likewise consumed here, because it never reaches rustc
-/// (`docs/flat-ast-design.md`). `reject` is consumed here too, and it is the one consumed
-/// attribute that leaves something behind: one generated documentation line stating the
-/// declaration's rejection rules (`docs/declared-rejections.md`).
+/// (`docs/flat-ast-design.md`). `reject` and `classify` are consumed here too, and they are the
+/// consumed attributes that leave something behind: one generated documentation line stating the
+/// declaration's rejection rules and its classifications (`docs/declared-rejections.md`).
 fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapshot) -> bool {
     let Ok(Some(metas)) = configured_attribute_metas(attrs, cfg) else {
         attrs.clear();
@@ -221,7 +221,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
     };
     let rejections = metas
         .iter()
-        .filter(|meta| meta.path().is_ident("reject"))
+        .filter(|meta| meta.path().is_ident("reject") || meta.path().is_ident("classify"))
         .cloned()
         .collect::<Vec<_>>();
     *attrs = metas
@@ -245,6 +245,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "restricts"
                         | "config"
                         | "reject"
+                        | "classify"
                 )
             )
         })
@@ -262,21 +263,37 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
 fn documented_rejection_rules(rejections: &[Meta]) -> Option<Attribute> {
     let rules = rejections
         .iter()
+        .filter(|meta| meta.path().is_ident("reject"))
         .filter_map(|meta| RejectRuleSyntax::from_meta(meta).ok())
-        .map(|rule| {
-            let pairs = rule
-                .pairs
-                .iter()
-                .map(|pair| format!("`{}` with `{}`", pair.left, pair.right))
+        .map(|rule| format!("{} ({})", rule.check.describe(), rule.message))
+        .collect::<Vec<_>>();
+    let classifications = rejections
+        .iter()
+        .filter(|meta| meta.path().is_ident("classify"))
+        .filter_map(|meta| ClassifySyntax::from_meta(meta).ok())
+        .flat_map(|classify| {
+            classify
+                .texts
+                .into_iter()
+                .map(move |text| {
+                    format!(
+                        "`{}` named `{}` counts as `{}`",
+                        classify.variant, text.text, text.label
+                    )
+                })
                 .collect::<Vec<_>>()
-                .join(", ");
-            format!("{pairs} ({})", rule.message)
         })
         .collect::<Vec<_>>();
-    if rules.is_empty() {
+    if rules.is_empty() && classifications.is_empty() {
         return None;
     }
-    let documentation = format!(" Rejection rules: {}.", rules.join("; "));
+    let mut documentation = String::new();
+    if !rules.is_empty() {
+        documentation.push_str(&format!(" Rejection rules: {}.", rules.join("; ")));
+    }
+    if !classifications.is_empty() {
+        documentation.push_str(&format!(" Classification: {}.", classifications.join("; ")));
+    }
     Some(parse_quote_spanned!(Span::call_site()=> #[doc = #documentation]))
 }
 
@@ -971,6 +988,48 @@ mod tests {
                 .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>(),
             ["Root"]
+        );
+    }
+
+    #[test]
+    fn classifications_and_text_rules_are_stripped_and_documented() {
+        let expansion = expand_declarations(
+            &items(
+                r#"recursa::ast_node! {
+                    #[classify(Named.name, fold = crate::fold, text("path", Path))]
+                    #[reject(once(Path), message = "only one PATH", cite = "gram.y 14047")]
+                    #[reject(not_in(Named, "path"), message = "unrecognized", cite = "gram.y 14065")]
+                    pub enum Opt {
+                        Path(Value),
+                        Named(NamedOption),
+                    }
+                }"#,
+            ),
+            "recursa",
+            false,
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(expansion.errors.is_empty(), "{:?}", expansion.errors);
+        let emitted = expansion
+            .origins
+            .iter()
+            .find(|(name, _)| name == "Opt")
+            .expect("the declaration is expanded")
+            .1
+            .concrete_item
+            .to_token_stream()
+            .to_string();
+        assert!(
+            !emitted.contains("classify") && !emitted.contains("not_in"),
+            "the emitted type carries no grammar-owned attribute: {emitted}"
+        );
+        assert!(
+            emitted.contains(
+                "Rejection rules: more than one of `Path` (only one PATH); `Named` named other \
+                 than `path` (unrecognized). Classification: `Named` named `path` counts as \
+                 `Path`."
+            ),
+            "the emitted type documents every rule and classification: {emitted}"
         );
     }
 
