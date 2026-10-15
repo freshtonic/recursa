@@ -5179,18 +5179,7 @@ impl SourceModelBuilder<'_> {
             return;
         }
         let ResolvedNodeBody::Enum { variants } = &node.body else {
-            for meta in declarations {
-                self.diagnostics
-                    .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
-                        self.site(origin, span_range(meta.span())),
-                        format!(
-                            "`#[{}(...)]` reads the items of a repetition of an enum, and `{}` \
-                             is not an enum",
-                            meta.path().get_ident().map(ToString::to_string).unwrap_or_default(),
-                            node.ident,
-                        ),
-                    ));
-            }
+            self.lower_struct_reject_rules(origin, node, &declarations);
             return;
         };
         let declared = variants
@@ -5251,18 +5240,31 @@ impl SourceModelBuilder<'_> {
                     continue;
                 }
             };
-            if let Some((kind, message)) = unknown_variant(&classify.variant, "classification") {
+            let Some(variant) = classify.variant.clone() else {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                        self.site(origin, classify.range.clone()),
+                        format!(
+                            "`#[classify(...)]` on the enum `{}` names a variant's field, as \
+                             `Variant.field`",
+                            node.ident,
+                        ),
+                    ));
+                continue;
+            };
+            if let Some((kind, message)) = unknown_variant(&variant, "classification") {
                 self.diagnostics
                     .push(kind.at(self.site(origin, classify.range.clone()), message));
                 continue;
             }
-            if !classified.insert(classify.variant.clone()) {
+            if !classified.insert(variant.clone()) {
                 self.diagnostics
                     .push(SourceModelDiagnosticKind::DuplicateClassification.at(
                         self.site(origin, classify.range.clone()),
                         format!(
-                            "`{}` already classifies `{}`; one variant has one classification",
-                            node.ident, classify.variant,
+                            "`{}` already classifies `{variant}`; one variant has one \
+                             classification",
+                            node.ident,
                         ),
                     ));
                 continue;
@@ -5275,7 +5277,7 @@ impl SourceModelBuilder<'_> {
                             self.site(origin, text.range.clone()),
                             format!(
                                 "`{}` maps the text `{}` twice; one text counts as one label",
-                                classify.variant, text.text,
+                                variant, text.text,
                             ),
                         ));
                 }
@@ -5378,6 +5380,109 @@ impl SourceModelBuilder<'_> {
                             ),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Validates the `#[classify(...)]` and `#[reject(...)]` declarations of one struct.
+    ///
+    /// A struct holds one value of each field, so only a text rule applies to it: the rule
+    /// refuses the struct when the folded text of its one classified field is (`one_of`) or is not
+    /// (`not_in`) one of the rule's texts. Pairs and `once` sets read the items of a repetition,
+    /// which only an enum's rules see. Whether the field exists and holds a content token is
+    /// known only once the Nodes are planned, so generation reports that.
+    fn lower_struct_reject_rules(
+        &mut self,
+        origin: SourceOrigin,
+        node: &ResolvedNode,
+        declarations: &[&Meta],
+    ) {
+        let mut classified: Option<String> = None;
+        for meta in declarations
+            .iter()
+            .filter(|meta| meta.path().is_ident("classify"))
+        {
+            let classify = match ClassifySyntax::from_meta(meta) {
+                Ok(classify) => classify,
+                Err(error) => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                            self.site(origin, error.range.clone()),
+                            format!("`#[classify(...)]` on `{}`: {}", node.ident, error.message),
+                        ));
+                    continue;
+                }
+            };
+            if let Some(variant) = &classify.variant {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
+                        self.site(origin, classify.range.clone()),
+                        format!(
+                            "`#[classify({variant}.{}, ...)]` names a variant, and `{}` is a \
+                             struct; write `#[classify({}, ...)]`",
+                            classify.field, node.ident, classify.field,
+                        ),
+                    ));
+                continue;
+            }
+            if let Some(field) = &classified {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::DuplicateClassification.at(
+                        self.site(origin, classify.range.clone()),
+                        format!(
+                            "`{}` already classifies `{field}`; a struct has one classification",
+                            node.ident,
+                        ),
+                    ));
+                continue;
+            }
+            classified = Some(classify.field);
+        }
+        for meta in declarations
+            .iter()
+            .filter(|meta| meta.path().is_ident("reject"))
+        {
+            let rule = match RejectRuleSyntax::from_meta(meta) {
+                Ok(rule) => rule,
+                Err(error) => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                            self.site(origin, error.range.clone()),
+                            format!("`#[reject(...)]` on `{}`: {}", node.ident, error.message),
+                        ));
+                    continue;
+                }
+            };
+            match &rule.check {
+                RejectCheckSyntax::Text {
+                    variant: field,
+                    range,
+                    ..
+                } => {
+                    if classified.as_deref() != Some(field.as_str()) {
+                        self.diagnostics.push(
+                            SourceModelDiagnosticKind::TextRuleWithoutClassification.at(
+                                self.site(origin, range.clone()),
+                                format!(
+                                    "a text rule reads the folded text of `{field}`, and no \
+                                     `#[classify({field}, ...)]` of `{}` says how to fold it",
+                                    node.ident,
+                                ),
+                            ),
+                        );
+                    }
+                }
+                RejectCheckSyntax::Pairs(_) | RejectCheckSyntax::Once { .. } => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
+                            self.site(origin, rule.range.clone()),
+                            format!(
+                                "`pair(...)` and `once(...)` read the items of a repetition of \
+                                 an enum, and `{}` is a struct; a struct takes text rules only",
+                                node.ident,
+                            ),
+                        ));
                 }
             }
         }
@@ -13822,6 +13927,68 @@ recursa::ast_node! {
             &misplaced,
             SourceModelDiagnosticKind::RejectRuleNotEnum,
             "RCA3145",
+        );
+
+        // A struct takes the field form of a classification and text rules over that field.
+        let precision = |attributes: &str| {
+            with(&format!(
+                r#"recursa::ast_node! {{
+
+    {attributes}
+    pub struct Precision {{
+        #[tok(PLUS, this)]
+        pub name: Name,
+    }}
+}}
+"#
+            ))
+        };
+        let struct_accepted = precision(
+            r#"#[classify(name, fold = crate::fold)]
+    #[reject(one_of(name, "zero"), message = "zero", cite = "here")]
+    #[reject(not_in(name, "one", "two"), message = "big", cite = "here")]"#,
+        );
+        assert!(
+            struct_accepted.source_modeled.is_some(),
+            "{:?}",
+            struct_accepted.diagnostics
+        );
+        let struct_texts = precision(r#"#[classify(name, fold = crate::fold, text("a", A))]"#);
+        assert_code(
+            &struct_texts,
+            SourceModelDiagnosticKind::MalformedRejectRule,
+            "RCA3144",
+        );
+        let struct_pair = precision(
+            r#"#[classify(name, fold = crate::fold)]
+    #[reject(once(name), message = "no", cite = "here")]"#,
+        );
+        assert_code(
+            &struct_pair,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
+        );
+        let struct_twice = precision(
+            r#"#[classify(name, fold = crate::fold)]
+    #[classify(name, fold = crate::fold)]"#,
+        );
+        assert_code(
+            &struct_twice,
+            SourceModelDiagnosticKind::DuplicateClassification,
+            "RCA3154",
+        );
+        let struct_unclassified =
+            precision(r#"#[reject(one_of(name, "zero"), message = "no", cite = "here")]"#);
+        assert_code(
+            &struct_unclassified,
+            SourceModelDiagnosticKind::TextRuleWithoutClassification,
+            "RCA3155",
+        );
+        let enum_field_form = option(r#"#[classify(text, fold = crate::fold)]"#);
+        assert_code(
+            &enum_field_form,
+            SourceModelDiagnosticKind::MalformedRejectRule,
+            "RCA3144",
         );
     }
 

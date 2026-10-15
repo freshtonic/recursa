@@ -422,6 +422,21 @@ fn render_flat_reduce_body(
         values.push((field.clone(), value));
     }
     values.reverse();
+    // A struct with text rules checks the flat value it has just built, before it is allocated.
+    let check = match super::table_driven::struct_check_site(plan, lr, rule, node, &elements, sites)
+    {
+        Some((start, len)) if variant_ident.is_none() => super::rejections::render_struct_check(
+            plan,
+            node,
+            super::rejections::StructFieldText::Flat {
+                value: &format_ident!("__recursa_node"),
+                read_pool: &|target, handle| flat_pool_read(plan, target, handle),
+                flat_path_of: &|target| flat_pattern_path(plan, target),
+            },
+            quote!(reduction.symbol_range_extent(#start, #len)),
+        )?,
+        _ => quote!(),
+    };
     let construction = render_construction(variant_ident, style, &values);
     let allocation = flat_alloc(
         node,
@@ -434,6 +449,7 @@ fn render_flat_reduce_body(
             #(#pops)*
             let __recursa_span = reduction.extent();
             let __recursa_node: Self = #construction;
+            #check
             let __recursa_handle = #allocation;
             reduction.push(__recursa_handle);
         }
@@ -643,29 +659,9 @@ fn render_flat_list_check(
             node.ident
         )
     })?;
-    let read_pool = |target: NodeId, handle: proc_macro2::TokenStream| {
-        let (planned, application, ty) = flat_node(plan, target)?;
-        Ok(if planned.flat.pool {
-            let accessor = format_ident!("pool_{}", application.parse_index);
-            quote! {
-                builder
-                    .#accessor()
-                    .get(#handle)
-                    .expect("a handle of this parse always addresses its own pool")
-            }
-        } else {
-            quote!(builder.shared().get::<#ty>(#handle))
-        })
-    };
-    let flat_path_of = |target: NodeId| {
-        let (planned, _, ty) = flat_node(plan, target)?;
-        super::table_driven::bare_type_path(&ty).ok_or_else(|| {
-            format!(
-                "`{}` is read by a rejection key but its flat application is not a path type",
-                planned.ident
-            )
-        })
-    };
+    let read_pool =
+        |target: NodeId, handle: proc_macro2::TokenStream| flat_pool_read(plan, target, handle);
+    let flat_path_of = |target: NodeId| flat_pattern_path(plan, target);
     let key = super::rejections::render_flat_key_closure(
         plan,
         node,
@@ -697,6 +693,41 @@ fn render_flat_list_check(
             let __recursa_key = #key;
             #check
         }
+    })
+}
+
+/// Reads one pooled flat value of `target` through `handle`, during a reduce that holds
+/// `builder`.
+fn flat_pool_read(
+    plan: &EmissionPlan,
+    target: NodeId,
+    handle: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, String> {
+    let (planned, application, ty) = flat_node(plan, target)?;
+    Ok(if planned.flat.pool {
+        let accessor = format_ident!("pool_{}", application.parse_index);
+        quote! {
+            builder
+                .#accessor()
+                .get(#handle)
+                .expect("a handle of this parse always addresses its own pool")
+        }
+    } else {
+        quote!(builder.shared().get::<#ty>(#handle))
+    })
+}
+
+/// Names one Node's flat type in a match pattern.
+fn flat_pattern_path(
+    plan: &EmissionPlan,
+    target: NodeId,
+) -> Result<proc_macro2::TokenStream, String> {
+    let (planned, _, ty) = flat_node(plan, target)?;
+    super::table_driven::bare_type_path(&ty).ok_or_else(|| {
+        format!(
+            "`{}` is read by a rejection key but its flat application is not a path type",
+            planned.ident
+        )
     })
 }
 

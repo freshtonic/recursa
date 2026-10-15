@@ -73,6 +73,7 @@ pub mod __private {
     #[cfg(feature = "arbitrary")]
     pub use crate::arbitrary_depth::{
         DepthGuard as ArbitraryDepthGuard, MAX_DEPTH as ARBITRARY_MAX_DEPTH,
+        REJECTION_ATTEMPTS as ARBITRARY_REJECTION_ATTEMPTS,
     };
     #[cfg(all(feature = "explorer", feature = "arbitrary"))]
     pub use crate::explorer::ArenaArbitraryRootFamily;
@@ -211,7 +212,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        41,
+        42,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -319,7 +320,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            41,
+            42,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
