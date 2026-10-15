@@ -685,14 +685,18 @@ impl TableDrivenRendering {
             }
             RuleAction::ListFirst { element } => {
                 let value = self.element(plan, *element)?.value;
+                // A text rule refuses one item on its own, so it runs on the first item too.
+                let rejection = render_nested_list_check(plan, self, *element, rule, true);
                 if plan.arena_ast {
                     quote! {
                         let element = #value;
+                        #rejection
                         reduction.push(#facade::ArenaVec1::new_in(element, reduction.arena()));
                     }
                 } else {
                     quote! {
                         let element = #value;
+                        #rejection
                         reduction.push(#facade::Vec1::new(element));
                     }
                 }
@@ -706,7 +710,7 @@ impl TableDrivenRendering {
                 };
                 // The declared rejection rules of the element type run here, where the items the
                 // list has passed and the extent of the item this step adds are both in hand.
-                let rejection = render_nested_list_check(plan, self, *element, rule);
+                let rejection = render_nested_list_check(plan, self, *element, rule, false);
                 quote! {
                     let element = #value;
                     let mut list = unsafe { reduction.pop::<#list_ty>() };
@@ -741,7 +745,7 @@ impl TableDrivenRendering {
 /// Node whose declaration carries rejection rules.
 ///
 /// The returned index is the Node's position in the plan, which names its generated rule table
-/// and its tag functions. Both list backends resolve the element the same way, so both reach the
+/// and its key function. Both list backends resolve the element the same way, so both reach the
 /// same table.
 pub(super) fn rejection_element<'plan>(
     plan: &'plan EmissionPlan,
@@ -770,14 +774,9 @@ pub(super) fn rejection_table_ident(index: usize) -> Ident {
     format_ident!("__RECURSA_REJECTIONS_{index}")
 }
 
-/// Names one Node's generated nested variant-tag function.
-fn rejection_tag_ident(index: usize) -> Ident {
-    format_ident!("__recursa_reject_tag_{index}")
-}
-
-/// Names one Node's generated flat variant-tag function.
-pub(super) fn rejection_flat_tag_ident(index: usize) -> Ident {
-    format_ident!("__recursa_reject_flat_tag_{index}")
+/// Names one Node's generated nested key function.
+fn rejection_key_ident(index: usize) -> Ident {
+    format_ident!("__recursa_reject_key_{index}")
 }
 
 /// Returns a path that names one application type without its generic arguments.
@@ -813,43 +812,91 @@ fn elided_type(ty: &Type) -> Type {
 }
 
 /// Renders the check one nested list step runs over the element type's rejection rules.
+///
+/// The first step of a list holds no passed item, so only a rule that refuses one item on its own
+/// can answer there; an element type with no such rule renders nothing at that step.
 fn render_nested_list_check(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
     element: ElementValue,
     rule: &Rule,
+    first: bool,
 ) -> proc_macro2::TokenStream {
-    let Some((index, _, _)) = rejection_element(plan, lr, element) else {
+    let Some((index, node, _)) = rejection_element(plan, lr, element) else {
         return quote!();
     };
+    if first
+        && !plan
+            .rejections
+            .rules(node.node)
+            .is_some_and(|rules| rules.refuses_single_items())
+    {
+        return quote!();
+    }
     let Some(last) = rule.rhs.len().checked_sub(1) else {
         return quote!();
     };
     let table = rejection_table_ident(index);
-    let tag = rejection_tag_ident(index);
+    let key = rejection_key_ident(index);
     // A list item is held behind the authored `boxed!` layers, so the item reference needs one
     // more dereference than the owned element value does.
     let item_derefs = (0..=element.boxes).map(|_| quote!(*)).collect::<Vec<_>>();
     let element_derefs = (0..element.boxes).map(|_| quote!(*)).collect::<Vec<_>>();
-    let passed = quote! {
-        list.as_slice().iter().map(|__recursa_item| (
-            #tag(&#(#item_derefs)*__recursa_item),
-            ::core::option::Option::None,
-        ))
+    let passed = if first {
+        quote!(::core::iter::empty())
+    } else {
+        quote! {
+            list.as_slice().iter().map(|__recursa_item| (
+                #key(&#(#item_derefs)*__recursa_item),
+                ::core::option::Option::None,
+            ))
+        }
     };
     let added = quote! {
         (
-            #tag(&#(#element_derefs)*element),
+            #key(&#(#element_derefs)*element),
             reduction.symbol_extent(#last),
         )
     };
     super::rejections::render_check(plan, &table, &passed, &added)
 }
 
-/// Renders the rule tables and tag functions every list check of this grammar names.
+/// Returns the nested type path a key function names one Node by in a match pattern.
+///
+/// A path in a pattern carries no generic arguments, and the arena form names the semantic
+/// lifetime, which the pattern elides.
+pub(super) fn nested_node_path(
+    plan: &EmissionPlan,
+    node: NodeId,
+) -> Result<proc_macro2::TokenStream, String> {
+    let planned = plan
+        .nodes
+        .iter()
+        .find(|candidate| candidate.node == node)
+        .ok_or_else(|| "a Node a rejection key names has no frozen parse plan".to_owned())?;
+    let [application] = planned.parse_applications.as_slice() else {
+        return Err(format!(
+            "`{}` is read by a rejection key but has more than one application",
+            planned.ident
+        ));
+    };
+    let mut ty = application.ty.clone();
+    if plan.arena_ast {
+        replace_lifetime(&mut ty, &input_lifetime(), &semantic_lifetime(plan));
+    }
+    bare_type_path(&elided_type(&ty)).ok_or_else(|| {
+        format!(
+            "`{}` is read by a rejection key but its application is not a path type",
+            planned.ident
+        )
+    })
+}
+
+/// Renders the rule tables and key functions every nested list check of this grammar names.
 ///
 /// Both backends call into the same table, so the table is rendered once in the parser module
-/// that holds both dispatchers. Only an element type a list actually uses gets one.
+/// that holds both dispatchers. Only an element type a list actually uses gets one. The flat
+/// backend computes its keys inline, because a flat key reads pools the reduce holds.
 fn render_root_rejections(
     plan: &EmissionPlan,
     lr: &TableDrivenRendering,
@@ -859,7 +906,8 @@ fn render_root_rejections(
     }
     let mut rendered = BTreeMap::new();
     for (_, rule) in lr.root_rules() {
-        let RuleAction::ListPush { element } = &rule.action else {
+        let (RuleAction::ListPush { element } | RuleAction::ListFirst { element }) = &rule.action
+        else {
             continue;
         };
         let Some((index, node, application)) = rejection_element(plan, lr, *element) else {
@@ -881,27 +929,15 @@ fn render_root_rejections(
             )
         })?;
         let mut items = super::rejections::render_rule_table(plan, node, &table);
-        items.extend(super::rejections::render_tag_function(
+        let name = |node: NodeId| nested_node_path(plan, node);
+        items.extend(super::rejections::render_key_function(
+            plan,
             node,
-            &rejection_tag_ident(index),
+            &rejection_key_ident(index),
             &quote!(#nested_ty),
             &nested_path,
-        ));
-        if plan.flat {
-            let flat_ty = super::flat::flat_application_type(plan, node, application)?;
-            let flat_path = bare_type_path(&flat_ty).ok_or_else(|| {
-                format!(
-                    "`{}` declares rejection rules but its flat application is not a path type",
-                    node.ident
-                )
-            })?;
-            items.extend(super::rejections::render_tag_function(
-                node,
-                &rejection_flat_tag_ident(index),
-                &quote!(#flat_ty),
-                &flat_path,
-            ));
-        }
+            &super::rejections::NestedNaming::Value(&name),
+        )?);
         rendered.insert(index, items);
     }
     let items = rendered.into_values();

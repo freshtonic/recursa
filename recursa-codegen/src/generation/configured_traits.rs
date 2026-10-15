@@ -487,7 +487,15 @@ pub(super) fn render_node_configured_traits(
             .contains(&ConfiguredTraitRecipe::Arbitrary)
     {
         implementations.push(render_node_arbitrary(plan, node));
-        implementations.push(super::rejections::render_arbitrary_support(plan, node));
+        let name = |node: NodeId| super::table_driven::nested_node_path(plan, node);
+        implementations.push(
+            super::rejections::render_arbitrary_support(
+                plan,
+                node,
+                &super::rejections::NestedNaming::Value(&name),
+            )
+            .unwrap_or_else(|error| quote!(::core::compile_error!(#error);)),
+        );
     }
     if plan.pretty.nodes[node_index].is_some() {
         implementations.push(render_node_pretty(plan, node, node_index));

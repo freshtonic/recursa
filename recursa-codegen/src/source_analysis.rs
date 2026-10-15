@@ -762,6 +762,8 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::UnterminatedOptionUnknownValue => "RCA3151",
         SourceModelDiagnosticKind::ElementWiseAttachmentOnRepeatedField => "RCA3152",
         SourceModelDiagnosticKind::MergedKindNotAdmissibleHere => "RCA3153",
+        SourceModelDiagnosticKind::DuplicateClassification => "RCA3154",
+        SourceModelDiagnosticKind::TextRuleWithoutClassification => "RCA3155",
     }
 }
 
