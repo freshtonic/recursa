@@ -314,6 +314,15 @@ pub enum ColumnOption { Path(Value), Default(Value), NotNull, Null, Named(NamedO
 `fold` is the consumer's function, `fn(&str) -> Option<impl AsRef<str>>`, because the consumer
 owns its scanner's folding rules.
 
+A struct takes text rules over one of its own fields. The struct is refused when it is reduced,
+at the extent of the field, so a check that a `gram.y` action makes on one value needs no list:
+
+```rust,ignore
+#[classify(value, fold = crate::literal::float_precision_class)]
+#[reject(one_of(value, "below_1"), code = "22023", message = "precision for type float must be at least 1 bit", cite = "...")]
+pub struct FloatPrecision { pub value: IntegerLit }
+```
+
 The failure is a `ParseErrorKind::DeclaredRejection` carrying the rule's note:
 
 ```rust,ignore

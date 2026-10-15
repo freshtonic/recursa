@@ -30,6 +30,8 @@ recursa::tokens! {
         NULL => "null" in RESERVED,
         #[config(since = pg18)]
         PATH => "path" in RESERVED,
+        SIZED => "sized" in RESERVED,
+        WIDTH => "width" in RESERVED,
     }
     admissions { Unreserved = UNRESERVED }
     punctuation {
@@ -208,5 +210,38 @@ recursa::ast_node! {
     pub struct Value {
         #[lex(pattern = r"'[^']*'")]
         pub text: ValueText,
+    }
+}
+
+recursa::ast_node! {
+    /// `SIZED <name> [WIDTH (<digits>)]`: a Node that holds a struct with text rules in an
+    /// optional field, as `FLOAT_P opt_float` holds its precision.
+    pub struct Sizing {
+        #[tok(SIZED)]
+        pub name: ColumnName,
+        pub width: Option<Width>,
+    }
+}
+
+recursa::ast_node! {
+    /// `WIDTH (<digits>)`, whose value a `gram.y` action checks, as `opt_float` checks the
+    /// precision of `FLOAT`: the fold reads the number, and each text rule refuses one range.
+    #[classify(digits, fold = crate::width_class)]
+    #[reject(
+        one_of(digits, "zero"),
+        code = "22023",
+        message = "width must be at least 1",
+        cite = "gram.y REL_17_11 14476, opt_float",
+    )]
+    #[reject(
+        one_of(digits, "wide"),
+        code = "22023",
+        message = "width must be less than 65",
+        cite = "gram.y REL_17_11 14485, opt_float",
+    )]
+    pub struct Width {
+        #[tok(WIDTH, LPAREN, this, RPAREN)]
+        #[lex(pattern = r"[0-9]+")]
+        pub digits: Digits,
     }
 }
