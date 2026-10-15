@@ -1567,10 +1567,19 @@ pub(super) fn render_node_explorer(
 /// Rationale: keeps an application adapter's schema, occurrence traversal, parsing, Pretty, and sampling in one emitted impl.
 /// Invariants: the erased API never exposes semantic Rust types or outlives its input.
 /// Phases: renders identity and schema, occurrence access, parse entry, then optional capabilities.
-/// Builds the `explorer_adapter` diagram-plan argument: `Some(include_str!(...))` embedding this
-/// generation's on-disk encoded diagram plan (published next to `root.rs` by [`super::publication`])
-/// when this grammar has one, otherwise `None`.
-fn explorer_diagram_plan_arg(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+/// Names the one static that embeds this generation's encoded diagram plan.
+pub(super) fn explorer_diagram_plan_static() -> Ident {
+    format_ident!("__RECURSA_EXPLORER_DIAGRAM_PLAN")
+}
+
+/// Builds the initializer of [`explorer_diagram_plan_static`]: `Some(include_str!(...))`
+/// embedding this generation's on-disk encoded diagram plan (published next to `root.rs` by
+/// [`super::publication`]) when this grammar has one, otherwise `None`.
+///
+/// The `include_str!` is rendered once, in the root, and every adapter names the static. When
+/// each adapter carried its own `include_str!`, the expander read and escaped the whole plan
+/// once per root Node: 1,540 copies of a 3 MB plan were a third of pg-sql's expansion time.
+fn explorer_diagram_plan_initializer(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     #[cfg(feature = "diagrams")]
     {
         if plan.diagrams.is_some() {
@@ -1599,7 +1608,8 @@ pub(super) fn render_node_application_explorer(
     let node_index = application.parse_index;
     let ty = &application.ty;
     let static_ty = &application.static_ty;
-    let diagram_plan_arg = explorer_diagram_plan_arg(plan);
+    let diagram_plan_static = explorer_diagram_plan_static();
+    let diagram_plan_arg = quote!(#module_anchor::#diagram_plan_static);
     let explorer_node = explorer_plan
         .nodes
         .iter()
@@ -2007,9 +2017,12 @@ pub(super) fn render_explorer_static_schema(
     let node_schemas_static = explorer_node_schemas_static();
     let token_schemas_static = explorer_token_schemas_static();
     let grammar_tables = explorer_grammar_tables_static();
+    let diagram_plan_static = explorer_diagram_plan_static();
+    let diagram_plan = explorer_diagram_plan_initializer(plan);
     quote! {
         #tokens
         #(#nodes)*
+        pub(crate) static #diagram_plan_static: Option<&str> = #diagram_plan;
         pub(crate) static #node_schemas_static:
             [&#facade::__private::ExplorerNodeSchemaData; #node_schema_count] =
             [#(#all_nodes),*];
