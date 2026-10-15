@@ -761,7 +761,7 @@ pub(super) fn rejection_element<'plan>(
             .iter()
             .any(|candidate| candidate.application == application)
     })?;
-    plan.rejections.rules(node.node)?;
+    plan.rejections.list_rules(node.node)?;
     let application = node
         .parse_applications
         .iter()
@@ -1536,12 +1536,70 @@ fn render_reduce_body(
     }
     values.reverse();
     let construction = render_construction(variant_ident, style, &values);
+    if let Some((start, len)) = struct_check_site(plan, lr, rule, node, &elements, &forms)
+        && variant_ident.is_none()
+    {
+        // A struct with text rules checks the value it has just built, before it is pushed.
+        let built = format_ident!("__recursa_built");
+        let name = |node: NodeId| nested_node_path(plan, node);
+        let naming = super::rejections::NestedNaming::Value(&name);
+        let check = super::rejections::render_struct_check(
+            plan,
+            node,
+            super::rejections::StructFieldText::Nested {
+                value: &built,
+                naming: &naming,
+            },
+            quote!(reduction.symbol_range_extent(#start, #len)),
+        )?;
+        return Ok(quote! {
+            {
+                #(#pops)*
+                let #built: Self = #construction;
+                #check
+                reduction.push(#built);
+            }
+        });
+    }
     Ok(quote! {
         {
             #(#pops)*
             reduction.push(#construction);
         }
     })
+}
+
+/// Finds the classified field of a struct with declared text rules in one reduce: the
+/// right-hand-side symbols of the field's own value, as a start and a length.
+///
+/// A site also holds the fixed tokens its `#[tok(...)]` group writes around the field, and a
+/// `gram.y` action positions its error at the value it reads (`parser_errposition(@2)`), so the
+/// extent is the one value-carrying symbol of the site. Both reduce backends walk the same
+/// elements and site forms, so the nested and the flat check report the same extent.
+pub(super) fn struct_check_site(
+    plan: &EmissionPlan,
+    lr: &TableDrivenRendering,
+    rule: &Rule,
+    node: &NodeParsePlan,
+    elements: &[ElementParsePlan],
+    forms: &[SiteForm],
+) -> Option<(usize, usize)> {
+    let field = super::rejections::struct_checked_field(plan, node.node)?;
+    let position = elements.iter().position(|element| {
+        matches!(
+            &element.kind,
+            ElementParseKind::Semantic { field: candidate, .. }
+                if candidate.ident.as_ref().is_some_and(|ident| ident.unraw() == field)
+        )
+    })?;
+    let form = forms.get(position)?;
+    let (start, len) = (form.start as usize, form.len as usize);
+    let value = rule
+        .rhs
+        .get(start..start + len)?
+        .iter()
+        .position(|symbol| lr.symbol_carries_value(*symbol));
+    Some(value.map_or((start, len), |offset| (start + offset, 1)))
 }
 
 /// Wraps a value expression in `boxes` layers of `Box::new`.

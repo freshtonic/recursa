@@ -99,6 +99,65 @@ fn column(source: &str) -> String {
     }
 }
 
+/// Parses one `SIZED` Node, whose optional width is a struct with text rules.
+#[cfg(not(feature = "flat-ast"))]
+fn sized(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Sizing::parse_spanned(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `SIZED` Node into a Flat AST.
+#[cfg(feature = "flat-ast")]
+fn sized(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Sizing::parse_flat(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Samples `SIZING` Nodes and reports whether every one of them parses back.
+///
+/// A sampled width that a rule refuses is sampled again, and an optional width whose retries run
+/// out is absent, so every seed gives a value and every value parses back. The digits token
+/// samples its one canonical spelling, `0`, which the first rule refuses, so no sample here holds
+/// a width: the fixture proves that the refusal neither escapes nor starves the holder.
+#[cfg(not(any(feature = "arena-ast", feature = "flat-ast")))]
+fn sampled_sized_round_trip() -> String {
+    use recursa::Arbitrary as _;
+    use recursa::Pretty as _;
+
+    let mut rendered = 0_usize;
+    for seed in 0_u8..64 {
+        let bytes = [seed, seed.wrapping_mul(29), seed ^ 0x71, seed.wrapping_add(5), seed, 1];
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        let Ok(value) = grammar::Sizing::arbitrary(&mut input) else {
+            continue;
+        };
+        let text = recursa::Parsed::synthetic(value).render();
+        let lexed = grammar::lex(text.as_str());
+        let mut parse_input = lexed.input();
+        match grammar::Sizing::parse_spanned(&mut parse_input) {
+            Ok(_) => rendered += 1,
+            Err(error) => return format!("{text:?} => {}", describe(&error)),
+        }
+    }
+    format!("{rendered} samples parse back")
+}
+
+/// A grammar whose AST holds no sampler of its own reports that it sampled nothing.
+#[cfg(any(feature = "arena-ast", feature = "flat-ast"))]
+fn sampled_sized_round_trip() -> String {
+    "not sampled".to_owned()
+}
+
 /// Samples values and reports whether every one of them parses back.
 ///
 /// A sampled repetition drops every item that would complete a forbidden pair, so a rendered
@@ -245,6 +304,15 @@ fn main() {
         column("column a \"__pg__is_not_null\" 'x'")
     );
 
+    // A struct's text rules refuse the struct on its own field's folded text, at the extent of
+    // that field, as `opt_float` refuses `float(0)` at the `Iconst`.
+    println!("sized_bare={}", sized("sized a"));
+    println!("sized_width={}", sized("sized a width(8)"));
+    println!("sized_leading_zeros={}", sized("sized a width(064)"));
+    println!("sized_zero={}", sized("sized a width(0)"));
+    println!("sized_wide={}", sized("sized a width(65)"));
+
     println!("sampled={}", sampled_round_trips());
     println!("sampled_columns={}", sampled_columns_round_trip());
+    println!("sampled_sized={}", sampled_sized_round_trip());
 }

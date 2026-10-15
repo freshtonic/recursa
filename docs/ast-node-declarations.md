@@ -72,7 +72,9 @@ This document is the declaration and nested-output contract.
   item of variant `V` by the folded text of its identifier. Accept
   `#[classify(V.field, fold = path, text("text", Label), ...)]` on the same enum, which names that
   identifier field, the consumer's fold function, and the label an item with that folded text
-  counts as. Both are gated only through `#[config_attr(BOUNDS, ...)]`. See
+  counts as. On a struct, accept `#[classify(field, fold = path)]` and the text rules
+  `one_of(field, ...)` and `not_in(field, ...)`, which refuse the struct by the folded text of its
+  own field when it is reduced. Both are gated only through `#[config_attr(BOUNDS, ...)]`. See
   [declared rejections](declared-rejections.md).
 - Flat AST variant design is out of scope for this session.
 
