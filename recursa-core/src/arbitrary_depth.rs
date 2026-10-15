@@ -34,6 +34,11 @@ thread_local! {
 /// re-check, not a guess.
 pub const MAX_DEPTH: u32 = 64;
 
+/// How many times a sampled struct with declared text rules samples again after a rule refuses
+/// it, before the sampler answers that the input bytes describe no value
+/// (`docs/declared-rejections.md`, "Sampling").
+pub const REJECTION_ATTEMPTS: u32 = 8;
+
 /// RAII guard incrementing the shared sampling-depth counter for its lifetime; decrements on
 /// drop, including on an early return, so a stray non-zero counter cannot outlive one `arbitrary`
 /// call tree even if a variant's construction returns an error partway through.

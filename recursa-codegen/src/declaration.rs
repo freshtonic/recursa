@@ -278,7 +278,9 @@ fn documented_rejection_rules(rejections: &[Meta]) -> Option<Attribute> {
                 .map(move |text| {
                     format!(
                         "`{}` named `{}` counts as `{}`",
-                        classify.variant, text.text, text.label
+                        classify.variant.as_deref().unwrap_or_default(),
+                        text.text,
+                        text.label
                     )
                 })
                 .collect::<Vec<_>>()

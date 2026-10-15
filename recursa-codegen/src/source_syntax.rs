@@ -252,7 +252,8 @@ pub(crate) enum RejectCheckSyntax {
     Text {
         /// `true` for `not_in`, `false` for `one_of`.
         negated: bool,
-        /// Name of the classified variant whose items the rule reads.
+        /// Name of the classified variant whose items the rule reads, or, on a struct, of the
+        /// classified field.
         variant: String,
         /// Texts in written order.
         texts: Vec<String>,
@@ -536,15 +537,17 @@ pub(crate) struct ClassifyTextSyntax {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One authored `#[classify(Variant.field, fold = path, text("...", Label), ...)]` declaration.
+/// One authored `#[classify(Variant.field, fold = path, text("...", Label), ...)]` declaration on
+/// an enum, or `#[classify(field, fold = path)]` on a struct.
 ///
-/// The declaration reads the identifier `field` of one variant's struct payload, folds its source
-/// text with the consumer's `fold` function, and lets an item whose folded text a mapping names
-/// count as that mapping's label for the enum's rejection rules
+/// On an enum, the declaration reads the identifier `field` of one variant's struct payload, folds
+/// its source text with the consumer's `fold` function, and lets an item whose folded text a
+/// mapping names count as that mapping's label for the enum's rejection rules. On a struct, it
+/// reads the struct's own `field`, and the struct's text rules compare its folded text
 /// (`docs/declared-rejections.md`).
 pub(crate) struct ClassifySyntax {
-    /// Name of the classified variant.
-    pub(crate) variant: String,
+    /// Name of the classified variant, or `None` for the struct form, which names a field only.
+    pub(crate) variant: Option<String>,
     /// Name of the identifier field of the variant's struct payload.
     pub(crate) field: String,
     /// Path of the consumer's fold function, `fn(&str) -> Option<impl AsRef<str>>`.
@@ -582,14 +585,19 @@ impl ClassifySyntax {
                         return None;
                     };
                     let variant = base.path.get_ident()?;
-                    Some((variant.unraw().to_string(), field.unraw().to_string()))
+                    Some((Some(variant.unraw().to_string()), field.unraw().to_string()))
+                }
+                Expr::Path(path) if path.qself.is_none() => {
+                    let field = path.path.get_ident()?;
+                    Some((None, field.unraw().to_string()))
                 }
                 _ => None,
             })
             .ok_or_else(|| {
                 configuration_error(
                     meta.span(),
-                    "classify names the classified field first, as `Variant.field`",
+                    "classify names the classified field first, as `Variant.field` on an enum \
+                     or `field` on a struct",
                 )
             })?;
         let mut fold = None;
@@ -645,10 +653,18 @@ impl ClassifySyntax {
         }
         let fold = fold
             .ok_or_else(|| configuration_error(meta.span(), "classify requires a `fold` entry"))?;
-        if texts.is_empty() {
+        // The struct form maps no text: the struct's text rules name the texts. Source-model
+        // lowering reports a struct form on an enum, and an enum form on a struct.
+        if variant.is_some() && texts.is_empty() {
             return Err(configuration_error(
                 meta.span(),
                 "classify requires at least one `text(\"...\", Label)` entry",
+            ));
+        }
+        if variant.is_none() && !texts.is_empty() {
+            return Err(configuration_error(
+                meta.span(),
+                "a struct's `classify(field, ...)` maps no text: its text rules name the texts",
             ));
         }
         Ok(Self {

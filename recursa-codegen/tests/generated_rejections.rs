@@ -81,6 +81,13 @@ const REJECTED_BY_PG18: &[&str] = &[
     // The gated text rule is written first, so it answers before the general one.
     "reserved=RCA4105/42601/option name cannot be used in XMLTABLE/gram.y REL_17_11 14098, \
      xmltable_column_option_el/9..32",
+    // A struct's text rules: a width the fold puts in range is accepted, leading zeros included,
+    // and each refused range carries its own message at the extent of the digits.
+    "sized_bare=ok",
+    "sized_width=ok",
+    "sized_leading_zeros=ok",
+    "sized_zero=RCA4105/22023/width must be at least 1/gram.y REL_17_11 14476, opt_float/14..15",
+    "sized_wide=RCA4105/22023/width must be less than 65/gram.y REL_17_11 14485, opt_float/14..16",
 ];
 
 /// The line the older build reports for the reserved name: no gated rule exists there, so the
@@ -95,10 +102,15 @@ const RESERVED_BEFORE_PG18: &str = "reserved=RCA4105/42601/unrecognized column o
 const SAMPLED: &[&str] = &[
     "sampled=64 samples parse back",
     "sampled_columns=58 samples parse back",
+    "sampled_sized=64 samples parse back",
 ];
 
 /// The sampling lines a storage with no sampler of its own prints.
-const NOT_SAMPLED: &[&str] = &["sampled=not sampled", "sampled_columns=not sampled"];
+const NOT_SAMPLED: &[&str] = &[
+    "sampled=not sampled",
+    "sampled_columns=not sampled",
+    "sampled_sized=not sampled",
+];
 
 #[test]
 fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
@@ -116,7 +128,7 @@ fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
             .iter()
             .filter(|line| line.contains("RCA4105"))
             .count()
-            == 15,
+            == 17,
         "every declared rejection of the fixture reports RCA4105: {reported:?}"
     );
 }

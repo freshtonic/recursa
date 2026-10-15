@@ -90,9 +90,15 @@ pub(super) struct Classification {
     classes: Vec<u32>,
 }
 
-/// Every declared rule and classification of one enum.
+/// Every declared rule and classification of one enum, or the text rules of one struct.
+///
+/// A struct is planned as an enum of one variant, tag 0, whose one classification reads the
+/// struct's own field: its text rules then run through the same runtime walk, at the reduce of the
+/// struct rather than at a list step.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct NodeRejections {
+    /// Whether the rules belong to a struct, which checks itself when it is reduced.
+    on_struct: bool,
     /// Rules in authored order.
     rules: Vec<RejectionRecord>,
     /// Classifications, one per classified variant.
@@ -106,6 +112,7 @@ impl NodeRejections {
     /// Reports whether a rule of this enum can refuse an item on its own, which only a text rule
     /// does. Such an enum needs the check at the first step of a list too.
     pub(super) fn refuses_single_items(&self) -> bool {
+        debug_assert!(!self.on_struct, "a struct's rules never run at a list step");
         self.rules
             .iter()
             .any(|rule| matches!(rule.check, RecordCheck::Text { .. }))
@@ -137,6 +144,16 @@ impl RejectionPlan {
     /// Returns the rules and classifications of one Node type.
     pub(super) fn rules(&self, node: NodeId) -> Option<&NodeRejections> {
         self.nodes.get(&node)
+    }
+
+    /// Returns the rules of one enum, which every repetition of the enum runs at its list steps.
+    pub(super) fn list_rules(&self, node: NodeId) -> Option<&NodeRejections> {
+        self.nodes.get(&node).filter(|rules| !rules.on_struct)
+    }
+
+    /// Returns the text rules of one struct, which the struct runs when it is reduced.
+    pub(super) fn struct_rules(&self, node: NodeId) -> Option<&NodeRejections> {
+        self.nodes.get(&node).filter(|rules| rules.on_struct)
     }
 
     /// Reports whether any enum classifies a variant, so a flat parse reads the text pool.
@@ -223,11 +240,23 @@ fn resolve_classification(
         .iter()
         .find(|candidate| candidate.node == payload)
         .ok_or_else(shape)?;
+    let (field_boxed, terminal) = resolve_field(nodes, payload_plan, field).ok_or_else(shape)?;
+    Ok((payload, field_boxed, terminal))
+}
+
+/// Resolves where the named field of one struct Node keeps its text: a content token or a
+/// token-wrapper enum, behind nothing but `boxed!`. `None` means the shape is not one a
+/// classification reads.
+fn resolve_field(
+    nodes: &[NodeParsePlan],
+    payload_plan: &NodeParsePlan,
+    field: &str,
+) -> Option<(bool, ClassifiedTerminal)> {
     let NodeBodyPlan::Struct { elements, .. } = &payload_plan.body else {
-        return Err(shape());
+        return None;
     };
     if payload_plan.parse_applications.len() != 1 {
-        return Err(shape());
+        return None;
     }
     let (_, projection) = semantic_fields(elements)
         .into_iter()
@@ -236,8 +265,7 @@ fn resolve_classification(
                 .ident
                 .as_ref()
                 .is_some_and(|ident| ident.unraw() == field)
-        })
-        .ok_or_else(shape)?;
+        })?;
     let SemanticParseProjection::Direct {
         terminal_node,
         explorer_terminal,
@@ -245,34 +273,31 @@ fn resolve_classification(
         ..
     } = projection
     else {
-        return Err(shape());
+        return None;
     };
     if !wrappers
         .iter()
         .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed))
     {
-        return Err(shape());
+        return None;
     }
     let field_boxed = !wrappers.is_empty();
     if matches!(explorer_terminal, ExplorerTerminalPlan::Content(_)) {
-        return Ok((payload, field_boxed, ClassifiedTerminal::Content));
+        return Some((field_boxed, ClassifiedTerminal::Content));
     }
-    let wrapper = terminal_node.ok_or_else(shape)?;
-    let wrapper_plan = nodes
-        .iter()
-        .find(|candidate| candidate.node == wrapper)
-        .ok_or_else(shape)?;
+    let wrapper = (*terminal_node)?;
+    let wrapper_plan = nodes.iter().find(|candidate| candidate.node == wrapper)?;
     let NodeBodyPlan::Enum { variants } = &wrapper_plan.body else {
-        return Err(shape());
+        return None;
     };
     if wrapper_plan.parse_applications.len() != 1 {
-        return Err(shape());
+        return None;
     }
     let mut names = Vec::new();
     for wrapped in variants {
         let fields = semantic_fields(&wrapped.elements);
         let [(_, projection)] = fields.as_slice() else {
-            return Err(shape());
+            return None;
         };
         match projection {
             SemanticParseProjection::Direct {
@@ -282,11 +307,10 @@ fn resolve_classification(
             } if wrappers.is_empty() && wrapped.style == ResolvedFieldStyle::Unnamed => {
                 names.push(wrapped.ident.unraw().to_string());
             }
-            _ => return Err(shape()),
+            _ => return None,
         }
     }
-    Ok((
-        payload,
+    Some((
         field_boxed,
         ClassifiedTerminal::Wrapper {
             node: wrapper,
@@ -421,7 +445,7 @@ fn node_rejections(
 
     let mut resolved = Vec::new();
     for classify in classifications {
-        let Some(tag) = variant(&classify.variant) else {
+        let Some(tag) = classify.variant.as_deref().and_then(variant) else {
             continue;
         };
         let (payload, field_boxed, terminal) =
@@ -449,8 +473,81 @@ fn node_rejections(
         });
     }
     Ok(NodeRejections {
+        on_struct: false,
         rules: records,
         classifications: resolved,
+        texts,
+    })
+}
+
+/// Builds the text rules of one struct and the classification of its one field.
+///
+/// The struct counts as the single variant of tag 0, so its text rules are ordinary text rules
+/// over that variant and the runtime walk needs no struct form of its own.
+fn struct_rejections(
+    nodes: &[NodeParsePlan],
+    struct_node: &NodeParsePlan,
+    metas: &[Meta],
+) -> Result<NodeRejections, String> {
+    let Some(classify) = metas
+        .iter()
+        .filter(|meta| meta.path().is_ident("classify"))
+        .find_map(|meta| ClassifySyntax::from_meta(meta).ok())
+    else {
+        return Ok(NodeRejections::default());
+    };
+    let mut texts: Vec<String> = Vec::new();
+    let mut records = Vec::new();
+    for rule in metas
+        .iter()
+        .filter(|meta| meta.path().is_ident("reject"))
+        .filter_map(|meta| RejectRuleSyntax::from_meta(meta).ok())
+    {
+        let RejectCheckSyntax::Text {
+            negated,
+            texts: rule_texts,
+            ..
+        } = &rule.check
+        else {
+            continue;
+        };
+        records.push(RejectionRecord {
+            check: RecordCheck::Text {
+                negated: *negated,
+                variant: 0,
+                texts: rule_texts
+                    .iter()
+                    .map(|text| intern_text(&mut texts, text))
+                    .collect(),
+            },
+            code: rule.code,
+            message: rule.message,
+            hint: rule.hint,
+            citation: rule.citation,
+        });
+    }
+    let (field_boxed, terminal) =
+        resolve_field(nodes, struct_node, &classify.field).ok_or_else(|| {
+            format!(
+                "`#[classify({}, ...)]` on `{}`: the field `{}` must be a content token or a \
+                 non-generic enum whose every variant holds one content token, and `{}` must be \
+                 a non-generic struct",
+                classify.field, struct_node.ident, classify.field, struct_node.ident,
+            )
+        })?;
+    let fold = &classify.fold;
+    Ok(NodeRejections {
+        on_struct: true,
+        rules: records,
+        classifications: vec![Classification {
+            variant: 0,
+            payload: struct_node.node,
+            field: classify.field,
+            field_boxed,
+            terminal,
+            fold: quote!(#fold).to_string(),
+            classes: vec![0; texts.len()],
+        }],
         texts,
     })
 }
@@ -469,16 +566,18 @@ pub(super) fn plan_rejections(
         {
             continue;
         }
-        let ResolvedNodeBody::Enum { .. } = &node.body else {
-            continue;
-        };
         let Some(planned) = nodes.iter().find(|planned| planned.node == node.id) else {
             continue;
         };
-        let NodeBodyPlan::Enum { variants } = &planned.body else {
-            continue;
+        let rejections = match (&node.body, &planned.body) {
+            (ResolvedNodeBody::Enum { .. }, NodeBodyPlan::Enum { variants }) => {
+                node_rejections(nodes, planned, &node.metas, variants)?
+            }
+            (ResolvedNodeBody::Struct { .. }, NodeBodyPlan::Struct { .. }) => {
+                struct_rejections(nodes, planned, &node.metas)?
+            }
+            _ => continue,
         };
-        let rejections = node_rejections(nodes, planned, &node.metas, variants)?;
         if !rejections.rules.is_empty() {
             plan.nodes.insert(node.id, rejections);
         }
@@ -606,10 +705,26 @@ fn render_nested_text(
     naming: &NestedNaming<'_>,
 ) -> Result<proc_macro2::TokenStream, String> {
     let field = format_ident!("{}", classification.field);
+    render_field_text(
+        plan,
+        classification,
+        naming,
+        quote!(__recursa_payload.#field),
+    )
+}
+
+/// Renders the source text of a classified field from the place expression that holds it, as
+/// an `Option<&str>`. The place holds the field as authored, behind its `boxed!` layer if any.
+fn render_field_text(
+    plan: &EmissionPlan,
+    classification: &Classification,
+    naming: &NestedNaming<'_>,
+    place: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, String> {
     let access = if classification.field_boxed {
-        quote!(&*__recursa_payload.#field)
+        quote!(&*#place)
     } else {
-        quote!(&__recursa_payload.#field)
+        quote!(&#place)
     };
     match &classification.terminal {
         ClassifiedTerminal::Content => Ok(quote! {
@@ -753,31 +868,12 @@ pub(super) fn render_flat_key_closure(
         if let Some((rejections, classification)) = classification {
             let payload = read_pool(classification.payload, quote!(*__recursa_payload))?;
             let field = format_ident!("{}", classification.field);
-            let text = match &classification.terminal {
-                ClassifiedTerminal::Content => quote! {
-                    builder
-                        .texts()
-                        .get(__recursa_struct.#field)
-                        .map(|__recursa_text| __recursa_text.as_str())
-                },
-                ClassifiedTerminal::Wrapper {
-                    node: wrapper,
-                    variants: wrapped,
-                } => {
-                    let wrapper_value = read_pool(*wrapper, quote!(__recursa_struct.#field))?;
-                    let wrapper_path = flat_path_of(*wrapper)?;
-                    let arms = wrapped.iter().map(|variant| {
-                        let variant = format_ident!("{variant}");
-                        quote! {
-                            #wrapper_path::#variant(__recursa_token) => builder
-                                .texts()
-                                .get(*__recursa_token)
-                                .map(|__recursa_text| __recursa_text.as_str()),
-                        }
-                    });
-                    quote!(match #wrapper_value { #(#arms)* })
-                }
-            };
+            let text = render_flat_field_text(
+                classification,
+                quote!(__recursa_struct.#field),
+                read_pool,
+                flat_path_of,
+            )?;
             let key = render_classified_key(facade, classification, &rejections.texts, text)?;
             arms.push(quote! {
                 #flat_path::#variant_ident(__recursa_payload) => {
@@ -797,6 +893,130 @@ pub(super) fn render_flat_key_closure(
     Ok(quote! {
         |__recursa_value: &#flat_ty| -> #facade::RejectionKey {
             match __recursa_value { #(#arms)* }
+        }
+    })
+}
+
+/// Renders the source text of a classified flat field, as an `Option<&str>`.
+///
+/// `handle` is the field's flat value: a text handle for a content token, or a handle into the
+/// wrapper's pool. A flat field holds no `boxed!` layer.
+fn render_flat_field_text(
+    classification: &Classification,
+    handle: proc_macro2::TokenStream,
+    read_pool: FlatPoolRead<'_>,
+    flat_path_of: &dyn Fn(NodeId) -> Result<proc_macro2::TokenStream, String>,
+) -> Result<proc_macro2::TokenStream, String> {
+    Ok(match &classification.terminal {
+        ClassifiedTerminal::Content => quote! {
+            builder
+                .texts()
+                .get(#handle)
+                .map(|__recursa_text| __recursa_text.as_str())
+        },
+        ClassifiedTerminal::Wrapper {
+            node: wrapper,
+            variants: wrapped,
+        } => {
+            let wrapper_value = read_pool(*wrapper, handle)?;
+            let wrapper_path = flat_path_of(*wrapper)?;
+            let arms = wrapped.iter().map(|variant| {
+                let variant = format_ident!("{variant}");
+                quote! {
+                    #wrapper_path::#variant(__recursa_token) => builder
+                        .texts()
+                        .get(*__recursa_token)
+                        .map(|__recursa_text| __recursa_text.as_str()),
+                }
+            });
+            quote!(match #wrapper_value { #(#arms)* })
+        }
+    })
+}
+
+/// Where a struct check finds the text of its classified field.
+///
+/// Both reduces check the struct they have just built, bound to a local, so the field's type is
+/// known from the struct's own declaration.
+pub(super) enum StructFieldText<'a> {
+    /// The value or arena reduce: the local that holds the built struct.
+    Nested {
+        /// The local the reduce bound the struct to.
+        value: &'a Ident,
+        /// How the key names a token wrapper.
+        naming: &'a NestedNaming<'a>,
+    },
+    /// The flat reduce: the local that holds the built flat struct.
+    Flat {
+        /// The local the reduce bound the flat struct to.
+        value: &'a Ident,
+        /// Reads one pooled flat value.
+        read_pool: FlatPoolRead<'a>,
+        /// Names one Node's flat type in a pattern.
+        flat_path_of: &'a dyn Fn(NodeId) -> Result<proc_macro2::TokenStream, String>,
+    },
+}
+
+/// Returns the name of the classified field of a struct with text rules.
+pub(super) fn struct_checked_field(plan: &EmissionPlan, node: NodeId) -> Option<&str> {
+    plan.rejections
+        .struct_rules(node)
+        .and_then(|rules| rules.classifications.first())
+        .map(|classification| classification.field.as_str())
+}
+
+/// Renders the check a struct with text rules runs when its reduce has built its field values.
+///
+/// The struct is the one item of the walk, keyed as the single variant of tag 0, and its extent
+/// is `extent`, the extent of the classified field: a `gram.y` action positions such an error at
+/// the value it reads. The rule table is a static of the reduce method, because the one reduce
+/// that builds the struct is the only place that reads it.
+pub(super) fn render_struct_check(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    text: StructFieldText<'_>,
+    extent: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, String> {
+    let facade = &plan.facade;
+    let Some(rejections) = plan.rejections.struct_rules(node.node) else {
+        return Ok(quote!());
+    };
+    let [classification] = rejections.classifications.as_slice() else {
+        return Err(format!(
+            "`{}` has text rules but no one classification",
+            node.ident
+        ));
+    };
+    let field = format_ident!("{}", classification.field);
+    let raw = match text {
+        StructFieldText::Nested { value, naming } => {
+            render_field_text(plan, classification, naming, quote!(#value.#field))?
+        }
+        StructFieldText::Flat {
+            value,
+            read_pool,
+            flat_path_of,
+        } => render_flat_field_text(
+            classification,
+            quote!(#value.#field),
+            read_pool,
+            flat_path_of,
+        )?,
+    };
+    let table = format_ident!("__RECURSA_STRUCT_REJECTIONS");
+    let table_items = render_rule_table(plan, node, &table);
+    let key = render_classified_key(facade, classification, &rejections.texts, raw)?;
+    let check = render_check(
+        plan,
+        &table,
+        &quote!(::core::iter::empty()),
+        &quote!((__recursa_key, #extent)),
+    );
+    Ok(quote! {
+        {
+            #table_items
+            let __recursa_key = #key;
+            #check
         }
     })
 }
@@ -841,7 +1061,23 @@ pub(super) fn render_arbitrary_support(
     }
     let table = format_ident!("__RECURSA_REJECTION_RULES");
     let table_items = render_rule_table(plan, node, &table);
-    let arms = render_nested_key_arms(plan, node, &quote!(Self), naming)?;
+    let key = match plan.rejections.struct_rules(node.node) {
+        Some(rejections) => {
+            let [classification] = rejections.classifications.as_slice() else {
+                return Err(format!(
+                    "`{}` has text rules but no one classification",
+                    node.ident
+                ));
+            };
+            let field = format_ident!("{}", classification.field);
+            let raw = render_field_text(plan, classification, naming, quote!(self.#field))?;
+            render_classified_key(facade, classification, &rejections.texts, raw)?
+        }
+        None => {
+            let arms = render_nested_key_arms(plan, node, &quote!(Self), naming)?;
+            quote!(match self { #(#arms)* })
+        }
+    };
     let node_ident = &node.ident;
     let (impl_generics, type_generics, where_clause) = node.generics.split_for_impl();
     Ok(quote! {
@@ -849,7 +1085,7 @@ pub(super) fn render_arbitrary_support(
             /// Reports this value's rejection key for its declared rejection rules.
             #[doc(hidden)]
             pub fn __recursa_rejection_key(&self) -> #facade::RejectionKey {
-                match self { #(#arms)* }
+                #key
             }
 
             /// Returns this type's declared rejection rules, in authored order.

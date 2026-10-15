@@ -1132,8 +1132,28 @@ pub(super) fn render_node_arbitrary(
             // the items that parse back, so the sampler runs the parser's own walk over them and
             // drops every item that would complete a forbidden pair.
             let sampled = quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?);
+            // A struct with text rules samples only values that parse back, or answers
+            // `IncorrectFormat` when its retries run out. An optional field of such a struct is
+            // then absent rather than unsampleable, so a rule that refuses most values never
+            // starves the Node that holds it.
+            if let (Some(node), [FieldWrapper::Optional, rest @ ..]) =
+                (terminal_node, wrappers.as_slice())
+                && plan.rejections.struct_rules(*node).is_some()
+                && rest
+                    .iter()
+                    .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed))
+            {
+                let inner = render_wrapped_type(facade, terminal, rest);
+                return quote! {
+                    if <bool as #facade::__private::arbitrary::Arbitrary>::arbitrary(input)? {
+                        <#inner as #facade::__private::arbitrary::Arbitrary>::arbitrary(input).ok()
+                    } else {
+                        ::core::option::Option::None
+                    }
+                };
+            }
             let rules = terminal_node
-                .filter(|node| plan.rejections.rules(*node).is_some())
+                .filter(|node| plan.rejections.list_rules(*node).is_some())
                 .map(|_| quote!(<#terminal>::__recursa_rejection_rules()));
             rules
                 .and_then(|rules| {
@@ -1248,6 +1268,29 @@ pub(super) fn render_node_arbitrary(
             }
         }
     };
+    // A struct with text rules samples again when a rule refuses the value, a bounded number of
+    // times, so a sampled value always parses back (`docs/declared-rejections.md`, "Sampling").
+    let checked_body = if plan.rejections.struct_rules(node.node).is_some() {
+        quote! {
+            {
+                let mut __recursa_attempts = 0u32;
+                loop {
+                    let __recursa_sampled = #body;
+                    if #facade::__private::RejectionFilter::new(Self::__recursa_rejection_rules())
+                        .admits(__recursa_sampled.__recursa_rejection_key())
+                    {
+                        break __recursa_sampled;
+                    }
+                    __recursa_attempts += 1;
+                    if __recursa_attempts >= #facade::__private::ARBITRARY_REJECTION_ATTEMPTS {
+                        return Err(#facade::__private::arbitrary::Error::IncorrectFormat);
+                    }
+                }
+            }
+        }
+    } else {
+        body
+    };
     quote! {
         __recursa_if_arbitrary! {
         impl #impl_generics #facade::__private::arbitrary::Arbitrary<'arbitrary>
@@ -1264,7 +1307,7 @@ pub(super) fn render_node_arbitrary(
                 let (__recursa_arbitrary_depth_guard, __recursa_arbitrary_depth) =
                     #facade::__private::ArbitraryDepthGuard::enter();
                 let _ = &__recursa_arbitrary_depth_guard;
-                Ok(#body)
+                Ok(#checked_body)
             }
         }
         }

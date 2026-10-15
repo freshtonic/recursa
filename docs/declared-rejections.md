@@ -7,6 +7,9 @@ Status: accepted design, 2026-10-13. Raised by
 [freshtonic/pg-sql#85](https://github.com/freshtonic/pg-sql/issues/85) and
 [freshtonic/pg-sql#87](https://github.com/freshtonic/pg-sql/issues/87): `once`, classifications
 and text rules ([Sets, classifications and text rules](#sets-classifications-and-text-rules)).
+Extended 2026-10-15 by [freshtonic/recursa#144](https://github.com/freshtonic/recursa/issues/144),
+for the consumer [freshtonic/pg-sql#88](https://github.com/freshtonic/pg-sql/issues/88): text
+rules on a struct field ([Text rules on a struct](#text-rules-on-a-struct)).
 
 Some rejections a raw parser makes are not grammar shapes. They are checks in a `gram.y` action
 that look at the set of items a list holds. `ConstraintAttributeSpec` (gram.y REL_17_11
@@ -46,7 +49,8 @@ pub enum ConstraintAttr { NotDeferrable, Deferrable, InitiallyImmediate, Initial
 
 It is accepted on an `ast_node!` enum, and nowhere else: every repetition of that enum runs the
 rule, so the rule belongs to the enum as a type rather than to one variant, one field or one use
-site.
+site. (A text rule may also go on a struct, which then refuses itself: see
+[Text rules on a struct](#text-rules-on-a-struct).)
 
 `code`, `message` and `hint` are opaque to Recursa: they are three strings that the consumer
 gives its own meaning. `cite` records the source that rejects the pair. `message` and `cite` are
@@ -123,6 +127,33 @@ included. `V` must carry a classification, which says where its text is and how 
 Unlike a pair or a set, a text rule refuses one item on its own, so the check also runs at the
 first step of a list for an element type that declares one; an element type with no text rule
 renders no check there, and its generated code is unchanged.
+
+### Text rules on a struct
+
+`opt_float` (gram.y REL_17_11 14466-14487) refuses `FLOAT(p)` when `p` is below 1 or above 53.
+Each limit has its own message, and `parser_errposition(@2)` puts the error at the `Iconst`. The
+precision is one value in a struct, not an item of a list, so no rule above can refuse it.
+
+```rust,ignore
+#[classify(value, fold = crate::literal::float_precision_class)]
+#[reject(one_of(value, "below_1"), code = "22023", message = "precision for type float must be at least 1 bit", cite = "...")]
+#[reject(one_of(value, "above_53"), code = "22023", message = "precision for type float must be less than 54 bits", cite = "...")]
+pub struct FloatPrecision { pub value: IntegerLit }
+```
+
+On a struct, a classification names one field of the struct itself, with no variant and no
+`text(...)` mappings, and a text rule names that field in place of a variant. The field has the
+shape a classified field has on an enum: a content token or a token wrapper, behind nothing but
+`boxed!`. The fold function gives the text the rules compare, and it may give any text: here it
+reads the integer value and gives the range the value falls in, so leading zeros and, for
+PostgreSQL 16 and later, every radix fold to the same text.
+
+The struct is refused when it is reduced, which is the one place that holds its field. The rule is
+planned as a text rule over a single variant, tag 0, so the runtime walk is the one above with one
+item. The error span is the extent of the field's own value, without the fixed tokens its
+`#[tok(...)]` group writes around it, as `parser_errposition(@2)` gives. The value, arena and flat
+reduces each check the struct they have just built, so all three agree. A struct takes text rules
+only: `pair(...)` and `once(...)` read a repetition, and on a struct they are `RCA3145`.
 
 ### The key
 
@@ -243,6 +274,12 @@ The arena form samples its seed mirror and then materializes it, and the mirror 
 filter from the same rendering, so the two forms drop the same items. A flat grammar has no
 sampler of its own.
 
+A struct with text rules samples again when a rule refuses the sampled value, at most
+`ARBITRARY_REJECTION_ATTEMPTS` (8) times, and then answers `arbitrary::Error::IncorrectFormat`.
+A content token samples one canonical spelling, so a rule that refuses that spelling refuses every
+retry too. An optional field whose type is such a struct is therefore sampled as absent when the
+struct cannot be sampled: a rule that refuses most values never starves the Node that holds it.
+
 ## Diagnostics
 
 New authoring diagnostics, with new codes:
@@ -265,6 +302,13 @@ and `RCA3149` for a removed variant that no classification maps a text to. It ad
 |---|---|
 | `RCA3154` | A variant is classified twice, or one classification maps one text twice. |
 | `RCA3155` | A text rule names a variant that no classification of the enum classifies. |
+
+The struct form reuses them: `RCA3144` for a struct classification with `text(...)` mappings or an
+enum classification without a variant, `RCA3145` for a pair, a `once` set or a `Variant.field`
+classification on a struct, `RCA3154` for a second classification of one struct, and `RCA3155`
+for a text rule that names a field no classification of the struct names. A field that does not
+exist or has another shape is a generation error, because its shape is known only once the Nodes
+are planned.
 
 A rule on an enum that no repetition field uses is accepted silently. It costs nothing, and a
 grammar under migration reaches that state on the way to its first list.
