@@ -7,13 +7,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/recursa-explorer"
+documentation = "https://github.com/freshtonic/recursa/tree/main/recursa-explorer"
 keywords = ["parser", "ast", "grammar", "visualization"]
 categories = ["development-tools"]
 include = ["src/**", "assets/**", "README.md", "LICENSE"]
+publish = false
 
 [dependencies]
-recursa = { version = "=0.1.0", path = "../recursa", features = ["explorer", "diagrams"] }
+recursa = { path = "../recursa", features = ["explorer", "diagrams"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"

@@ -19,7 +19,7 @@ release_always = false
 # Pre-1.0 and the public API is largely generated; semver checks add noise.
 semver_check = false
 
-# The six published crates pin one another with exact versions and the
+# The five published crates pin one another with exact versions and the
 # generation protocol stamps `CARGO_PKG_VERSION` into generated output, so a
 # consumer must upgrade them together. One version group keeps them in step.
 [[package]]
@@ -42,11 +42,12 @@ version_group = "recursa"
 name = "recursa-diagrams"
 version_group = "recursa"
 
+# Never released: the explorer, test support and the examples.
 [[package]]
 name = "recursa-explorer"
-version_group = "recursa"
+release = false
+publish = false
 
-# Never released: test support and the examples.
 [[package]]
 name = "recursa-test"
 release = false
