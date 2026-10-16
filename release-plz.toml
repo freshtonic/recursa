@@ -50,11 +50,14 @@ version_group = "recursa"
 [[package]]
 name = "recursa-test"
 release = false
+publish = false
 
 [[package]]
 name = "recursa-example-json"
 release = false
+publish = false
 
 [[package]]
 name = "recursa-example-expressions"
 release = false
+publish = false
