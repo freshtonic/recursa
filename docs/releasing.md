@@ -17,7 +17,7 @@ not use GitHub Actions.
 2. It runs `cargo test --workspace`. Use `--skip-tests` to skip this step.
 3. It runs `release-plz update`. release-plz reads the conventional commits
    since the last tag (`feat:` bumps the minor version, `fix:` the patch
-   version, a breaking change the major version), bumps the six published
+   version, a breaking change the major version), bumps the five published
    crates together, and updates their changelogs.
 4. It shows the diff, makes a signed commit `chore: release vX.Y.Z`, and
    pushes `main`. There is no release PR.
@@ -64,11 +64,12 @@ Tokens for the local flow:
 
 ## What moves together
 
-`recursa`, `recursa-core`, `recursa-macros`, `recursa-codegen`,
-`recursa-diagrams` and `recursa-explorer` form one version group in
+`recursa`, `recursa-core`, `recursa-macros`, `recursa-codegen` and
+`recursa-diagrams` form one version group in
 `release-plz.toml`. They pin one another with exact versions and the
 generation protocol stamps the crate version into generated output, so a
-consumer must upgrade them as a set. `recursa-test` and the examples are
+consumer must upgrade them as a set. `recursa-explorer`, `recursa-test` and
+the examples are
 never released: they have `release = false` and `publish = false`.
 
 ## Repository configuration for GitHub Actions
