@@ -1231,6 +1231,17 @@ fn resolved_field_positions(resolved: &ResolvedSourceGrammar) -> Vec<(usize, usi
 
 /// Builds the source model from resolved declarations without publishing partial state.
 pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelReport {
+    lower_source_model_with_prover(input).0
+}
+
+/// Lowers the source model and also returns the Pretty boundary prover that validated it.
+///
+/// Materialization proves Pretty boundaries over the same lexical languages. To give it this
+/// prover lets it reuse the compiled languages, catalogs, and products, so it does not compile
+/// them again.
+pub(crate) fn lower_source_model_with_prover(
+    input: SourceModelInput<'_>,
+) -> (SourceModelReport, PrettyBoundaryProver) {
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
     let resolved_field_positions = resolved_field_positions(&input.resolved);
     let mut diagnostics = Vec::new();
@@ -1282,7 +1293,8 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     builder.reject_flat_name_collisions();
     builder.index_pretty_content_definitions();
     builder.validate_pretty_spacing();
-    builder.finish()
+    let prover = builder.pretty_boundary_prover.take();
+    (builder.finish(), prover)
 }
 
 /// Carries the source model builder retained from authored source structure.
@@ -2460,7 +2472,7 @@ const PRETTY_BOUNDARY_DFA_SIZE_BUDGET: usize = 8 * 1024 * 1024;
 /// Root catalogs and individual languages are bounded separately by their small, authored
 /// cardinalities. Child unions can grow to a full binary catalog tree, so their compiled DFAs,
 /// expanded reachable graphs, and right-side viability tables share this deterministic cap.
-const PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_BUDGET: usize = 32 * 1024 * 1024;
+const PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_BUDGET: usize = 128 * 1024 * 1024;
 
 /// Maximum adaptive-child cache entries retained in addition to the aggregate heavy-heap cap.
 const PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_ENTRY_BUDGET: usize = 16 * 1024;
