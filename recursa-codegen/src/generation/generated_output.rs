@@ -573,8 +573,10 @@ fn generated_lint_policy() -> proc_macro2::TokenStream {
             unreachable_patterns,
             unused_variables,
             clippy::blocks_in_conditions,
+            clippy::borrow_deref_ref,
             clippy::borrowed_box,
             clippy::collapsible_if,
+            clippy::collapsible_match,
             clippy::match_like_matches_macro,
             clippy::match_single_binding,
             clippy::needless_borrow,
@@ -582,6 +584,8 @@ fn generated_lint_policy() -> proc_macro2::TokenStream {
             clippy::never_loop,
             clippy::new_ret_no_self,
             clippy::possible_missing_else,
+            clippy::redundant_closure,
+            clippy::single_match,
             clippy::unnecessary_literal_unwrap
         )]
     }
