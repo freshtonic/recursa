@@ -20,10 +20,10 @@
 //! - goto on nonterminal `n` from state `s`: let `i = pgoto[n] + s`; if in range and
 //!   `check[i] == s` go to `table[i]`, otherwise `defgoto[n]`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::automaton::{Action, Automaton, State, StateId};
-use super::grammar::{LrGrammar, NonterminalId, RuleId, Symbol, TerminalId};
+use super::grammar::{LrGrammar, RuleId, Symbol, TerminalId};
 
 /// The `pact` value of a state whose only action is its default reduction.
 pub const PACT_NINF: i32 = i32::MIN;
@@ -86,9 +86,8 @@ impl LrTables {
             );
         }
         let mut defgoto = Vec::with_capacity(grammar.nonterminal_count());
-        for index in 0..grammar.nonterminal_count() {
-            let nonterminal = NonterminalId::new(index as u32);
-            let (column, default) = goto_column(states, nonterminal);
+        for entries in goto_entries(states, grammar.nonterminal_count()) {
+            let (column, default) = goto_column(entries);
             vectors.push(column);
             defgoto.push(default);
         }
@@ -276,15 +275,27 @@ fn action_row(state: &State) -> SparseVector {
         .collect()
 }
 
-/// The goto column of a nonterminal without its most frequent target, and that target.
-fn goto_column(states: &[State], nonterminal: NonterminalId) -> (SparseVector, u32) {
-    let mut entries: Vec<(StateId, StateId)> = Vec::new();
+/// The `(state, target)` goto entries of each nonterminal, in state order.
+///
+/// One pass over the transitions of each state gives every column. The entries are the same as a
+/// lookup of each nonterminal in each state.
+fn goto_entries(states: &[State], nonterminal_count: usize) -> Vec<Vec<(StateId, StateId)>> {
+    let mut columns = vec![Vec::new(); nonterminal_count];
     for state in states {
-        if let Some(target) = state.transition(Symbol::Nonterminal(nonterminal)) {
-            entries.push((state.id(), target));
+        for (symbol, target) in state.transitions() {
+            if let Symbol::Nonterminal(nonterminal) = symbol
+                && let Some(column) = columns.get_mut(nonterminal.index())
+            {
+                column.push((state.id(), *target));
+            }
         }
     }
-    let mut counts: HashMap<StateId, usize> = HashMap::new();
+    columns
+}
+
+/// The goto column of a nonterminal without its most frequent target, and that target.
+fn goto_column(entries: Vec<(StateId, StateId)>) -> (SparseVector, u32) {
+    let mut counts: BTreeMap<StateId, usize> = BTreeMap::new();
     for (_, target) in &entries {
         *counts.entry(*target).or_default() += 1;
     }
