@@ -949,6 +949,16 @@ enum PrettyBoundarySite {
 
 /// Derives the materialize while materializing grammar applications and container shapes.
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
+    materialize_with_prover(source_modeled, PrettyBoundaryProver::default())
+}
+
+/// Materializes the grammar with a Pretty boundary prover that may already hold compiled
+/// languages, catalogs, and products, for example the prover that validated the source model.
+/// The prover is a cache, so the report does not depend on what it already holds.
+pub(crate) fn materialize_with_prover(
+    source_modeled: SourceModeledGrammar,
+    mut pretty_boundary_prover: PrettyBoundaryProver,
+) -> MaterializationReport {
     let equivalence = source_modeled
         .resolved()
         .configuration
@@ -956,7 +966,6 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
         .text_equivalence;
     let lexical_patterns =
         materialized_pretty_lexical_patterns(source_modeled.source_model(), equivalence);
-    let mut pretty_boundary_prover = PrettyBoundaryProver::default();
     let pretty_lexical_catalog = pretty_boundary_prover.intern_catalog(&lexical_patterns);
     let lexical = plan_lexical(&source_modeled);
     let materializer = Materializer {

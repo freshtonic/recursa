@@ -24,14 +24,15 @@ use crate::lexical::{
 };
 use crate::lowering::{DiscoveryInputs, RustEdition};
 use crate::materialization::{
-    LoweredGrammar, MaterializationDiagnostic, MaterializationDiagnosticKind, materialize,
+    LoweredGrammar, MaterializationDiagnostic, MaterializationDiagnosticKind,
+    materialize_with_prover,
 };
 use crate::resolution::{
     ResolutionDiagnostic, ResolutionDiagnosticKind, ResolutionInput, resolve_local_semantics,
 };
 use crate::source_model::{
     SourceModelDiagnostic, SourceModelDiagnosticKind, SourceModelInput, SourceSite,
-    lower_source_model,
+    lower_source_model_with_prover,
 };
 use crate::source_syntax::CargoCfgSnapshot;
 use crate::{
@@ -207,7 +208,7 @@ pub(crate) fn analyze_discovered_tree(
         ));
     };
 
-    let source_model = lower_source_model(SourceModelInput {
+    let (source_model, pretty_boundary_prover) = lower_source_model_with_prover(SourceModelInput {
         resolved,
         cfg: &input.cfg,
     });
@@ -227,7 +228,7 @@ pub(crate) fn analyze_discovered_tree(
         ));
     };
 
-    let materialization = materialize(source_modeled);
+    let materialization = materialize_with_prover(source_modeled, pretty_boundary_prover);
     collector.extend(
         materialization
             .lexical_diagnostics
