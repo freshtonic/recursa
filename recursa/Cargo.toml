@@ -1,6 +1,6 @@
 [package]
 name = "recursa"
-version = "0.1.0"
+version = "0.1.1"
 description = "AST-first parser generator for Rust"
 authors.workspace = true
 edition.workspace = true
@@ -21,5 +21,5 @@ serde = ["recursa-core/serde", "recursa-macros/serde"]
 spans = ["recursa-core/spans"]
 
 [dependencies]
-recursa-core = { version = "=0.1.0", path = "../recursa-core" }
-recursa-macros = { version = "=0.1.0", path = "../recursa-macros" }
+recursa-core = { version = "=0.1.1", path = "../recursa-core" }
+recursa-macros = { version = "=0.1.1", path = "../recursa-macros" }
