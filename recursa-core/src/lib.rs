@@ -319,7 +319,7 @@ mod compatibility_tests {
     #[test]
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
-            { super::__private::release_stamp("0.1.0") },
+            { super::__private::release_stamp(env!("CARGO_PKG_VERSION")) },
             42,
         > = super::__private::FACADE_COMPATIBILITY;
     }
