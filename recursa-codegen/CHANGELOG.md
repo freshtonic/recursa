@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.1...recursa-codegen-v0.1.2) - 2026-10-22
+
+### Other
+
+- set the recursa version in the fixture locks at each release
+- *(codegen)* give the source-model Pretty prover to materialization
+- *(codegen)* raise the Pretty catalog cache budget to 128 MiB
+
 ## [0.1.1](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.0...recursa-codegen-v0.1.1) - 2026-10-22
 
 ### Fixed

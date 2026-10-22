@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/freshtonic/recursa/compare/recursa-v0.1.1...recursa-v0.1.2) - 2026-10-22
+
+### Other
+
+- compare the release stamp with the crate version
+
 ## [0.1.1](https://github.com/freshtonic/recursa/compare/recursa-v0.1.0...recursa-v0.1.1) - 2026-10-22
 
 ### Other
