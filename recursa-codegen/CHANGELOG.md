@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.0...recursa-codegen-v0.1.1) - 2026-10-22
+
+### Fixed
+
+- *(codegen)* allow four more clippy lints on generated code
+
+### Other
+
+- *(codegen)* group the conflict findings of the LR dump by state once
+- *(codegen)* build all goto columns in one pass over the states
+- *(codegen)* start the comb-packing search at the first free slot
+- *(codegen)* build only anchored lexical DFAs, and build each one once
+
 ## [0.1.0](https://github.com/freshtonic/recursa/releases/tag/recursa-codegen-v0.1.0) - 2026-10-16
 
 ### Added
