@@ -5,7 +5,8 @@
 #   1. Check the tools, the tokens, and that main is clean and in step with
 #      origin/main.
 #   2. Run the default test suite (skip with --skip-tests).
-#   3. `release-plz update`: bump the version group and the changelogs.
+#   3. `release-plz update`: bump the version group and the changelogs. Then
+#      scripts/update-fixture-locks.sh sets the new version in the fixture locks.
 #   4. Show the diff, commit it signed, and push main.
 #   5. `cargo publish --workspace --dry-run`, then `release-plz release`: publish to
 #      crates.io, push the `<crate>-v<version>` tags, make the GitHub releases.
@@ -88,6 +89,8 @@ fi
 
 step "release-plz update"
 release-plz update
+# release-plz does not change the checked fixture lock files.
+scripts/update-fixture-locks.sh
 
 if [[ -n $(git status --porcelain) ]]; then
   git --no-pager diff --stat
