@@ -1899,12 +1899,24 @@ fn validate_pattern(pattern: &str) -> Result<(), UnsupportedPatternReason> {
     if look.contains_anchor() {
         return Err(UnsupportedPatternReason::Anchor);
     }
-    let dfa = dense::DFA::new(pattern)
-        .map_err(|_| UnsupportedPatternReason::InvalidOrUnsupportedSyntax)?;
+    let dfa = anchored_dfa(pattern).ok_or(UnsupportedPatternReason::InvalidOrUnsupportedSyntax)?;
     if accepts_empty(&dfa) {
         return Err(UnsupportedPatternReason::EmptyMatch);
     }
     Ok(())
+}
+
+/// Builds the DFA of one pattern with only the anchored start state.
+///
+/// Lexical analysis reads only anchored starts. The default configuration also determinizes the
+/// unanchored search states, which is the most expensive part of the build and is not used. The
+/// NFA, the anchored states, and the set of build errors do not change. `None` means the build
+/// failed.
+fn anchored_dfa(pattern: &str) -> Option<dense::DFA<Vec<u32>>> {
+    dense::Builder::new()
+        .configure(dense::DFA::config().start_kind(StartKind::Anchored))
+        .build(pattern)
+        .ok()
 }
 
 /// Derives the pattern evidence under the grammar keyword and lexical-selection policies.
@@ -2012,6 +2024,10 @@ fn pattern_ambiguities(
         .into_iter()
         .map(|(indices, witness)| PatternAmbiguity { indices, witness })
         .collect::<Vec<_>>();
+    // Each contender's DFA is built at most once, because one contender can be in many pairs.
+    let mut pair_dfas = (0..contenders.len())
+        .map(|_| None)
+        .collect::<Vec<Option<Option<dense::DFA<Vec<u32>>>>>>();
 
     for left in 0..contenders.len() {
         for right in left + 1..contenders.len() {
@@ -2030,9 +2046,17 @@ fn pattern_ambiguities(
             }) {
                 continue;
             }
-            let Some(witness) =
-                prefix_overlap_witness(&contenders[left].pattern, &contenders[right].pattern)
+            for index in [left, right] {
+                if pair_dfas[index].is_none() {
+                    pair_dfas[index] = Some(anchored_dfa(&contenders[index].pattern));
+                }
+            }
+            let (Some(Some(left_dfa)), Some(Some(right_dfa))) =
+                (&pair_dfas[left], &pair_dfas[right])
             else {
+                continue;
+            };
+            let Some(witness) = prefix_overlap_witness(left_dfa, right_dfa) else {
                 continue;
             };
             ambiguities.push(PatternAmbiguity {
@@ -2048,7 +2072,10 @@ fn pattern_ambiguities(
 }
 
 /// Finds a valid UTF-8 prefix on which both anchored patterns have accepted, at possibly different ends.
-fn prefix_overlap_witness(left: &str, right: &str) -> Option<String> {
+fn prefix_overlap_witness(
+    left_dfa: &dense::DFA<Vec<u32>>,
+    right_dfa: &dense::DFA<Vec<u32>>,
+) -> Option<String> {
     type State = (
         Option<regex_automata::util::primitives::StateID>,
         Option<regex_automata::util::primitives::StateID>,
@@ -2056,9 +2083,6 @@ fn prefix_overlap_witness(left: &str, right: &str) -> Option<String> {
         bool,
     );
 
-    let (Ok(left_dfa), Ok(right_dfa)) = (dense::DFA::new(left), dense::DFA::new(right)) else {
-        return None;
-    };
     let input = Input::new(b"").anchored(Anchored::Yes);
     let (Ok(left_start), Ok(right_start)) = (
         left_dfa.start_state_forward(&input),
@@ -2073,9 +2097,9 @@ fn prefix_overlap_witness(left: &str, right: &str) -> Option<String> {
         frontier.pop_front()
     {
         let left_matched =
-            left_matched || left_state.is_some_and(|state| dfa_accepts(&left_dfa, state));
+            left_matched || left_state.is_some_and(|state| dfa_accepts(left_dfa, state));
         let right_matched =
-            right_matched || right_state.is_some_and(|state| dfa_accepts(&right_dfa, state));
+            right_matched || right_state.is_some_and(|state| dfa_accepts(right_dfa, state));
         if left_matched
             && right_matched
             && !witness.is_empty()
@@ -2092,8 +2116,8 @@ fn prefix_overlap_witness(left: &str, right: &str) -> Option<String> {
                         (!dfa.is_dead_state(next) && !dfa.is_quit_state(next)).then_some(next)
                     })
                 };
-            let next_left = advance(&left_dfa, left_state);
-            let next_right = advance(&right_dfa, right_state);
+            let next_left = advance(left_dfa, left_state);
+            let next_right = advance(right_dfa, right_state);
             if (next_left.is_none() && !left_matched) || (next_right.is_none() && !right_matched) {
                 continue;
             }

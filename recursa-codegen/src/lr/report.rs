@@ -12,7 +12,8 @@
 use std::fmt::Write as _;
 
 use super::automaton::{
-    Action, Automaton, Conflict, ConflictKind, MergeArtefactCheck, Resolution, State,
+    Action, Automaton, Conflict, ConflictKind, EndMarkerResolution, MergeArtefactCheck, Resolution,
+    ResolvedConflict, ScopedConflictResolution, State, StateId,
 };
 use super::grammar::{LrGrammar, NonterminalOrigin, RuleId, Symbol};
 use super::paths::{SymbolPath, render_path, shortest_paths};
@@ -185,11 +186,12 @@ pub fn automaton_dump(grammar: &LrGrammar, automaton: &Automaton) -> String {
     }
     text.push('\n');
     let paths = shortest_paths(automaton);
+    let findings = StateFindings::new(automaton);
     for state in automaton.states() {
         render_state(
             &mut text,
             grammar,
-            automaton,
+            &findings,
             state,
             paths[state.id().index()].as_ref(),
         );
@@ -235,12 +237,60 @@ fn render_helper_copies(text: &mut String, grammar: &LrGrammar) {
     }
 }
 
+/// The conflict findings of each state, in the order the automaton keeps them.
+///
+/// The dump groups the findings by state one time, so the time to render a state does not
+/// include a scan of the findings of all the other states.
+struct StateFindings<'a> {
+    /// Cells that authored scoped declarations settled, by state.
+    scoped: Vec<Vec<&'a ScopedConflictResolution>>,
+    /// Shift/reduce conflicts that precedence settled, by state.
+    resolved: Vec<Vec<&'a ResolvedConflict>>,
+    /// End-marker reduce/reduce conflicts that declaration order settled, by state.
+    end_marker: Vec<Vec<&'a EndMarkerResolution>>,
+    /// Conflicts that stay, by state.
+    conflicts: Vec<Vec<&'a Conflict>>,
+}
+
+impl<'a> StateFindings<'a> {
+    /// Groups every finding of `automaton` by its state.
+    fn new(automaton: &'a Automaton) -> Self {
+        let count = automaton.states().len();
+        Self {
+            scoped: group_by_state(automaton.scoped_resolutions(), count, |found| found.state),
+            resolved: group_by_state(automaton.resolved_conflicts(), count, |found| found.state),
+            end_marker: group_by_state(automaton.end_marker_resolutions(), count, |found| {
+                found.state
+            }),
+            conflicts: group_by_state(automaton.conflicts(), count, |found| found.state),
+        }
+    }
+}
+
+/// Groups `items` by state and keeps their order in each group.
+fn group_by_state<T>(items: &[T], count: usize, state_of: impl Fn(&T) -> StateId) -> Vec<Vec<&T>> {
+    let mut groups = vec![Vec::new(); count];
+    for item in items {
+        let index = state_of(item).index();
+        if index >= groups.len() {
+            groups.resize_with(index + 1, Vec::new);
+        }
+        groups[index].push(item);
+    }
+    groups
+}
+
+/// Returns the group of `state`, or no findings when the state has none.
+fn state_group<'g, T>(groups: &'g [Vec<&'g T>], state: &State) -> &'g [&'g T] {
+    groups.get(state.id().index()).map_or(&[], Vec::as_slice)
+}
+
 /// Renders one state: its shortest path, items, the conflicts precedence or declaration order
 /// resolved, actions with rejected alternatives in brackets, then gotos.
 fn render_state(
     text: &mut String,
     grammar: &LrGrammar,
-    automaton: &Automaton,
+    findings: &StateFindings<'_>,
     state: &State,
     path: Option<&SymbolPath>,
 ) {
@@ -254,11 +304,7 @@ fn render_state(
     text.push('\n');
 
     let mut wrote_resolved = false;
-    for resolved in automaton
-        .scoped_resolutions()
-        .iter()
-        .filter(|resolved| resolved.state == state.id())
-    {
+    for resolved in state_group(&findings.scoped, state) {
         let rules = resolved
             .rules
             .iter()
@@ -284,11 +330,7 @@ fn render_state(
         );
         wrote_resolved = true;
     }
-    for resolved in automaton
-        .resolved_conflicts()
-        .iter()
-        .filter(|resolved| resolved.state == state.id())
-    {
+    for resolved in state_group(&findings.resolved, state) {
         let verdict = match resolved.resolution {
             Resolution::Shift => "shift",
             Resolution::Reduce => "reduce",
@@ -302,11 +344,7 @@ fn render_state(
         );
         wrote_resolved = true;
     }
-    for resolution in automaton
-        .end_marker_resolutions()
-        .iter()
-        .filter(|resolution| resolution.state == state.id())
-    {
+    for resolution in state_group(&findings.end_marker, state) {
         let rules: Vec<String> = resolution
             .rules
             .iter()
@@ -326,11 +364,7 @@ fn render_state(
         text.push('\n');
     }
 
-    let conflicts: Vec<&Conflict> = automaton
-        .conflicts()
-        .iter()
-        .filter(|conflict| conflict.state == state.id())
-        .collect();
+    let conflicts = state_group(&findings.conflicts, state);
     let mut wrote_action = false;
     for (terminal, action) in state.actions() {
         if let Action::Reduce(rule) = action
@@ -357,7 +391,7 @@ fn render_state(
             "$default",
             render_action(grammar, Action::Reduce(rule))
         );
-        for conflict in &conflicts {
+        for conflict in conflicts {
             let _ = writeln!(
                 text,
                 "    {:<12}[{}]",

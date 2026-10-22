@@ -20,10 +20,10 @@
 //! - goto on nonterminal `n` from state `s`: let `i = pgoto[n] + s`; if in range and
 //!   `check[i] == s` go to `table[i]`, otherwise `defgoto[n]`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::automaton::{Action, Automaton, State, StateId};
-use super::grammar::{LrGrammar, NonterminalId, RuleId, Symbol, TerminalId};
+use super::grammar::{LrGrammar, RuleId, Symbol, TerminalId};
 
 /// The `pact` value of a state whose only action is its default reduction.
 pub const PACT_NINF: i32 = i32::MIN;
@@ -86,9 +86,8 @@ impl LrTables {
             );
         }
         let mut defgoto = Vec::with_capacity(grammar.nonterminal_count());
-        for index in 0..grammar.nonterminal_count() {
-            let nonterminal = NonterminalId::new(index as u32);
-            let (column, default) = goto_column(states, nonterminal);
+        for entries in goto_entries(states, grammar.nonterminal_count()) {
+            let (column, default) = goto_column(entries);
             vectors.push(column);
             defgoto.push(default);
         }
@@ -276,15 +275,27 @@ fn action_row(state: &State) -> SparseVector {
         .collect()
 }
 
-/// The goto column of a nonterminal without its most frequent target, and that target.
-fn goto_column(states: &[State], nonterminal: NonterminalId) -> (SparseVector, u32) {
-    let mut entries: Vec<(StateId, StateId)> = Vec::new();
+/// The `(state, target)` goto entries of each nonterminal, in state order.
+///
+/// One pass over the transitions of each state gives every column. The entries are the same as a
+/// lookup of each nonterminal in each state.
+fn goto_entries(states: &[State], nonterminal_count: usize) -> Vec<Vec<(StateId, StateId)>> {
+    let mut columns = vec![Vec::new(); nonterminal_count];
     for state in states {
-        if let Some(target) = state.transition(Symbol::Nonterminal(nonterminal)) {
-            entries.push((state.id(), target));
+        for (symbol, target) in state.transitions() {
+            if let Symbol::Nonterminal(nonterminal) = symbol
+                && let Some(column) = columns.get_mut(nonterminal.index())
+            {
+                column.push((state.id(), *target));
+            }
         }
     }
-    let mut counts: HashMap<StateId, usize> = HashMap::new();
+    columns
+}
+
+/// The goto column of a nonterminal without its most frequent target, and that target.
+fn goto_column(entries: Vec<(StateId, StateId)>) -> (SparseVector, u32) {
+    let mut counts: BTreeMap<StateId, usize> = BTreeMap::new();
     for (_, target) in &entries {
         *counts.entry(*target).or_default() += 1;
     }
@@ -319,7 +330,18 @@ fn pack_vectors(vectors: &[SparseVector]) -> (Vec<i32>, Vec<i32>, Vec<i32>) {
     let mut table: Vec<i32> = Vec::new();
     let mut check: Vec<i32> = Vec::new();
     let mut occupied: Vec<bool> = Vec::new();
-    let mut used_bases: HashMap<i32, ()> = HashMap::new();
+    // Every slot below `first_free` is occupied. A base that puts the first key of a vector below
+    // it cannot fit, so the search starts at `first_free`. The result is the same as a search from
+    // the lowest base, but the time does not grow with the number of occupied slots.
+    let mut first_free = 0_usize;
+    // `used_bases[base + base_bias]` is true when a vector already uses `base`. The lowest
+    // possible base is the negated largest first key, so `base + base_bias` is not negative.
+    let base_bias = vectors
+        .iter()
+        .filter_map(|vector| vector.first().map(|(key, _)| *key))
+        .max()
+        .unwrap_or(0);
+    let mut used_bases: Vec<bool> = Vec::new();
     let mut identical: HashMap<&SparseVector, i32> = HashMap::new();
 
     for index in order {
@@ -332,9 +354,13 @@ fn pack_vectors(vectors: &[SparseVector]) -> (Vec<i32>, Vec<i32>, Vec<i32>) {
             continue;
         }
         let min_key = vector[0].0;
-        let mut base = -min_key;
+        let mut base = first_free as i32 - min_key;
         loop {
-            let fits = !used_bases.contains_key(&base)
+            let used = used_bases
+                .get((base + base_bias) as usize)
+                .copied()
+                .unwrap_or(false);
+            let fits = !used
                 && vector.iter().all(|(key, _)| {
                     let slot = (base + key) as usize;
                     slot >= occupied.len() || !occupied[slot]
@@ -355,7 +381,14 @@ fn pack_vectors(vectors: &[SparseVector]) -> (Vec<i32>, Vec<i32>, Vec<i32>) {
             table[slot] = *value;
             check[slot] = *key;
         }
-        used_bases.insert(base, ());
+        let used = (base + base_bias) as usize;
+        if used >= used_bases.len() {
+            used_bases.resize(used + 1, false);
+        }
+        used_bases[used] = true;
+        while occupied.get(first_free).copied().unwrap_or(false) {
+            first_free += 1;
+        }
         identical.insert(vector, base);
         bases[index] = base;
     }
