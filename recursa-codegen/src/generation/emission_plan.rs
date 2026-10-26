@@ -84,6 +84,8 @@ pub(super) struct EmissionPlan {
     pub(super) pretty: PrettyEmissionPlan,
     /// Declared rejection rules, keyed by the enum that declares them.
     pub(super) rejections: RejectionPlan,
+    /// Restricted expressions, keyed by the base enum whose rules they lower.
+    pub(super) restrictions: RestrictionPlan,
     /// Declared build-configuration requirements and their per-Node ceilings.
     pub(super) requirements: RequirementPlan,
     #[cfg(feature = "diagrams")]
@@ -972,6 +974,10 @@ impl EmissionPlan {
         // whole table belongs to the identity of the Generation it produced.
         let rejections = plan_rejections(resolved, &nodes)?;
         canonical.push_str(&format!(";rejections={rejections:?}"));
+        // Arbitrary and Pretty read the admitted variants of each restriction, so the table
+        // belongs to the identity of the Generation it produced.
+        let restrictions = plan_restrictions(lowered.source_modeled.source_model(), &nodes)?;
+        canonical.push_str(&format!(";restrictions={restrictions:?}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
@@ -1000,6 +1006,7 @@ impl EmissionPlan {
             capabilities,
             pretty,
             rejections,
+            restrictions,
             requirements,
             #[cfg(feature = "diagrams")]
             diagrams,

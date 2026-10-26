@@ -126,7 +126,7 @@ pub mod __private {
     pub use crate::lex::{
         ByteSet, FixedLexLiteral, LexClosedMatch, LexDiagnostic, LexDiagnosticCode, LexExtras,
         LexFailure, LexPlan, LexRule, LexTokenIndex, OperatorRunRule, lex, lex_nested,
-        lex_next_exclusion, lex_physical_line, lex_same_delimiter, scan_closed,
+        lex_next_exclusion, lex_pair_fuses, lex_physical_line, lex_same_delimiter, scan_closed,
     };
     pub use crate::lr::{
         LrTables, Reduction as LrReduction, run as lr_run, run_flat as lr_run_flat,
@@ -141,6 +141,7 @@ pub mod __private {
         parse_arena_spanned, parse_arena_without_spans, parse_flat_with,
         parse_seal::Sealed as ParseSealed, parse_spanned, parse_without_spans, pretty_view,
     };
+    pub use crate::pretty::stricter_bound as pretty_stricter_bound;
     pub use crate::rejection::{
         RejectionFilter, RejectionKey, RejectionNote, RejectionPair, RejectionRule,
         first_rejection as first_declared_rejection,

@@ -248,6 +248,19 @@ struct PrettyGroupingWitness {
     grouping: PrettyGrouping,
     /// Whether the recursive owner is reached indirectly through a helper.
     delegated: bool,
+    /// The semantic element on the path at each step, outermost first: the element of the atom
+    /// variant, then the variant and element of each helper Node, down to the owner.
+    steps: Vec<PrettyGroupingStep>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One step of a grouping witness: the variant of a Node and its element on the path.
+struct PrettyGroupingStep {
+    /// The variant index of the Node the step is in; 0 for a struct and for the atom variant,
+    /// whose index the caller knows.
+    variant: usize,
+    /// The element index of the semantic element on the path.
+    element: usize,
 }
 
 impl PrettyGroupingProof {
@@ -347,6 +360,7 @@ impl<'a> PrettyGroupingAnalyzer<'a> {
                                 after: Vec::new(),
                             },
                             delegated: false,
+                            steps: Vec::new(),
                         }],
                         ..PrettyGroupingProof::default()
                     }
@@ -377,12 +391,18 @@ impl<'a> PrettyGroupingAnalyzer<'a> {
                     context_before.extend(witness.grouping.before);
                     let mut after = witness.grouping.after;
                     after.extend(context_after);
+                    let mut steps = vec![PrettyGroupingStep {
+                        variant: 0,
+                        element: index,
+                    }];
+                    steps.extend(witness.steps);
                     proof.push_witness(PrettyGroupingWitness {
                         grouping: PrettyGrouping {
                             before: context_before,
                             after,
                         },
                         delegated: witness.delegated,
+                        steps,
                     });
                 }
             }
@@ -543,11 +563,14 @@ impl<'a> PrettyGroupingAnalyzer<'a> {
         }
         let mut proof = PrettyGroupingProof::default();
         if let Some(variants) = self.syntax.nodes.get(&node) {
-            for elements in variants {
+            for (variant_index, elements) in variants.iter().enumerate() {
                 let variant = self.elements(owner, elements);
                 proof.empty |= variant.empty;
                 proof.cyclic.extend(variant.cyclic.iter().copied());
-                for witness in variant.witnesses {
+                for mut witness in variant.witnesses {
+                    if let Some(step) = witness.steps.first_mut() {
+                        step.variant = variant_index;
+                    }
                     proof.push_witness(witness);
                 }
             }
@@ -2100,6 +2123,17 @@ pub(super) fn render_declared_enum_pretty(
     } = &frame;
     let variants = trait_variants(&node.body);
     let variant_count = variants.len();
+    let capable = pretty_leading_level_nodes(plan);
+    let frame = render_grouping_frame(plan, node, node_index, &quote!(__recursa_body(context)?;));
+    let restrictions = plan.restrictions.of(node.node);
+    let repairable = repairable_restrictions(plan, node, node_index);
+    // The `leading` restrictions, which keep the base on an operand that ends a rule.
+    let leading_only = restrictions
+        .iter()
+        .enumerate()
+        .filter(|(_, restriction)| restriction.leading_only)
+        .map(|(index, _)| u16::try_from(index).expect("a restriction index fits u16"))
+        .collect::<Vec<_>>();
     let rendered_variants = variants
         .iter()
         .zip(&behavior.variant_layouts)
@@ -2110,6 +2144,13 @@ pub(super) fn render_declared_enum_pretty(
         .map(
             |(variant_index, ((((variant, layout), behavior), variant_pretty), declared_variant))| {
             let (pattern, bindings) = variant_bound_pattern(node_ident, variant, "pretty_declared");
+            // The token after the first operand, which the parser compares with the operand's
+            // rule when it decides to reduce it (`docs/declared-precedence.md`, "Consumers").
+            let lookahead =
+                render_first_operand_lookahead(variant, node.node, &bindings, access, &capable);
+            // The operands a restriction retypes in this variant receive the restriction the
+            // value was rendered under (`docs/declared-precedence.md`, "Restricted expressions").
+            let edges = restricted_edges(variant, node.node);
             let mut binding_index = 0_usize;
             let mut semantic_index = 0_usize;
             let rendered = variant
@@ -2187,6 +2228,7 @@ pub(super) fn render_declared_enum_pretty(
                                 )
                             }
                             PrettyDeclaredOperandBehavior::Recursive { minimum, next, .. } => {
+                                let minimum_behavior = minimum;
                                 // A recursive operand is `Box<Self>`, or the attached optional
                                 // `#[tok(X, this)] Option<Box<Self>>`, whose absence renders
                                 // nothing, attachment included.
@@ -2207,16 +2249,52 @@ pub(super) fn render_declared_enum_pretty(
                                         }),
                                     "validated recursive declared-precedence operands are direct or attached optionals and may only use Box storage wrappers",
                                 );
+                                let restriction = match parse_projection.as_ref() {
+                                    SemanticParseProjection::Direct {
+                                        restriction: Some(restriction),
+                                        ..
+                                    } => quote!(::core::option::Option::Some(#restriction)),
+                                    _ if edges.first == Some(index) => {
+                                        quote!(__recursa_inner_restriction)
+                                    }
+                                    _ if edges.last == Some(index) && leading_only.is_empty() => {
+                                        quote!(__recursa_inner_restriction)
+                                    }
+                                    _ if edges.last == Some(index) => quote! {
+                                        __recursa_inner_restriction
+                                            .filter(|restriction| !matches!(restriction, #(#leading_only)|*))
+                                    },
+                                    _ => quote!(::core::option::Option::None),
+                                };
                                 let wrappers = &access.value_wrappers(wrappers);
                                 let minimum = render_pretty_declared_minimum(*minimum);
+                                // An interior operand that ends a rule of this Node in some
+                                // derivation is also a last operand there.
+                                let minimum = match (
+                                    *minimum_behavior,
+                                    shadow_minimum(facade, &variants, variant_index, index),
+                                ) {
+                                    (PrettyDeclaredMinimum::None, Some(shadow)) => shadow,
+                                    _ => minimum,
+                                };
                                 let next = render_pretty_declared_next(*next);
+                                let next = match (&lookahead, index) {
+                                    (Some(lookahead), 0) => quote! {
+                                        #facade::__private::pretty_stricter_bound(#next, #lookahead)
+                                    },
+                                    _ => next,
+                                };
                                 let operand = if optional {
                                     quote!(operand)
                                 } else {
                                     quote!(#binding)
                                 };
-                                let semantic =
-                                    access.declared_recursion(operand, &minimum, &next);
+                                let semantic = access.declared_recursion(
+                                    operand,
+                                    &minimum,
+                                    &next,
+                                    &restriction,
+                                );
                                 let rendered = if let Some(attachment) = attachment {
                                     // An attached operator token has no fixed neighbor in the
                                     // enclosing document group the way a standalone
@@ -2353,21 +2431,33 @@ pub(super) fn render_declared_enum_pretty(
             // A variant with no declared level is never parenthesized, so the whole test folds
             // to `false` here rather than to a `false || false` the downstream crate's
             // deny-by-default `clippy::eq_op` would reject.
-            let parenthesize_check = declared_variant.level.map_or_else(
-                || quote!(false),
-                |level| {
-                    let bound = |bound: proc_macro2::TokenStream| {
-                        quote! {
-                            #bound.is_some_and(|(candidate, tie)| {
-                                #level < candidate || (#level == candidate && tie)
-                            })
-                        }
-                    };
-                    let entry = bound(quote!(min));
-                    let exit = bound(quote!(next));
-                    quote!(#entry || #exit)
-                },
-            );
+            // The terms of the parenthesization test. A variant with no term folds the test to
+            // `false`, never to a comparison of a literal with itself, which the downstream
+            // crate's deny-by-default `clippy::eq_op` would reject.
+            let mut parenthesize_terms = Vec::new();
+            if let Some(level) = declared_variant.level {
+                let bound = |bound: proc_macro2::TokenStream| {
+                    quote! {
+                        #bound.is_some_and(|(candidate, tie)| {
+                            #level < candidate || (#level == candidate && tie)
+                        })
+                    }
+                };
+                parenthesize_terms.push(bound(quote!(min)));
+                parenthesize_terms.push(bound(quote!(next)));
+            }
+            // As the last operand of its parent, a value whose first symbol is an operand is
+            // also parenthesized when the parser would reduce the parent before the token after
+            // that operand: the token's level is below the parent's bound.
+            if let Some(lookahead) = &lookahead {
+                parenthesize_terms.push(quote! {
+                    (#lookahead).is_some_and(|(lookahead, _)| {
+                        min.is_some_and(|(candidate, tie)| {
+                            lookahead < candidate || (lookahead == candidate && tie)
+                        })
+                    })
+                });
+            }
             let group_open = declared_behavior.grouping.as_ref().map(|grouping| {
                 grouping
                     .before
@@ -2386,18 +2476,60 @@ pub(super) fn render_declared_enum_pretty(
                     })
                     .collect::<proc_macro2::TokenStream>()
             });
-            let helper_body = quote! {
+            // A value whose variant the restriction refuses is parenthesized, when the restriction
+            // admits the grouping atom: the atom's interior is the base again.
+            let inadmissible = restrictions
+                .iter()
+                .enumerate()
+                .filter(|(index, restriction)| {
+                    repairable.contains(index)
+                        && !restriction.admitted.get(variant_index).copied().unwrap_or(true)
+                })
+                .map(|(index, _)| u16::try_from(index).expect("a restriction index fits u16"))
+                .collect::<Vec<_>>();
+            if !inadmissible.is_empty() {
+                parenthesize_terms.push(quote! {
+                    matches!(restriction, ::core::option::Option::Some(#(#inadmissible)|*))
+                });
+            }
+            let parenthesize_check = if parenthesize_terms.is_empty() {
+                quote!(false)
+            } else {
+                quote!(#(#parenthesize_terms)||*)
+            };
+            let helper_body = match &frame {
+                // The synthesized parentheses render through the frame of the grouping atom, so
+                // they lay out as the atom of a parsed value does.
+                Some(frame) => quote! {
+                    let __recursa_parenthesize = #parenthesize_check;
+                    let __recursa_declared_inner_min = if __recursa_parenthesize { None } else { min };
+                    let __recursa_declared_inner_next = if __recursa_parenthesize { None } else { next };
+                    let __recursa_inner_restriction = if __recursa_parenthesize { None } else { restriction };
+                    let __recursa_body = |context: &mut #facade::PrettyContext| -> ::core::fmt::Result {
+                        #rendered
+                        Ok(())
+                    };
+                    if __recursa_parenthesize {
+                        #frame
+                    } else {
+                        __recursa_body(context)?;
+                    }
+                    Ok(())
+                },
+                None => quote! {
                     let __recursa_parenthesize = #parenthesize_check;
                     if __recursa_parenthesize {
                         #group_open
                     }
                     let __recursa_declared_inner_min = if __recursa_parenthesize { None } else { min };
                     let __recursa_declared_inner_next = if __recursa_parenthesize { None } else { next };
+                    let __recursa_inner_restriction = if __recursa_parenthesize { None } else { restriction };
                     #rendered
                     if __recursa_parenthesize {
                         #group_close
                     }
                     Ok(())
+                },
             };
             let helper = format_ident!(
                 "__recursa_pretty_declared_variant_{node_index}_{variant_index}"
@@ -2418,7 +2550,7 @@ pub(super) fn render_declared_enum_pretty(
             let variant_pattern = variant_pattern(node_ident, &variant.ident, variant.style);
             (
                 quote! {
-                    #variant_pattern => self.#helper(#method_arguments context, min, next)
+                    #variant_pattern => self.#helper(#method_arguments context, min, next, restriction)
                 },
                 quote! {
                     fn #helper #method_generics(
@@ -2427,6 +2559,7 @@ pub(super) fn render_declared_enum_pretty(
                         context: &mut #facade::PrettyContext,
                         min: ::core::option::Option<(u32, bool)>,
                         next: ::core::option::Option<(u32, bool)>,
+                        restriction: ::core::option::Option<u16>,
                     ) -> ::core::fmt::Result #method_where {
                         #helper_body
                     }
@@ -2444,10 +2577,26 @@ pub(super) fn render_declared_enum_pretty(
             context,
             ::core::option::Option::None,
             ::core::option::Option::None,
+            ::core::option::Option::None,
         )?;),
     );
+    let restricted_node = render_pretty_hints(
+        &behavior.pretty,
+        quote!(self.__recursa_pretty_declared(
+            #method_arguments
+            context,
+            ::core::option::Option::None,
+            ::core::option::Option::None,
+            ::core::option::Option::Some(restriction),
+        )?;),
+    );
+    let restricted_entry = (!restrictions.is_empty())
+        .then(|| render_pretty_restricted_entry(plan, node, access, restricted_node));
     let trait_impl = render_pretty_trait_impl(plan, node, access, rendered_node);
+    let leading = render_pretty_leading_level(plan, node, access, &capable);
     quote! {
+        #leading
+
         impl #inherent_generics #node_ident #type_generics #inherent_where {
             fn __recursa_pretty_declared #method_generics(
                 &self,
@@ -2455,11 +2604,14 @@ pub(super) fn render_declared_enum_pretty(
                 context: &mut #facade::PrettyContext,
                 min: ::core::option::Option<(u32, bool)>,
                 next: ::core::option::Option<(u32, bool)>,
+                restriction: ::core::option::Option<u16>,
             ) -> ::core::fmt::Result #method_where {
                 match self { #(#arms),* }
             }
 
             #(#helper_methods)*
+
+            #restricted_entry
         }
 
         #trait_impl
@@ -2599,12 +2751,32 @@ impl PrettyAccess {
         operand: proc_macro2::TokenStream,
         minimum: &proc_macro2::TokenStream,
         next: &proc_macro2::TokenStream,
+        restriction: &proc_macro2::TokenStream,
     ) -> proc_macro2::TokenStream {
         match self {
-            Self::Nested => {
-                quote!((#operand).__recursa_pretty_declared(context, #minimum, #next))
-            }
-            Self::Flat => flat_pretty_declared_recursion(operand, minimum, next),
+            Self::Nested => quote! {
+                (#operand).__recursa_pretty_declared(context, #minimum, #next, #restriction)
+            },
+            Self::Flat => flat_pretty_declared_recursion(operand, minimum, next, restriction),
+        }
+    }
+
+    /// Renders the call of one field that names a restricted expression of a declared base: the
+    /// base's restricted entry, which writes the parentheses the site needs.
+    fn restricted_dispatch(
+        self,
+        value: proc_macro2::TokenStream,
+        restriction: u16,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => quote!((#value).__recursa_pretty_restricted(context, #restriction)),
+            Self::Flat => quote! {
+                __recursa_ast[*(#value)].__recursa_pretty_restricted(
+                    __recursa_ast,
+                    context,
+                    #restriction,
+                )
+            },
         }
     }
 
@@ -2660,6 +2832,7 @@ fn render_pretty_trait_impl(
     body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let ident = access.target_ident(node);
     let max_width = plan.pretty_max_width;
     let indent = plan.pretty_indent;
@@ -2673,6 +2846,7 @@ fn render_pretty_trait_impl(
                         context: &mut #facade::PrettyContext,
                     ) -> ::core::fmt::Result {
                         context.configure_defaults(#max_width, #indent);
+                        context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
                         context.baseline_group(|context| { #body Ok(()) })
                     }
                 }
@@ -2745,7 +2919,12 @@ fn render_pretty_element(
                     )
                 }
                 (
-                    SemanticParseProjection::Direct { wrappers, .. },
+                    SemanticParseProjection::Direct {
+                        wrappers,
+                        terminal_node,
+                        restriction,
+                        ..
+                    },
                     PrettySemanticProjection::Direct {
                         repetition,
                         attachment,
@@ -2754,6 +2933,8 @@ fn render_pretty_element(
                         provenance,
                     },
                 ) => {
+                    let restricted =
+                        restricted_dispatch_index(plan, *terminal_node, *restriction, wrappers);
                     let wrappers = &access.value_wrappers(wrappers);
                     let rendered = if let Some(attachment) = attachment {
                         render_pretty_attached_semantic(
@@ -2768,6 +2949,7 @@ fn render_pretty_element(
                             *provenance,
                             content_token,
                             access,
+                            restricted,
                         )
                     } else {
                         let reference = if borrowed {
@@ -2783,6 +2965,7 @@ fn render_pretty_element(
                             *provenance,
                             content_token,
                             access,
+                            restricted,
                         )
                     };
                     let reference = if borrowed { value } else { quote!(&#value) };
@@ -2900,10 +3083,14 @@ pub(super) fn render_node_pretty_for(
         }
     };
     let body = render_pretty_hints(&behavior.pretty, quote!(#body?;));
-    render_pretty_trait_impl(plan, node, access, body)
+    let leading =
+        render_pretty_leading_level(plan, node, access, &pretty_leading_level_nodes(plan));
+    let trait_impl = render_pretty_trait_impl(plan, node, access, body);
+    quote!(#trait_impl #leading)
 }
 
 /// Renders one semantic field with its presence, repetition, attachment, and provenance rules.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_pretty_semantic(
     plan: &EmissionPlan,
     index: usize,
@@ -2912,8 +3099,12 @@ pub(super) fn render_pretty_semantic(
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
     access: PrettyAccess,
+    restricted: Option<u16>,
 ) -> proc_macro2::TokenStream {
-    let pretty = access.dispatch(plan, value, content_token);
+    let pretty = match restricted {
+        Some(restriction) => access.restricted_dispatch(value, restriction),
+        None => access.dispatch(plan, value, content_token),
+    };
     let render_value = if let Some(repetition) = repetition {
         let separator = repetition
             .separator
@@ -3320,9 +3511,13 @@ pub(super) fn render_pretty_attached_semantic(
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
     access: PrettyAccess,
+    restricted: Option<u16>,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let semantic = access.dispatch(plan, terminal, content_token);
+        let semantic = match restricted {
+            Some(restriction) => access.restricted_dispatch(terminal, restriction),
+            None => access.dispatch(plan, terminal, content_token),
+        };
         render_pretty_attachment_unit(attachment, provenance, semantic)
     };
 
@@ -3428,4 +3623,923 @@ pub(super) fn delimiter_close(open: &str) -> Option<&'static str> {
         "{" => Some("}"),
         _ => None,
     }
+}
+
+/// What the parser sees first in one element: the token at its start.
+///
+/// Pretty reads the declared level of that token when the element follows an operand, because
+/// bison compares the level of the lookahead token, not the level of the enclosing rule, when it
+/// decides between reducing the operand and shifting
+/// (`docs/declared-precedence.md`, "Consumers").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyLeading {
+    /// A fixed token with a declared level.
+    Level(DeclaredVariantLevel),
+    /// A required child Node, whose own leading token decides.
+    Child(NodeId),
+    /// No known leading token with a level: a token with no level, a content token, or an
+    /// element that can be absent.
+    None,
+}
+
+/// Returns the leading token of one required attached fixed entry.
+fn attached_leading(syntax: &AttachedFixedSyntaxParsePlan) -> PrettyLeading {
+    match syntax {
+        AttachedFixedSyntaxParsePlan::Required(fixed) => fixed
+            .precedence
+            .map_or(PrettyLeading::None, PrettyLeading::Level),
+        AttachedFixedSyntaxParsePlan::Optional(_) => PrettyLeading::None,
+    }
+}
+
+/// Returns the leading token of one element.
+fn element_leading(element: &ElementParsePlan) -> PrettyLeading {
+    match &element.kind {
+        ElementParseKind::Fixed { precedence, .. } => {
+            precedence.map_or(PrettyLeading::None, PrettyLeading::Level)
+        }
+        ElementParseKind::OptionalFixedTokenGroup { .. } => PrettyLeading::None,
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::FixedPresence { before, .. } => {
+                before.first().map_or(PrettyLeading::None, attached_leading)
+            }
+            SemanticParseProjection::Direct {
+                attachment,
+                wrappers,
+                terminal_node,
+                explorer_terminal,
+                ..
+            } => {
+                if let Some(first) = attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.before.first())
+                {
+                    return attached_leading(first);
+                }
+                match (terminal_node, explorer_terminal) {
+                    (Some(node), ExplorerTerminalPlan::Node(_))
+                        if wrappers
+                            .iter()
+                            .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed)) =>
+                    {
+                        PrettyLeading::Child(*node)
+                    }
+                    _ => PrettyLeading::None,
+                }
+            }
+        },
+    }
+}
+
+/// Returns the token the parser sees right after the first operand of one variant, when the
+/// variant's first symbol is a self-recursive operand of `owner`.
+///
+/// The second value is the binding index of the element that holds the token, for a child Node.
+fn first_operand_lookahead(
+    variant: &VariantParsePlan,
+    owner: NodeId,
+) -> Option<(PrettyLeading, usize)> {
+    let first = variant.elements.first()?;
+    let ElementParseKind::Semantic { projection, .. } = &first.kind else {
+        return None;
+    };
+    let SemanticParseProjection::Direct {
+        terminal_node: Some(terminal),
+        attachment,
+        ..
+    } = projection.as_ref()
+    else {
+        return None;
+    };
+    if *terminal != owner
+        || attachment
+            .as_ref()
+            .is_some_and(|attachment| !attachment.before.is_empty())
+    {
+        return None;
+    }
+    if let Some(after) = attachment
+        .as_ref()
+        .and_then(|attachment| attachment.after.first())
+    {
+        return Some((attached_leading(after), 0));
+    }
+    let next = variant.elements.get(1)?;
+    Some((element_leading(next), 1))
+}
+
+/// Reports whether one Node can name a leading-level function: a Node with Pretty and no type or
+/// const parameter.
+fn leading_level_capable(plan: &EmissionPlan, node: NodeId) -> bool {
+    plan.nodes
+        .iter()
+        .position(|candidate| candidate.node == node)
+        .is_some_and(|index| {
+            plan.pretty.nodes[index].is_some()
+                && plan.nodes[index]
+                    .generics
+                    .params
+                    .iter()
+                    .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+        })
+}
+
+/// Collects the Nodes whose leading token a declared-precedence helper reads at run time.
+///
+/// The set starts at the child Node that follows a first operand, and closes over the child Node
+/// that leads each of their variants.
+pub(super) fn pretty_leading_level_nodes(plan: &EmissionPlan) -> BTreeSet<NodeId> {
+    let mut pending = Vec::new();
+    for (node, behavior) in plan.nodes.iter().zip(&plan.pretty.nodes) {
+        if !behavior
+            .as_ref()
+            .is_some_and(|behavior| behavior.declared.is_some())
+        {
+            continue;
+        }
+        let NodeBodyPlan::Enum { variants } = &node.body else {
+            continue;
+        };
+        for variant in variants {
+            if let Some((PrettyLeading::Child(child), _)) =
+                first_operand_lookahead(variant, node.node)
+            {
+                pending.push(child);
+            }
+        }
+    }
+    let mut nodes = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if !leading_level_capable(plan, node) || !nodes.insert(node) {
+            continue;
+        }
+        let Some(planned) = plan.nodes.iter().find(|candidate| candidate.node == node) else {
+            continue;
+        };
+        let elements: Vec<&[ElementParsePlan]> = match &planned.body {
+            NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+            NodeBodyPlan::Enum { variants } => variants
+                .iter()
+                .map(|variant| variant.elements.as_slice())
+                .collect(),
+        };
+        for elements in elements {
+            if let Some(PrettyLeading::Child(child)) = elements.first().map(element_leading) {
+                pending.push(child);
+            }
+        }
+    }
+    nodes
+}
+
+/// Renders the constant bound of one declared level as the token after an operand.
+///
+/// The tie flag is the one a first operand's `next` bound carries: a tie parenthesizes unless
+/// the level is `left`, because bison then reduces the operand before the token.
+fn render_leading_level_constant(level: DeclaredVariantLevel) -> proc_macro2::TokenStream {
+    let ordinal = level.ordinal;
+    let tie = level.associativity != PrecedenceAssociativity::Left;
+    quote!(::core::option::Option::Some((#ordinal, #tie)))
+}
+
+/// Renders the leading bound of one element, given the expression that reaches its value.
+fn render_leading(
+    leading: PrettyLeading,
+    value: impl FnOnce() -> proc_macro2::TokenStream,
+    access: PrettyAccess,
+    capable: &BTreeSet<NodeId>,
+) -> Option<proc_macro2::TokenStream> {
+    match leading {
+        PrettyLeading::Level(level) => Some(render_leading_level_constant(level)),
+        PrettyLeading::Child(child) if capable.contains(&child) => {
+            let value = value();
+            Some(match access {
+                PrettyAccess::Nested => quote!((#value).__recursa_pretty_leading_level()),
+                PrettyAccess::Flat => quote! {
+                    __recursa_ast[*(#value)].__recursa_pretty_leading_level(__recursa_ast)
+                },
+            })
+        }
+        PrettyLeading::Child(_) | PrettyLeading::None => None,
+    }
+}
+
+/// Renders the expression for the token after the first operand of one declared variant, or
+/// `None` when no token with a level follows it.
+pub(super) fn render_first_operand_lookahead(
+    variant: &VariantParsePlan,
+    owner: NodeId,
+    bindings: &[Ident],
+    access: PrettyAccess,
+    capable: &BTreeSet<NodeId>,
+) -> Option<proc_macro2::TokenStream> {
+    let (leading, binding) = first_operand_lookahead(variant, owner)?;
+    render_leading(
+        leading,
+        || {
+            let binding = &bindings[binding];
+            quote!(#binding)
+        },
+        access,
+        capable,
+    )
+}
+
+/// Renders the private function that returns the declared level of the token one Node value
+/// starts with, for a Node that follows a first operand (see [`pretty_leading_level_nodes`]).
+pub(super) fn render_pretty_leading_level(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    access: PrettyAccess,
+    capable: &BTreeSet<NodeId>,
+) -> proc_macro2::TokenStream {
+    if !capable.contains(&node.node) {
+        return proc_macro2::TokenStream::new();
+    }
+    let ident = access.target_ident(node);
+    let none = quote!(::core::option::Option::None);
+    let body = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => elements
+            .first()
+            .and_then(|first| {
+                render_leading(
+                    element_leading(first),
+                    || match &first.kind {
+                        ElementParseKind::Semantic { field, .. } => {
+                            let value =
+                                field_access(quote!(self), field.ident.as_ref(), field.index);
+                            quote!(&#value)
+                        }
+                        ElementParseKind::Fixed { .. }
+                        | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                            unreachable!("a child leading element is semantic")
+                        }
+                    },
+                    access,
+                    capable,
+                )
+            })
+            .unwrap_or_else(|| none.clone()),
+        NodeBodyPlan::Enum { variants } if variants.is_empty() => none.clone(),
+        NodeBodyPlan::Enum { variants } => {
+            let arms = variants.iter().map(|variant| {
+                let (pattern, bindings) = variant_bound_pattern(&ident, variant, "pretty_leading");
+                let value = variant
+                    .elements
+                    .first()
+                    .and_then(|first| {
+                        render_leading(
+                            element_leading(first),
+                            || {
+                                let binding = &bindings[0];
+                                quote!(#binding)
+                            },
+                            access,
+                            capable,
+                        )
+                    })
+                    .unwrap_or_else(|| none.clone());
+                quote!(#pattern => #value)
+            });
+            quote!(match self { #(#arms),* })
+        }
+    };
+    let PrettyFrame {
+        inherent_generics,
+        type_generics,
+        inherent_where,
+        method_generics,
+        method_where,
+        method_parameters,
+        ..
+    } = access.frame(plan, node);
+    quote! {
+        impl #inherent_generics #ident #type_generics #inherent_where {
+            /// Returns the declared level of the token this value starts with, and whether a
+            /// tie at that level parenthesizes the operand before it.
+            #[doc(hidden)]
+            #[allow(dead_code, unused_variables)]
+            pub(crate) fn __recursa_pretty_leading_level #method_generics(
+                &self,
+                #method_parameters
+            ) -> ::core::option::Option<(u32, bool)> #method_where {
+                #body
+            }
+        }
+    }
+}
+
+/// Returns the restriction one field renders its base under, when the field names a restricted
+/// expression of a base with declared-precedence Pretty and holds the base directly, behind
+/// nothing but `Box`.
+///
+/// A field of another shape renders through the base's ordinary `Pretty`, as before.
+fn restricted_dispatch_index(
+    plan: &EmissionPlan,
+    terminal_node: Option<NodeId>,
+    restriction: Option<u16>,
+    wrappers: &[FieldWrapper],
+) -> Option<u16> {
+    let (base, restriction) = (terminal_node?, restriction?);
+    if !wrappers
+        .iter()
+        .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed))
+        || plan
+            .restrictions
+            .of(base)
+            .get(usize::from(restriction))
+            .is_none()
+    {
+        return None;
+    }
+    let index = plan.nodes.iter().position(|node| node.node == base)?;
+    plan.pretty.nodes[index]
+        .as_ref()
+        .is_some_and(|behavior| behavior.declared.is_some())
+        .then_some(restriction)
+}
+
+/// Returns the restrictions of one declared base under which Pretty can repair a value: the
+/// restrictions that admit every grouping atom the enclosure proof selected.
+///
+/// A restriction that does not admit the atom keeps today's rendering; `Arbitrary` never samples
+/// a value it refuses (`docs/declared-precedence.md`, "Consumers").
+fn repairable_restrictions(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> BTreeSet<usize> {
+    let restrictions = plan.restrictions.of(node.node);
+    if restrictions.is_empty() {
+        return BTreeSet::new();
+    }
+    let atoms = grouping_atom_variants(plan, node, node_index);
+    if atoms.is_empty() {
+        return BTreeSet::new();
+    }
+    restrictions
+        .iter()
+        .enumerate()
+        .filter(|(_, restriction)| {
+            atoms
+                .iter()
+                .all(|atom| restriction.admitted.get(*atom).copied().unwrap_or(false))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Returns the variants of one declared Node whose enclosure the grouping proof selected, by
+/// the same rule as [`agreed_grouping`].
+fn grouping_atom_variants(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> Vec<usize> {
+    let Some(behavior) = plan.pretty.nodes[node_index].as_ref() else {
+        return Vec::new();
+    };
+    let Some(declared) = behavior.declared.as_ref() else {
+        return Vec::new();
+    };
+    let Some(grouping) = declared.grouping.as_ref() else {
+        return Vec::new();
+    };
+    let NodeBodyPlan::Enum { variants } = &node.body else {
+        return Vec::new();
+    };
+    let syntax = emitted_pretty_grouping_syntax(&plan.nodes);
+    let mut analyzer = PrettyGroupingAnalyzer::new(&syntax);
+    let mut candidates = Vec::new();
+    for (index, ((variant, elements), declared_variant)) in variants
+        .iter()
+        .zip(&behavior.variants)
+        .zip(&declared.variants)
+        .enumerate()
+    {
+        let is_atom = declared_variant.operands.iter().all(|operand| {
+            matches!(
+                operand,
+                PrettyDeclaredOperandBehavior::Ordinary
+                    | PrettyDeclaredOperandBehavior::Recursive {
+                        minimum: PrettyDeclaredMinimum::None,
+                        next: PrettyDeclaredNext::None,
+                        ..
+                    }
+            )
+        });
+        if !is_atom {
+            continue;
+        }
+        let proof = variant
+            .elements
+            .iter()
+            .zip(elements)
+            .map(|(element, behavior)| emitted_pretty_grouping_element(element, behavior))
+            .collect::<Vec<_>>();
+        if let Some(witness) = analyzer.grouping(node.node, &proof) {
+            candidates.push((index, witness));
+        }
+    }
+    let has_direct = candidates.iter().any(|(_, witness)| !witness.delegated);
+    candidates
+        .into_iter()
+        .filter(|(_, witness)| !(has_direct && witness.delegated) && witness.grouping == *grouping)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Renders the private entry a field that names a restricted expression renders through: the
+/// body of the base's `Pretty` implementation, under the restriction.
+fn render_pretty_restricted_entry(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    access: PrettyAccess,
+    body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
+    let PrettyFrame {
+        method_generics,
+        method_where,
+        method_parameters,
+        ..
+    } = access.frame(plan, node);
+    quote! {
+        /// Renders this value at a site that parses it through one restricted expression, with
+        /// the parentheses that make every refused variant parse there.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        pub(crate) fn __recursa_pretty_restricted #method_generics(
+            &self,
+            #method_parameters
+            context: &mut #facade::PrettyContext,
+            restriction: u16,
+        ) -> ::core::fmt::Result #method_where {
+            context.configure_defaults(#max_width, #indent);
+            context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
+            context.baseline_group(|context| { #body Ok(()) })
+        }
+    }
+}
+
+/// Renders the enclosure Pretty writes when it parenthesizes a value, as the document events
+/// that the grouping atom renders for a parsed value (`docs/declared-precedence.md`, "The
+/// enclosure proof").
+///
+/// The frame walks the witness path of the selected atom: the atom variant of the owner, then the
+/// variant and element of each helper Node, down to the owner. Each step renders what the atom
+/// path renders: a helper Node through its `Pretty` entry (defaults, baseline group and hints),
+/// its element sequence with its layout, the fixed syntax of the step, and the attachment of the
+/// element on the path. Elements that the proof took as absent render nothing. Every fixed token
+/// is canonical and has no provenance. `hole` renders the parenthesized value itself.
+///
+/// The frame is `None` when the path has a shape this renderer does not copy; the caller then
+/// writes the fixed syntax of the enclosure inline, as before.
+fn render_grouping_frame(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+    hole: &proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
+    let behavior = plan.pretty.nodes[node_index].as_ref()?;
+    let declared = behavior.declared.as_ref()?;
+    let grouping = declared.grouping.as_ref()?;
+    let NodeBodyPlan::Enum { variants } = &node.body else {
+        return None;
+    };
+    let syntax = emitted_pretty_grouping_syntax(&plan.nodes);
+    let mut analyzer = PrettyGroupingAnalyzer::new(&syntax);
+    let mut candidates = Vec::new();
+    for (index, ((variant, elements), declared_variant)) in variants
+        .iter()
+        .zip(&behavior.variants)
+        .zip(&declared.variants)
+        .enumerate()
+    {
+        let is_atom = declared_variant.operands.iter().all(|operand| {
+            matches!(
+                operand,
+                PrettyDeclaredOperandBehavior::Ordinary
+                    | PrettyDeclaredOperandBehavior::Recursive {
+                        minimum: PrettyDeclaredMinimum::None,
+                        next: PrettyDeclaredNext::None,
+                        ..
+                    }
+            )
+        });
+        if !is_atom {
+            continue;
+        }
+        let proof = variant
+            .elements
+            .iter()
+            .zip(elements)
+            .map(|(element, behavior)| emitted_pretty_grouping_element(element, behavior))
+            .collect::<Vec<_>>();
+        if let Some(witness) = analyzer.grouping(node.node, &proof) {
+            candidates.push((index, witness));
+        }
+    }
+    let has_direct = candidates.iter().any(|(_, witness)| !witness.delegated);
+    let (atom, witness) = candidates
+        .into_iter()
+        .find(|(_, witness)| !(has_direct && witness.delegated) && witness.grouping == *grouping)?;
+    let frame = FrameRenderer {
+        plan,
+        owner: node.node,
+        hole,
+    };
+    frame.sequence(
+        node_index,
+        atom,
+        &witness.steps,
+        &behavior.variant_layouts[atom],
+        &behavior.variant_pretty[atom],
+        true,
+    )
+}
+
+/// Renders the steps of one enclosure frame (see [`render_grouping_frame`]).
+struct FrameRenderer<'a> {
+    /// The plan whose Nodes the path crosses.
+    plan: &'a EmissionPlan,
+    /// The declared Node that the enclosure parenthesizes.
+    owner: NodeId,
+    /// The statements that render the parenthesized value.
+    hole: &'a proc_macro2::TokenStream,
+}
+
+impl FrameRenderer<'_> {
+    /// Renders one Node of the path through its `Pretty` entry, as a parsed child renders.
+    fn node(&self, node: NodeId, steps: &[PrettyGroupingStep]) -> Option<proc_macro2::TokenStream> {
+        let index = self
+            .plan
+            .nodes
+            .iter()
+            .position(|planned| planned.node == node)?;
+        let behavior = self.plan.pretty.nodes[index].as_ref()?;
+        if behavior.declared.is_some() {
+            return None;
+        }
+        let step = steps.first()?;
+        let layout = behavior.variant_layouts.get(step.variant)?;
+        let hints = behavior.variant_pretty.get(step.variant)?;
+        let body = self.sequence(index, step.variant, steps, layout, hints, false)?;
+        Some(self.entry(&behavior.pretty, body))
+    }
+
+    /// Renders the `Pretty` entry of one Node around its body: defaults, the baseline group and
+    /// the Node hints.
+    fn entry(
+        &self,
+        hints: &PrettyHints,
+        body: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        let max_width = self.plan.pretty_max_width;
+        let indent = self.plan.pretty_indent;
+        let body = render_pretty_hints(hints, quote!({ #body Ok(()) }?;));
+        quote! {
+            context.configure_defaults(#max_width, #indent);
+            context.baseline_group(|context| { #body Ok(()) })?;
+        }
+    }
+
+    /// Renders one variant of one Node of the path: its elements, its layout and its hints.
+    ///
+    /// `atom` is true for the atom variant of the owner, which the owner's declared helper
+    /// renders without a `Pretty` entry of its own.
+    fn sequence(
+        &self,
+        node_index: usize,
+        variant: usize,
+        steps: &[PrettyGroupingStep],
+        layout: &PrettySequenceLayout,
+        hints: &PrettyHints,
+        atom: bool,
+    ) -> Option<proc_macro2::TokenStream> {
+        let planned = &self.plan.nodes[node_index];
+        let behavior = self.plan.pretty.nodes[node_index].as_ref()?;
+        let elements = match &planned.body {
+            NodeBodyPlan::Struct { elements, .. } => elements,
+            NodeBodyPlan::Enum { variants } => &variants.get(variant)?.elements,
+        };
+        let behaviors = behavior.variants.get(variant)?;
+        let step = steps.first()?;
+        let mut rendered = Vec::with_capacity(elements.len());
+        for (index, (element, behavior)) in elements.iter().zip(behaviors).enumerate() {
+            let path = index == step.element;
+            rendered.push(self.element(element, behavior, path.then(|| &steps[1..]), atom)?);
+        }
+        let sequence = render_pretty_sequence(*layout, &rendered);
+        let sequence = render_pretty_hints(hints, sequence);
+        Some(match &planned.body {
+            NodeBodyPlan::Struct { .. } => quote!(#sequence),
+            NodeBodyPlan::Enum { .. } => sequence,
+        })
+    }
+
+    /// Renders one element of a step: fixed syntax, an absent element, a fixed-only helper Node,
+    /// or the element on the path (`rest` holds the steps below it).
+    fn element(
+        &self,
+        element: &ElementParsePlan,
+        behavior: &PrettyElementBehavior,
+        rest: Option<&[PrettyGroupingStep]>,
+        atom: bool,
+    ) -> Option<proc_macro2::TokenStream> {
+        match (&element.kind, behavior) {
+            (
+                ElementParseKind::Fixed { .. },
+                PrettyElementBehavior::Fixed {
+                    spelling,
+                    rendering,
+                    ..
+                },
+            ) if rest.is_none() => Some(render_pretty_synthetic_fixed(
+                self.plan, spelling, *rendering,
+            )),
+            (ElementParseKind::OptionalFixedTokenGroup { .. }, _) if rest.is_none() => {
+                Some(proc_macro2::TokenStream::new())
+            }
+            (
+                ElementParseKind::Semantic { projection, .. },
+                PrettyElementBehavior::Semantic {
+                    projection:
+                        PrettySemanticProjection::Direct {
+                            attachment,
+                            pretty,
+                            presence,
+                            repetition: None,
+                            ..
+                        },
+                },
+            ) => {
+                let SemanticParseProjection::Direct {
+                    terminal_node,
+                    wrappers,
+                    explorer_terminal: ExplorerTerminalPlan::Node(_),
+                    ..
+                } = projection.as_ref()
+                else {
+                    return None;
+                };
+                let terminal = (*terminal_node)?;
+                let required = wrappers
+                    .iter()
+                    .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed));
+                let value = match rest {
+                    // The proof takes an optional element as absent.
+                    None if !required => return Some(proc_macro2::TokenStream::new()),
+                    None => self.fixed_only(terminal)?,
+                    Some(_) if !required => return None,
+                    Some(_) if terminal == self.owner && atom => {
+                        // A direct atom renders its operand through the declared helper.
+                        let hole = self.hole;
+                        quote!(#hole)
+                    }
+                    Some(_) if terminal == self.owner => {
+                        // A helper reaches the owner through its `Pretty` entry.
+                        let index = self
+                            .plan
+                            .nodes
+                            .iter()
+                            .position(|planned| planned.node == self.owner)?;
+                        let hints = &self.plan.pretty.nodes[index].as_ref()?.pretty;
+                        let hole = self.hole;
+                        self.entry(hints, quote!(#hole))
+                    }
+                    Some(rest) => self.node(terminal, rest)?,
+                };
+                let unit = match attachment {
+                    Some(attachment) => {
+                        if atom && attachment.layout == PrettySequenceLayout::Linear {
+                            return None;
+                        }
+                        self.attachment(attachment, value)?
+                    }
+                    None => value,
+                };
+                Some(render_pretty_presence(
+                    pretty,
+                    *presence,
+                    wrappers,
+                    quote!(()),
+                    unit,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Renders one fixed-only helper Node, which every variant renders as the same fixed syntax.
+    fn fixed_only(&self, node: NodeId) -> Option<proc_macro2::TokenStream> {
+        let index = self
+            .plan
+            .nodes
+            .iter()
+            .position(|planned| planned.node == node)?;
+        let behavior = self.plan.pretty.nodes[index].as_ref()?;
+        if behavior.declared.is_some() {
+            return None;
+        }
+        let planned = &self.plan.nodes[index];
+        let elements = match &planned.body {
+            NodeBodyPlan::Struct { elements, .. } => elements,
+            NodeBodyPlan::Enum { variants } => &variants.first()?.elements,
+        };
+        let mut rendered = Vec::with_capacity(elements.len());
+        for (element, element_behavior) in elements.iter().zip(behavior.variants.first()?) {
+            rendered.push(match (&element.kind, element_behavior) {
+                (
+                    ElementParseKind::Fixed { .. },
+                    PrettyElementBehavior::Fixed {
+                        spelling,
+                        rendering,
+                        ..
+                    },
+                ) => render_pretty_synthetic_fixed(self.plan, spelling, *rendering),
+                _ => self.element(element, element_behavior, None, false)?,
+            });
+        }
+        let sequence = render_pretty_sequence(*behavior.variant_layouts.first()?, &rendered);
+        let sequence = render_pretty_hints(behavior.variant_pretty.first()?, sequence);
+        Some(self.entry(&behavior.pretty, sequence))
+    }
+
+    /// Renders the attached fixed syntax of the element on the path around its value, as
+    /// [`render_pretty_attachment_unit`] does, with canonical tokens and absent optional entries.
+    fn attachment(
+        &self,
+        attachment: &PrettyAttachmentBehavior,
+        value: proc_macro2::TokenStream,
+    ) -> Option<proc_macro2::TokenStream> {
+        let syntax = |syntax: &PrettyAttachedSyntaxBehavior| match syntax {
+            PrettyAttachedSyntaxBehavior::Required(fixed) => {
+                render_pretty_synthetic_fixed(self.plan, &fixed.spelling, fixed.rendering)
+            }
+            PrettyAttachedSyntaxBehavior::Optional(_) => proc_macro2::TokenStream::new(),
+        };
+        let before = attachment.before.iter().map(syntax).collect::<Vec<_>>();
+        let after = attachment.after.iter().map(syntax).collect::<Vec<_>>();
+        if attachment.layout == PrettySequenceLayout::Delimited {
+            let open = before.first()?;
+            let leading = &before[1..];
+            let close = after.last()?;
+            let trailing = &after[..after.len() - 1];
+            Some(quote! {
+                #open
+                context.indented(|context| {
+                    context.soft_break("")?;
+                    #(#leading)*
+                    #value
+                    #(#trailing)*
+                    Ok(())
+                })?;
+                context.soft_break("")?;
+                #close
+                context.close_delimiter();
+            })
+        } else {
+            Some(quote!(#(#before)* #value #(#after)*))
+        }
+    }
+}
+
+/// Returns a comparable description of one element: its kind, its fixed spellings, and for a
+/// semantic field its terminal, wrappers and restriction.
+fn element_signature(element: &ElementParsePlan) -> String {
+    let attached = |syntax: &[AttachedFixedSyntaxParsePlan]| {
+        syntax
+            .iter()
+            .map(|syntax| match syntax {
+                AttachedFixedSyntaxParsePlan::Required(fixed) => fixed.spelling.clone(),
+                AttachedFixedSyntaxParsePlan::Optional(tokens) => format!(
+                    "[{}]",
+                    tokens
+                        .iter()
+                        .map(|fixed| fixed.spelling.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    match &element.kind {
+        ElementParseKind::Fixed { spelling, .. } => format!("fixed {spelling}"),
+        ElementParseKind::OptionalFixedTokenGroup { tokens, .. } => format!(
+            "optional {}",
+            tokens
+                .iter()
+                .map(|fixed| fixed.spelling.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::Direct {
+                terminal_node,
+                wrappers,
+                restriction,
+                attachment,
+                ..
+            } => format!(
+                "semantic {terminal_node:?} {wrappers:?} {restriction:?} [{}] [{}]",
+                attachment
+                    .as_ref()
+                    .map_or_else(String::new, |attachment| attached(&attachment.before)),
+                attachment
+                    .as_ref()
+                    .map_or_else(String::new, |attachment| attached(&attachment.after)),
+            ),
+            SemanticParseProjection::FixedPresence {
+                before,
+                sequence,
+                after,
+                ..
+            } => format!(
+                "presence [{}] [{}] [{}]",
+                attached(before),
+                sequence
+                    .iter()
+                    .map(|fixed| fixed.spelling.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                attached(after)
+            ),
+        },
+    }
+}
+
+/// Returns the left-edge bound of an interior operand that ends a rule of its own Node in some
+/// derivation, or `None` when no rule ends there.
+///
+/// The parser has then reduced that shorter rule when it sees the token after the operand, so
+/// the operand needs the bound of a last operand of that rule. Two shapes make such a rule: the
+/// elements after the operand can all be absent (`a LIKE b [ESCAPE c]`), or another variant of
+/// the Node is the same sequence up to and including the operand (`LIKE` beside
+/// `LIKE ... ESCAPE`). The bound of each such rule is joined with the stricter-bound rule.
+fn shadow_minimum(
+    facade: &Ident,
+    variants: &[VariantParsePlan],
+    variant_index: usize,
+    element_index: usize,
+) -> Option<proc_macro2::TokenStream> {
+    let variant = &variants[variant_index];
+    let element = variant.elements.get(element_index)?;
+    let after_empty = match &element.kind {
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::Direct { attachment, .. } => attachment
+                .as_ref()
+                .is_none_or(|attachment| attachment.after.is_empty()),
+            SemanticParseProjection::FixedPresence { .. } => return None,
+        },
+        ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+            return None;
+        }
+    };
+    if element_index == 0 || !after_empty {
+        return None;
+    }
+    let bound = |level: DeclaredVariantLevel| {
+        let ordinal = level.ordinal;
+        let tie = level.associativity != PrecedenceAssociativity::Right;
+        quote!(::core::option::Option::Some((#ordinal, #tie)))
+    };
+    let mut bounds = Vec::new();
+    if variant.elements[element_index + 1..]
+        .iter()
+        .all(element_can_be_absent)
+        && let Some(level) = variant.declared_precedence
+    {
+        bounds.push(bound(level));
+    }
+    let prefix = variant.elements[..=element_index]
+        .iter()
+        .map(element_signature)
+        .collect::<Vec<_>>();
+    for (index, sibling) in variants.iter().enumerate() {
+        if index == variant_index || sibling.elements.len() != element_index + 1 {
+            continue;
+        }
+        let Some(level) = sibling.declared_precedence else {
+            continue;
+        };
+        if sibling
+            .elements
+            .iter()
+            .map(element_signature)
+            .eq(prefix.iter().cloned())
+        {
+            bounds.push(bound(level));
+        }
+    }
+    let mut bounds = bounds.into_iter();
+    let first = bounds.next()?;
+    Some(bounds.fold(
+        first,
+        |joined, bound| quote!(#facade::__private::pretty_stricter_bound(#joined, #bound)),
+    ))
 }

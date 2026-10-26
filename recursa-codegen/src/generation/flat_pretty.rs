@@ -136,6 +136,7 @@ pub(super) fn flat_pretty_declared_recursion(
     operand: proc_macro2::TokenStream,
     minimum: &proc_macro2::TokenStream,
     next: &proc_macro2::TokenStream,
+    restriction: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     quote! {
         __recursa_ast[*(#operand)].__recursa_pretty_declared(
@@ -143,6 +144,7 @@ pub(super) fn flat_pretty_declared_recursion(
             context,
             #minimum,
             #next,
+            #restriction,
         )
     }
 }
@@ -185,6 +187,7 @@ pub(super) fn flat_pretty_trait_impl(
     body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let ident = flat_type_ident(&node.ident);
     let parameters = flat_pretty_parameters(node);
     let input = flat_pretty_input_lifetime();
@@ -209,6 +212,7 @@ pub(super) fn flat_pretty_trait_impl(
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
                 context.configure_defaults(#max_width, #indent);
+                context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
                 context.baseline_group(|context| { #body Ok(()) })
             }
         }
