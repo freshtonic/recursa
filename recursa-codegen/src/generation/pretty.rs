@@ -2770,12 +2770,17 @@ impl PrettyAccess {
     ) -> proc_macro2::TokenStream {
         match self {
             Self::Nested => quote!((#value).__recursa_pretty_restricted(context, #restriction)),
+            // The value is a reference to a handle; the binding keeps the lint
+            // `clippy::deref_addrof` off a field the caller borrows in place.
             Self::Flat => quote! {
-                __recursa_ast[*(#value)].__recursa_pretty_restricted(
-                    __recursa_ast,
-                    context,
-                    #restriction,
-                )
+                {
+                    let __recursa_handle: &_ = #value;
+                    __recursa_ast[*__recursa_handle].__recursa_pretty_restricted(
+                        __recursa_ast,
+                        context,
+                        #restriction,
+                    )
+                }
             },
         }
     }
@@ -3816,7 +3821,10 @@ fn render_leading(
             Some(match access {
                 PrettyAccess::Nested => quote!((#value).__recursa_pretty_leading_level()),
                 PrettyAccess::Flat => quote! {
-                    __recursa_ast[*(#value)].__recursa_pretty_leading_level(__recursa_ast)
+                    {
+                        let __recursa_handle: &_ = #value;
+                        __recursa_ast[*__recursa_handle].__recursa_pretty_leading_level(__recursa_ast)
+                    }
                 },
             })
         }
