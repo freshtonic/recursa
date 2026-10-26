@@ -153,21 +153,7 @@ pub(super) fn declared_variant_level(
     if let Some(over) = override_level {
         return Some(level_of(over.level));
     }
-    let level_of_token = |definition: TokenDefinitionId| {
-        source
-            .precedence
-            .iter()
-            .enumerate()
-            .find(|(_, level)| {
-                level.kinds.iter().any(
-                    |kind| matches!(kind, PrecedenceKindReference::Token(candidate) if *candidate == definition),
-                )
-            })
-            .map(|(index, level)| DeclaredVariantLevel {
-                ordinal: index as u32,
-                associativity: level.associativity,
-            })
-    };
+    let level_of_token = |definition: TokenDefinitionId| token_declared_level(source, definition);
     let mut last = None;
     let mut visit = |token_use: TokenUseId| {
         let definition = source.token_uses[token_use.index()].definition;
@@ -201,6 +187,27 @@ pub(super) fn declared_variant_level(
         }
     }
     last
+}
+
+/// Returns the declared `precedence { ... }` level of one token definition, or `None` when no
+/// level names it.
+pub(super) fn token_declared_level(
+    source: &SourceModel,
+    definition: TokenDefinitionId,
+) -> Option<DeclaredVariantLevel> {
+    source
+        .precedence
+        .iter()
+        .enumerate()
+        .find(|(_, level)| {
+            level.kinds.iter().any(
+                |kind| matches!(kind, PrecedenceKindReference::Token(candidate) if *candidate == definition),
+            )
+        })
+        .map(|(index, level)| DeclaredVariantLevel {
+            ordinal: index as u32,
+            associativity: level.associativity,
+        })
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -243,6 +250,9 @@ pub(super) struct AttachedFixedParsePlan {
     pub(super) spelling: String,
     /// Pretty spacing adjacent to the spelling.
     pub(super) spacing: PrettySpacing,
+    /// The token's declared `precedence { ... }` level, which Pretty compares when the token is
+    /// the parser's lookahead after an operand; `None` for a token with no level.
+    pub(super) precedence: Option<DeclaredVariantLevel>,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -259,6 +269,8 @@ pub(super) enum ElementParseKind {
         spelling: String,
         /// Pretty spacing adjacent to the token.
         spacing: PrettySpacing,
+        /// The token's declared `precedence { ... }` level; `None` for a token with no level.
+        precedence: Option<DeclaredVariantLevel>,
         /// Generated accessor identifying this occurrence.
         accessor: Ident,
     },
@@ -312,6 +324,9 @@ pub(super) enum SemanticParseProjection {
         repetition_break: PlannedRepetitionBreak,
         /// Formatting hints retained for the field.
         pretty: PrettyHints,
+        /// The restricted expression the field parses its base through, as its dense index in
+        /// the base's [`RestrictionPlan`] list; `None` at every ordinary field.
+        restriction: Option<u16>,
     },
     /// Parses required fixed syntax around one atomic optional sequence stored as `bool`.
     FixedPresence {
@@ -715,6 +730,7 @@ fn declaration_fixed_element(
             capture: PlannedCapturePolicy::Inherited,
             spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
             spacing: fixed.pretty_spacing,
+            precedence: token_declared_level(source, definition.id),
             accessor: fixed_accessor_ident(&name)?,
         },
     })
@@ -823,6 +839,7 @@ pub(super) fn declaration_elements(
                             lowered.grammar.text_equivalence,
                         ),
                         spacing: fixed.pretty_spacing,
+                        precedence: token_declared_level(source, definition.id),
                         accessor: fixed_accessor_ident(&name)?,
                     },
                 })
@@ -852,6 +869,7 @@ pub(super) fn declaration_elements(
                             lowered.grammar.text_equivalence,
                         ),
                         spacing: fixed.pretty_spacing,
+                        precedence: token_declared_level(source, definition.id),
                     })
                 };
                 Ok(ElementParsePlan {
@@ -1011,6 +1029,7 @@ pub(super) fn declaration_elements(
                             ),
                             repetition_break,
                             pretty: pretty.clone(),
+                            restriction: field_restriction(&field.ty, resolved, source),
                         }
                     }
                 };
@@ -1080,6 +1099,7 @@ fn declaration_fixed_token(
         capture,
         spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
         spacing: fixed.pretty_spacing,
+        precedence: token_declared_level(source, definition.id),
     })
 }
 
