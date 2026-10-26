@@ -5375,6 +5375,8 @@ impl SourceModelBuilder<'_> {
                         }
                     }
                 }
+                // The variant name was checked with the labels above.
+                RejectCheckSyntax::Variant { .. } => {}
                 RejectCheckSyntax::Text { variant, range, .. } => {
                     if let Some((kind, message)) = unknown_variant(variant, "text rule") {
                         self.diagnostics
@@ -5492,6 +5494,17 @@ impl SourceModelBuilder<'_> {
                             format!(
                                 "`pair(...)` and `once(...)` read the items of a repetition of \
                                  an enum, and `{}` is a struct; a struct takes text rules only",
+                                node.ident,
+                            ),
+                        ));
+                }
+                RejectCheckSyntax::Variant { .. } => {
+                    self.diagnostics
+                        .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
+                            self.site(origin, rule.range.clone()),
+                            format!(
+                                "`variant(...)` refuses one variant of an enum, and `{}` is a \
+                                 struct; a struct takes text rules only",
                                 node.ident,
                             ),
                         ));

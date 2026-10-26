@@ -86,6 +86,8 @@ pub(super) struct EmissionPlan {
     pub(super) rejections: RejectionPlan,
     /// Restricted expressions, keyed by the base enum whose rules they lower.
     pub(super) restrictions: RestrictionPlan,
+    /// Refused variants and validation hooks, which run when a reduce has built a Node.
+    pub(super) validations: ValidationPlan,
     /// Declared build-configuration requirements and their per-Node ceilings.
     pub(super) requirements: RequirementPlan,
     #[cfg(feature = "diagrams")]
@@ -978,6 +980,10 @@ impl EmissionPlan {
         // belongs to the identity of the Generation it produced.
         let restrictions = plan_restrictions(lowered.source_modeled.source_model(), &nodes)?;
         canonical.push_str(&format!(";restrictions={restrictions:?}"));
+        // A refused variant or a hook changes the generated reduce, so the table belongs to the
+        // identity of the Generation it produced.
+        let validations = plan_validations(resolved, resolved.build_inputs.flat)?;
+        canonical.push_str(&format!(";validations={validations:?}"));
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
@@ -1007,6 +1013,7 @@ impl EmissionPlan {
             pretty,
             rejections,
             restrictions,
+            validations,
             requirements,
             #[cfg(feature = "diagrams")]
             diagrams,
