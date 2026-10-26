@@ -1192,6 +1192,9 @@ pub(super) fn render_node_arbitrary(
     // operand that the restriction retypes samples that restriction again, as the lowering
     // parses it.
     let enum_body = |selected: &[usize], restricted: Option<(u16, &PlannedRestriction)>| {
+        if selected.is_empty() {
+            return quote!(return Err(#facade::__private::arbitrary::Error::IncorrectFormat));
+        }
         let variants = trait_variants(&node.body);
         let arms = selected.iter().enumerate().map(|(choice, &index)| {
             let variant = &variants[index];
@@ -1320,7 +1323,14 @@ pub(super) fn render_node_arbitrary(
             }
         }
         NodeBodyPlan::Enum { variants } => {
-            let all = (0..variants.len()).collect::<Vec<_>>();
+            // A variant that a declared rule refuses never parses back, so it is never sampled.
+            let all = (0..variants.len())
+                .filter(|index| {
+                    !plan
+                        .validations
+                        .refuses_variant(node.node, variants[*index].resolved_variant)
+                })
+                .collect::<Vec<_>>();
             enum_body(&all, None)
         }
     };
@@ -1338,7 +1348,13 @@ pub(super) fn render_node_arbitrary(
                 .admitted
                 .iter()
                 .enumerate()
-                .filter(|(_, admitted)| **admitted)
+                .filter(|(variant, admitted)| {
+                    **admitted
+                        && !plan.validations.refuses_variant(
+                            node.node,
+                            trait_variants(&node.body)[*variant].resolved_variant,
+                        )
+                })
                 .map(|(variant, _)| variant)
                 .collect::<Vec<_>>();
             if selected.is_empty() {

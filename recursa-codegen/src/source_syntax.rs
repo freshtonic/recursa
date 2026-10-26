@@ -260,6 +260,15 @@ pub(crate) enum RejectCheckSyntax {
         /// Authored range of the entry.
         range: Range<u32>,
     },
+    /// `variant(V)`: a Node of variant `V` is refused when its reduce builds it. The variant's
+    /// syntax stays in the grammar, so its tokens keep their place in the LR tables, as a `gram.y`
+    /// action refuses a form its rule matched.
+    Variant {
+        /// Name of the refused variant.
+        variant: String,
+        /// Authored range of the entry.
+        range: Range<u32>,
+    },
 }
 
 impl RejectCheckSyntax {
@@ -282,6 +291,7 @@ impl RejectCheckSyntax {
                 .map(|label| (label.as_str(), range.clone()))
                 .collect(),
             Self::Text { .. } => Vec::new(),
+            Self::Variant { variant, range } => vec![(variant.as_str(), range.clone())],
         }
     }
 
@@ -315,6 +325,7 @@ impl RejectCheckSyntax {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Self::Variant { variant, .. } => format!("`{variant}`"),
         }
     }
 }
@@ -368,17 +379,20 @@ impl RejectRuleSyntax {
                 Meta::List(entry)
                     if entry.path.is_ident("once")
                         || entry.path.is_ident("one_of")
-                        || entry.path.is_ident("not_in") =>
+                        || entry.path.is_ident("not_in")
+                        || entry.path.is_ident("variant") =>
                 {
                     if single.is_some() {
                         return Err(configuration_error(
                             entry.span(),
-                            "reject makes one test: write one `once(...)`, `one_of(...)` or \
-                             `not_in(...)` per declaration",
+                            "reject makes one test: write one `once(...)`, `one_of(...)`, \
+                             `not_in(...)` or `variant(...)` per declaration",
                         ));
                     }
                     single = Some(if entry.path.is_ident("once") {
                         reject_once(entry)?
+                    } else if entry.path.is_ident("variant") {
+                        reject_variant(entry)?
                     } else {
                         reject_text(entry, entry.path.is_ident("not_in"))?
                     });
@@ -452,6 +466,20 @@ impl RejectRuleSyntax {
             range: span_range(meta.span()),
         })
     }
+}
+
+/// Reads one `variant(V)` entry of a `reject(...)` declaration.
+fn reject_variant(entry: &syn::MetaList) -> Result<RejectCheckSyntax, ConfigurationError> {
+    let name = syn::parse2::<syn::Ident>(entry.tokens.clone()).map_err(|_| {
+        configuration_error(
+            entry.span(),
+            "reject `variant(...)` names exactly one variant",
+        )
+    })?;
+    Ok(RejectCheckSyntax::Variant {
+        variant: name.unraw().to_string(),
+        range: span_range(entry.span()),
+    })
 }
 
 /// Reads one `pair(A, B)` entry of a `reject(...)` declaration.

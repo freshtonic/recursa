@@ -153,6 +153,18 @@ _Avoid_: Version gate, cfg predicate
 A declaration on an enum that names forbidden pairs of its variants, with the code, message, hint and citation of the source that rejects them; any repetition of that enum rejects a parse whose items hold a named pair.
 _Avoid_: Declared validation, conflict rule, validation rule
 
+**Refused variant**:
+A declared rejection rule that refuses every value of one enum variant when its reduce builds it.
+The variant keeps its syntax, so its tokens keep their place in the LR tables, as a `gram.y`
+action refuses a form its rule matched.
+_Avoid_: Removed variant, error production
+
+**Validation hook**:
+A consumer function, named by `#[validate(...)]` on a Node or a variant, that a generated reduce
+calls with the Node it has just built, in every storage. It refuses the Node with a static note,
+and the parse ends with a declared rejection.
+_Avoid_: Rule action, post-parse check
+
 **Declared rejection**:
 The parse failure a rejection rule produces, positioned at the first item that completes a forbidden pair in source order and carrying the rule's message data.
 _Avoid_: Validation failure, semantic error

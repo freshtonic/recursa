@@ -19,7 +19,7 @@ pub use recursa_core::{
     ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, Configuration,
     DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, FlatNode, Handle,
     HasSpan, List, List1, ListItem, Node, NodeView, OffsetOverflow, Parse, ParseError,
-    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink, Rejection,
+    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink, Refusal, Rejection,
     RejectionKey, RejectionNote, RejectionPair, RejectionRule, Repeated, RepeatedIter, Requirement,
     RequirementNote, RequirementScan, Requires, SideTable, SourceMap, SourceMapEntry, Span, Text,
     TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,

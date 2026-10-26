@@ -172,6 +172,71 @@ reports the reserved name first. The walk checks each item as the list grows, so
 first refused item in source order. Both refuse the same lists; only the message of a list with
 two errors can differ.
 
+## Refused variants and validation hooks
+
+Extended by freshtonic/pgtk#55. Decision record: [ADR 0013](adr/0013-validation-hooks-run-consumer-code-at-the-reduce.md).
+
+Some checks of a `gram.y` action read one Node, not a list. `frame_extent` refuses a frame that
+starts at `UNBOUNDED FOLLOWING` (REL_17_11 gram.y 16335), although `frame_bound` admits the
+form: the keyword must shift there, so the grammar keeps the arm. `row OVERLAPS row` counts the
+values of each row (15002), `makeOrderedSetArgs` compares the types of two arguments (18843), and
+`insertSelectOptions` merges the clauses of a parenthesized query into the query around it
+(18880-18936). Two declarations cover them.
+
+### `variant(V)`
+
+```rust,ignore
+#[reject(
+    variant(UnboundedFollowing),
+    code = "42P20",
+    message = "frame start cannot be UNBOUNDED FOLLOWING",
+    cite = "gram.y REL_17_11 16335, frame_extent",
+)]
+pub enum WindowFrameSingleBound { CurrentRow, UnboundedPreceding, UnboundedFollowing, ... }
+```
+
+A refused variant belongs to the enum, as every rule does, and it refuses every value of the
+variant. The variant keeps its syntax, so its tokens keep their place in the LR tables, and the
+reduce of the variant ends the parse with the rule's message data at the extent of the variant. A
+`variant(...)` entry makes the declaration's one test. The diagnostics of the names are the ones
+of a pair: `RCA3146` for an unknown variant and `RCA3149` for a variant the configuration removed.
+On a struct it is `RCA3145`.
+
+### `#[validate(...)]`
+
+```rust,ignore
+#[validate(crate::validation::overlaps, flat = crate::validation::overlaps_flat)]
+Overlaps(boxed!(Row), #[tok(OVERLAPS, this)] boxed!(Row)),
+```
+
+A validation hook names consumer functions, on a Node or on one variant of an enum. The generated
+reduce calls them when it has built the Node, after the Node's own text rules:
+
+- the value and the arena reduces call `path` with `&Node`;
+- the flat reduce calls `flat = path` with `&FlatNode` and `&FlatAst<'_, FlatNode>`. The builder
+  lends its stores as a result rooted at a placeholder handle and takes them back after the call,
+  so the hook indexes handles and lists, and renders a child, with the owner's own API.
+
+A grammar that emits the Flat AST requires `flat = path`, because the three storages must accept
+and reject the same sources. Each function answers `Result<(), Refusal>`. A `Refusal` names a
+static `RejectionNote`, which the consumer builds with `RejectionNote::new`, and optionally the
+semantic field (counted in declaration order over the fields of the Node's variant) whose extent
+the error reports, as `parser_errposition` names one. Without a field, the error is at the extent
+of the whole Node. The failure is the ordinary declared rejection, `RCA4105`.
+
+The nested and the flat function of one check read the same fields in the same order. A check that
+compares values compares their Pretty renderings, which are equal in both storages by
+construction, because one renderer serves both.
+
+A hook adds the extent stack to the parse, as a declared rule does. A grammar with neither pays
+nothing.
+
+### Sampling
+
+`Arbitrary` never samples a refused variant. It does not run a hook: the arena form samples a seed
+mirror, and the hook takes the arena type. A sampled value can therefore be one that a hook
+refuses; a consumer's round trip accepts it when both parsers refuse it with the same message.
+
 ## Version gating
 
 A rule is gated only through the composition that already exists:
@@ -318,6 +383,6 @@ grammar under migration reaches that state on the way to its first list.
 Diagrams, `Pretty`, `Visit` and the Explorer are untouched: a rejection rule constrains which
 values a parse produces, not what a value holds or how it renders. The one generated addition to
 documentation is a single rustdoc line on the enum listing its rules, their messages and its
-classifications. No ADR:
-the declaration adds authoring surface and a runtime failure class, and changes no decision this
-project recorded.
+classifications. The rules of a list need no ADR: they add authoring surface and a runtime
+failure class, and change no decision this project recorded. A validation hook runs consumer code
+inside the parse, and ADR 0013 records that decision.

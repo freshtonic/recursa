@@ -340,13 +340,14 @@ fn render_flat_reduce_body(
     let RuleAction::Construct { variant, sites, .. } = &rule.action else {
         return Ok(quote!({}));
     };
-    let (variant_ident, style, elements): (
+    let (variant_ident, variant_id, style, elements): (
         Option<&Ident>,
+        Option<ResolvedVariantId>,
         ResolvedFieldStyle,
         Cow<'_, [ElementParsePlan]>,
     ) = match (&application.body, variant) {
         (NodeBodyPlan::Struct { style, elements }, None) => {
-            (None, *style, Cow::Borrowed(elements.as_slice()))
+            (None, None, *style, Cow::Borrowed(elements.as_slice()))
         }
         (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
             let resolved = plan_variant(lr, application, *declaration)?;
@@ -358,6 +359,7 @@ fn render_flat_reduce_body(
                 })?;
             (
                 Some(&variant.ident),
+                Some(resolved),
                 variant.style,
                 Cow::Borrowed(variant.elements.as_slice()),
             )
@@ -437,6 +439,15 @@ fn render_flat_reduce_body(
         )?,
         _ => quote!(),
     };
+    // A refused variant or a validation hook reads the flat value it has just built, before it is
+    // allocated, exactly where the nested reduce reads its value.
+    let validation = render_reduce_checks(
+        plan,
+        node,
+        variant_id,
+        &field_extents(lr, rule, &elements, sites),
+        BuiltNode::Flat(&format_ident!("__recursa_node"), &syn::parse_quote!(Self)),
+    )?;
     let construction = render_construction(variant_ident, style, &values);
     let allocation = flat_alloc(
         node,
@@ -450,6 +461,7 @@ fn render_flat_reduce_body(
             let __recursa_span = reduction.extent();
             let __recursa_node: Self = #construction;
             #check
+            #validation
             let __recursa_handle = #allocation;
             reduction.push(__recursa_handle);
         }
@@ -1019,7 +1031,7 @@ pub(super) fn render_flat_dispatcher(
         .iter()
         .filter_map(|(_, function)| function.as_ref());
     let module_anchor = &plan.module_anchor;
-    let demand_extents = (!plan.rejections.is_empty())
+    let demand_extents = (!plan.rejections.is_empty() || !plan.validations.is_empty())
         .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
     let entries = quote! {
         /// The flat parse entry of one root Node: its flat type and its start tables. Every
