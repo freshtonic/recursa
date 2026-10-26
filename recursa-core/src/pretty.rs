@@ -175,6 +175,9 @@ pub struct PrettySink {
     config: PrettyConfig,
     /// Structured instructions awaiting layout resolution.
     events: Vec<PrettyEvent>,
+    /// The grammar's test for two adjacent texts that its lexer would join or split in another
+    /// way; layout writes one space between such texts.
+    lexical_boundary: Option<fn(&str, &str) -> bool>,
 }
 
 impl PrettySink {
@@ -183,6 +186,7 @@ impl PrettySink {
         Self {
             config,
             events: Vec::new(),
+            lexical_boundary: None,
         }
     }
 
@@ -201,9 +205,16 @@ impl PrettySink {
         let mut column = 0_usize;
         let mut indent = 0_usize;
         let mut groups = Vec::<GroupMode>::new();
+        // The last nonempty text written and whether nothing separates it from the next text,
+        // so that two texts the lexer would join get one space between them.
+        let mut boundary = LexicalBoundary::new(self.lexical_boundary);
         for (index, event) in self.events.iter().enumerate() {
             match event {
                 PrettyEvent::Text { text, source } => {
+                    if boundary.guard(text) {
+                        output.push(' ');
+                        column = column.saturating_add(1);
+                    }
                     let start = output.len();
                     output.push_str(text);
                     if !text.is_empty() {
@@ -213,6 +224,7 @@ impl PrettySink {
                         });
                     }
                     column = column_after(column, text);
+                    boundary.wrote(text);
                 }
                 PrettyEvent::SoftBreak(flat) => {
                     let broken = match groups.last().copied() {
@@ -227,13 +239,18 @@ impl PrettySink {
                     };
                     if broken {
                         newline(&mut output, &mut column, indent, self.config.indent);
+                        boundary.separate();
                     } else {
                         output.push_str(flat);
                         column = column_after(column, flat);
+                        if !flat.is_empty() {
+                            boundary.separate();
+                        }
                     }
                 }
                 PrettyEvent::HardBreak => {
                     newline(&mut output, &mut column, indent, self.config.indent);
+                    boundary.separate();
                 }
                 PrettyEvent::RepetitionBreak {
                     separator,
@@ -267,7 +284,8 @@ impl PrettySink {
                             });
                     if broken {
                         if !leading && let Some(separator) = separator {
-                            if *space_before_separator {
+                            // A requested space, or a space the lexer needs, comes first.
+                            if *space_before_separator || boundary.guard(&separator.text) {
                                 output.push(' ');
                                 column = column.saturating_add(1);
                             }
@@ -280,6 +298,7 @@ impl PrettySink {
                             column = column_after(column, &separator.text);
                         }
                         newline(&mut output, &mut column, indent, self.config.indent);
+                        boundary.separate();
                         if *leading && let Some(separator) = separator {
                             let start = output.len();
                             output.push_str(&separator.text);
@@ -288,17 +307,24 @@ impl PrettySink {
                                 source: separator.source,
                             });
                             column = column_after(column, &separator.text);
+                            boundary.wrote(&separator.text);
                             if *space_after_separator {
                                 output.push(' ');
                                 column = column.saturating_add(1);
+                                boundary.separate();
                             }
                         }
                     } else {
                         if *space_before_separator {
                             output.push(' ');
                             column = column.saturating_add(1);
+                            boundary.separate();
                         }
                         if let Some(separator) = separator {
+                            if boundary.guard(&separator.text) {
+                                output.push(' ');
+                                column = column.saturating_add(1);
+                            }
                             let start = output.len();
                             output.push_str(&separator.text);
                             source_map.push(SourceMapEntry {
@@ -306,10 +332,12 @@ impl PrettySink {
                                 source: separator.source,
                             });
                             column = column_after(column, &separator.text);
+                            boundary.wrote(&separator.text);
                         }
                         if *space_after_separator {
                             output.push(' ');
                             column = column.saturating_add(1);
+                            boundary.separate();
                         }
                     }
                 }
@@ -333,6 +361,75 @@ impl PrettySink {
                 entries: source_map.into_boxed_slice(),
             },
         )
+    }
+}
+
+/// The text before the next boundary that layout writes, for the lexical guard.
+struct LexicalBoundary<'events> {
+    /// The grammar's test for two adjacent texts that its lexer would not keep apart.
+    fuses: Option<fn(&str, &str) -> bool>,
+    /// The last nonempty text written, while nothing has been written after it.
+    last: Option<&'events str>,
+    /// Answers already computed for one pair of texts in this rendering.
+    cache: std::collections::HashMap<(&'events str, &'events str), bool>,
+}
+
+impl<'events> LexicalBoundary<'events> {
+    /// Creates the guard of one rendering.
+    fn new(fuses: Option<fn(&str, &str) -> bool>) -> Self {
+        Self {
+            fuses,
+            last: None,
+            cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Reports whether `next`, written now, needs one space before it so that the lexer keeps
+    /// it apart from the last text.
+    fn guard(&mut self, next: &'events str) -> bool {
+        let (Some(fuses), Some(last)) = (self.fuses, self.last) else {
+            return false;
+        };
+        if next.is_empty() || next.starts_with(char::is_whitespace) {
+            return false;
+        }
+        *self
+            .cache
+            .entry((last, next))
+            .or_insert_with(|| fuses(last, next))
+    }
+
+    /// Records that `text` was written.
+    fn wrote(&mut self, text: &'events str) {
+        if text.ends_with(char::is_whitespace) {
+            self.last = None;
+        } else if !text.is_empty() {
+            self.last = Some(text);
+        }
+    }
+
+    /// Records that whitespace was written, so the next text starts a new boundary.
+    fn separate(&mut self) {
+        self.last = None;
+    }
+}
+
+/// Combines two declared-precedence bounds of one operand edge into the stricter one.
+///
+/// A bound is a level and whether an operand at exactly that level is parenthesized. The higher
+/// level is stricter; on equal levels a tie parenthesizes when either bound says so. Generated
+/// `Pretty` code uses this to join the bound of the enclosing rule with the bound of the token
+/// that the parser sees after the operand (`docs/declared-precedence.md`, "Consumers").
+#[doc(hidden)]
+pub fn stricter_bound(
+    left: Option<(u32, bool)>,
+    right: Option<(u32, bool)>,
+) -> Option<(u32, bool)> {
+    match (left, right) {
+        (Some(left), Some(right)) if left.0 > right.0 => Some(left),
+        (Some(left), Some(right)) if right.0 > left.0 => Some(right),
+        (Some(left), Some(right)) => Some((left.0, left.1 || right.1)),
+        (bound, None) | (None, bound) => bound,
     }
 }
 
@@ -601,6 +698,18 @@ impl PrettyContext {
     pub fn configure_defaults(&mut self, max_width: usize, indent: usize) {
         if !self.caller_configured {
             self.sink.config = PrettyConfig::new(max_width, indent);
+        }
+    }
+
+    /// Selects the grammar's test for two adjacent texts that its lexer would join or split in
+    /// another way. The first grammar entry that renders sets it; later entries keep it.
+    ///
+    /// Layout then writes one space between two such texts, so the rendering lexes as the
+    /// tokens it was built from.
+    #[doc(hidden)]
+    pub fn configure_lexical_boundary(&mut self, fuses: fn(&str, &str) -> bool) {
+        if self.sink.lexical_boundary.is_none() {
+            self.sink.lexical_boundary = Some(fuses);
         }
     }
 
@@ -1502,6 +1611,82 @@ mod tests {
             }
         }
         assert_eq!(AdjacentPunctuation.render(), ": :");
+    }
+
+    #[test]
+    fn a_lexical_boundary_separates_only_adjacent_texts_that_the_lexer_joins() {
+        fn joins(left: &str, right: &str) -> bool {
+            left.ends_with('@') && right.starts_with('@')
+        }
+        struct Adjacent;
+        impl Pretty for Adjacent {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.configure_lexical_boundary(joins);
+                context.tight_token("@")?;
+                context.tight_token("@")?;
+                context.tight_token("x")?;
+                context.tight_token("@")?;
+                context.soft_break("")?;
+                context.tight_token("@")?;
+                context.soft_break(" ")?;
+                context.tight_token("@")
+            }
+        }
+        // The first two texts and the last two of the flat break meet and get a space. A text
+        // after `x`, and a text after a written space, do not.
+        assert_eq!(Adjacent.render(), "@ @x@ @ @");
+
+        struct Broken;
+        impl Pretty for Broken {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.configure_lexical_boundary(joins);
+                context.group(|context| {
+                    context.tight_token("@aaaaaaaaaa")?;
+                    context.soft_break("")?;
+                    context.tight_token("@")
+                })
+            }
+        }
+        // A broken soft break writes a newline, so the texts no longer meet.
+        assert_eq!(
+            Broken.render_with(PrettyConfig::new(4, 2)),
+            "@aaaaaaaaaa\n@"
+        );
+
+        struct Unset;
+        impl Pretty for Unset {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.tight_token("@")?;
+                context.tight_token("@")
+            }
+        }
+        // Without a grammar test, layout writes the texts as before.
+        assert_eq!(Unset.render(), "@@");
+    }
+
+    #[test]
+    fn the_stricter_bound_takes_the_higher_level_and_joins_ties() {
+        assert_eq!(
+            super::stricter_bound(Some((3, false)), Some((5, false))),
+            Some((5, false))
+        );
+        assert_eq!(
+            super::stricter_bound(Some((5, true)), Some((3, false))),
+            Some((5, true))
+        );
+        assert_eq!(
+            super::stricter_bound(Some((4, false)), Some((4, true))),
+            Some((4, true))
+        );
+        assert_eq!(
+            super::stricter_bound(None, Some((4, true))),
+            Some((4, true))
+        );
+        assert_eq!(
+            super::stricter_bound(Some((4, false)), None),
+            Some((4, false))
+        );
+        assert_eq!(super::stricter_bound(None, None), None);
     }
 
     #[test]

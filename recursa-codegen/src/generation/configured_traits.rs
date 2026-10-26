@@ -1110,6 +1110,18 @@ pub(super) fn render_node_arbitrary(
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     let (_, type_generics, _) = node.generics.split_for_impl();
     let arbitrary_value = |projection: &SemanticParseProjection| match projection {
+        // A field that names a restricted expression samples only what that nonterminal
+        // derives (`docs/declared-precedence.md`, "Restricted expressions"), so a sampled value
+        // always has a rendering the site parses.
+        SemanticParseProjection::Direct {
+            terminal,
+            terminal_node: Some(base),
+            wrappers,
+            restriction: Some(restriction),
+            ..
+        } if restriction_samples(plan, *base, *restriction) => {
+            render_restricted_arbitrary_value(facade, terminal, wrappers, *restriction)
+        }
         SemanticParseProjection::Direct {
             terminal,
             wrappers,
@@ -1175,6 +1187,120 @@ pub(super) fn render_node_arbitrary(
             quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?)
         }
     };
+    // Renders the choice of one variant among `selected` (indices into the enum's variants) and
+    // its construction. Inside a restricted sampler, `restricted` names the restriction, and an
+    // operand that the restriction retypes samples that restriction again, as the lowering
+    // parses it.
+    let enum_body = |selected: &[usize], restricted: Option<(u16, &PlannedRestriction)>| {
+        let variants = trait_variants(&node.body);
+        let arms = selected.iter().enumerate().map(|(choice, &index)| {
+            let variant = &variants[index];
+            let edges = restricted.map(|(_, restriction)| {
+                let edges = restricted_edges(variant, node.node);
+                (
+                    edges.first,
+                    edges.last.filter(|_| !restriction.leading_only),
+                )
+            });
+            let values = variant
+                .elements
+                .iter()
+                .enumerate()
+                .filter_map(|(element_index, element)| {
+                    let ElementParseKind::Semantic { field, projection } = &element.kind else {
+                        return None;
+                    };
+                    let edge = edges.is_some_and(|(first, last)| {
+                        first == Some(element_index) || last == Some(element_index)
+                    });
+                    let value = match (edge, restricted, projection.as_ref()) {
+                        (
+                            true,
+                            Some((restriction, _)),
+                            SemanticParseProjection::Direct {
+                                terminal, wrappers, ..
+                            },
+                        ) => render_restricted_arbitrary_value(
+                            facade,
+                            terminal,
+                            wrappers,
+                            restriction,
+                        ),
+                        _ => arbitrary_value(projection),
+                    };
+                    Some((field, value))
+                })
+                .collect::<Vec<_>>();
+            let variant_ident = &variant.ident;
+            let value = match variant.style {
+                ResolvedFieldStyle::Named => {
+                    let entries = values.iter().map(|(field, value)| {
+                        let ident = field.ident.as_ref().expect("named field");
+                        quote!(#ident: #value)
+                    });
+                    quote!(Self::#variant_ident { #(#entries),* })
+                }
+                ResolvedFieldStyle::Unnamed => {
+                    let values = values.iter().map(|(_, value)| value);
+                    quote!(Self::#variant_ident(#(#values),*))
+                }
+                ResolvedFieldStyle::Unit => quote!(Self::#variant_ident),
+            };
+            quote!(#choice => #value)
+        });
+        let last = selected.len().saturating_sub(1);
+        // `int_in_range` deterministically returns the range's lower bound once the input is
+        // exhausted (confirmed empirically, not merely a rare edge case), so a plain uniform
+        // choice can deterministically re-select a recursive variant forever once a
+        // mutually-recursive grammar (any real one) runs out of entropy. Past a bounded
+        // sampling depth, prefer a variant with no Node-typed element at all — one that can
+        // always be constructed without recursing further — falling back to the plain choice
+        // when there is nothing to gain from restricting it (every variant already recurses,
+        // or none does).
+        let leaf_indices = selected
+            .iter()
+            .enumerate()
+            .filter(|(_, index)| !variant_has_node_element(&variants[**index]))
+            .map(|(choice, _)| choice)
+            .collect::<Vec<_>>();
+        let variant_index = if leaf_indices.len() == selected.len() {
+            // Every variant is already a leaf (never recurses) — nothing to restrict.
+            quote!(input.int_in_range(0usize..=#last)?)
+        } else if leaf_indices.is_empty() {
+            // No variant can be constructed without recursing into another Node at all (e.g.
+            // even an "atom" case wraps a dedicated Node type rather than a bare content
+            // token) — there is no variant to prefer, so the only way to guarantee
+            // termination once already deep is to refuse to go deeper. This is not merely a
+            // deeper search: `int_in_range` deterministically returns the same variant index
+            // forever once entropy is exhausted, so without this the recursion genuinely never
+            // ends rather than just becoming unlikely.
+            quote! {
+                {
+                    if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
+                        return Err(#facade::__private::arbitrary::Error::NotEnoughData);
+                    }
+                    input.int_in_range(0usize..=#last)?
+                }
+            }
+        } else {
+            let leaf_count = leaf_indices.len();
+            let leaf_upper = leaf_count - 1;
+            quote! {
+                if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
+                    const __RECURSA_LEAF_VARIANTS: [usize; #leaf_count] = [#(#leaf_indices),*];
+                    __RECURSA_LEAF_VARIANTS[input.int_in_range(0usize..=#leaf_upper)?]
+                } else {
+                    input.int_in_range(0usize..=#last)?
+                }
+            }
+        };
+        quote! {
+            match #variant_index {
+                #(#arms,)*
+                _ => unreachable!("the arbitrary variant index is in range"),
+            }
+        }
+    };
     let body = match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
             let fields = semantic_fields_with_projections(elements);
@@ -1193,81 +1319,60 @@ pub(super) fn render_node_arbitrary(
                 ResolvedFieldStyle::Unit => quote!(Self),
             }
         }
-        NodeBodyPlan::Enum { .. } => {
-            let variants = trait_variants(&node.body);
-            let arms = variants.iter().enumerate().map(|(index, variant)| {
-                let fields = semantic_fields_with_projections(&variant.elements);
-                let values = fields
-                    .iter()
-                    .map(|(_, projection)| arbitrary_value(projection));
-                let variant_ident = &variant.ident;
-                let value = match variant.style {
-                    ResolvedFieldStyle::Named => {
-                        let entries = fields.iter().zip(values).map(|((field, _), value)| {
-                            let ident = field.ident.as_ref().expect("named field");
-                            quote!(#ident: #value)
-                        });
-                        quote!(Self::#variant_ident { #(#entries),* })
-                    }
-                    ResolvedFieldStyle::Unnamed => quote!(Self::#variant_ident(#(#values),*)),
-                    ResolvedFieldStyle::Unit => quote!(Self::#variant_ident),
-                };
-                quote!(#index => #value)
-            });
-            let last = variants.len().saturating_sub(1);
-            // `int_in_range` deterministically returns the range's lower bound once the input is
-            // exhausted (confirmed empirically, not merely a rare edge case), so a plain uniform
-            // choice can deterministically re-select a recursive variant forever once a
-            // mutually-recursive grammar (any real one) runs out of entropy. Past a bounded
-            // sampling depth, prefer a variant with no Node-typed element at all — one that can
-            // always be constructed without recursing further — falling back to the plain choice
-            // when there is nothing to gain from restricting it (every variant already recurses,
-            // or none does).
-            let leaf_indices = variants
-                .iter()
-                .enumerate()
-                .filter(|(_, variant)| !variant_has_node_element(variant))
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            let variant_index = if leaf_indices.len() == variants.len() {
-                // Every variant is already a leaf (never recurses) — nothing to restrict.
-                quote!(input.int_in_range(0usize..=#last)?)
-            } else if leaf_indices.is_empty() {
-                // No variant can be constructed without recursing into another Node at all (e.g.
-                // even an "atom" case wraps a dedicated Node type rather than a bare content
-                // token) — there is no variant to prefer, so the only way to guarantee
-                // termination once already deep is to refuse to go deeper. This is not merely a
-                // deeper search: `int_in_range` deterministically returns the same variant index
-                // forever once entropy is exhausted, so without this the recursion genuinely never
-                // ends rather than just becoming unlikely.
-                quote! {
-                    {
-                        if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
-                            return Err(#facade::__private::arbitrary::Error::NotEnoughData);
-                        }
-                        input.int_in_range(0usize..=#last)?
-                    }
-                }
-            } else {
-                let leaf_count = leaf_indices.len();
-                let leaf_upper = leaf_count - 1;
-                quote! {
-                    if __recursa_arbitrary_depth >= #facade::__private::ARBITRARY_MAX_DEPTH {
-                        const __RECURSA_LEAF_VARIANTS: [usize; #leaf_count] = [#(#leaf_indices),*];
-                        __RECURSA_LEAF_VARIANTS[input.int_in_range(0usize..=#leaf_upper)?]
-                    } else {
-                        input.int_in_range(0usize..=#last)?
-                    }
-                }
-            };
-            quote! {
-                match #variant_index {
-                    #(#arms,)*
-                    _ => unreachable!("the arbitrary variant index is in range"),
-                }
-            }
+        NodeBodyPlan::Enum { variants } => {
+            let all = (0..variants.len()).collect::<Vec<_>>();
+            enum_body(&all, None)
         }
     };
+    // One sampler per restricted expression of this base: the admitted variants only, with the
+    // restriction applied again to every operand the lowering retypes.
+    let restrictions = plan.restrictions.of(node.node);
+    let restricted_sampler = (matches!(node.body, NodeBodyPlan::Enum { .. })
+        && (0..restrictions.len()).any(|index| {
+            restriction_samples(plan, node.node, u16::try_from(index).unwrap_or(u16::MAX))
+        }))
+    .then(|| {
+        let arms = restrictions.iter().enumerate().map(|(index, restriction)| {
+            let index = u16::try_from(index).expect("a restriction index fits u16");
+            let selected = restriction
+                .admitted
+                .iter()
+                .enumerate()
+                .filter(|(_, admitted)| **admitted)
+                .map(|(variant, _)| variant)
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                return quote! {
+                    #index => return Err(#facade::__private::arbitrary::Error::IncorrectFormat)
+                };
+            }
+            let body = enum_body(&selected, Some((index, restriction)));
+            quote!(#index => #body)
+        });
+        quote! {
+            __recursa_if_arbitrary! {
+            impl #impl_generics #node_ident #type_generics #where_clause {
+                /// Samples a value of one restricted expression of this enum: an admitted
+                /// variant, with the restriction applied again to every operand the lowering
+                /// retypes.
+                #[doc(hidden)]
+                #[allow(dead_code)]
+                pub(crate) fn __recursa_arbitrary_restricted(
+                    input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    restriction: u16,
+                ) -> #facade::__private::arbitrary::Result<Self> {
+                    let (__recursa_arbitrary_depth_guard, __recursa_arbitrary_depth) =
+                        #facade::__private::ArbitraryDepthGuard::enter();
+                    let _ = &__recursa_arbitrary_depth_guard;
+                    Ok(match restriction {
+                        #(#arms,)*
+                        _ => unreachable!("the restriction index is in range"),
+                    })
+                }
+            }
+            }
+        }
+    });
     // A struct with text rules samples again when a rule refuses the value, a bounded number of
     // times, so a sampled value always parses back (`docs/declared-rejections.md`, "Sampling").
     let checked_body = if plan.rejections.struct_rules(node.node).is_some() {
@@ -1311,7 +1416,60 @@ pub(super) fn render_node_arbitrary(
             }
         }
         }
+        #restricted_sampler
     }
+}
+
+/// Reports whether a field that names restriction `restriction` of `base` samples through the
+/// base's restricted sampler: the restriction is planned and admits a variant.
+fn restriction_samples(plan: &EmissionPlan, base: NodeId, restriction: u16) -> bool {
+    plan.restrictions
+        .of(base)
+        .get(usize::from(restriction))
+        .is_some_and(|planned| planned.admitted.contains(&true))
+}
+
+/// Renders the sampling of one field that names a restricted expression: the base's restricted
+/// sampler, under the field's storage wrappers.
+fn render_restricted_arbitrary_value(
+    facade: &Ident,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+    restriction: u16,
+) -> proc_macro2::TokenStream {
+    let base = quote!(<#terminal>::__recursa_arbitrary_restricted(input, #restriction)?);
+    let more = quote!(<bool as #facade::__private::arbitrary::Arbitrary>::arbitrary(input)?);
+    wrappers
+        .iter()
+        .rev()
+        .fold(base, |value, wrapper| match wrapper {
+            FieldWrapper::Boxed => quote!(::std::boxed::Box::new(#value)),
+            FieldWrapper::Optional => quote! {
+                if #more {
+                    ::core::option::Option::Some(#value)
+                } else {
+                    ::core::option::Option::None
+                }
+            },
+            FieldWrapper::ZeroOrMore => quote! {
+                {
+                    let mut __recursa_items = ::std::vec::Vec::new();
+                    while #more {
+                        __recursa_items.push(#value);
+                    }
+                    __recursa_items
+                }
+            },
+            FieldWrapper::OneOrMore => quote! {
+                {
+                    let mut __recursa_items = #facade::Vec1::new(#value);
+                    while #more {
+                        __recursa_items.push(#value);
+                    }
+                    __recursa_items
+                }
+            },
+        })
 }
 
 /// Renders configured serialization or deserialization through the authored semantic shape.

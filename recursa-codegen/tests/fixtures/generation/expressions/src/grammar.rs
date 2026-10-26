@@ -11,6 +11,12 @@
 //!   while the parenthesized atom keeps the full language.
 //! - An `ESCAPE`-style keyword one level above its operator: `ESCAPE` above `LIKE` shifts the
 //!   optional clause, while any token below `LIKE` reduces the comparison first.
+//! - A rule whose level is not the level of the token after its first operand: `Quant` takes
+//!   `PLUS` through `#[parse(prec = PLUS)]`, as `gram.y`'s `a_expr subquery_Op sub_type
+//!   select_with_parens %prec Op` does, but the parser compares the level of its operator token,
+//!   `*` or `=`, when it decides to reduce the operand before it.
+//! - Prefix operators whose spellings the lexer joins: `@` beside `@` is `@@`, and `-` beside
+//!   `-` opens a comment, so `Pretty` writes a space between two of them.
 
 recursa::grammar! {
     module = crate::grammar,
@@ -19,13 +25,14 @@ recursa::grammar! {
 }
 
 recursa::tokens! {
-    ignore = r"[ \t\n\r]+",
+    ignore = r"[ \t\n\r]+|--[^\n]*",
     keywords {
         AND => "and",
         BETWEEN => "between",
         LIKE => "like",
         ESCAPE => "escape",
         NULL => "null",
+        ANY => "any",
     }
     punctuation {
         EQ => "=",
@@ -34,6 +41,8 @@ recursa::tokens! {
         STAR => "*",
         CARET => "^",
         BANG => "!",
+        AT => "@",
+        ATAT => "@@",
         LPAREN => "(",
         RPAREN => ")",
     }
@@ -45,7 +54,7 @@ recursa::tokens! {
         left(bp = 20) { PLUS, MINUS },
         left(bp = 30) { STAR },
         right(bp = 40) { CARET },
-        right(bp = 45) { UMINUS },
+        right(bp = 45) { UMINUS, AT, ATAT },
         left(bp = 50) { BANG },
     }
 }
@@ -80,6 +89,10 @@ recursa::ast_node! {
         #[parse(prec = UMINUS)]
         Negate(#[tok(MINUS, this)] boxed!(Self)),
         Factorial(#[tok(this, BANG)] boxed!(Self)),
+        /// A prefix `@`, whose spelling joins a second one into `@@`.
+        Abs(#[tok(AT, this)] boxed!(Self)),
+        /// A prefix `@@`.
+        Center(#[tok(ATAT, this)] boxed!(Self)),
         Power(boxed!(Self), #[tok(CARET, this)] boxed!(Self)),
         Multiply(boxed!(Self), #[tok(STAR, this)] boxed!(Self)),
         Add(boxed!(Self), #[tok(PLUS, this)] boxed!(Self)),
@@ -104,6 +117,31 @@ recursa::ast_node! {
             #[tok(BETWEEN, this)] boxed!(BExpr),
             #[tok(AND, this)] boxed!(Self),
         ),
+        /// `a_expr: a_expr subquery_Op sub_type select_with_parens %prec Op`: the rule takes
+        /// `PLUS`'s level, while the token after its operand is `*` or `=`.
+        #[parse(prec = PLUS)]
+        Quant(boxed!(Self), QuantSuffix),
+    }
+}
+
+recursa::ast_node! {
+    /// The operator and the operand of a quantified comparison: `* any(name)`.
+    #[derive(Debug, Clone)]
+    pub struct QuantSuffix {
+        pub op: QuantOp,
+        #[tok(ANY, LPAREN, this, RPAREN)]
+        pub name: Name,
+    }
+}
+
+recursa::ast_node! {
+    /// The operator of a quantified comparison: a token whose level differs from the rule's.
+    #[derive(Debug, Clone)]
+    pub enum QuantOp {
+        #[tok(STAR)]
+        Star,
+        #[tok(EQ)]
+        Eq,
     }
 }
 

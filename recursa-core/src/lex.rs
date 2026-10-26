@@ -764,3 +764,56 @@ where
     }
     LexResult::new(source, records, trivia)
 }
+
+/// Reports whether two texts that `Pretty` writes next to each other lex as other records than
+/// the two texts lexed alone.
+///
+/// The joined text must lex as the records of `left`, followed by the records of `right`
+/// moved by the length of `left`, with the same kinds and the same retained trivia. Any other
+/// result means the grammar's lexer would split the joined text in another way, or that trivia
+/// such as a comment starts across the boundary, so `Pretty` must write a space between the
+/// texts.
+#[doc(hidden)]
+pub fn lex_pair_fuses<Token>(left: &str, right: &str, plan: &LexPlan) -> bool
+where
+    Token: for<'source> Logos<'source, Source = str, Extras = LexExtras> + LexTokenIndex,
+{
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    let joined = format!("{left}{right}");
+    let left_lexed = lex::<Token>(left, plan);
+    let right_lexed = lex::<Token>(right, plan);
+    let joined_lexed = lex::<Token>(&joined, plan);
+    let shift = left.len();
+    let expected = left_lexed
+        .records()
+        .iter()
+        .map(|record| (record.kind, record.span.range()))
+        .chain(right_lexed.records().iter().map(|record| {
+            let range = record.span.range();
+            (record.kind, range.start + shift..range.end + shift)
+        }));
+    let records_fuse = !joined_lexed
+        .records()
+        .iter()
+        .map(|record| (record.kind, record.span.range()))
+        .eq(expected);
+    if records_fuse {
+        return true;
+    }
+    let trivia = |lexed: &LexResult<'_>, shift: usize| {
+        lexed
+            .trivia()
+            .unwrap_or(&[])
+            .iter()
+            .map(|record| {
+                let range = record.span.range();
+                (record.kind, range.start + shift..range.end + shift)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut expected_trivia = trivia(&left_lexed, 0);
+    expected_trivia.extend(trivia(&right_lexed, shift));
+    trivia(&joined_lexed, 0) != expected_trivia
+}
