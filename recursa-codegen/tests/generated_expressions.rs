@@ -103,6 +103,28 @@ fn the_expressions_fixture_decides_every_operator_by_its_declared_level() {
         lines.contains("err \"1 2\" => code=RCA4100 kind=UnexpectedToken"),
         "{lines}"
     );
+
+    // Pretty writes what a parse of its rendering needs (`docs/declared-precedence.md`,
+    // "Consumers"), and each rendering parses back to the value: the parentheses of a value that
+    // a restricted site refuses, also on the retyped edge of an admitted variant; the parentheses
+    // that the level of the token after a first operand needs (a rule's own level still adds
+    // the parentheses it added before, so `a + (b* any(q))` keeps them); and a space between two
+    // texts that the lexer would join. Every sampled value renders as text that parses back to the
+    // same text.
+    for expected in [
+        "repair \"a between (b and c) and d\"\n",
+        "repair \"a between b + (c and e) and d\"\n",
+        "repair \"(a + b)* any(q)\"\n",
+        "repair \"a + (b* any(q))\"\n",
+        "repair \"a like (b= any(q))\"\n",
+        "repair \"(a like b)= any(q)\"\n",
+        "repair \"@ @a\"\n",
+        "repair \"@@a\"\n",
+        "repair \"- -a\"\n",
+        "arbitrary round trip ok\n",
+    ] {
+        assert!(stdout.contains(expected), "{expected}\n{stdout}");
+    }
 }
 
 #[test]
