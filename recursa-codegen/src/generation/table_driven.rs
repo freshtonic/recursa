@@ -1234,7 +1234,7 @@ fn render_parse_impl(
     let accept_rule = start.accept_rule;
     // A grammar that declares a rejection rule positions it at one list item, and only the LR
     // extent stack holds the extent of a reduced nonterminal.
-    let demand_extents = (!plan.rejections.is_empty())
+    let demand_extents = (!plan.rejections.is_empty() || !plan.validations.is_empty())
         .then(|| quote!(#facade::__private::ParseContext::demand_extents(context);));
     if plan.arena_ast {
         let family_visibility = publicly_materialized.then(|| quote!(pub));
@@ -1458,13 +1458,14 @@ fn render_reduce_body(
     let RuleAction::Construct { variant, sites, .. } = &rule.action else {
         return Ok(quote!({}));
     };
-    let (variant_ident, style, elements): (
+    let (variant_ident, variant_id, style, elements): (
         Option<&Ident>,
+        Option<ResolvedVariantId>,
         ResolvedFieldStyle,
         Cow<'_, [ElementParsePlan]>,
     ) = match (&application.body, variant) {
         (NodeBodyPlan::Struct { style, elements }, None) => {
-            (None, *style, Cow::Borrowed(elements.as_slice()))
+            (None, None, *style, Cow::Borrowed(elements.as_slice()))
         }
         (NodeBodyPlan::Enum { variants, .. }, Some(declaration)) => {
             let resolved = plan_variant(lr, application, *declaration)?;
@@ -1476,6 +1477,7 @@ fn render_reduce_body(
                 })?;
             (
                 Some(&variant.ident),
+                Some(resolved),
                 variant.style,
                 Cow::Borrowed(variant.elements.as_slice()),
             )
@@ -1536,11 +1538,20 @@ fn render_reduce_body(
     }
     values.reverse();
     let construction = render_construction(variant_ident, style, &values);
+    // A refused variant or a validation hook reads the value it has just built, before it is
+    // pushed (`docs/declared-rejections.md`, "Refused variants and validation hooks").
+    let built = format_ident!("__recursa_built");
+    let validation = render_reduce_checks(
+        plan,
+        node,
+        variant_id,
+        &field_extents(lr, rule, &elements, &forms),
+        BuiltNode::Nested(&built),
+    )?;
     if let Some((start, len)) = struct_check_site(plan, lr, rule, node, &elements, &forms)
         && variant_ident.is_none()
     {
         // A struct with text rules checks the value it has just built, before it is pushed.
-        let built = format_ident!("__recursa_built");
         let name = |node: NodeId| nested_node_path(plan, node);
         let naming = super::rejections::NestedNaming::Value(&name);
         let check = super::rejections::render_struct_check(
@@ -1557,6 +1568,17 @@ fn render_reduce_body(
                 #(#pops)*
                 let #built: Self = #construction;
                 #check
+                #validation
+                reduction.push(#built);
+            }
+        });
+    }
+    if !validation.is_empty() {
+        return Ok(quote! {
+            {
+                #(#pops)*
+                let #built: Self = #construction;
+                #validation
                 reduction.push(#built);
             }
         });

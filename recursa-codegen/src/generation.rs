@@ -101,6 +101,7 @@ mod rust_names;
 mod source_text;
 mod table_driven;
 mod table_driven_flat;
+mod validations;
 mod visit;
 
 use arbitrary_seed::*;
@@ -128,6 +129,7 @@ use restrictions::*;
 use reuse::*;
 use rust_names::*;
 use table_driven::*;
+use validations::*;
 use visit::*;
 
 /// One complete published logical output.

@@ -42,8 +42,10 @@ pub struct RejectionNote {
 }
 
 impl RejectionNote {
-    /// Builds one note. Generated code is the only caller.
-    #[doc(hidden)]
+    /// Builds one note.
+    ///
+    /// Generated code builds the note of each declared rule. A validation hook builds its own
+    /// notes as statics, and a [`Refusal`] names one of them.
     pub const fn new(
         site: &'static str,
         code: Option<&'static str>,
@@ -263,6 +265,13 @@ pub struct Rejection {
 }
 
 impl Rejection {
+    /// Builds the rejection of one reduce: the note of the rule or hook that refused the Node, and
+    /// the extent the reduce reports. Generated code is the only caller.
+    #[doc(hidden)]
+    pub const fn declared(note: &'static RejectionNote, span: Option<Span>) -> Self {
+        Self { note, span }
+    }
+
     /// The message data of the rule that rejected the list.
     pub const fn note(&self) -> &'static RejectionNote {
         self.note
@@ -271,6 +280,47 @@ impl Rejection {
     /// The extent of the item that a rule refused.
     pub const fn span(&self) -> Option<Span> {
         self.span
+    }
+}
+
+/// What a validation hook answers when it refuses the Node it is given.
+///
+/// A hook (`#[validate(...)]`, `docs/declared-rejections.md`) is a consumer function that a
+/// generated reduce calls with the Node it has just built. It refuses the Node with a static
+/// [`RejectionNote`], and it can name the semantic field whose extent the error reports, as a
+/// `gram.y` action names a position with `parser_errposition`. Without a field, the error
+/// reports the extent of the whole Node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Refusal {
+    /// The message data of the refusal.
+    note: &'static RejectionNote,
+    /// The index of the semantic field whose extent the error reports, in declaration order.
+    field: Option<usize>,
+}
+
+impl Refusal {
+    /// Refuses the Node with `note`, at the extent of the whole Node.
+    pub const fn new(note: &'static RejectionNote) -> Self {
+        Self { note, field: None }
+    }
+
+    /// Reports the error at the extent of semantic field `field`, counted from zero in
+    /// declaration order over the fields of the variant the Node holds.
+    pub const fn at_field(self, field: usize) -> Self {
+        Self {
+            note: self.note,
+            field: Some(field),
+        }
+    }
+
+    /// The message data of the refusal.
+    pub const fn note(&self) -> &'static RejectionNote {
+        self.note
+    }
+
+    /// The semantic field whose extent the error reports, when the hook named one.
+    pub const fn field(&self) -> Option<usize> {
+        self.field
     }
 }
 
