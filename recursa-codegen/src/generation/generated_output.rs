@@ -1855,6 +1855,13 @@ pub(super) fn render_root(
             LexResult { inner: __recursa_finalize(source, records, trivia) }
         }
 
+        /// Reports whether two texts that `Pretty` writes next to each other lex as other
+        /// records than the two texts alone, so that layout writes a space between them.
+        #[doc(hidden)]
+        pub fn __recursa_pretty_tokens_fuse(left: &str, right: &str) -> bool {
+            #facade::__private::lex_pair_fuses::<__RecursaLexToken>(left, right, &__RECURSA_LEX_PLAN)
+        }
+
         #framing_lex
         #explorer_raw_lex
 
@@ -1864,6 +1871,8 @@ pub(super) fn render_root(
             GrammarInfo, LexBuildError, LexBuilder, LexError, LexErrorCode, LexErrors, LexResult,
             Token, Tokens, #trivia_exports grammar_info, lex,
         };
+        #[doc(hidden)]
+        pub use __recursa_lexical::__recursa_pretty_tokens_fuse;
 
         #[doc(hidden)]
         pub(crate) mod __recursa_content_tokens {
