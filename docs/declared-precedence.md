@@ -175,12 +175,57 @@ and by nothing else.
   `L' < L`, or `L' == L` and the parent is `right` or `nonassoc`; or when it is
   the parent's last operand and `L' < L`, or `L' == L` and the parent is
   `left` or `nonassoc`. A child with no level is never parenthesized. Interior
-  operands are delimited by fixed tokens and are never parenthesized by
-  precedence. This reproduces the current binding-power rule exactly, and the
-  existing Pretty goldens are the proof. The requirement that the grammar have
+  operands are delimited by fixed tokens and are not parenthesized by
+  precedence, with one exception below. The requirement that the grammar have
   a grouping atom (an atom that encloses `Self` between fixed tokens) is
   unchanged; see "The enclosure proof" below for what counts as fixed syntax
   and how one atom is selected.
+
+  The rule above compares the levels of two rules. Bison compares the level of
+  a rule with the level of the lookahead token, and the two are different when
+  a variant has a `#[parse(prec = ...)]` override or when the token after its
+  first operand is not its last levelled terminal (pg-sql's quantified
+  comparisons: `#[parse(prec = Op)]`, and the token after the operand is `*`,
+  `<` or `LIKE`). So Pretty also uses the token's level `T`, and the union of
+  the two tests can only add parentheses:
+
+  - A first operand is also parenthesized when its level is below `T(p)`, the
+    level of the token after it in the parent (or equal, and `T(p)` is not
+    `left`). `T(p)` is the level of a fixed token, or, for a child Node, the
+    level of the token that the child's value starts with, which a generated
+    function reads at run time.
+  - A last operand whose own first symbol is an operand is also parenthesized
+    when `T(c)`, the level of the token after that operand, is below the
+    parent's level (or equal, and the parent is `left` or `nonassoc`): the
+    parser then reduces the parent before it sees that token.
+  - An interior operand that ends a rule of the same Node in some derivation is
+    a last operand there: the elements after it can all be absent
+    (`a LIKE b [ESCAPE c]`), or another variant is the same sequence up to and
+    including the operand (`LIKE` beside `LIKE ... ESCAPE`). It takes the bound
+    of a last operand of that rule.
+
+  A parsed tree never meets the new terms, because the parser built that shape
+  when the reduce or the shift won. So the rendering of a parsed tree does not
+  change.
+
+  At a restricted site (see "Restricted expressions"), Pretty also
+  parenthesizes a value whose variant the restriction refuses, and it passes
+  the restriction on to the operands the lowering retypes. A field that names a
+  restriction renders through a generated entry of the base that carries the
+  restriction. This works only when the restriction admits the grouping atom,
+  because the atom's interior is the base again. A restriction that refuses the
+  atom (a `leading` restriction that refuses `(`, or a restriction of constants)
+  keeps the rendering it had, and `Arbitrary` never samples a value it refuses:
+  it samples each restricted site through the restriction's own variants.
+
+  Synthesized parentheses render through the enclosure frame of the selected
+  grouping atom: the same element sequence, layout, groups and hints that the
+  atom of a parsed value renders, so a repaired value and the parse of its
+  rendering lay out the same way.
+
+  A remaining limit: the shadow rule above covers a shorter rule of the same
+  Node only. An interior operand of a rule whose prefix is a rule of another
+  Node is not covered.
 - **Diagrams.** A variant renders as the rule the author wrote. The
   `atom`/`prefix`/`infix`/`postfix` role labels and binding powers are
   removed. The precedence table is not rendered on rules.

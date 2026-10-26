@@ -421,8 +421,18 @@ _Avoid_: Delimiter kind, token identity, single-variant helper
 An authored Node that accepts a subset of another expression Node's productions
 so that an interior operand cannot consume a token that also closes the enclosing
 syntax. It is written by hand, as PostgreSQL writes b_expr, and is not derived
-from an exclusion list.
+from an exclusion list. Arbitrary samples only the language of a restricted
+site, and Pretty parenthesizes a value that the site refuses when the
+restriction admits the grouping atom; a restriction that refuses the atom keeps
+its rendering, because no parentheses can repair it.
 _Avoid_: Exclusion set, Pratt clone, minimum binding power
+
+**Lexical boundary**:
+The place between two texts that Pretty writes with nothing between them. The
+grammar's own lexer decides it: when the two texts joined lex as other records
+than the two texts alone, Pretty writes one space between them, so that a
+rendering always lexes as the tokens it was built from.
+_Avoid_: Spacing class, token spacing
 
 **Parse capability**:
 The sealed facade contract that gives a generated grammar type its safe
