@@ -123,6 +123,80 @@ fn sized(source: &str) -> String {
     }
 }
 
+/// Parses one `FRAME` Node and reports `ok` or the failure.
+#[cfg(not(feature = "flat-ast"))]
+fn frame(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Frame::parse_spanned(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `FRAME` Node into a Flat AST.
+#[cfg(feature = "flat-ast")]
+fn frame(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Frame::parse_flat(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `PAIR` Node and reports `ok` or the failure.
+#[cfg(not(feature = "flat-ast"))]
+fn pair(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Pair::parse_spanned(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `PAIR` Node into a Flat AST.
+#[cfg(feature = "flat-ast")]
+fn pair(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Pair::parse_flat(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Samples `FRAME` Nodes and reports whether any of them holds the refused variant.
+#[cfg(not(any(feature = "arena-ast", feature = "flat-ast")))]
+fn sampled_frames() -> String {
+    use recursa::Arbitrary as _;
+
+    let mut sampled = 0_usize;
+    for seed in 0_u8..64 {
+        let bytes = [seed, seed.wrapping_mul(11), seed ^ 0x2b, seed.wrapping_add(7), seed];
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        let Ok(value) = grammar::Frame::arbitrary(&mut input) else {
+            continue;
+        };
+        if matches!(value.bound, grammar::Bound::Last) {
+            return "a sample holds the refused variant".to_owned();
+        }
+        sampled += 1;
+    }
+    format!("{} samples, none refused", sampled.min(1))
+}
+
+/// A grammar whose AST holds no sampler of its own reports that it sampled nothing.
+#[cfg(any(feature = "arena-ast", feature = "flat-ast"))]
+fn sampled_frames() -> String {
+    "not sampled".to_owned()
+}
+
 /// Samples `SIZING` Nodes and reports whether every one of them parses back.
 ///
 /// A sampled width that a rule refuses is sampled again, and an optional width whose retries run
@@ -311,6 +385,18 @@ fn main() {
     println!("sized_leading_zeros={}", sized("sized a width(064)"));
     println!("sized_zero={}", sized("sized a width(0)"));
     println!("sized_wide={}", sized("sized a width(65)"));
+
+    // A refused variant keeps its syntax and is refused when it is reduced, at the extent of the
+    // whole variant; the other variants parse.
+    println!("frame_first={}", frame("frame first"));
+    println!("frame_last={}", frame("frame last"));
+    // A validation hook of a struct refuses the value at the field it names; a hook of one
+    // variant runs only for that variant.
+    println!("pair_two={}", pair("pair (a b)"));
+    println!("pair_three={}", pair("pair (a b c)"));
+    println!("frame_many_two={}", frame("frame many (a b)"));
+    println!("frame_many_three={}", frame("frame many (a b c)"));
+    println!("sampled_frames={}", sampled_frames());
 
     println!("sampled={}", sampled_round_trips());
     println!("sampled_columns={}", sampled_columns_round_trip());

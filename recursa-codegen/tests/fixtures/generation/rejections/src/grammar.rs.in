@@ -32,6 +32,11 @@ recursa::tokens! {
         PATH => "path" in RESERVED,
         SIZED => "sized" in RESERVED,
         WIDTH => "width" in RESERVED,
+        FRAME => "frame" in RESERVED,
+        FIRST => "first" in RESERVED,
+        LAST => "last" in RESERVED,
+        MANY => "many" in RESERVED,
+        PAIR => "pair" in RESERVED,
     }
     admissions { Unreserved = UNRESERVED }
     punctuation {
@@ -243,5 +248,45 @@ recursa::ast_node! {
         #[tok(WIDTH, LPAREN, this, RPAREN)]
         #[lex(pattern = r"[0-9]+")]
         pub digits: Digits,
+    }
+}
+
+recursa::ast_node! {
+    /// `FRAME <bound>`, whose bound a `gram.y` action checks, as `frame_extent` refuses a frame
+    /// that starts at `UNBOUNDED FOLLOWING`.
+    pub struct Frame {
+        #[tok(FRAME)]
+        pub bound: Bound,
+    }
+}
+
+recursa::ast_node! {
+    /// The bound of a frame. `LAST` stays in the grammar, so the keyword keeps its place in the
+    /// LR tables, and the declared rule refuses it when it is reduced. `MANY (...)` holds a list
+    /// that a validation hook of the variant checks.
+    #[reject(
+        variant(Last),
+        code = "42P20",
+        message = "frame start cannot be LAST",
+        cite = "gram.y REL_17_11 16335, frame_extent",
+    )]
+    pub enum Bound {
+        #[tok(FIRST)]
+        First,
+        #[tok(LAST)]
+        Last,
+        #[validate(crate::at_most_two, flat = crate::at_most_two_flat)]
+        #[tok(MANY, LPAREN, this, RPAREN)]
+        Many(one_or_many!(ColumnName)),
+    }
+}
+
+recursa::ast_node! {
+    /// `PAIR (<name>...)`: a validation hook of the struct refuses a list that is not two names,
+    /// as the `row OVERLAPS row` action refuses a row that is not two values.
+    #[validate(crate::two_names, flat = crate::two_names_flat)]
+    #[tok(PAIR, LPAREN, this, RPAREN)]
+    pub struct Pair {
+        pub names: one_or_many!(ColumnName),
     }
 }
