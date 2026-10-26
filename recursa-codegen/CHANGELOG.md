@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.2...recursa-codegen-v0.1.3) - 2026-10-26
+
+### Added
+
+- refuse one variant, and validate a Node when its reduce builds it
+
+### Fixed
+
+- *(codegen)* bind a flat handle before indexing so clippy keeps quiet
+- make Pretty and Arbitrary agree with restricted sites and the lexer
+
+### Other
+
+- *(codegen)* refuse a variant and validate a Node in every storage
+- *(codegen)* round-trip sampled and repaired values in the fixtures
+
 ## [0.1.2](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.1...recursa-codegen-v0.1.2) - 2026-10-22
 
 ### Other

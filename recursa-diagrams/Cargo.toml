@@ -1,6 +1,6 @@
 [package]
 name = "recursa-diagrams"
-version = "0.1.2"
+version = "0.1.3"
 description = "Semantic railroad-diagram plans and Rustdoc SVG rendering for Recursa"
 authors.workspace = true
 edition.workspace = true
