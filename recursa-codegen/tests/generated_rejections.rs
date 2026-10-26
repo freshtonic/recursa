@@ -88,6 +88,16 @@ const REJECTED_BY_PG18: &[&str] = &[
     "sized_leading_zeros=ok",
     "sized_zero=RCA4105/22023/width must be at least 1/gram.y REL_17_11 14476, opt_float/14..15",
     "sized_wide=RCA4105/22023/width must be less than 65/gram.y REL_17_11 14485, opt_float/14..16",
+    // A refused variant keeps its syntax and is refused when it is reduced, at the extent of
+    // the whole variant: `last` at 6..10.
+    "frame_first=ok",
+    "frame_last=RCA4105/42P20/frame start cannot be LAST/gram.y REL_17_11 16335, frame_extent/6..10",
+    // A validation hook of a struct refuses the value at the field it names: the list `a b c`
+    // at 6..11. A hook of one variant runs for that variant only, at the extent of the variant.
+    "pair_two=ok",
+    "pair_three=RCA4105/42601/a pair holds exactly two names/gram.y REL_17_11 15002, a_expr/6..11",
+    "frame_many_two=ok",
+    "frame_many_three=RCA4105/42601/a frame holds at most two names/fixture/6..18",
 ];
 
 /// The line the older build reports for the reserved name: no gated rule exists there, so the
@@ -100,6 +110,7 @@ const RESERVED_BEFORE_PG18: &str = "reserved=RCA4105/42601/unrecognized column o
 /// A sampled option list drops every option a rule refuses, and a list whose every option is
 /// refused describes no value, so fewer columns than seeds survive; every survivor parses back.
 const SAMPLED: &[&str] = &[
+    "sampled_frames=1 samples, none refused",
     "sampled=64 samples parse back",
     "sampled_columns=58 samples parse back",
     "sampled_sized=64 samples parse back",
@@ -107,6 +118,7 @@ const SAMPLED: &[&str] = &[
 
 /// The sampling lines a storage with no sampler of its own prints.
 const NOT_SAMPLED: &[&str] = &[
+    "sampled_frames=not sampled",
     "sampled=not sampled",
     "sampled_columns=not sampled",
     "sampled_sized=not sampled",
@@ -128,7 +140,7 @@ fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
             .iter()
             .filter(|line| line.contains("RCA4105"))
             .count()
-            == 17,
+            == 20,
         "every declared rejection of the fixture reports RCA4105: {reported:?}"
     );
 }
