@@ -246,6 +246,7 @@ fn configure_emitted_attributes(attrs: &mut Vec<Attribute>, cfg: &CargoCfgSnapsh
                         | "config"
                         | "reject"
                         | "classify"
+                        | "validate"
                 )
             )
         })
@@ -1032,6 +1033,50 @@ mod tests {
                  `Path`."
             ),
             "the emitted type documents every rule and classification: {emitted}"
+        );
+    }
+
+    #[test]
+    fn a_refused_variant_and_a_validation_hook_never_reach_the_emitted_type() {
+        let expansion = expand_declarations(
+            &items(
+                r#"recursa::ast_node! {
+                    #[reject(
+                        variant(Last),
+                        code = "42P20",
+                        message = "frame start cannot be LAST",
+                        cite = "gram.y 16335",
+                    )]
+                    #[validate(crate::check)]
+                    pub enum Bound {
+                        First,
+                        Last,
+                        #[validate(crate::check_many, flat = crate::check_many_flat)]
+                        Many(Name),
+                    }
+                }"#,
+            ),
+            "recursa",
+            false,
+            &CargoCfgSnapshot::default(),
+        );
+        assert!(expansion.errors.is_empty(), "{:?}", expansion.errors);
+        let emitted = expansion
+            .origins
+            .iter()
+            .find(|(name, _)| name == "Bound")
+            .expect("the declaration is expanded")
+            .1
+            .concrete_item
+            .to_token_stream()
+            .to_string();
+        assert!(
+            !emitted.contains("reject") && !emitted.contains("validate"),
+            "the emitted type carries no grammar-owned attribute: {emitted}"
+        );
+        assert!(
+            emitted.contains("Rejection rules: `Last` (frame start cannot be LAST)."),
+            "the emitted type documents the refused variant: {emitted}"
         );
     }
 

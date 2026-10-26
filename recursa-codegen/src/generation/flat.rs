@@ -798,6 +798,58 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
         quote!(#[doc = #doc] #field: #facade::__private::TypedPool<#ty>)
     });
     let builder_pool_fields = pool_fields.clone();
+    // A flat validation hook reads the Nodes a reduce has already allocated through the owner's
+    // own API, so the builder lends its stores as a result and takes them back.
+    let lend = plan.validations.reads_flat_builder().then(|| {
+        let lend_moves = pooled.iter().map(|pool| {
+            let field = &pool.field;
+            quote!(#field: taken.#field)
+        });
+        let restore_moves = pooled.iter().map(|pool| {
+            let field = &pool.field;
+            quote!(#field: ast.#field)
+        });
+        quote! {
+            /// Lends the stores to a flat validation hook as a result rooted at no Node.
+            ///
+            /// A hook reads the Nodes the parse has allocated so far through the owner's own
+            /// indexing and rendering. The builder holds empty stores until `restore` takes the
+            /// stores back, so a reduce calls the two in pairs.
+            #[doc(hidden)]
+            pub(crate) fn lend<__RecursaRoot: #facade::__private::FlatNode>(
+                &mut self,
+            ) -> FlatAst<'__recursa_input, __RecursaRoot> {
+                let has_spans = self.has_spans;
+                let taken = ::core::mem::replace(self, Self::new(has_spans, 0));
+                FlatAst {
+                    #(#lend_moves,)*
+                    shared: taken.shared,
+                    lists: taken.lists,
+                    texts: taken.texts,
+                    scratch: taken.scratch,
+                    // A handle that names no Node: the parse has not reduced its root.
+                    root: #facade::__private::opaque_handle(::core::num::NonZeroU32::MAX),
+                    has_spans,
+                }
+            }
+
+            /// Takes back the stores that `lend` gave a validation hook.
+            #[doc(hidden)]
+            pub(crate) fn restore<__RecursaRoot: #facade::__private::FlatNode>(
+                &mut self,
+                ast: FlatAst<'__recursa_input, __RecursaRoot>,
+            ) {
+                *self = Self {
+                    #(#restore_moves,)*
+                    shared: ast.shared,
+                    lists: ast.lists,
+                    texts: ast.texts,
+                    scratch: ast.scratch,
+                    has_spans: ast.has_spans,
+                };
+            }
+        }
+    });
     let pool_initializers = pooled.iter().map(|pool| {
         let field = &pool.field;
         quote!(#field: #facade::__private::TypedPool::with_capacity(capture_spans, pooled_nodes))
@@ -1311,6 +1363,8 @@ pub(super) fn render_flat_owner(plan: &EmissionPlan) -> Result<proc_macro2::Toke
             pub(crate) fn has_spans(&self) -> bool {
                 self.has_spans
             }
+
+            #lend
 
             /// Seals the stores into an immutable result rooted at `root`.
             #[doc(hidden)]

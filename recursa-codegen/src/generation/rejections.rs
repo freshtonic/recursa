@@ -415,6 +415,9 @@ fn node_rejections(
                 }
                 RecordCheck::Once(tags)
             }
+            // A refused variant is checked when its reduce builds it, not at a list step
+            // (`super::validations`).
+            RejectCheckSyntax::Variant { .. } => continue,
             RejectCheckSyntax::Text {
                 negated,
                 variant: name,

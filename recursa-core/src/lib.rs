@@ -56,7 +56,9 @@ pub use parsed::{
     ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
 pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
-pub use rejection::{Rejection, RejectionKey, RejectionNote, RejectionPair, RejectionRule};
+pub use rejection::{
+    Refusal, Rejection, RejectionKey, RejectionNote, RejectionPair, RejectionRule,
+};
 pub use requirement::{Configuration, Requirement, RequirementNote, RequirementScan, Requires};
 pub use span::{OffsetOverflow, Span};
 pub use visitor::{
