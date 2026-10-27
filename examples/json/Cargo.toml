@@ -19,7 +19,7 @@ default = []
 explorer = ["recursa/explorer", "recursa-codegen/explorer"]
 
 [dependencies]
-recursa = { version = "=0.1.3", features = ["diagrams", "spans"], path = "../../recursa" }
+recursa = { version = "=0.1.4", features = ["diagrams", "spans"], path = "../../recursa" }
 
 [build-dependencies]
-recursa-codegen = { version = "=0.1.3", features = ["diagrams", "spans"], path = "../../recursa-codegen" }
+recursa-codegen = { version = "=0.1.4", features = ["diagrams", "spans"], path = "../../recursa-codegen" }
