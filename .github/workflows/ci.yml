@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fixture-locks:
+    name: Fixture locks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      # A release PR from release-plz changes the crate versions but not the
+      # fixture locks. The fixture tests then fail with a --locked error.
+      - name: Check that the fixture locks name the workspace version
+        run: scripts/update-fixture-locks.sh --check
+
   msrv:
     name: Rust 1.88
     runs-on: ubuntu-latest
@@ -94,4 +109,4 @@ jobs:
         with:
           components: miri
       - name: Run the Flat AST storage tests under Miri
-        run: cargo +nightly miri test -p recursa-core flat:: --locked
+        run: "cargo +nightly miri test -p recursa-core flat:: --locked"

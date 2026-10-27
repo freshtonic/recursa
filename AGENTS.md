@@ -21,3 +21,8 @@ covered by the canonical documentation gate. See `docs/agents/documentation.md`.
 
 Default local and CI suites exclude benchmarks, timing assertions, and aggregate evidence reruns.
 See `docs/agents/testing.md`.
+
+### Releasing
+
+When the crate version changes, you must run `scripts/update-fixture-locks.sh`. A release PR from
+release-plz does not run it. See `docs/agents/releasing.md`.
