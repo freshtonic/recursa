@@ -238,6 +238,108 @@ fn main() {
     );
 }
 
+#[test]
+fn arena_framing_frames_a_window_as_its_text_placed_alone() {
+    let package = scaffold_fixture();
+    let grammar = package.path.join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read framing grammar");
+    fs::write(
+        &grammar,
+        source.replace(
+            "    spans = mandatory,\n",
+            "    spans = mandatory,\n    arena_ast,\n",
+        ),
+    )
+    .expect("select arena-backed framing islands");
+    fs::write(
+        package.path.join("src/main.rs"),
+        r#"use recursa_generated_framing::grammar;
+
+fn main() {
+    let document = "put 'a';\r\n-- c ; d\r\nput ('x';'y');\r\nbroken;\r\ncopy 't';\r\nx;y\r\n\\.\r\nput 'tail'";
+    let boundaries = (0..=document.len()).collect::<Vec<_>>();
+    for (position, start) in boundaries.iter().copied().enumerate() {
+        for end in boundaries[position..].iter().copied() {
+            let framed = describe(&grammar::Entry::frame_window(document, start..end), start);
+            let alone = describe(&grammar::Entry::frame(&document[start..end]), 0);
+            assert_eq!(framed, alone, "window {start}..{end}");
+        }
+    }
+    let middle = 8..document.find("broken").unwrap();
+    let frame = grammar::Entry::frame_window(document, middle.clone())
+        .unwrap_or_else(|failure| panic!("the middle window frames complete: {failure:?}"));
+    assert_eq!(frame.source(), document);
+    assert_eq!(frame.render_exact(), &document[middle]);
+    assert_eq!(
+        frame
+            .typed_islands()
+            .map(|parsed| parsed.source().expect("arena island provenance"))
+            .collect::<Vec<_>>(),
+        ["put ('x';'y');"],
+    );
+    println!("arena-window-ok");
+}
+
+fn describe<F: recursa::ArenaAstFamily>(
+    result: &Result<grammar::CompleteFrame<'_, F>, grammar::FrameFailure<'_>>,
+    offset: usize,
+) -> Vec<String> {
+    let relative = |span: recursa::Span| {
+        (span.start() as usize - offset, span.end() as usize - offset)
+    };
+    match result {
+        Ok(frame) => {
+            let mut lines = vec![format!("frame {:?}", frame.render_exact())];
+            for part in frame.parts() {
+                lines.push(match part {
+                    grammar::CompletePart::Island(island) => format!(
+                        "island {:?} {:?} {:?}",
+                        relative(island.span()),
+                        island.parsed().source(),
+                        island.parsed().source_bounds().map(relative),
+                    ),
+                    other => format!("part {:?}", relative(other.span())),
+                });
+            }
+            lines
+        }
+        Err(grammar::FrameFailure::Rejected(rejection)) => {
+            let mut lines = vec![format!(
+                "rejected {:?} {:?} {rejection}",
+                relative(rejection.island()),
+                rejection.framing().map(|framing| (framing.code(), relative(framing.span()))),
+            )];
+            for diagnostic in rejection.diagnostics() {
+                lines.push(format!(
+                    "diagnostic {:?} {:?} {:?} {}",
+                    diagnostic.kind(),
+                    relative(diagnostic.span()),
+                    diagnostic.text(),
+                    diagnostic.message(),
+                ));
+            }
+            lines
+        }
+        Err(grammar::FrameFailure::Fatal(fatal)) => vec![format!("fatal {}", fatal.message())],
+    }
+}
+"#,
+    )
+    .expect("author arena window assertions");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "arena window fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "arena-window-ok"
+    );
+}
+
 fn scaffold_fixture() -> Fixture {
     let guard = FIXTURE_WORKSPACE
         .get_or_init(|| Mutex::new(()))

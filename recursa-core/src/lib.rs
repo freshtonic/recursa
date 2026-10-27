@@ -117,8 +117,8 @@ pub mod __private {
     #[cfg(all(feature = "explorer", feature = "spans"))]
     pub use crate::framing::{
         PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData,
-        frame_arena_document, frame_document, payload_plan as framing_payload_plan,
-        plan as framing_plan,
+        frame_arena_document, frame_arena_window, frame_document, frame_window,
+        payload_plan as framing_payload_plan, plan as framing_plan,
     };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
     pub use crate::input::{
@@ -215,7 +215,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        42,
+        43,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -323,7 +323,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp(env!("CARGO_PKG_VERSION")) },
-            42,
+            43,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

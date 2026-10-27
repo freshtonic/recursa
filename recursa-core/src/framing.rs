@@ -101,7 +101,9 @@ pub struct ArenaCompleteFrame<'input, F: ArenaAstFamily> {
 struct FrameStorage<'input, P> {
     /// Complete borrowed source.
     source: &'input str,
-    /// Ordered, non-overlapping, exhaustive source ownership.
+    /// Exact text that the parts own: the complete source, or the window of a window frame.
+    owned: &'input str,
+    /// Ordered, non-overlapping, exhaustive ownership of `owned`, in complete-source spans.
     parts: Box<[FramePart<'input, P>]>,
 }
 
@@ -111,9 +113,12 @@ impl<'input, T> CompleteFrame<'input, T> {
         self.inner.source
     }
 
-    /// Returns exact original source without normalization.
+    /// Returns the exact source text that the parts own, without normalization.
+    ///
+    /// This is the complete source, except for a frame of one window of a
+    /// document, where it is the text of that window.
     pub const fn render_exact(&self) -> &'input str {
-        self.inner.source
+        self.inner.owned
     }
 
     /// Iterates exact source parts in ownership order.
@@ -144,9 +149,12 @@ impl<'input, F: ArenaAstFamily> ArenaCompleteFrame<'input, F> {
         self.inner.source
     }
 
-    /// Returns exact original source without normalization.
+    /// Returns the exact source text that the parts own, without normalization.
+    ///
+    /// This is the complete source, except for a frame of one window of a
+    /// document, where it is the text of that window.
     pub const fn render_exact(&self) -> &'input str {
-        self.inner.source
+        self.inner.owned
     }
 
     /// Iterates exact source parts in ownership order.
@@ -534,6 +542,41 @@ where
 {
     let inner = frame_document_impl(
         source,
+        0..source.len(),
+        lex,
+        plan,
+        |input, follow| parse_spanned_with_root_follow::<T, ()>(input, follow),
+        parsed_active_variant_is,
+    )?;
+    Ok(CompleteFrame { inner })
+}
+
+/// Parses and partitions one byte window of a document through one generated framing plan.
+///
+/// The result is the result of [`frame_document`] for the text `&source[window]` placed alone,
+/// with each span, each diagnostic and each region in the coordinates of the complete `source`.
+/// The window text is lexed alone, so a token that the window cuts is lexed from its part in the
+/// window. The parts of a complete frame own the window exactly once, and the rejected extent
+/// of a rejection does not go past the end of the window.
+///
+/// A `window` that is not a range of `source` on UTF-8 character boundaries is a fatal
+/// [`FrameError`].
+//
+// Not yet a stable API. Generated `frame_window` methods call this for consumers that frame
+// one part of a document at a time, such as the recovering parse of pgtk-sql.
+#[doc(hidden)]
+pub fn frame_window<'input, T>(
+    source: &'input str,
+    window: std::ops::Range<usize>,
+    lex: LexFn,
+    plan: &'static PlanData,
+) -> Result<CompleteFrame<'input, T>, FrameFailure<'input>>
+where
+    T: GeneratedParse<'input> + ExplorerRoot + 'input,
+{
+    let inner = frame_document_impl(
+        source,
+        window,
         lex,
         plan,
         |input, follow| parse_spanned_with_root_follow::<T, ()>(input, follow),
@@ -556,6 +599,39 @@ where
 {
     let inner = frame_document_impl(
         source,
+        0..source.len(),
+        lex,
+        plan,
+        |input, follow| parse_arena_spanned_with_root_follow::<T, ()>(input, follow),
+        arena_parsed_active_variant_is,
+    )?;
+    Ok(ArenaCompleteFrame { inner })
+}
+
+/// Parses and partitions one byte window of a document while retaining every AST in its own
+/// arena.
+///
+/// This is [`frame_window`] for arena-backed islands. The result is the result of
+/// [`frame_arena_document`] for the text `&source[window]` placed alone, with each span, each
+/// diagnostic and each region in the coordinates of the complete `source`.
+//
+// Not yet a stable API. Generated `frame_window` methods call this for consumers that frame
+// one part of a document at a time, such as the recovering parse of pgtk-sql.
+#[doc(hidden)]
+pub fn frame_arena_window<'input, T>(
+    source: &'input str,
+    window: std::ops::Range<usize>,
+    lex: LexFn,
+    plan: &'static PlanData,
+) -> Result<ArenaCompleteFrame<'input, T::Family>, FrameFailure<'input>>
+where
+    T: ArenaGeneratedParse<'input> + 'input,
+    T::Family: 'input,
+    for<'arena> <T::Family as ArenaAstFamily>::Ast<'arena>: ExplorerRoot,
+{
+    let inner = frame_document_impl(
+        source,
+        window,
         lex,
         plan,
         |input, follow| parse_arena_spanned_with_root_follow::<T, ()>(input, follow),
@@ -565,15 +641,31 @@ where
 }
 
 /// Shared framing interpreter parameterized only by the strict parse storage strategy.
+///
+/// The interpreter frames the bytes of `window` as if they were the complete document. Every
+/// span stays in complete-source coordinates: the window is lexed alone and its records are
+/// shifted to their positions in `source`.
 fn frame_document_impl<'input, P>(
     source: &'input str,
+    window: std::ops::Range<usize>,
     lex: LexFn,
     plan: &'static PlanData,
     mut parse: impl FnMut(&mut Input<'input>, &FollowSet) -> Result<P, crate::ParseError>,
     active_variant_is: impl Fn(&P, &'static VariantSchemaData) -> bool,
 ) -> Result<FrameStorage<'input, P>, FrameFailure<'input>> {
     validate_plan(source, plan)?;
-    let mut byte = 0_usize;
+    if window.start > window.end {
+        return Err(fatal(
+            source,
+            Span::new(0, 0).expect("zero span is valid"),
+            "framing window ends before it starts",
+        )
+        .into());
+    }
+    let window = checked_span(source, window.start, window.end)?;
+    let window_start = window.start() as usize;
+    let end = window.end() as usize;
+    let mut byte = window_start;
     let mut drafts = Vec::new();
 
     // One lex per segment, not one per island. Every candidate window below begins and
@@ -581,12 +673,12 @@ fn frame_document_impl<'input, P>(
     // lexing the window and costs nothing per island. Only a payload region, whose
     // interior the grammar does not tokenize, can change how the text after it lexes, so
     // only a payload forces a fresh lex.
-    let mut segment = lex_rebased(source, 0, lex)?;
+    let mut segment = lex_window(source, window, lex)?;
 
-    while byte < source.len() {
+    while byte < end {
         let records = remaining_records(segment.records(), byte);
         let Some(first) = records.first().copied() else {
-            drafts.push(DraftPart::Gap(checked_span(source, byte, source.len())?));
+            drafts.push(DraftPart::Gap(checked_span(source, byte, end)?));
             break;
         };
         let first_start = first.span.start() as usize;
@@ -649,7 +741,7 @@ fn frame_document_impl<'input, P>(
             // complete final island without a trailing boundary.
             let mut input = island_input(
                 source,
-                checked_span(source, island_start, source.len())?,
+                checked_span(source, island_start, end)?,
                 &segment,
                 plan,
             )?;
@@ -662,7 +754,7 @@ fn frame_document_impl<'input, P>(
                             island: checked_span(
                                 source,
                                 island_start,
-                                rejection_end(source, &boundaries, next.span),
+                                rejection_end(end, &boundaries, next.span),
                             )?,
                             diagnostics: vec![trailing_input_diagnostic(
                                 source,
@@ -683,12 +775,8 @@ fn frame_document_impl<'input, P>(
                         span: checked_span(source, island_start, root_end)?,
                         parsed,
                     });
-                    if root_end < source.len() {
-                        drafts.push(DraftPart::Gap(checked_span(
-                            source,
-                            root_end,
-                            source.len(),
-                        )?));
+                    if root_end < end {
+                        drafts.push(DraftPart::Gap(checked_span(source, root_end, end)?));
                     }
                     break;
                 }
@@ -720,7 +808,7 @@ fn frame_document_impl<'input, P>(
                         island: checked_span(
                             source,
                             island_start,
-                            rejection_end(source, &boundaries, failure_span),
+                            rejection_end(end, &boundaries, failure_span),
                         )?,
                         diagnostics: failure.diagnostics().to_vec().into_boxed_slice(),
                         framing,
@@ -743,8 +831,9 @@ fn frame_document_impl<'input, P>(
 
         if enters_payload {
             let payload = plan.payload.expect("payload transition was selected");
-            let Some(terminator) = standalone_terminator(source, byte, payload.terminator) else {
-                let end = source.len();
+            let Some(terminator) =
+                standalone_terminator(source, window_start, byte..end, payload.terminator)
+            else {
                 return Err(FrameFailure::Rejected(FrameRejection {
                     source,
                     island: checked_span(source, byte, end)?,
@@ -760,25 +849,25 @@ fn frame_document_impl<'input, P>(
                     }),
                 }));
             };
-            let end = terminator.end() as usize;
+            let payload_end = terminator.end() as usize;
             drafts.push(DraftPart::Payload {
-                span: checked_span(source, byte, end)?,
+                span: checked_span(source, byte, payload_end)?,
                 data: checked_span(source, byte, terminator.start() as usize)?,
                 terminator,
             });
-            byte = end;
+            byte = payload_end;
             // The grammar does not tokenize payload interiors, so an unbalanced quote,
             // dollar tag or comment opener inside one would change how everything after
             // it lexes. Restart the lex after the payload, as a per-island lex did.
-            segment = lex_rebased(source, byte, lex)?;
+            segment = lex_window(source, checked_span(source, byte, end)?, lex)?;
         }
     }
 
-    if source.is_empty() {
-        drafts.push(DraftPart::Gap(checked_span(source, 0, 0)?));
+    if window_start == end {
+        drafts.push(DraftPart::Gap(window));
     }
-    validate_draft_partition(source, &drafts)?;
-    Ok(complete_from_drafts(source, drafts))
+    validate_draft_partition(source, window, &drafts)?;
+    Ok(complete_from_drafts(source, window, drafts))
 }
 
 /// Reports whether the source before one failing token is a complete strict island.
@@ -809,16 +898,18 @@ fn prefix_is_complete_island<'input, P>(
 ///
 /// The extent ends at the first candidate boundary at or after the failure so
 /// a rejection names one statement-sized window rather than the whole suffix.
-fn rejection_end(source: &str, boundaries: &[TokenRecord], failure: Span) -> usize {
+/// With no such boundary it ends at `end`, the end of the framed window.
+fn rejection_end(end: usize, boundaries: &[TokenRecord], failure: Span) -> usize {
     boundaries
         .iter()
         .find(|boundary| boundary.span.end() >= failure.end())
-        .map_or(source.len(), |boundary| boundary.span.end() as usize)
+        .map_or(end, |boundary| boundary.span.end() as usize)
 }
 
 /// Converts a validated draft partition into the published strict frame.
 fn complete_from_drafts<'input, P>(
     source: &'input str,
+    window: Span,
     drafts: Vec<DraftPart<P>>,
 ) -> FrameStorage<'input, P> {
     let parts = drafts
@@ -842,6 +933,9 @@ fn complete_from_drafts<'input, P>(
         .collect::<Vec<_>>();
     FrameStorage {
         source,
+        owned: source
+            .get(window.range())
+            .expect("the framed window is a checked source span"),
         parts: parts.into_boxed_slice(),
     }
 }
@@ -949,15 +1043,6 @@ fn validate_hard_progress<'input>(
     Ok(())
 }
 
-/// Lexes one suffix and rebases every checked record to complete-source offsets.
-fn lex_rebased<'input>(
-    source: &'input str,
-    base: usize,
-    lex: LexFn,
-) -> Result<LexResult<'input>, FrameError<'input>> {
-    lex_window(source, checked_span(source, base, source.len())?, lex)
-}
-
 /// Lexes one exact absolute-coordinate window and validates every shifted record.
 fn lex_window<'input>(
     source: &'input str,
@@ -1036,15 +1121,23 @@ fn lex_window<'input>(
 }
 
 /// Locates exact standalone terminator text and includes its physical line ending.
-fn standalone_terminator(source: &str, start: usize, terminator: &str) -> Option<Span> {
-    let suffix = source.get(start..)?;
-    let mut line_start = start;
+///
+/// The search covers only `range`, the rest of the framed window. A line starts at
+/// `window_start`, the beginning of the framed text, or immediately after LF.
+fn standalone_terminator(
+    source: &str,
+    window_start: usize,
+    range: std::ops::Range<usize>,
+    terminator: &str,
+) -> Option<Span> {
+    let suffix = source.get(range.clone())?;
+    let mut line_start = range.start;
     for line in suffix.split_inclusive('\n') {
         let has_newline = line.ends_with('\n');
         let without_lf = line.strip_suffix('\n').unwrap_or(line);
         let content = without_lf.strip_suffix('\r').unwrap_or(without_lf);
         let line_end = line_start.checked_add(line.len())?;
-        let physical_line_start = line_start == 0
+        let physical_line_start = line_start == window_start
             || source
                 .as_bytes()
                 .get(line_start.checked_sub(1)?)
@@ -1057,12 +1150,13 @@ fn standalone_terminator(source: &str, start: usize, terminator: &str) -> Option
     None
 }
 
-/// Proves that draft ownership is exhaustive, ordered, and non-overlapping.
+/// Proves that draft ownership of the framed window is exhaustive, ordered, and non-overlapping.
 fn validate_draft_partition<'input, P>(
     source: &'input str,
+    window: Span,
     drafts: &[DraftPart<P>],
 ) -> Result<(), FrameError<'input>> {
-    let mut cursor = 0_u32;
+    let mut cursor = window.start();
     for draft in drafts {
         let span = match draft {
             DraftPart::Gap(span)
@@ -1080,11 +1174,11 @@ fn validate_draft_partition<'input, P>(
         }
         cursor = span.end();
     }
-    if cursor as usize != source.len() {
+    if cursor != window.end() {
         return Err(fatal(
             source,
             checked_span(source, cursor as usize, cursor as usize)?,
-            "framing partition does not reach end of source",
+            "framing partition does not reach end of its window",
         ));
     }
     Ok(())
@@ -1184,13 +1278,15 @@ mod tests {
             "plan",
         );
         assert_fatal(
-            lex_rebased("x", 0, invalid_span_lex).expect_err("invalid span must be fatal"),
+            lex_window("x", Span::new(0, 1).unwrap(), invalid_span_lex)
+                .expect_err("invalid span must be fatal"),
             "x",
         );
 
         let invalid_partition = [DraftPart::<()>::Gap(Span::new(0, 0).unwrap())];
         assert_fatal(
-            validate_draft_partition("x", &invalid_partition).unwrap_err(),
+            validate_draft_partition("x", Span::new(0, 1).unwrap(), &invalid_partition)
+                .unwrap_err(),
             "x",
         );
         assert_fatal(validate_hard_progress("x", 0, 0).unwrap_err(), "x");
@@ -1232,15 +1328,15 @@ mod tests {
         };
         let boundaries = [boundary(7), boundary(14)];
         assert_eq!(
-            rejection_end(source, &boundaries, Span::new(6, 7).unwrap()),
+            rejection_end(source.len(), &boundaries, Span::new(6, 7).unwrap()),
             8
         );
         assert_eq!(
-            rejection_end(source, &boundaries, Span::new(9, 12).unwrap()),
+            rejection_end(source.len(), &boundaries, Span::new(9, 12).unwrap()),
             15
         );
         assert_eq!(
-            rejection_end(source, &[], Span::new(9, 12).unwrap()),
+            rejection_end(source.len(), &[], Span::new(9, 12).unwrap()),
             source.len()
         );
     }

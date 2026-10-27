@@ -109,6 +109,10 @@ _Avoid_: Best-effort AST, recovered statement
 The ordinary strict failure of one document: the extent of the first failing island candidate, that island's strict parse diagnostics, and the framing cause (missing boundary or missing payload terminator) when the island itself parsed. It is distinct from a fatal framing invariant error.
 _Avoid_: Recovered frame, partial document, syntax error list
 
+**Framing window**:
+A byte range of a document that `frame_window` frames as if its text were the complete document, with every span in the coordinates of the complete source. The window text is lexed alone. It is a hidden API for consumers that frame one statement window at a time, and it is not yet stable.
+_Avoid_: Partial frame, recovery window
+
 **Payload transition**:
 A generated framing transition entered only after strict parsing commits the configured framing-island variant. Its data and standalone physical-line terminator have distinct exact spans; an incomplete island prefix cannot enter payload mode.
 _Avoid_: Token trigger, lexer mode callback
