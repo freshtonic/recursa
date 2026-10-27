@@ -10,8 +10,7 @@ and text rules ([Sets, classifications and text rules](#sets-classifications-and
 Extended 2026-10-15 by [freshtonic/recursa#144](https://github.com/freshtonic/recursa/issues/144),
 for the consumer [freshtonic/pg-sql#88](https://github.com/freshtonic/pg-sql/issues/88): text
 rules on a struct field ([Text rules on a struct](#text-rules-on-a-struct)). Extended
-2026-10-27 for the consumer pgtk-sql, which reads `U&"..." UESCAPE '...'` in every identifier
-position: classifications through a projection
+2026-10-27 for names of more than one token: classifications through a projection
 ([Classification through a projection](#classification-through-a-projection)) and omitted
 variants ([Sampling](#sampling)). Decision record:
 [ADR 0014](adr/0014-classify-through-a-projection-and-omit-variants-from-sampling.md).
@@ -162,24 +161,24 @@ only: `pair(...)` and `once(...)` read a repetition, and on a struct they are `R
 
 ### Classification through a projection
 
-A classification reads one token. `parser.c` (`base_yylex`) makes one `IDENT` of a `UIDENT`
-and its optional `UESCAPE` clause, so in PostgreSQL every identifier position takes
-`U&"d!0061t" UESCAPE '!'`. pgtk-sql models the form as a struct of a name and an optional
-clause, and adds a variant that holds the struct to each token-wrapper enum of its identifiers.
-Without more, a classification cannot read such a wrapper, because one of its variants holds no
-token. The struct says what a classification reads instead:
+A classification reads one token. But in some languages one name can have more than one token,
+for example a quoted name with an optional clause that names its escape character. A grammar
+models the form as a struct of a name and an optional clause, and adds a variant that holds the
+struct to each token-wrapper enum of its identifiers. Without more, a classification cannot read
+such a wrapper, because one of its variants holds no token. The struct says what a
+classification reads instead:
 
 ```rust,ignore
-#[classify(via(name, uescape), spell = crate::ident::unicode_spelling)]
-pub struct UnicodeIdent {
-    pub name: UidentName,
-    pub uescape: Option<UescapeSuffix>,
+#[classify(via(name, escape), spell = crate::names::escaped_spelling)]
+pub struct EscapedName {
+    pub name: QuotedName,
+    pub escape: Option<EscapeClause>,
 }
 
 #[classify(via = escape_char)]
-pub struct UescapeSuffix {
-    #[tok(UESCAPE, this)]
-    pub escape_char: UescapeString,
+pub struct EscapeClause {
+    #[tok(ESCAPE, this)]
+    pub escape_char: StringLit,
 }
 
 #[classify(via = name.text)]
@@ -197,8 +196,9 @@ which no token has. With one path, the text is the text of that path. With `spel
 function `fn(&[&str]) -> Option<String>` makes the one text from the texts of the paths in
 written order; more than one path needs it. The classification then folds that text with its
 own fold function, as if one token held it, so a spelling function gives a spelling, not a
-folded text: pgtk-sql decodes the name with the escape character of the clause (`\` without
-one) and gives a quoted identifier, which the fold of every classification reads as a name. A path with no text,
+folded text. In the example, the spelling function decodes the name with the escape character
+of the clause (a default without one) and gives a quoted name, which the fold of every
+classification reads as a name. A path with no text,
 or a spelling function that answers `None`, gives the item no folded text.
 
 A struct with a projection stands where a classification expects a token: as the classified
@@ -206,7 +206,7 @@ field itself, or as the payload of one variant of a token-wrapper enum, behind n
 `boxed!`. A wrapper whose every variant holds a token is planned exactly as before, so a grammar
 with no projection generates the code it generated before projections existed. A projection is
 no classification of the struct, so the struct can also classify one of its own fields for its own
-text rules, as `UescapeSuffix` refuses an escape character that `check_uescapechar` refuses.
+text rules, as `EscapeClause` can refuse an escape character that is not valid.
 
 The nested key reads the paths through field access. The flat key reads the struct and each
 struct a path passes through out of their pools, and the token texts out of the text pool, so
@@ -301,16 +301,16 @@ mirror, and the hook takes the arena type. A sampled value can therefore be one 
 refuses; a consumer's round trip accepts it when both parsers refuse it with the same message.
 
 A variant that parses can still be one whose samples a hook or a text rule refuses nearly always.
-pgtk-sql's `U&"..." UESCAPE '...'` identifier is one: few sampled escape strings name a correct
-escape character, and identifiers occur in nearly every statement, so sampling the variant
-spends the sample of nearly every Node that holds an identifier. `#[omit(Arbitrary)]` on the
+A name with an escape clause is one: few sampled escape strings name a valid escape character,
+and identifiers occur in nearly every Node, so sampling the variant spends the sample of nearly
+every Node that holds an identifier. `#[omit(Arbitrary)]` on the
 variant keeps it out of sampling:
 
 ```rust,ignore
 pub enum ColId {
     Text(ColIdText),
     #[omit(Arbitrary)]
-    Unicode(UnicodeIdent),
+    Escaped(EscapedName),
 }
 ```
 

@@ -173,8 +173,7 @@ _Avoid_: Rule action, post-parse check
 A `#[classify(via ...)]` declaration on a struct that names the fields whose text a classification
 reads when it reaches the struct, as a field type or as the payload of a token-wrapper variant.
 One path reads the text of one token; several paths read the text that the consumer's `spell`
-function makes of their texts, as `parser.c` makes one identifier of `U&"..."` and its `UESCAPE`
-clause.
+function makes of their texts, for example one name from a quoted name and its escape clause.
 _Avoid_: Classification alias, text accessor
 
 **Omitted variant**:

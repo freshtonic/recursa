@@ -3,19 +3,17 @@
 Status: accepted
 
 Design: [`docs/declared-rejections.md`](../declared-rejections.md), "Classification through a
-projection" and "Sampling". Raised by pgtk-sql, which must read `U&"x" UESCAPE '!'` in every
-identifier position.
+projection" and "Sampling".
 
-`parser.c` (`base_yylex`) makes one `IDENT` of a `UIDENT` and its `UESCAPE` clause. pgtk-sql lexes
-`U&"..."` as a token of its own, as scan.l lexes `UIDENT`, and it models the form as a struct of
-the name and an optional clause, and adds a variant that holds that struct to each of its
-identifier enums. Two things then fail. A
-classification reads one token, and a token-wrapper enum with a two-token variant is no shape it
-reads, so every declared rule that classifies an identifier (the `xmltable_column_el` options,
-the role names, the partitioning strategy) can no longer be written. And `Arbitrary` samples the
-new variant as often as the token variant, but few sampled escape strings name a correct escape
-character, so a hook refuses most statements: the round-trip yield of pgtk-sql fell from 897 to
-303 per mille.
+Some languages let one name have more than one token. For example, a quoted name can take an
+optional clause that changes how its text is read, such as an escape character. A grammar models
+this as a struct of the name and the optional clause, and adds a variant that holds that struct
+to each of its identifier enums. Two things then fail. A classification reads one token, and a
+token-wrapper enum with a variant of two tokens is no shape that it reads, so no declared rule
+that classifies an identifier can still be written. And `Arbitrary` samples the new variant as
+often as the token variant. If few sampled clauses are valid, a hook refuses most samples, and
+the yield of a round-trip test falls by much: in the consumer that raised this, it fell from 897
+to 303 per mille.
 
 We choose two declarations. A struct declares a projection, `#[classify(via = field)]` or
 `#[classify(via(path, ...), spell = path)]`, and a classification that reaches the struct, as a
