@@ -1737,6 +1737,36 @@ pub(super) fn render_node_application_explorer(
                                 &#module_anchor::__RECURSA_FRAMING_PLAN,
                             )
                         }
+
+                        // Not yet a stable API: for consumers that frame one part of a
+                        // document at a time, such as the recovering parse of pgtk-sql.
+                        /// Frames one byte window of `source` as `frame` frames the text of
+                        /// the window placed alone, with every span in the coordinates of the
+                        /// complete source.
+                        ///
+                        /// The window text is lexed alone, so a token that the window cuts is
+                        /// lexed from its part in the window. A window that is not a range of
+                        /// `source` on UTF-8 character boundaries is a fatal failure.
+                        #[doc(hidden)]
+                        pub fn frame_window #method_generics(
+                            source: &'__recursa_input str,
+                            window: ::core::ops::Range<usize>,
+                        ) -> Result<
+                            #facade::framing::ArenaCompleteFrame<
+                                '__recursa_input,
+                                <Self as #facade::__private::ArenaGeneratedParse<
+                                    '__recursa_input,
+                                >>::Family,
+                            >,
+                            #facade::framing::FrameFailure<'__recursa_input>,
+                        > {
+                            #facade::__private::frame_arena_window::<Self>(
+                                source,
+                                window,
+                                #module_anchor::__recursa_lexical::__recursa_frame_lex,
+                                &#module_anchor::__RECURSA_FRAMING_PLAN,
+                            )
+                        }
                     }
                 } else {
                     quote! {
@@ -1750,6 +1780,31 @@ pub(super) fn render_node_application_explorer(
                     > {
                         #facade::__private::frame_document::<Self>(
                             source,
+                            #module_anchor::__recursa_lexical::__recursa_frame_lex,
+                            &#module_anchor::__RECURSA_FRAMING_PLAN,
+                        )
+                    }
+
+                    // Not yet a stable API: for consumers that frame one part of a
+                    // document at a time, such as the recovering parse of pgtk-sql.
+                    /// Frames one byte window of `source` as `frame` frames the text of
+                    /// the window placed alone, with every span in the coordinates of the
+                    /// complete source.
+                    ///
+                    /// The window text is lexed alone, so a token that the window cuts is
+                    /// lexed from its part in the window. A window that is not a range of
+                    /// `source` on UTF-8 character boundaries is a fatal failure.
+                    #[doc(hidden)]
+                    pub fn frame_window #method_generics(
+                        source: &'__recursa_input str,
+                        window: ::core::ops::Range<usize>,
+                    ) -> Result<
+                        #facade::framing::CompleteFrame<'__recursa_input, Self>,
+                        #facade::framing::FrameFailure<'__recursa_input>,
+                    > {
+                        #facade::__private::frame_window::<Self>(
+                            source,
+                            window,
                             #module_anchor::__recursa_lexical::__recursa_frame_lex,
                             &#module_anchor::__RECURSA_FRAMING_PLAN,
                         )

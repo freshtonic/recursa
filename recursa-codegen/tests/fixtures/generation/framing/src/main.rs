@@ -338,7 +338,265 @@ fn main() {
     );
     assert_owned_once(shared_base_source, shared_base.spans());
 
+    frame_windows();
+
     println!("framing-ok");
+}
+
+/// Frames windows of one document and compares each with the frame of its text placed alone.
+fn frame_windows() {
+    let document = concat!(
+        "put 'a';\r\n",
+        "-- c ; d\r\n",
+        "put ('x';'y');\r\n",
+        "broken;\r\n",
+        "copy 'table';\r\none;two\r\n\\.\r\n",
+        "put 'caf\u{e9}';\r\n",
+        "put 'tail'",
+    );
+    let at = |text: &str| document.find(text).expect("the document contains the text");
+    let after = |text: &str| at(text) + text.len();
+
+    // Every window on character boundaries gives the frame of its text placed alone, with
+    // the spans offset to the complete document.
+    let boundaries = (0..=document.len())
+        .filter(|index| document.is_char_boundary(*index))
+        .collect::<Vec<_>>();
+    for (position, start) in boundaries.iter().copied().enumerate() {
+        for end in boundaries[position..].iter().copied() {
+            assert_window_is_alone(document, start..end);
+        }
+    }
+
+    // A window in the middle of the document.
+    let middle = after("put 'a';")..after("put ('x';'y');");
+    let frame = window(document, middle.clone());
+    assert_eq!(frame.source(), document);
+    assert_eq!(frame.render_exact(), &document[middle.clone()]);
+    assert_owned_once_in(document, middle.clone(), frame.spans());
+    assert_eq!(
+        frame
+            .typed_islands()
+            .map(|parsed| parsed.source().expect("window island provenance"))
+            .collect::<Vec<_>>(),
+        ["put ('x';'y');"],
+    );
+    let island = frame
+        .typed_islands()
+        .next()
+        .expect("the middle window has one island");
+    assert_eq!(
+        island.source_bounds(),
+        Some(recursa::Span::new(at("put ('x'"), middle.end).unwrap()),
+    );
+
+    // A rejected window in the middle: its spans are spans of the complete document.
+    let rejected = after("put ('x';'y');")..after("broken;");
+    let rejection = window_rejection(document, rejected.clone());
+    assert_eq!(rejection.source(), document);
+    assert_eq!(&document[rejection.island().range()], "broken;");
+    assert_eq!(
+        rejection.diagnostics()[0].span().start() as usize,
+        at("broken;"),
+        "the diagnostic names the lexical error at its position in the document",
+    );
+
+    // Windows at the start and at the end of the document.
+    let start = window(document, 0..after("put 'a';"));
+    assert_eq!(start.typed_islands().count(), 1);
+    let end = window(document, after("put 'caf\u{e9}';")..document.len());
+    assert_eq!(
+        end.typed_islands()
+            .map(|parsed| parsed.source().expect("final island provenance"))
+            .collect::<Vec<_>>(),
+        ["put 'tail'"],
+    );
+
+    // An empty window owns one empty gap.
+    let empty_at = at("broken;");
+    let empty = window(document, empty_at..empty_at);
+    assert_eq!(empty.render_exact(), "");
+    assert_eq!(
+        empty.spans().collect::<Vec<_>>(),
+        [recursa::Span::new(empty_at, empty_at).unwrap()],
+    );
+
+    // A window that cuts a token lexes the part of the token in the window. A quoted name
+    // that the window cuts does not close, so the rejection ends at the end of the window,
+    // not at the end of the document.
+    let cut = at("put 'tail'")..at("put 'tail'") + "put 'ta".len();
+    let rejection = window_rejection(document, cut.clone());
+    assert_eq!(rejection.island().end() as usize, cut.end);
+    assert!(
+        rejection
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| (diagnostic.span().end() as usize) <= cut.end)
+    );
+    // A window that starts in a keyword lexes the rest of the keyword alone.
+    let cut_keyword = at("put 'a';") + 1..after("put 'a';");
+    window_rejection(document, cut_keyword);
+
+    // A payload terminator outside the window does not close a payload in the window.
+    let open_payload = at("copy 'table';")..after("one;two\r\n");
+    let rejection = window_rejection(document, open_payload.clone());
+    let framing = rejection.framing().expect("the payload has no terminator");
+    assert_eq!(framing.code(), "RCA5001");
+    assert_eq!(
+        framing.span(),
+        recursa::Span::new(open_payload.end, open_payload.end).unwrap(),
+    );
+    let closed_payload = at("copy 'table';")..after("\\.\r\n");
+    let frame = window(document, closed_payload.clone());
+    assert_owned_once_in(document, closed_payload, frame.spans());
+
+    // A window that is not a range of character boundaries is a fatal failure.
+    let in_character = at("\u{e9}") + 1;
+    #[allow(clippy::reversed_empty_ranges)]
+    for invalid in [
+        3..2,
+        0..document.len() + 1,
+        in_character..document.len(),
+        0..in_character,
+    ] {
+        match grammar::Entry::frame_window(document, invalid.clone()) {
+            Err(grammar::FrameFailure::Fatal(fatal)) => {
+                assert_eq!(fatal.code(), "RCA5090");
+                assert_eq!(fatal.source(), document);
+            }
+            _ => panic!("window {invalid:?} must be a fatal failure"),
+        }
+    }
+}
+
+/// Asserts that a window frame equals the frame of the window text placed alone.
+fn assert_window_is_alone(document: &str, window: std::ops::Range<usize>) {
+    let offset = window.start;
+    let text = &document[window.clone()];
+    let framed = describe(
+        &grammar::Entry::frame_window(document, window.clone()),
+        offset,
+    );
+    let alone = describe(&grammar::Entry::frame(text), 0);
+    assert_eq!(framed, alone, "window {window:?} ({text:?})");
+}
+
+/// Describes one framing result with spans relative to `offset`.
+fn describe(
+    result: &Result<grammar::CompleteFrame<'_, grammar::Entry<'_>>, grammar::FrameFailure<'_>>,
+    offset: usize,
+) -> Vec<String> {
+    let relative =
+        |span: recursa::Span| (span.start() as usize - offset, span.end() as usize - offset);
+    match result {
+        Ok(frame) => {
+            let mut lines = vec![format!("frame {:?}", frame.render_exact())];
+            for part in frame.parts() {
+                lines.push(match part {
+                    grammar::CompletePart::Gap(region) => {
+                        format!("gap {:?} {:?}", relative(region.span()), region.text())
+                    }
+                    grammar::CompletePart::Line(region) => {
+                        format!("line {:?} {:?}", relative(region.span()), region.text())
+                    }
+                    grammar::CompletePart::Delimited(region) => {
+                        format!(
+                            "delimited {:?} {:?}",
+                            relative(region.span()),
+                            region.text()
+                        )
+                    }
+                    grammar::CompletePart::Payload(payload) => format!(
+                        "payload {:?} {:?} {:?}",
+                        relative(payload.span()),
+                        relative(payload.data_span()),
+                        relative(payload.terminator_span()),
+                    ),
+                    grammar::CompletePart::Island(island) => {
+                        let parsed = island.parsed();
+                        let root = recursa::HasSpan::span(&parsed.root()).map(relative);
+                        let gaps = parsed
+                            .root()
+                            .trivia_gaps()
+                            .map(|gap| relative(gap.span()))
+                            .collect::<Vec<_>>();
+                        format!(
+                            "island {:?} {:?} {:?} root={root:?} gaps={gaps:?}",
+                            relative(island.span()),
+                            parsed.source(),
+                            parsed.source_bounds().map(relative),
+                        )
+                    }
+                });
+            }
+            lines
+        }
+        Err(grammar::FrameFailure::Rejected(rejection)) => {
+            let mut lines = vec![format!(
+                "rejected {:?} span={:?} {rejection}",
+                relative(rejection.island()),
+                relative(rejection.span()),
+            )];
+            if let Some(framing) = rejection.framing() {
+                lines.push(format!(
+                    "framing {} {:?} {}",
+                    framing.code(),
+                    relative(framing.span()),
+                    framing.message(),
+                ));
+            }
+            for diagnostic in rejection.diagnostics() {
+                lines.push(format!(
+                    "diagnostic {:?} {:?} {:?} {:?} {:?} {}",
+                    diagnostic.kind(),
+                    relative(diagnostic.span()),
+                    diagnostic.text(),
+                    diagnostic.found(),
+                    diagnostic.expected().collect::<Vec<_>>(),
+                    diagnostic.message(),
+                ));
+            }
+            lines
+        }
+        Err(grammar::FrameFailure::Fatal(fatal)) => vec![format!("fatal {}", fatal.message())],
+    }
+}
+
+/// Frames one window that must frame complete.
+fn window(
+    document: &str,
+    window: std::ops::Range<usize>,
+) -> grammar::CompleteFrame<'_, grammar::Entry<'_>> {
+    grammar::Entry::frame_window(document, window.clone())
+        .unwrap_or_else(|failure| panic!("window {window:?} must frame complete: {failure:?}"))
+}
+
+/// Frames one window that must be rejected as ordinary invalid input.
+fn window_rejection(document: &str, window: std::ops::Range<usize>) -> grammar::FrameRejection<'_> {
+    match grammar::Entry::frame_window(document, window.clone()) {
+        Ok(_) => panic!("window {window:?} must be rejected"),
+        Err(grammar::FrameFailure::Rejected(rejection)) => rejection,
+        Err(grammar::FrameFailure::Fatal(fatal)) => {
+            panic!("window {window:?} must reject as ordinary input, not fatally: {fatal}")
+        }
+    }
+}
+
+/// Asserts that ordered spans own one window of the source exactly once.
+fn assert_owned_once_in(
+    source: &str,
+    window: std::ops::Range<usize>,
+    spans: impl IntoIterator<Item = recursa::Span>,
+) {
+    let mut cursor = window.start;
+    let mut rendered = String::new();
+    for span in spans {
+        assert_eq!(span.start() as usize, cursor);
+        rendered.push_str(&source[span.range()]);
+        cursor = span.end() as usize;
+    }
+    assert_eq!(cursor, window.end);
+    assert_eq!(rendered, &source[window]);
 }
 
 /// Frames one document that must be rejected as ordinary invalid input.

@@ -109,3 +109,35 @@ final marker without its required line ending remains payload data.
 `PayloadRegion::data_span` and `terminator_span` are distinct; the latter
 includes its original line ending. A missing terminator rejects the document
 with the `RCA5001` framing cause at end of input.
+
+## Window framing (not yet stable)
+
+Generation also adds `Entry::frame_window(source, window)`, where `window` is a
+`Range<usize>` of byte offsets in `source`. The method is public but
+`#[doc(hidden)]`. It is for consumers that frame one part of a document at a
+time, for example the recovering parse of pgtk-sql, which frames each
+statement window between two statement boundaries. It is not yet a stable API:
+its signature and its behavior can change in a patch release.
+
+The result of `frame_window(source, window)` is the result of
+`frame(&source[window])`, with each span in the coordinates of the complete
+source. This applies to the parts, the island spans, `Parsed::source_bounds()`,
+the rejected extent, the strict diagnostics, and the framing cause. `source()`
+of the frame or of the rejection is the complete source. `render_exact()` of
+the frame is the text of the window, and its parts own each byte of the window
+exactly once.
+
+These rules follow from that equality:
+
+- The text of the window is lexed alone. A token that the window cuts is lexed
+  from its part in the window. For example, a window that cuts a quoted string
+  contains an unterminated string.
+- A rejected extent with no candidate boundary after the failure ends at the
+  end of the window, not at the end of the source.
+- A payload terminator after the end of the window does not close a payload in
+  the window. The `RCA5001` framing cause is at the end of the window.
+- An empty window frames as one empty gap at its position.
+
+A window that is not a range of `source` on UTF-8 character boundaries
+(including a window that ends before it starts) is a fatal `FrameError`
+(`RCA5090`).

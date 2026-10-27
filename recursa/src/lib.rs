@@ -48,7 +48,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp(env!("CARGO_PKG_VERSION")) },
-            42,
+            43,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
