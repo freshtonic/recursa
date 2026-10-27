@@ -88,6 +88,8 @@ pub(super) struct EmissionPlan {
     pub(super) restrictions: RestrictionPlan,
     /// Refused variants and validation hooks, which run when a reduce has built a Node.
     pub(super) validations: ValidationPlan,
+    /// Variants that `#[omit(Arbitrary)]` keeps out of generated sampling.
+    pub(super) unsampled: UnsampledVariants,
     /// Declared build-configuration requirements and their per-Node ceilings.
     pub(super) requirements: RequirementPlan,
     #[cfg(feature = "diagrams")]
@@ -984,6 +986,13 @@ impl EmissionPlan {
         // identity of the Generation it produced.
         let validations = plan_validations(resolved, resolved.build_inputs.flat)?;
         canonical.push_str(&format!(";validations={validations:?}"));
+        // A variant that sampling omits changes the generated `Arbitrary` choice. A grammar that
+        // omits none adds nothing, so its identity is the one it had before the declaration
+        // existed.
+        let unsampled = plan_unsampled_variants(resolved);
+        if !unsampled.is_empty() {
+            canonical.push_str(&format!(";unsampled={unsampled:?}"));
+        }
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             arena_ast: resolved.build_inputs.arena_ast,
@@ -1014,6 +1023,7 @@ impl EmissionPlan {
             rejections,
             restrictions,
             validations,
+            unsampled,
             requirements,
             #[cfg(feature = "diagrams")]
             diagrams,

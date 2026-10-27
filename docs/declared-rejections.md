@@ -9,7 +9,11 @@ Status: accepted design, 2026-10-13. Raised by
 and text rules ([Sets, classifications and text rules](#sets-classifications-and-text-rules)).
 Extended 2026-10-15 by [freshtonic/recursa#144](https://github.com/freshtonic/recursa/issues/144),
 for the consumer [freshtonic/pg-sql#88](https://github.com/freshtonic/pg-sql/issues/88): text
-rules on a struct field ([Text rules on a struct](#text-rules-on-a-struct)).
+rules on a struct field ([Text rules on a struct](#text-rules-on-a-struct)). Extended
+2026-10-27 for names of more than one token: classifications through a projection
+([Classification through a projection](#classification-through-a-projection)) and omitted
+variants ([Sampling](#sampling)). Decision record:
+[ADR 0014](adr/0014-classify-through-a-projection-and-omit-variants-from-sampling.md).
 
 Some rejections a raw parser makes are not grammar shapes. They are checks in a `gram.y` action
 that look at the set of items a list holds. `ConstraintAttributeSpec` (gram.y REL_17_11
@@ -155,6 +159,65 @@ item. The error span is the extent of the field's own value, without the fixed t
 reduces each check the struct they have just built, so all three agree. A struct takes text rules
 only: `pair(...)` and `once(...)` read a repetition, and on a struct they are `RCA3145`.
 
+### Classification through a projection
+
+A classification reads one token. But in some languages one name can have more than one token,
+for example a quoted name with an optional clause that names its escape character. A grammar
+models the form as a struct of a name and an optional clause, and adds a variant that holds the
+struct to each token-wrapper enum of its identifiers. Without more, a classification cannot read
+such a wrapper, because one of its variants holds no token. The struct says what a
+classification reads instead:
+
+```rust,ignore
+#[classify(via(name, escape), spell = crate::names::escaped_spelling)]
+pub struct EscapedName {
+    pub name: QuotedName,
+    pub escape: Option<EscapeClause>,
+}
+
+#[classify(via = escape_char)]
+pub struct EscapeClause {
+    #[tok(ESCAPE, this)]
+    pub escape_char: StringLit,
+}
+
+#[classify(via = name.text)]
+pub struct WrappedName {
+    #[tok(OPTION, this)]
+    pub name: ColumnName,
+}
+```
+
+A **projection** names one or more field paths of the struct. A path names a field of the
+struct, then a field of each struct it passes through, behind nothing but `boxed!`, and it ends
+at a field that a classification reads: a content token, a token wrapper, or another struct with a
+projection. The last field of a path may be an `Option`; an absent value gives the empty text,
+which no token has. With one path, the text is the text of that path. With `spell = path`, the consumer's
+function `fn(&[&str]) -> Option<String>` makes the one text from the texts of the paths in
+written order; more than one path needs it. The classification then folds that text with its
+own fold function, as if one token held it, so a spelling function gives a spelling, not a
+folded text. In the example, the spelling function decodes the name with the escape character
+of the clause (a default without one) and gives a quoted name, which the fold of every
+classification reads as a name. A path with no text,
+or a spelling function that answers `None`, gives the item no folded text.
+
+A struct with a projection stands where a classification expects a token: as the classified
+field itself, or as the payload of one variant of a token-wrapper enum, behind nothing but
+`boxed!`. A wrapper whose every variant holds a token is planned exactly as before, so a grammar
+with no projection generates the code it generated before projections existed. A projection is
+no classification of the struct, so the struct can also classify one of its own fields for its own
+text rules, as `EscapeClause` can refuse an escape character that is not valid.
+
+The nested key reads the paths through field access. The flat key reads the struct and each
+struct a path passes through out of their pools, and the token texts out of the text pool, so
+nothing is materialized and all three storages still agree. A text that a spelling function makes
+is owned, so only a key that reads one holds a `Cow<str>`.
+
+A projection is written on a struct, once. On an enum it is `RCA3145`, a second one on one struct
+is `RCA3154`, and a declaration that cannot be read, or that names more than one path without
+`spell`, is `RCA3144`. A path that ends at no field a classification reads is a generation
+error, because the shape is known only once the Nodes are planned.
+
 ### The key
 
 The walk reads one **key** per item: its variant tag, its class tag, and the index of its folded
@@ -236,6 +299,28 @@ nothing.
 `Arbitrary` never samples a refused variant. It does not run a hook: the arena form samples a seed
 mirror, and the hook takes the arena type. A sampled value can therefore be one that a hook
 refuses; a consumer's round trip accepts it when both parsers refuse it with the same message.
+
+A variant that parses can still be one whose samples a hook or a text rule refuses nearly always.
+A name with an escape clause is one: few sampled escape strings name a valid escape character,
+and identifiers occur in nearly every Node, so sampling the variant spends the sample of nearly
+every Node that holds an identifier. `#[omit(Arbitrary)]` on the
+variant keeps it out of sampling:
+
+```rust,ignore
+pub enum ColId {
+    Text(ColIdText),
+    #[omit(Arbitrary)]
+    Escaped(EscapedName),
+}
+```
+
+On a declaration, `#[omit(...)]` suppresses configured trait implementations. On a variant it
+names `Arbitrary` only, once (`RCA3108` otherwise): the sampler chooses among the other variants,
+as it does for a refused variant, and the payload type keeps its own `Arbitrary` implementation.
+The arena form's seed mirror keeps the Node and variant identities, so it reads the same omission
+and makes the same choice. An enum whose every variant is omitted or refused answers
+`arbitrary::Error::IncorrectFormat`. A grammar that omits no variant generates the code it
+generated before the declaration existed.
 
 ## Version gating
 

@@ -237,3 +237,27 @@ fn an_unresolved_shift_reduce_conflict_is_an_ordinary_rca0400_build_error() {
         );
     }
 }
+
+#[test]
+fn rejection_planner_reports_a_projection_that_reaches_no_token_directly() {
+    let template = include_str!("../../tests/fixtures/generation/rejections/src/grammar.rs.in")
+        .replace("{{AST}}", "");
+    // A path that names no field of the struct, and a path that ends at a struct with no
+    // projection, both leave the classification of `ColumnOption` with no text to read.
+    for (written, broken) in [
+        (
+            "#[classify(via = name.text)]",
+            "#[classify(via = name.missing)]",
+        ),
+        ("#[classify(via = name.text)]", "#[classify(via = name)]"),
+    ] {
+        let source = template.replacen(written, broken, 1);
+        assert_ne!(source, template, "the fixture declares `{written}`");
+        let detail = emission_plan_join_error(source, |_| {});
+        assert!(
+            detail.contains("`#[classify(Named.name, ...)]` on `ColumnOption`")
+                && detail.contains("a struct with `#[classify(via ...)]`"),
+            "{broken}: {detail}"
+        );
+    }
+}

@@ -169,6 +169,18 @@ calls with the Node it has just built, in every storage. It refuses the Node wit
 and the parse ends with a declared rejection.
 _Avoid_: Rule action, post-parse check
 
+**Classification projection**:
+A `#[classify(via ...)]` declaration on a struct that names the fields whose text a classification
+reads when it reaches the struct, as a field type or as the payload of a token-wrapper variant.
+One path reads the text of one token; several paths read the text that the consumer's `spell`
+function makes of their texts, for example one name from a quoted name and its escape clause.
+_Avoid_: Classification alias, text accessor
+
+**Omitted variant**:
+An enum variant that `#[omit(Arbitrary)]` keeps out of generated sampling. It parses as any
+variant does; only the sampler never chooses it, in the value form and the arena seed mirror.
+_Avoid_: Skipped variant, hidden variant
+
 **Declared rejection**:
 The parse failure a rejection rule produces, positioned at the first item that completes a forbidden pair in source order and carrying the rule's message data.
 _Avoid_: Validation failure, semantic error

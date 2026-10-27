@@ -171,6 +171,59 @@ fn pair(source: &str) -> String {
     }
 }
 
+/// Parses one `TAG` Node and reports `ok` or the failure.
+#[cfg(not(feature = "flat-ast"))]
+fn tag(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Tag::parse_spanned(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Parses one `TAG` Node into a Flat AST.
+#[cfg(feature = "flat-ast")]
+fn tag(source: &str) -> String {
+    let lexed = grammar::lex(source);
+    assert_eq!(lexed.errors().count(), 0, "fixture source lexes: {source}");
+    let mut input = lexed.input();
+    match grammar::Tag::parse_flat(&mut input) {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Samples option names and reports whether any of them holds the omitted variant.
+#[cfg(not(any(feature = "arena-ast", feature = "flat-ast")))]
+fn sampled_option_names() -> String {
+    use recursa::Arbitrary as _;
+
+    let mut wrapped = 0_usize;
+    for seed in 0_u8..64 {
+        let bytes = [seed, seed.wrapping_mul(17), seed ^ 0x4d, seed.wrapping_add(11), seed];
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        let Ok(value) = grammar::OptionName::arbitrary(&mut input) else {
+            continue;
+        };
+        match value {
+            grammar::OptionName::Escaped(_) => {
+                return "a sample holds the omitted variant".to_owned();
+            }
+            grammar::OptionName::Wrapped(_) => wrapped += 1,
+            grammar::OptionName::Text(_) => {}
+        }
+    }
+    format!("{} wrapped samples, none escaped", wrapped.min(1))
+}
+
+/// A grammar whose AST holds no sampler of its own reports that it sampled nothing.
+#[cfg(any(feature = "arena-ast", feature = "flat-ast"))]
+fn sampled_option_names() -> String {
+    "not sampled".to_owned()
+}
+
 /// Samples `FRAME` Nodes and reports whether any of them holds the refused variant.
 #[cfg(not(any(feature = "arena-ast", feature = "flat-ast")))]
 fn sampled_frames() -> String {
@@ -378,6 +431,43 @@ fn main() {
         column("column a \"__pg__is_not_null\" 'x'")
     );
 
+    // A projection lets a classification read a name that a struct holds: the text of one
+    // token one struct deeper, or the text a spelling function makes of two tokens.
+    println!(
+        "column_wrapped_default={}",
+        column("column a option \"default\" 'x'")
+    );
+    println!(
+        "column_wrapped_two_defaults={}",
+        column("column a default 'x' option \"default\" 'y'")
+    );
+    println!(
+        "column_escaped_path={}",
+        column("column a U&\"pa!th\" uescape '!' 'x'")
+    );
+    println!(
+        "column_escaped_two_paths={}",
+        column("column a path 'x' U&\"p!ath\" uescape '!' 'y'")
+    );
+    println!(
+        "column_escaped_unknown={}",
+        column("column a U&\"fo!o\" uescape '!' 'x'")
+    );
+    // An absent optional field gives the empty text, and the spelling function reads it.
+    println!(
+        "column_unescaped_two_paths={}",
+        column("column a path 'x' U&\"path\" 'y'")
+    );
+    // A spelling function that gives no text leaves the option with no folded text, which
+    // `not_in` refuses.
+    println!(
+        "column_escaped_no_text={}",
+        column("column a U&\"pa!th\" uescape '!!' 'x'")
+    );
+    // A struct's classified field may be a struct with a projection.
+    println!("tag_plain={}", tag("tag option a"));
+    println!("tag_reserved={}", tag("tag option reserved"));
+
     // A struct's text rules refuse the struct on its own field's folded text, at the extent of
     // that field, as `opt_float` refuses `float(0)` at the `Iconst`.
     println!("sized_bare={}", sized("sized a"));
@@ -401,4 +491,5 @@ fn main() {
     println!("sampled={}", sampled_round_trips());
     println!("sampled_columns={}", sampled_columns_round_trip());
     println!("sampled_sized={}", sampled_sized_round_trip());
+    println!("sampled_option_names={}", sampled_option_names());
 }

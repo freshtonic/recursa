@@ -37,6 +37,9 @@ recursa::tokens! {
         LAST => "last" in RESERVED,
         MANY => "many" in RESERVED,
         PAIR => "pair" in RESERVED,
+        OPTION => "option" in RESERVED,
+        UESCAPE => "uescape" in RESERVED,
+        TAG => "tag" in RESERVED,
     }
     admissions { Unreserved = UNRESERVED }
     punctuation {
@@ -201,12 +204,65 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// An option name: a word or a quoted identifier, as `IDENT` is.
+    /// An option name: a word or a quoted identifier, as `IDENT` is, or one of two structs whose
+    /// projection says which text a classification reads.
     pub enum OptionName {
         Text(
             #[lex(pattern = r#""[^"]+"|[A-Za-z_][A-Za-z0-9_]*"#, admits(Unreserved))]
             OptionNameText,
         ),
+        Wrapped(boxed!(WrappedName)),
+        /// Most sampled escape strings name no escape character, so sampling never chooses
+        /// this variant: a sample of it would spend the sample of the option list.
+        #[omit(Arbitrary)]
+        Escaped(boxed!(EscapedName)),
+    }
+}
+
+recursa::ast_node! {
+    /// `OPTION <name>`: a name one struct deeper. A classification reads the text of the column
+    /// name's own token, as if the token stood in the option name's place.
+    #[classify(via = name.text)]
+    pub struct WrappedName {
+        #[tok(OPTION, this)]
+        pub name: ColumnName,
+    }
+}
+
+recursa::ast_node! {
+    /// `U&"<name>" [UESCAPE '<c>']`: a name of one or two tokens, as `parser.c` reads a `UIDENT`
+    /// and its `UESCAPE` clause as one identifier. The consumer's spelling function makes the
+    /// one text a classification folds from the texts of both; an absent clause gives the empty
+    /// text.
+    #[classify(via(name, escape), spell = crate::spell_escaped)]
+    pub struct EscapedName {
+        #[lex(pattern = r#"[Uu]&"[^"]+""#)]
+        pub name: EscapedNameText,
+        pub escape: Option<Escape>,
+    }
+}
+
+recursa::ast_node! {
+    /// `UESCAPE '<c>'`: a classification reads the text of the string, one struct deeper.
+    #[classify(via = value.text)]
+    pub struct Escape {
+        #[tok(UESCAPE, this)]
+        pub value: Value,
+    }
+}
+
+recursa::ast_node! {
+    /// `TAG OPTION <name>`: a struct whose classified field is itself a struct with a projection.
+    #[classify(label, fold = crate::fold_name)]
+    #[reject(
+        one_of(label, "reserved"),
+        code = "42601",
+        message = "a tag cannot be reserved",
+        cite = "fixture",
+    )]
+    pub struct Tag {
+        #[tok(TAG, this)]
+        pub label: WrappedName,
     }
 }
 

@@ -22,7 +22,9 @@ use super::*;
 use syn::Meta;
 
 use crate::resolution::ResolvedNodeBody;
-use crate::source_syntax::{ClassifySyntax, RejectCheckSyntax, RejectRuleSyntax};
+use crate::source_syntax::{
+    ClassifySyntax, ClassifyViaSyntax, RejectCheckSyntax, RejectRuleSyntax,
+};
 
 /// The test one recorded rule makes, with every name resolved to a tag or a text index.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -69,7 +71,103 @@ enum ClassifiedTerminal {
         /// The wrapper's variants, in plan order.
         variants: Vec<String>,
     },
+    /// The field is a token-wrapper enum of which at least one variant holds a struct that
+    /// declares a projection. A wrapper whose every variant holds a token stays a
+    /// [`ClassifiedTerminal::Wrapper`], so a grammar with no projection plans what it planned
+    /// before projections existed.
+    ProjectingWrapper {
+        /// The wrapper Node.
+        node: NodeId,
+        /// The wrapper's variants, in plan order.
+        variants: Vec<WrappedText>,
+    },
+    /// The field is a struct that declares a projection.
+    Projected(Box<Projection>),
 }
+
+impl ClassifiedTerminal {
+    /// Reports whether reading the text through this terminal reads the flat pool of `node`.
+    fn reads_pool(&self, node: NodeId) -> bool {
+        match self {
+            Self::Content => false,
+            Self::Wrapper { node: wrapper, .. } => *wrapper == node,
+            Self::ProjectingWrapper {
+                node: wrapper,
+                variants,
+            } => {
+                *wrapper == node
+                    || variants.iter().any(|variant| match variant {
+                        WrappedText::Token(_) => false,
+                        WrappedText::Projected { projection, .. } => projection.reads_pool(node),
+                    })
+            }
+            Self::Projected(projection) => projection.reads_pool(node),
+        }
+    }
+}
+
+/// One variant of a [`ClassifiedTerminal::ProjectingWrapper`].
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum WrappedText {
+    /// The variant holds one content token.
+    Token(String),
+    /// The variant holds, behind nothing but `boxed!`, a struct that declares a projection.
+    Projected {
+        /// The variant's name.
+        variant: String,
+        /// The projection of the struct the variant holds.
+        projection: Projection,
+    },
+}
+
+/// The declared projection of one struct, `#[classify(via ...)]`, resolved against the planned
+/// Nodes: the classification that reaches the struct reads the text of its projected fields.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Projection {
+    /// The struct that declares the projection.
+    node: NodeId,
+    /// The projected field paths, in written order.
+    paths: Vec<ProjectedPath>,
+    /// The consumer's spelling function, as written, which makes one text of the texts of the
+    /// paths. A projection of one path without it reads the text of that path.
+    spell: Option<String>,
+}
+
+impl Projection {
+    /// Reports whether reading the text through this projection reads the flat pool of `node`.
+    fn reads_pool(&self, node: NodeId) -> bool {
+        self.node == node
+            || self.paths.iter().any(|path| {
+                path.steps.iter().any(|(_, step)| *step == node) || path.terminal.reads_pool(node)
+            })
+    }
+}
+
+/// One projected field path of a [`Projection`].
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ProjectedPath {
+    /// The struct fields the path passes through before its last field, each with the struct
+    /// Node it holds.
+    steps: Vec<(String, NodeId)>,
+    /// The last field of the path.
+    field: String,
+    /// Whether the last field is held behind `boxed!`.
+    field_boxed: bool,
+    /// Whether the last field is an `Option`. An absent value gives the empty text, which no
+    /// token has.
+    field_optional: bool,
+    /// Where the last field keeps its text.
+    terminal: ClassifiedTerminal,
+}
+
+/// The authored projection of each struct that declares one, before it is resolved.
+///
+/// A projection belongs to the struct, so every classification that reaches the struct reads it.
+type ProjectionSyntaxes = BTreeMap<NodeId, (Vec<Vec<String>>, Option<String>)>;
+
+/// The deepest chain of projections and token wrappers a classification follows. A deeper chain
+/// is a shape a classification does not read, which also ends a cycle of projections.
+const MAX_PROJECTION_DEPTH: usize = 8;
 
 /// One classification of one variant, with its field path resolved against the planned Nodes.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -169,11 +267,7 @@ impl RejectionPlan {
         self.nodes.contains_key(&node)
             || self.nodes.values().any(|rules| {
                 rules.classifications.iter().any(|classification| {
-                    classification.payload == node
-                        || matches!(
-                            &classification.terminal,
-                            ClassifiedTerminal::Wrapper { node: wrapper, .. } if *wrapper == node
-                        )
+                    classification.payload == node || classification.terminal.reads_pool(node)
                 })
             })
     }
@@ -223,6 +317,7 @@ fn variant_payload(variant: &VariantParsePlan) -> Option<NodeId> {
 /// generation reports, because the shape is only known once the Nodes are planned.
 fn resolve_classification(
     nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
     enum_node: &NodeParsePlan,
     variant: &VariantParsePlan,
     field: &str,
@@ -230,8 +325,9 @@ fn resolve_classification(
     let shape = || {
         format!(
             "`#[classify({}.{field}, ...)]` on `{}`: `{}` must hold exactly one non-generic \
-             struct Node, whose field `{field}` is a content token or a non-generic enum whose \
-             every variant holds one content token",
+             struct Node, whose field `{field}` is a content token, a non-generic enum whose \
+             every variant holds one content token or a struct with `#[classify(via ...)]`, or \
+             such a struct itself",
             variant.ident, enum_node.ident, variant.ident,
         )
     };
@@ -240,40 +336,78 @@ fn resolve_classification(
         .iter()
         .find(|candidate| candidate.node == payload)
         .ok_or_else(shape)?;
-    let (field_boxed, terminal) = resolve_field(nodes, payload_plan, field).ok_or_else(shape)?;
+    let (field_boxed, terminal) =
+        resolve_field(nodes, projections, payload_plan, field, 0).ok_or_else(shape)?;
     Ok((payload, field_boxed, terminal))
 }
 
-/// Resolves where the named field of one struct Node keeps its text: a content token or a
-/// token-wrapper enum, behind nothing but `boxed!`. `None` means the shape is not one a
-/// classification reads.
-fn resolve_field(
-    nodes: &[NodeParsePlan],
-    payload_plan: &NodeParsePlan,
+/// Returns the semantic projection of the named field of one non-generic struct Node.
+fn struct_field<'plan>(
+    payload_plan: &'plan NodeParsePlan,
     field: &str,
-) -> Option<(bool, ClassifiedTerminal)> {
+) -> Option<&'plan SemanticParseProjection> {
     let NodeBodyPlan::Struct { elements, .. } = &payload_plan.body else {
         return None;
     };
     if payload_plan.parse_applications.len() != 1 {
         return None;
     }
-    let (_, projection) = semantic_fields(elements)
+    semantic_fields(elements)
         .into_iter()
         .find(|(candidate, _)| {
             candidate
                 .ident
                 .as_ref()
                 .is_some_and(|ident| ident.unraw() == field)
-        })?;
+        })
+        .map(|(_, projection)| projection)
+}
+
+/// Resolves where the named field of one struct Node keeps its text: a content token, a
+/// token-wrapper enum, or a struct that declares a projection, behind nothing but `boxed!`.
+/// `None` means the shape is not one a classification reads.
+///
+/// A token-wrapper variant may hold a struct that declares a projection in place of a token.
+/// `depth` counts the projections and wrappers already followed, so a cycle of projections ends.
+fn resolve_field(
+    nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
+    payload_plan: &NodeParsePlan,
+    field: &str,
+    depth: usize,
+) -> Option<(bool, ClassifiedTerminal)> {
+    match resolve_wrapped_field(nodes, projections, payload_plan, field, depth, false)? {
+        (field_boxed, false, terminal) => Some((field_boxed, terminal)),
+        (_, true, _) => None,
+    }
+}
+
+/// Resolves a field as [`resolve_field`] does, and, when `allow_optional` is set, also a field
+/// whose outermost wrapper is `Option`, as the last field of a projected path may be. Answers
+/// whether the field is boxed, whether it is optional, and its terminal.
+fn resolve_wrapped_field(
+    nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
+    payload_plan: &NodeParsePlan,
+    field: &str,
+    depth: usize,
+    allow_optional: bool,
+) -> Option<(bool, bool, ClassifiedTerminal)> {
+    if depth > MAX_PROJECTION_DEPTH {
+        return None;
+    }
     let SemanticParseProjection::Direct {
         terminal_node,
         explorer_terminal,
         wrappers,
         ..
-    } = projection
+    } = struct_field(payload_plan, field)?
     else {
         return None;
+    };
+    let (field_optional, wrappers) = match wrappers.split_first() {
+        Some((FieldWrapper::Optional, rest)) if allow_optional => (true, rest),
+        _ => (false, wrappers.as_slice()),
     };
     if !wrappers
         .iter()
@@ -283,17 +417,25 @@ fn resolve_field(
     }
     let field_boxed = !wrappers.is_empty();
     if matches!(explorer_terminal, ExplorerTerminalPlan::Content(_)) {
-        return Some((field_boxed, ClassifiedTerminal::Content));
+        return Some((field_boxed, field_optional, ClassifiedTerminal::Content));
     }
     let wrapper = (*terminal_node)?;
     let wrapper_plan = nodes.iter().find(|candidate| candidate.node == wrapper)?;
+    if projections.contains_key(&wrapper) {
+        let projection = resolve_projection(nodes, projections, wrapper_plan, depth + 1)?;
+        return Some((
+            field_boxed,
+            field_optional,
+            ClassifiedTerminal::Projected(Box::new(projection)),
+        ));
+    }
     let NodeBodyPlan::Enum { variants } = &wrapper_plan.body else {
         return None;
     };
     if wrapper_plan.parse_applications.len() != 1 {
         return None;
     }
-    let mut names = Vec::new();
+    let mut wrapped_texts = Vec::new();
     for wrapped in variants {
         let fields = semantic_fields(&wrapped.elements);
         let [(_, projection)] = fields.as_slice() else {
@@ -305,18 +447,115 @@ fn resolve_field(
                 wrappers,
                 ..
             } if wrappers.is_empty() && wrapped.style == ResolvedFieldStyle::Unnamed => {
-                names.push(wrapped.ident.unraw().to_string());
+                wrapped_texts.push(WrappedText::Token(wrapped.ident.unraw().to_string()));
             }
-            _ => return None,
+            _ => {
+                let payload = variant_payload(wrapped)?;
+                if !projections.contains_key(&payload) {
+                    return None;
+                }
+                let payload_plan = nodes.iter().find(|candidate| candidate.node == payload)?;
+                wrapped_texts.push(WrappedText::Projected {
+                    variant: wrapped.ident.unraw().to_string(),
+                    projection: resolve_projection(nodes, projections, payload_plan, depth + 1)?,
+                });
+            }
         }
     }
-    Some((
-        field_boxed,
+    let terminal = if wrapped_texts
+        .iter()
+        .all(|wrapped| matches!(wrapped, WrappedText::Token(_)))
+    {
         ClassifiedTerminal::Wrapper {
             node: wrapper,
-            variants: names,
-        },
-    ))
+            variants: wrapped_texts
+                .into_iter()
+                .filter_map(|wrapped| match wrapped {
+                    WrappedText::Token(name) => Some(name),
+                    WrappedText::Projected { .. } => None,
+                })
+                .collect(),
+        }
+    } else {
+        ClassifiedTerminal::ProjectingWrapper {
+            node: wrapper,
+            variants: wrapped_texts,
+        }
+    };
+    Some((field_boxed, field_optional, terminal))
+}
+
+/// Resolves the declared projection of one struct: each path passes through struct fields,
+/// behind nothing but `boxed!`, and ends at a field that [`resolve_field`] reads.
+fn resolve_projection(
+    nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
+    struct_plan: &NodeParsePlan,
+    depth: usize,
+) -> Option<Projection> {
+    let (paths, spell) = projections.get(&struct_plan.node)?;
+    let mut resolved = Vec::new();
+    for path in paths {
+        let (last, passed) = path.split_last()?;
+        let mut current = struct_plan;
+        let mut steps = Vec::new();
+        for step in passed {
+            let SemanticParseProjection::Direct {
+                terminal_node: Some(next),
+                explorer_terminal,
+                wrappers,
+                ..
+            } = struct_field(current, step)?
+            else {
+                return None;
+            };
+            if matches!(explorer_terminal, ExplorerTerminalPlan::Content(_))
+                || !wrappers
+                    .iter()
+                    .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed))
+            {
+                return None;
+            }
+            current = nodes.iter().find(|candidate| candidate.node == *next)?;
+            steps.push((step.clone(), *next));
+        }
+        let (field_boxed, field_optional, terminal) =
+            resolve_wrapped_field(nodes, projections, current, last, depth, true)?;
+        resolved.push(ProjectedPath {
+            steps,
+            field: last.clone(),
+            field_boxed,
+            field_optional,
+            terminal,
+        });
+    }
+    Some(Projection {
+        node: struct_plan.node,
+        paths: resolved,
+        spell: spell.clone(),
+    })
+}
+
+/// Reads the projection every struct of the grammar declares, `#[classify(via ...)]`.
+///
+/// Source-model lowering reports a projection that cannot be read, a second one, and one on an
+/// enum, so a declaration that cannot be read here is skipped.
+fn projection_syntaxes(resolved: &ResolvedSourceGrammar) -> ProjectionSyntaxes {
+    resolved
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.body, ResolvedNodeBody::Struct { .. }))
+        .filter_map(|node| {
+            let via = node
+                .metas
+                .iter()
+                .filter(|meta| meta.path().is_ident("classify"))
+                .filter(|meta| ClassifyViaSyntax::is_via(meta))
+                .find_map(|meta| ClassifyViaSyntax::from_meta(meta).ok())?;
+            let spell = via.spell.map(|spell| quote!(#spell).to_string());
+            Some((node.id, (via.paths, spell)))
+        })
+        .collect()
 }
 
 /// Adds `text` to the text table when it is new, and returns its index.
@@ -342,6 +581,7 @@ fn intern_text(texts: &mut Vec<String>, text: &str) -> u32 {
 /// Phases: reads the declarations, numbers labels, records rules, resolves classifications.
 fn node_rejections(
     nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
     enum_node: &NodeParsePlan,
     metas: &[Meta],
     variants: &[VariantParsePlan],
@@ -451,8 +691,13 @@ fn node_rejections(
         let Some(tag) = classify.variant.as_deref().and_then(variant) else {
             continue;
         };
-        let (payload, field_boxed, terminal) =
-            resolve_classification(nodes, enum_node, &variants[tag as usize], &classify.field)?;
+        let (payload, field_boxed, terminal) = resolve_classification(
+            nodes,
+            projections,
+            enum_node,
+            &variants[tag as usize],
+            &classify.field,
+        )?;
         let classes = texts
             .iter()
             .map(|text| {
@@ -489,6 +734,7 @@ fn node_rejections(
 /// over that variant and the runtime walk needs no struct form of its own.
 fn struct_rejections(
     nodes: &[NodeParsePlan],
+    projections: &ProjectionSyntaxes,
     struct_node: &NodeParsePlan,
     metas: &[Meta],
 ) -> Result<NodeRejections, String> {
@@ -530,11 +776,12 @@ fn struct_rejections(
         });
     }
     let (field_boxed, terminal) =
-        resolve_field(nodes, struct_node, &classify.field).ok_or_else(|| {
+        resolve_field(nodes, projections, struct_node, &classify.field, 0).ok_or_else(|| {
             format!(
-                "`#[classify({}, ...)]` on `{}`: the field `{}` must be a content token or a \
-                 non-generic enum whose every variant holds one content token, and `{}` must be \
-                 a non-generic struct",
+                "`#[classify({}, ...)]` on `{}`: the field `{}` must be a content token, a \
+                 non-generic enum whose every variant holds one content token or a struct with \
+                 `#[classify(via ...)]`, or such a struct itself, and `{}` must be a non-generic \
+                 struct",
                 classify.field, struct_node.ident, classify.field, struct_node.ident,
             )
         })?;
@@ -561,6 +808,7 @@ pub(super) fn plan_rejections(
     nodes: &[NodeParsePlan],
 ) -> Result<RejectionPlan, String> {
     let mut plan = RejectionPlan::default();
+    let projections = projection_syntaxes(resolved);
     for node in &resolved.nodes {
         if !node
             .metas
@@ -574,10 +822,10 @@ pub(super) fn plan_rejections(
         };
         let rejections = match (&node.body, &planned.body) {
             (ResolvedNodeBody::Enum { .. }, NodeBodyPlan::Enum { variants }) => {
-                node_rejections(nodes, planned, &node.metas, variants)?
+                node_rejections(nodes, &projections, planned, &node.metas, variants)?
             }
             (ResolvedNodeBody::Struct { .. }, NodeBodyPlan::Struct { .. }) => {
-                struct_rejections(nodes, planned, &node.metas)?
+                struct_rejections(nodes, &projections, planned, &node.metas)?
             }
             _ => continue,
         };
@@ -665,8 +913,13 @@ fn render_classified_key(
     facade: &Ident,
     classification: &Classification,
     texts: &[String],
-    raw: proc_macro2::TokenStream,
+    raw: RenderedText,
 ) -> Result<proc_macro2::TokenStream, String> {
+    // An owned text is an `Option<Cow<str>>`; the scrutinee keeps it alive for the whole match.
+    let raw = match raw {
+        RenderedText::Owned(raw) => quote!((#raw).as_deref()),
+        raw => raw.tokens(),
+    };
     let variant = classification.variant;
     let fold: syn::Path = syn::parse_str(&classification.fold)
         .map_err(|error| format!("a classify fold path does not render back: {error}"))?;
@@ -700,13 +953,63 @@ pub(super) enum NestedNaming<'a> {
     Seed,
 }
 
+/// The rendered text of a classified field.
+///
+/// A text that a projection's `spell` function makes is owned, so it is rendered as an
+/// `Option<Cow<str>>`. Every other text borrows the source and is rendered as an
+/// `Option<&str>`, exactly as before projections existed.
+enum RenderedText {
+    /// A `&str` expression: the text of a token, which is always there. It renders as
+    /// `Some(text)`.
+    Present(proc_macro2::TokenStream),
+    /// An `Option<&str>` expression.
+    Borrowed(proc_macro2::TokenStream),
+    /// An `Option<::std::borrow::Cow<str>>` expression.
+    Owned(proc_macro2::TokenStream),
+}
+
+impl RenderedText {
+    /// Returns the expression in its own form: an `Option<&str>`, or an `Option<Cow<str>>` when
+    /// the text is owned.
+    fn tokens(self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Present(text) => quote!(::core::option::Option::Some(#text)),
+            Self::Borrowed(text) | Self::Owned(text) => text,
+        }
+    }
+
+    /// Returns the expression as an `Option<Cow<str>>`.
+    fn into_owned(self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Present(text) => {
+                quote!(::core::option::Option::Some(::std::borrow::Cow::Borrowed(#text)))
+            }
+            Self::Borrowed(text) => quote!((#text).map(::std::borrow::Cow::Borrowed)),
+            Self::Owned(text) => text,
+        }
+    }
+
+    /// Wraps the expression in `wrap`, which keeps its type.
+    fn wrap(self, wrap: impl FnOnce(proc_macro2::TokenStream) -> proc_macro2::TokenStream) -> Self {
+        match self {
+            Self::Owned(text) => Self::Owned(wrap(text)),
+            text => Self::Borrowed(wrap(text.tokens())),
+        }
+    }
+
+    /// Reports whether the expression is an `Option<Cow<str>>`.
+    fn is_owned(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+}
+
 /// Renders the source text of a classified field of a nested payload bound to
-/// `__recursa_payload`, as an `Option<&str>`.
+/// `__recursa_payload`.
 fn render_nested_text(
     plan: &EmissionPlan,
     classification: &Classification,
     naming: &NestedNaming<'_>,
-) -> Result<proc_macro2::TokenStream, String> {
+) -> Result<RenderedText, String> {
     let field = format_ident!("{}", classification.field);
     render_field_text(
         plan,
@@ -716,53 +1019,224 @@ fn render_nested_text(
     )
 }
 
-/// Renders the source text of a classified field from the place expression that holds it, as
-/// an `Option<&str>`. The place holds the field as authored, behind its `boxed!` layer if any.
+/// Renders the source text of a classified field from the place expression that holds it. The
+/// place holds the field as authored, behind its `boxed!` layer if any.
 fn render_field_text(
     plan: &EmissionPlan,
     classification: &Classification,
     naming: &NestedNaming<'_>,
     place: proc_macro2::TokenStream,
+) -> Result<RenderedText, String> {
+    render_terminal_text(
+        plan,
+        &classification.terminal,
+        classification.field_boxed,
+        naming,
+        place,
+        0,
+    )
+}
+
+/// Names a classified wrapper enum in a nested match pattern.
+fn nested_wrapper_path(
+    plan: &EmissionPlan,
+    naming: &NestedNaming<'_>,
+    node: NodeId,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let access = if classification.field_boxed {
+    match naming {
+        NestedNaming::Value(name) => name(node),
+        NestedNaming::Seed => {
+            let wrapper = plan
+                .nodes
+                .iter()
+                .find(|candidate| candidate.node == node)
+                .ok_or_else(|| "a classified wrapper has no frozen parse plan".to_owned())?;
+            let [application] = wrapper.parse_applications.as_slice() else {
+                return Err(format!(
+                    "a classification reads through the generic wrapper `{}`",
+                    wrapper.ident
+                ));
+            };
+            let ty = super::arbitrary_seed::seed_type_path(plan, application.parse_index);
+            Ok(quote!(#ty))
+        }
+    }
+}
+
+/// Renders the text of one nested field from its place expression, through `terminal`.
+///
+/// `depth` numbers the bindings of nested projections, so an inner projection never shadows a
+/// binding that an outer one still reads.
+fn render_terminal_text(
+    plan: &EmissionPlan,
+    terminal: &ClassifiedTerminal,
+    field_boxed: bool,
+    naming: &NestedNaming<'_>,
+    place: proc_macro2::TokenStream,
+    depth: usize,
+) -> Result<RenderedText, String> {
+    let access = if field_boxed {
         quote!(&*#place)
     } else {
         quote!(&#place)
     };
-    match &classification.terminal {
-        ClassifiedTerminal::Content => Ok(quote! {
-            ::core::option::Option::Some((#access).text())
-        }),
+    match terminal {
+        ClassifiedTerminal::Content => Ok(RenderedText::Present(quote!((#access).text()))),
         ClassifiedTerminal::Wrapper { node, variants } => {
-            let path = match naming {
-                NestedNaming::Value(name) => name(*node)?,
-                NestedNaming::Seed => {
-                    let wrapper = plan
-                        .nodes
-                        .iter()
-                        .find(|candidate| candidate.node == *node)
-                        .ok_or_else(|| {
-                            "a classified wrapper has no frozen parse plan".to_owned()
-                        })?;
-                    let [application] = wrapper.parse_applications.as_slice() else {
-                        return Err(format!(
-                            "`{}` classifies through the generic wrapper `{}`",
-                            classification.field, wrapper.ident
-                        ));
-                    };
-                    let ty = super::arbitrary_seed::seed_type_path(plan, application.parse_index);
-                    quote!(#ty)
-                }
-            };
+            let path = nested_wrapper_path(plan, naming, *node)?;
             let arms = variants.iter().map(|variant| {
                 let variant = format_ident!("{variant}");
                 quote!(#path::#variant(__recursa_token) => __recursa_token.text(),)
             });
-            Ok(quote! {
+            Ok(RenderedText::Borrowed(quote! {
                 ::core::option::Option::Some(match #access { #(#arms)* })
+            }))
+        }
+        ClassifiedTerminal::ProjectingWrapper { node, variants } => {
+            let path = nested_wrapper_path(plan, naming, *node)?;
+            let binding = format_ident!("__recursa_projected_{depth}");
+            let mut arms = Vec::new();
+            for wrapped in variants {
+                arms.push(match wrapped {
+                    WrappedText::Token(variant) => {
+                        let variant = format_ident!("{variant}");
+                        (
+                            variant,
+                            quote!(__recursa_token),
+                            RenderedText::Present(quote!(__recursa_token.text())),
+                        )
+                    }
+                    WrappedText::Projected {
+                        variant,
+                        projection,
+                    } => (
+                        format_ident!("{variant}"),
+                        quote!(#binding),
+                        render_projection_text(plan, projection, naming, &binding, depth + 1)?,
+                    ),
+                });
+            }
+            let owned = arms.iter().any(|(_, _, text)| text.is_owned());
+            let arms = arms.into_iter().map(|(variant, binding, text)| {
+                let text = if owned {
+                    text.into_owned()
+                } else {
+                    text.tokens()
+                };
+                quote!(#path::#variant(#binding) => #text,)
+            });
+            let rendered = quote!(match #access { #(#arms)* });
+            Ok(if owned {
+                RenderedText::Owned(rendered)
+            } else {
+                RenderedText::Borrowed(rendered)
+            })
+        }
+        ClassifiedTerminal::Projected(projection) => {
+            let binding = format_ident!("__recursa_projected_{depth}");
+            let text = render_projection_text(plan, projection, naming, &binding, depth + 1)?;
+            Ok(text.wrap(|text| quote!({ let #binding = #access; #text })))
+        }
+    }
+}
+
+/// Renders the text of one nested struct, bound to `binding`, through its declared projection.
+fn render_projection_text(
+    plan: &EmissionPlan,
+    projection: &Projection,
+    naming: &NestedNaming<'_>,
+    binding: &Ident,
+    depth: usize,
+) -> Result<RenderedText, String> {
+    let mut texts = Vec::new();
+    for (index, path) in projection.paths.iter().enumerate() {
+        let steps = path.steps.iter().map(|(field, _)| format_ident!("{field}"));
+        let field = format_ident!("{}", path.field);
+        // Field access derefs a `boxed!` layer on each struct the path passes through.
+        let place = quote!(#binding #(.#steps)* .#field);
+        if !path.field_optional {
+            texts.push(render_terminal_text(
+                plan,
+                &path.terminal,
+                path.field_boxed,
+                naming,
+                place,
+                depth,
+            )?);
+            continue;
+        }
+        let present = format_ident!("__recursa_present_{depth}_{index}");
+        let text = render_terminal_text(
+            plan,
+            &path.terminal,
+            path.field_boxed,
+            naming,
+            quote!((*#present)),
+            depth,
+        )?;
+        texts.push(render_optional(quote!(&#place), &present, text));
+    }
+    render_spelled(projection, texts, depth)
+}
+
+/// Renders the text of an optional projected field: the text of its value, bound to `present`
+/// in the `Some` arm, or the empty text when the value is absent.
+fn render_optional(
+    scrutinee: proc_macro2::TokenStream,
+    present: &Ident,
+    text: RenderedText,
+) -> RenderedText {
+    match text {
+        RenderedText::Owned(text) => RenderedText::Owned(quote! {
+            match #scrutinee {
+                ::core::option::Option::Some(#present) => #text,
+                ::core::option::Option::None => {
+                    ::core::option::Option::Some(::std::borrow::Cow::Borrowed(""))
+                }
+            }
+        }),
+        text => {
+            let text = text.tokens();
+            RenderedText::Borrowed(quote! {
+                match #scrutinee {
+                    ::core::option::Option::Some(#present) => #text,
+                    ::core::option::Option::None => ::core::option::Option::Some(""),
+                }
             })
         }
     }
+}
+
+/// Combines the texts of a projection's paths: the one text of a projection without a `spell`
+/// function, or the text that function makes of all of them.
+///
+/// A path with no text gives the projection no text, as a token with no folded form does.
+fn render_spelled(
+    projection: &Projection,
+    mut texts: Vec<RenderedText>,
+    depth: usize,
+) -> Result<RenderedText, String> {
+    let Some(spell) = &projection.spell else {
+        return match (texts.pop(), texts.is_empty()) {
+            (Some(text), true) => Ok(text),
+            _ => Err("a projection of more than one path has no spell function".to_owned()),
+        };
+    };
+    let spell: syn::Path = syn::parse_str(spell)
+        .map_err(|error| format!("a classify spell path does not render back: {error}"))?;
+    let parts = (0..texts.len())
+        .map(|index| format_ident!("__recursa_part_{depth}_{index}"))
+        .collect::<Vec<_>>();
+    let texts = texts.into_iter().map(RenderedText::tokens);
+    Ok(RenderedText::Owned(quote! {
+        match (#(#texts,)*) {
+            (#(::core::option::Option::Some(#parts),)*) => #spell(&[
+                #(::core::convert::AsRef::<str>::as_ref(&#parts)),*
+            ])
+            .map(::std::borrow::Cow::<str>::Owned),
+            _ => ::core::option::Option::None,
+        }
+    }))
 }
 
 /// Renders the match arms that compute one nested value's key.
@@ -900,7 +1374,7 @@ pub(super) fn render_flat_key_closure(
     })
 }
 
-/// Renders the source text of a classified flat field, as an `Option<&str>`.
+/// Renders the source text of a classified flat field.
 ///
 /// `handle` is the field's flat value: a text handle for a content token, or a handle into the
 /// wrapper's pool. A flat field holds no `boxed!` layer.
@@ -909,14 +1383,31 @@ fn render_flat_field_text(
     handle: proc_macro2::TokenStream,
     read_pool: FlatPoolRead<'_>,
     flat_path_of: &dyn Fn(NodeId) -> Result<proc_macro2::TokenStream, String>,
-) -> Result<proc_macro2::TokenStream, String> {
-    Ok(match &classification.terminal {
-        ClassifiedTerminal::Content => quote! {
+) -> Result<RenderedText, String> {
+    render_flat_terminal_text(&classification.terminal, handle, read_pool, flat_path_of, 0)
+}
+
+/// Renders the text of one flat field from its flat value, through `terminal`.
+///
+/// A projected struct is read out of its pool, then each struct its path passes through, so
+/// nothing is materialized. `depth` numbers the bindings, as it does for a nested text.
+fn render_flat_terminal_text(
+    terminal: &ClassifiedTerminal,
+    handle: proc_macro2::TokenStream,
+    read_pool: FlatPoolRead<'_>,
+    flat_path_of: &dyn Fn(NodeId) -> Result<proc_macro2::TokenStream, String>,
+    depth: usize,
+) -> Result<RenderedText, String> {
+    let token_text = |token: proc_macro2::TokenStream| {
+        quote! {
             builder
                 .texts()
-                .get(#handle)
+                .get(#token)
                 .map(|__recursa_text| __recursa_text.as_str())
-        },
+        }
+    };
+    Ok(match terminal {
+        ClassifiedTerminal::Content => RenderedText::Borrowed(token_text(handle)),
         ClassifiedTerminal::Wrapper {
             node: wrapper,
             variants: wrapped,
@@ -932,9 +1423,121 @@ fn render_flat_field_text(
                         .map(|__recursa_text| __recursa_text.as_str()),
                 }
             });
-            quote!(match #wrapper_value { #(#arms)* })
+            RenderedText::Borrowed(quote!(match #wrapper_value { #(#arms)* }))
+        }
+        ClassifiedTerminal::ProjectingWrapper {
+            node: wrapper,
+            variants,
+        } => {
+            let wrapper_value = read_pool(*wrapper, handle)?;
+            let wrapper_path = flat_path_of(*wrapper)?;
+            let binding = format_ident!("__recursa_projected_{depth}");
+            let mut arms = Vec::new();
+            for wrapped in variants {
+                arms.push(match wrapped {
+                    WrappedText::Token(variant) => (
+                        format_ident!("{variant}"),
+                        quote!(__recursa_token),
+                        RenderedText::Borrowed(token_text(quote!(*__recursa_token))),
+                    ),
+                    WrappedText::Projected {
+                        variant,
+                        projection,
+                    } => {
+                        let value = read_pool(projection.node, quote!(*#binding))?;
+                        let text = render_flat_projection_text(
+                            projection,
+                            &binding,
+                            read_pool,
+                            flat_path_of,
+                            depth + 1,
+                        )?;
+                        (
+                            format_ident!("{variant}"),
+                            quote!(#binding),
+                            text.wrap(|text| quote!({ let #binding = #value; #text })),
+                        )
+                    }
+                });
+            }
+            let owned = arms.iter().any(|(_, _, text)| text.is_owned());
+            let arms = arms.into_iter().map(|(variant, binding, text)| {
+                let text = if owned {
+                    text.into_owned()
+                } else {
+                    text.tokens()
+                };
+                quote!(#wrapper_path::#variant(#binding) => #text,)
+            });
+            let rendered = quote!(match #wrapper_value { #(#arms)* });
+            if owned {
+                RenderedText::Owned(rendered)
+            } else {
+                RenderedText::Borrowed(rendered)
+            }
+        }
+        ClassifiedTerminal::Projected(projection) => {
+            let binding = format_ident!("__recursa_projected_{depth}");
+            let value = read_pool(projection.node, handle)?;
+            let text = render_flat_projection_text(
+                projection,
+                &binding,
+                read_pool,
+                flat_path_of,
+                depth + 1,
+            )?;
+            text.wrap(|text| quote!({ let #binding = #value; #text }))
         }
     })
+}
+
+/// Renders the text of one flat struct, bound to `binding`, through its declared projection.
+fn render_flat_projection_text(
+    projection: &Projection,
+    binding: &Ident,
+    read_pool: FlatPoolRead<'_>,
+    flat_path_of: &dyn Fn(NodeId) -> Result<proc_macro2::TokenStream, String>,
+    depth: usize,
+) -> Result<RenderedText, String> {
+    let mut texts = Vec::new();
+    for (index, path) in projection.paths.iter().enumerate() {
+        // Each struct the path passes through is read out of its own pool.
+        let mut reads = Vec::new();
+        let mut current = quote!(#binding);
+        for (step, (field, node)) in path.steps.iter().enumerate() {
+            let field = format_ident!("{field}");
+            let local = format_ident!("__recursa_step_{depth}_{index}_{step}");
+            let value = read_pool(*node, quote!(#current.#field))?;
+            reads.push(quote!(let #local = #value;));
+            current = quote!(#local);
+        }
+        let field = format_ident!("{}", path.field);
+        let text = if path.field_optional {
+            let present = format_ident!("__recursa_present_{depth}_{index}");
+            let text = render_flat_terminal_text(
+                &path.terminal,
+                quote!(#present),
+                read_pool,
+                flat_path_of,
+                depth,
+            )?;
+            render_optional(quote!(#current.#field), &present, text)
+        } else {
+            render_flat_terminal_text(
+                &path.terminal,
+                quote!(#current.#field),
+                read_pool,
+                flat_path_of,
+                depth,
+            )?
+        };
+        // A path through no struct reads nothing first, and needs no block.
+        texts.push(match text {
+            text if reads.is_empty() => text,
+            text => text.wrap(|text| quote!({ #(#reads)* #text })),
+        });
+    }
+    render_spelled(projection, texts, depth)
 }
 
 /// Where a struct check finds the text of its classified field.
