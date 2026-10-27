@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.4...recursa-codegen-v0.1.5) - 2026-10-27
+
+### Added
+
+- classify through a declared projection, and omit a variant from sampling
+
 ## [0.1.4](https://github.com/freshtonic/recursa/compare/recursa-codegen-v0.1.3...recursa-codegen-v0.1.4) - 2026-10-27
 
 ### Added
