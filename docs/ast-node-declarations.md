@@ -76,6 +76,11 @@ This document is the declaration and nested-output contract.
   `one_of(field, ...)` and `not_in(field, ...)`, which refuse the struct by the folded text of its
   own field when it is reduced. Both are gated only through `#[config_attr(BOUNDS, ...)]`. See
   [declared rejections](declared-rejections.md).
+- Accept `#[classify(via = field)]` or `#[classify(via(path, ...), spell = path)]` on a struct,
+  which names the fields whose text a classification reads when it reaches the struct, as a field
+  type or as the payload of a token-wrapper variant. Accept `#[omit(Arbitrary)]` on an enum
+  variant, which keeps the variant out of generated sampling. See
+  [declared rejections](declared-rejections.md).
 - Flat AST variant design is out of scope for this session.
 
 The motivating declaration is:

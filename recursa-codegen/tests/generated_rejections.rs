@@ -81,6 +81,28 @@ const REJECTED_BY_PG18: &[&str] = &[
     // The gated text rule is written first, so it answers before the general one.
     "reserved=RCA4105/42601/option name cannot be used in XMLTABLE/gram.y REL_17_11 14098, \
      xmltable_column_option_el/9..32",
+    // A projection lets a classification read a name that a struct holds. `option "default"`
+    // counts as `default` by the text of the column name one struct deeper, and
+    // `U&"pa!th" uescape '!'` counts as `path` by the text the spelling function makes of both
+    // tokens. The position of a refused option is the extent of the whole option.
+    "column_wrapped_default=ok",
+    "column_wrapped_two_defaults=RCA4105/42601/only one DEFAULT value is allowed/gram.y \
+     REL_17_11 14038, xmltable_column_el/21..41",
+    "column_escaped_path=ok",
+    "column_escaped_two_paths=RCA4105/42601/only one PATH value per column is allowed/gram.y \
+     REL_17_11 14047, xmltable_column_el/18..43",
+    "column_escaped_unknown=RCA4105/42601/unrecognized column option/gram.y REL_17_11 14065, \
+     xmltable_column_el/9..33",
+    // An absent `UESCAPE` clause gives the empty text: `U&"path"` counts as `path`.
+    "column_unescaped_two_paths=RCA4105/42601/only one PATH value per column is allowed/gram.y \
+     REL_17_11 14047, xmltable_column_el/18..30",
+    // A spelling function that gives no text leaves the option with no folded text.
+    "column_escaped_no_text=RCA4105/42601/unrecognized column option/gram.y REL_17_11 14065, \
+     xmltable_column_el/9..35",
+    // A struct's classified field may itself be a struct with a projection: the error is at
+    // the extent of that field, `option reserved` at 4..19.
+    "tag_plain=ok",
+    "tag_reserved=RCA4105/42601/a tag cannot be reserved/fixture/4..19",
     // A struct's text rules: a width the fold puts in range is accepted, leading zeros included,
     // and each refused range carries its own message at the extent of the digits.
     "sized_bare=ok",
@@ -109,11 +131,15 @@ const RESERVED_BEFORE_PG18: &str = "reserved=RCA4105/42601/unrecognized column o
 ///
 /// A sampled option list drops every option a rule refuses, and a list whose every option is
 /// refused describes no value, so fewer columns than seeds survive; every survivor parses back.
+///
+/// Sampling never chooses an option name variant that `#[omit(Arbitrary)]` names, and still
+/// chooses the other variants.
 const SAMPLED: &[&str] = &[
     "sampled_frames=1 samples, none refused",
     "sampled=64 samples parse back",
     "sampled_columns=58 samples parse back",
     "sampled_sized=64 samples parse back",
+    "sampled_option_names=1 wrapped samples, none escaped",
 ];
 
 /// The sampling lines a storage with no sampler of its own prints.
@@ -122,6 +148,7 @@ const NOT_SAMPLED: &[&str] = &[
     "sampled=not sampled",
     "sampled_columns=not sampled",
     "sampled_sized=not sampled",
+    "sampled_option_names=not sampled",
 ];
 
 #[test]
@@ -140,7 +167,7 @@ fn a_rejection_rule_refuses_the_list_a_gram_y_action_refuses() {
             .iter()
             .filter(|line| line.contains("RCA4105"))
             .count()
-            == 20,
+            == 26,
         "every declared rejection of the fixture reports RCA4105: {reported:?}"
     );
 }

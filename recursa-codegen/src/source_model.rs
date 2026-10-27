@@ -34,9 +34,9 @@ use crate::resolution::{
     ResolvedType, ResolvedTypeKind, ResolvedVariantId, SemanticTarget, TypeAliasId,
 };
 use crate::source_syntax::{
-    CargoCfgSnapshot, ClassifySyntax, RejectCheckSyntax, RejectRuleSyntax,
+    CargoCfgSnapshot, ClassifySyntax, ClassifyViaSyntax, RejectCheckSyntax, RejectRuleSyntax,
     configured_attribute_metas as configured_metas, item_attributes as item_attrs, path_text,
-    span_range,
+    span_range, variant_omits_arbitrary,
 };
 
 #[derive(Clone, Debug)]
@@ -5116,6 +5116,13 @@ impl SourceModelBuilder<'_> {
                                     &mut self.diagnostics,
                                 );
                                 self.lower_greedy(origin, &variant.metas);
+                                if let Err(error) = variant_omits_arbitrary(&variant.metas) {
+                                    self.diagnostics.push(SourceModelDiagnostic {
+                                        kind: SourceModelDiagnosticKind::InvalidTraitDelta,
+                                        sites: vec![self.site(origin, error.range.clone())],
+                                        message: error.message,
+                                    });
+                                }
                                 self.lower_precedence_override(
                                     origin,
                                     &variant.metas,
@@ -5241,6 +5248,18 @@ impl SourceModelBuilder<'_> {
             .iter()
             .filter(|meta| meta.path().is_ident("classify"))
         {
+            if ClassifyViaSyntax::is_via(meta) {
+                self.diagnostics
+                    .push(SourceModelDiagnosticKind::RejectRuleNotEnum.at(
+                        self.site(origin, span_range(meta.span())),
+                        format!(
+                            "`#[classify(via ...)]` projects a struct to its fields, and `{}` is \
+                             an enum; write it on the struct that a variant holds",
+                            node.ident,
+                        ),
+                    ));
+                continue;
+            }
             let classify = match ClassifySyntax::from_meta(meta) {
                 Ok(classify) => classify,
                 Err(error) => {
@@ -5413,10 +5432,41 @@ impl SourceModelBuilder<'_> {
         declarations: &[&Meta],
     ) {
         let mut classified: Option<String> = None;
+        let mut projected = false;
         for meta in declarations
             .iter()
             .filter(|meta| meta.path().is_ident("classify"))
         {
+            // A projection is no classification of the struct: it says which field a
+            // classification of a holder reads (`docs/declared-rejections.md`).
+            if ClassifyViaSyntax::is_via(meta) {
+                match ClassifyViaSyntax::from_meta(meta) {
+                    Ok(via) if projected => {
+                        self.diagnostics.push(
+                            SourceModelDiagnosticKind::DuplicateClassification.at(
+                                self.site(origin, via.range),
+                                format!(
+                                    "`{}` already declares a projection; a struct has one \
+                                     `#[classify(via ...)]`",
+                                    node.ident,
+                                ),
+                            ),
+                        );
+                    }
+                    Ok(_) => projected = true,
+                    Err(error) => {
+                        self.diagnostics
+                            .push(SourceModelDiagnosticKind::MalformedRejectRule.at(
+                                self.site(origin, error.range.clone()),
+                                format!(
+                                    "`#[classify(via ...)]` on `{}`: {}",
+                                    node.ident, error.message
+                                ),
+                            ));
+                    }
+                }
+                continue;
+            }
             let classify = match ClassifySyntax::from_meta(meta) {
                 Ok(classify) => classify,
                 Err(error) => {
@@ -14015,6 +14065,128 @@ recursa::ast_node! {
             SourceModelDiagnosticKind::MalformedRejectRule,
             "RCA3144",
         );
+    }
+
+    #[test]
+    fn invalid_projections_and_variant_omissions_have_structured_diagnostics() {
+        const PRELUDE: &str = r#"recursa::grammar! {
+    module = crate,
+}
+recursa::tokens! {
+    punctuation { PLUS => "+", STAR => "*" }
+}
+recursa::ast_node! {
+
+    pub struct Name {
+        #[lex(pattern = r"[a-z]+")]
+        pub text: NameText,
+    }
+}
+"#;
+        let with = |declaration: &str| model(&format!("{PRELUDE}{declaration}"));
+        let projected = |attributes: &str| {
+            with(&format!(
+                r#"recursa::ast_node! {{
+
+    {attributes}
+    pub struct Wrapped {{
+        #[tok(PLUS, this)]
+        pub name: Name,
+    }}
+}}
+"#
+            ))
+        };
+        let variants = |attributes: &str| {
+            with(&format!(
+                r#"recursa::ast_node! {{
+
+    pub enum Opt {{
+        #[tok(PLUS)]
+        Plus,
+        {attributes}
+        #[tok(STAR)]
+        Star,
+    }}
+}}
+"#
+            ))
+        };
+
+        // One path, a path through a struct, and several paths with a spelling function. A
+        // projection beside the struct's own classification is no second classification.
+        for accepted in [
+            "#[classify(via = name)]",
+            "#[classify(via = name.text)]",
+            "#[classify(via(name, name.text), spell = crate::spell)]",
+            r#"#[classify(via = name.text)]
+    #[classify(name, fold = crate::fold)]
+    #[reject(one_of(name, "x"), message = "no", cite = "here")]"#,
+        ] {
+            let report = projected(accepted);
+            assert!(
+                report.source_modeled.is_some(),
+                "{accepted}: {:?}",
+                report.diagnostics
+            );
+        }
+        for malformed in [
+            "#[classify(via(name, name.text))]",
+            "#[classify(via = 1)]",
+            "#[classify(via = name, fold = crate::fold)]",
+            "#[classify(via = name, spell = crate::a, spell = crate::b)]",
+        ] {
+            assert_code(
+                &projected(malformed),
+                SourceModelDiagnosticKind::MalformedRejectRule,
+                "RCA3144",
+            );
+        }
+        assert_code(
+            &projected(
+                r#"#[classify(via = name)]
+    #[classify(via = name.text)]"#,
+            ),
+            SourceModelDiagnosticKind::DuplicateClassification,
+            "RCA3154",
+        );
+        let on_enum = with(
+            r#"recursa::ast_node! {
+
+    #[classify(via = name)]
+    pub enum Opt {
+        #[tok(PLUS)]
+        Plus,
+        Named(Name),
+    }
+}
+"#,
+        );
+        assert_code(
+            &on_enum,
+            SourceModelDiagnosticKind::RejectRuleNotEnum,
+            "RCA3145",
+        );
+
+        // A variant omits only `Arbitrary`, once.
+        let omitted = variants("#[omit(Arbitrary)]");
+        assert!(
+            omitted.source_modeled.is_some(),
+            "{:?}",
+            omitted.diagnostics
+        );
+        for invalid in [
+            "#[omit(Debug)]",
+            "#[omit(Arbitrary, Clone)]",
+            "#[omit(Arbitrary)] #[omit(Arbitrary)]",
+            "#[omit]",
+        ] {
+            assert_code(
+                &variants(invalid),
+                SourceModelDiagnosticKind::InvalidTraitDelta,
+                "RCA3108",
+            );
+        }
     }
 
     #[test]

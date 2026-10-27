@@ -9,6 +9,27 @@ pub fn fold_name(raw: &str) -> Option<std::borrow::Cow<'_, str>> {
     }
 }
 
+/// Spells an escaped option name as the quoted name it stands for. The fixture's escape
+/// character only marks a letter, so `U&"pa!th"` with the escape `'!'` is `"path"`, and a name
+/// with no escape clause (the empty text) is the name itself. An escape string of other than
+/// one character gives no text, as an escape that `parser.c` refuses names nothing.
+pub fn spell_escaped(parts: &[&str]) -> Option<String> {
+    let [name, escape] = parts else {
+        return None;
+    };
+    let inner = name.get(2..)?.strip_prefix('"')?.strip_suffix('"')?;
+    if escape.is_empty() {
+        return Some(format!("\"{inner}\""));
+    }
+    let escape = escape.strip_prefix('\'')?.strip_suffix('\'')?;
+    let mut characters = escape.chars();
+    let character = characters.next()?;
+    if characters.next().is_some() {
+        return None;
+    }
+    Some(format!("\"{}\"", inner.replace(character, "")))
+}
+
 /// Folds a width to the range it falls in, as the `opt_float` action reads its `Iconst`: below 1,
 /// within the limit, or above 64.
 pub fn width_class(raw: &str) -> Option<&'static str> {

@@ -705,6 +705,198 @@ impl ClassifySyntax {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One authored projection of a struct for classifications: `#[classify(via = field)]`, or
+/// `#[classify(via(path, ...), spell = path)]`.
+///
+/// A classification reads the text of one token. A struct that declares a projection can stand
+/// where a classification expects that token, as a field type or as the payload of one variant
+/// of a token-wrapper enum: the classification then reads the text of the projected field. With
+/// `spell`, the projection names one or more field paths, and the consumer's `spell` function
+/// makes the one text the classification folds from the texts of those fields
+/// (`docs/declared-rejections.md`, "Classification through a projection").
+pub(crate) struct ClassifyViaSyntax {
+    /// The projected field paths in written order. Each path names one field of the struct, then
+    /// a field of each struct it passes through.
+    pub(crate) paths: Vec<Vec<String>>,
+    /// Path of the consumer's spelling function, `fn(&[&str]) -> Option<String>`.
+    pub(crate) spell: Option<syn::Path>,
+    /// Authored range of the whole declaration.
+    pub(crate) range: Range<u32>,
+}
+
+impl ClassifyViaSyntax {
+    /// Reports whether one `classify(...)` meta is the projection form: its first entry is
+    /// `via = ...` or `via(...)`.
+    pub(crate) fn is_via(meta: &Meta) -> bool {
+        let Meta::List(list) = meta else {
+            return false;
+        };
+        let Ok(entries) =
+            Punctuated::<Expr, Token![,]>::parse_terminated.parse2(list.tokens.clone())
+        else {
+            return false;
+        };
+        entries.first().is_some_and(|first| match first {
+            Expr::Assign(assign) => {
+                matches!(assign.left.as_ref(), Expr::Path(path) if path.path.is_ident("via"))
+            }
+            Expr::Call(call) => {
+                matches!(call.func.as_ref(), Expr::Path(path) if path.path.is_ident("via"))
+            }
+            _ => false,
+        })
+    }
+
+    /// Reads one projection meta.
+    ///
+    /// Whether each path names fields of the right shapes is known only once the Nodes are
+    /// planned, so generation reports that.
+    pub(crate) fn from_meta(meta: &Meta) -> Result<Self, ConfigurationError> {
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "classify must use parentheses",
+            ));
+        };
+        let entries = Punctuated::<Expr, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        let mut entries = entries.iter();
+        let first = entries.next().ok_or_else(|| {
+            configuration_error(meta.span(), "classify(via ...) names a projected field")
+        })?;
+        let written = match first {
+            Expr::Assign(assign) => vec![assign.right.as_ref()],
+            Expr::Call(call) => call.args.iter().collect(),
+            other => {
+                return Err(configuration_error(
+                    other.span(),
+                    "a projection is written `via = field` or `via(path, ...)`",
+                ));
+            }
+        };
+        let paths = written
+            .into_iter()
+            .map(|expr| {
+                field_path(expr).ok_or_else(|| {
+                    configuration_error(
+                        expr.span(),
+                        "a projected path names fields, as `field` or `field.inner`",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if paths.is_empty() {
+            return Err(configuration_error(
+                first.span(),
+                "a projection names at least one field path",
+            ));
+        }
+        let mut spell = None;
+        for entry in entries {
+            match entry {
+                Expr::Assign(assign) if matches!(assign.left.as_ref(), Expr::Path(path) if path.path.is_ident("spell")) =>
+                {
+                    let Expr::Path(path) = assign.right.as_ref() else {
+                        return Err(configuration_error(
+                            assign.right.span(),
+                            "classify `spell` names a function path",
+                        ));
+                    };
+                    if spell.replace(path.path.clone()).is_some() {
+                        return Err(configuration_error(
+                            assign.span(),
+                            "duplicate classify spell entry",
+                        ));
+                    }
+                }
+                other => {
+                    return Err(configuration_error(
+                        other.span(),
+                        "a projection accepts one `spell = path` entry after its paths only",
+                    ));
+                }
+            }
+        }
+        if paths.len() > 1 && spell.is_none() {
+            return Err(configuration_error(
+                meta.span(),
+                "a projection of more than one path names the `spell = path` function that \
+                 makes one text of their texts",
+            ));
+        }
+        Ok(Self {
+            paths,
+            spell,
+            range: span_range(meta.span()),
+        })
+    }
+}
+
+/// Reads the `#[omit(...)]` declarations of one enum variant, and reports whether they omit the
+/// variant from the configured `Arbitrary` implementation.
+///
+/// On a declaration, `#[omit(...)]` suppresses configured trait implementations. On a variant it
+/// names `Arbitrary` only: the generated sampler never chooses the variant, as it never chooses a
+/// refused variant, and the arena form's seed mirror receives the same choice
+/// (`docs/declared-rejections.md`, "Sampling"). Every other trait belongs to the whole type, so a
+/// variant that names one is an error, as is a second `#[omit(...)]` on one variant.
+pub(crate) fn variant_omits_arbitrary(metas: &[Meta]) -> Result<bool, ConfigurationError> {
+    let mut omitted = false;
+    let mut seen = false;
+    for meta in metas.iter().filter(|meta| meta.path().is_ident("omit")) {
+        if std::mem::replace(&mut seen, true) {
+            return Err(configuration_error(
+                meta.span(),
+                "a variant accepts at most one `#[omit(...)]` list",
+            ));
+        }
+        let Meta::List(list) = meta else {
+            return Err(configuration_error(
+                meta.span(),
+                "`#[omit]` must use parentheses",
+            ));
+        };
+        let paths = Punctuated::<Path, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+            .map_err(|error| configuration_error(error.span(), error.to_string()))?;
+        for path in &paths {
+            if path
+                .segments
+                .last()
+                .is_none_or(|segment| segment.ident != "Arbitrary")
+            {
+                return Err(configuration_error(
+                    path.span(),
+                    "`#[omit(...)]` on a variant names `Arbitrary` only: the variant is never \
+                     sampled, and every other trait belongs to the whole type",
+                ));
+            }
+            omitted = true;
+        }
+    }
+    Ok(omitted)
+}
+
+/// Reads a field path written as `field` or `field.inner.more`.
+fn field_path(expr: &Expr) -> Option<Vec<String>> {
+    match expr {
+        Expr::Path(path) if path.qself.is_none() && path.attrs.is_empty() => {
+            Some(vec![path.path.get_ident()?.unraw().to_string()])
+        }
+        Expr::Field(access) => {
+            let syn::Member::Named(field) = &access.member else {
+                return None;
+            };
+            let mut path = field_path(&access.base)?;
+            path.push(field.unraw().to_string());
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
 /// Reads a bare name written as the value of a `config` entry.
 fn configuration_name(value: &Expr) -> Result<String, ConfigurationError> {
     match value {

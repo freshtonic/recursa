@@ -228,6 +228,51 @@ pub(super) fn plan_validations(
     Ok(plan)
 }
 
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+/// The variants that generated `Arbitrary` sampling never chooses, by `#[omit(Arbitrary)]` on
+/// the variant.
+///
+/// A refused variant is never sampled either, because it never parses back
+/// ([`ValidationPlan::refuses_variant`]). An omitted variant parses, but its author knows that
+/// most samples of it are values a hook refuses, so sampling it would spend the sample of every
+/// Node that holds it. The arena form's seed mirror keeps the Node and variant identities, so it
+/// reads the same set and makes the same choice.
+pub(super) struct UnsampledVariants {
+    /// The omitted variants, keyed by their enum.
+    variants: BTreeSet<(NodeId, ResolvedVariantId)>,
+}
+
+impl UnsampledVariants {
+    /// Reports whether no variant of the grammar is omitted from sampling.
+    pub(super) fn is_empty(&self) -> bool {
+        self.variants.is_empty()
+    }
+
+    /// Reports whether sampling omits one variant.
+    pub(super) fn omits(&self, node: NodeId, variant: ResolvedVariantId) -> bool {
+        self.variants.contains(&(node, variant))
+    }
+}
+
+/// Plans the variants that `#[omit(Arbitrary)]` keeps out of generated sampling.
+///
+/// Source-model lowering reports an `#[omit(...)]` on a variant that names another trait, so a
+/// declaration that cannot be read here omits nothing.
+pub(super) fn plan_unsampled_variants(resolved: &ResolvedSourceGrammar) -> UnsampledVariants {
+    let mut variants = BTreeSet::new();
+    for node in &resolved.nodes {
+        let ResolvedNodeBody::Enum { variants: declared } = &node.body else {
+            continue;
+        };
+        for variant in declared {
+            if crate::source_syntax::variant_omits_arbitrary(&variant.metas).unwrap_or(false) {
+                variants.insert((node.id, variant.id));
+            }
+        }
+    }
+    UnsampledVariants { variants }
+}
+
 /// How one reduce reaches the Node it has built.
 pub(super) enum BuiltNode<'a> {
     /// The value or arena reduce: the local that holds the built Node.

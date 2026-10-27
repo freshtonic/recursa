@@ -1323,12 +1323,13 @@ pub(super) fn render_node_arbitrary(
             }
         }
         NodeBodyPlan::Enum { variants } => {
-            // A variant that a declared rule refuses never parses back, so it is never sampled.
+            // A variant that a declared rule refuses never parses back, so it is never sampled,
+            // and a variant that `#[omit(Arbitrary)]` names is not sampled either.
             let all = (0..variants.len())
                 .filter(|index| {
-                    !plan
-                        .validations
-                        .refuses_variant(node.node, variants[*index].resolved_variant)
+                    let variant = variants[*index].resolved_variant;
+                    !plan.validations.refuses_variant(node.node, variant)
+                        && !plan.unsampled.omits(node.node, variant)
                 })
                 .collect::<Vec<_>>();
             enum_body(&all, None)
@@ -1349,11 +1350,12 @@ pub(super) fn render_node_arbitrary(
                 .iter()
                 .enumerate()
                 .filter(|(variant, admitted)| {
+                    let resolved_variant = trait_variants(&node.body)[*variant].resolved_variant;
                     **admitted
-                        && !plan.validations.refuses_variant(
-                            node.node,
-                            trait_variants(&node.body)[*variant].resolved_variant,
-                        )
+                        && !plan
+                            .validations
+                            .refuses_variant(node.node, resolved_variant)
+                        && !plan.unsampled.omits(node.node, resolved_variant)
                 })
                 .map(|(variant, _)| variant)
                 .collect::<Vec<_>>();
