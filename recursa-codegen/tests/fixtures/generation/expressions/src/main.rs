@@ -347,6 +347,69 @@ fn render_repairs() {
     println!("arbitrary round trip ok");
 }
 
+/// Renders a value of one Node, parses the rendering as that Node, and checks that the parse
+/// renders the same text. Returns the rendering.
+macro_rules! node_fixpoint {
+    ($node:ty, $value:expr, $config:expr) => {{
+        let rendered = ($value).render_with($config);
+        let lexed = grammar::lex(&rendered);
+        assert!(lexed.errors().next().is_none(), "{rendered:?} lexes");
+        let mut input = lexed.input();
+        let parsed = <$node>::parse(&mut input)
+            .unwrap_or_else(|error| panic!("{rendered:?} parses: {error}"));
+        assert!(input.is_eof(), "{rendered:?} is fully consumed");
+        assert_eq!(parsed.render_with($config), rendered, "the rendering is a fixpoint");
+        rendered
+    }};
+}
+
+/// Renders the fields that hold an `Expr` before a token: a source that the token after it can
+/// continue is parenthesized, and only then.
+fn render_followed_fields() {
+    use grammar::{Expr, Find, Search, SearchTail};
+    let boxed = |source: &'static str| Box::new(parse_expr(source));
+    let name = |source: &'static str| match parse_expr(source) {
+        Expr::Name(name) => name,
+        _ => unreachable!("a name parses as a name"),
+    };
+    let config = PrettyConfig::default();
+    let search = |source: Expr<'static>, tail: SearchTail<'static>| Search {
+        source: Box::new(source),
+        tail,
+    };
+    for value in [
+        // `ESCAPE` is above `LIKE`: the parser would shift it into the comparison.
+        search(Expr::Like(boxed("a"), boxed("b")), SearchTail::Escape(name("c"))),
+        // `PLUS` is above `ESCAPE`: the parser reduces the sum first.
+        search(Expr::Add(boxed("a"), boxed("b")), SearchTail::Escape(name("c"))),
+        // `USING` continues no `Expr`.
+        search(Expr::Like(boxed("a"), boxed("b")), SearchTail::Using(name("c"))),
+    ] {
+        println!("followed {:?}", node_fixpoint!(Search<'_>, value, config));
+    }
+    let find = Find {
+        source: Box::new(Expr::Like(boxed("a"), boxed("b"))),
+        name: name("c"),
+    };
+    println!("followed {:?}", node_fixpoint!(Find<'_>, find, config));
+    let mut checked = 0_usize;
+    for seed in 0..2_000_u64 {
+        let bytes = entropy(seed);
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        if let Ok(sampled) = <Search<'static> as Arbitrary>::arbitrary(&mut input) {
+            node_fixpoint!(Search<'_>, sampled, config);
+            checked += 1;
+        }
+        let mut input = recursa::__private::arbitrary::Unstructured::new(&bytes);
+        if let Ok(sampled) = <Find<'static> as Arbitrary>::arbitrary(&mut input) {
+            node_fixpoint!(Find<'_>, sampled, config);
+            checked += 1;
+        }
+    }
+    assert!(checked > 2_000, "the sampler yields values: {checked}");
+    println!("followed round trip ok");
+}
+
 /// Renders one two-operand variant.
 fn binary(name: &str, left: &grammar::Expr<'_>, right: &grammar::Expr<'_>) -> String {
     format!("{name}({}, {})", shape(left), shape(right))
@@ -388,5 +451,6 @@ fn main() {
         }
     }
     render_repairs();
+    render_followed_fields();
     println!("expressions-ok");
 }

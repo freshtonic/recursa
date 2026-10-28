@@ -2218,6 +2218,14 @@ pub(super) fn render_declared_enum_pretty(
                         semantic_index += 1;
                         match operand {
                             PrettyDeclaredOperandBehavior::Ordinary => {
+                                let followed = render_field_follow(
+                                    plan,
+                                    &variant.elements,
+                                    index,
+                                    |holder| element_binding(&variant.elements, &bindings, holder),
+                                    access,
+                                    &capable,
+                                );
                                 render_pretty_element(
                                     plan,
                                     index,
@@ -2225,6 +2233,7 @@ pub(super) fn render_declared_enum_pretty(
                                     behavior,
                                     Some((quote!(#binding), true)),
                                     access,
+                                    followed,
                                 )
                             }
                             PrettyDeclaredOperandBehavior::Recursive { minimum, next, .. } => {
@@ -2592,6 +2601,17 @@ pub(super) fn render_declared_enum_pretty(
     );
     let restricted_entry = (!restrictions.is_empty())
         .then(|| render_pretty_restricted_entry(plan, node, access, restricted_node));
+    let followed_node = render_pretty_hints(
+        &behavior.pretty,
+        quote!(self.__recursa_pretty_declared(
+            #method_arguments
+            context,
+            ::core::option::Option::None,
+            next,
+            ::core::option::Option::None,
+        )?;),
+    );
+    let followed_entry = render_pretty_followed_entry(plan, node, access, followed_node);
     let trait_impl = render_pretty_trait_impl(plan, node, access, rendered_node);
     let leading = render_pretty_leading_level(plan, node, access, &capable);
     quote! {
@@ -2612,6 +2632,8 @@ pub(super) fn render_declared_enum_pretty(
             #(#helper_methods)*
 
             #restricted_entry
+
+            #followed_entry
         }
 
         #trait_impl
@@ -2646,6 +2668,17 @@ pub(super) fn render_pretty_declared_next(next: PrettyDeclaredNext) -> proc_macr
             quote!(::core::option::Option::Some((#level, #tie)))
         }
     }
+}
+
+/// How one semantic field calls the Pretty of its value.
+pub(super) enum FieldDispatch {
+    /// The value's ordinary `Pretty`.
+    Plain,
+    /// The restricted entry of a declared base, under the restriction the field names.
+    Restricted(u16),
+    /// The followed entry of a declared base, with the bound of the token after the field: an
+    /// expression of type `Option<(u32, bool)>` (`docs/declared-precedence.md`, "Consumers").
+    Followed(proc_macro2::TokenStream),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2785,6 +2818,44 @@ impl PrettyAccess {
         }
     }
 
+    /// Renders the call of one field that holds a declared base directly and that a token with
+    /// a level follows: the base's followed entry, which writes the parentheses that keep the
+    /// parser from shifting that token into the value.
+    fn followed_dispatch(
+        self,
+        value: proc_macro2::TokenStream,
+        next: &proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        match self {
+            Self::Nested => quote!((#value).__recursa_pretty_followed(context, #next)),
+            Self::Flat => quote! {
+                {
+                    let __recursa_handle: &_ = #value;
+                    __recursa_ast[*__recursa_handle].__recursa_pretty_followed(
+                        __recursa_ast,
+                        context,
+                        #next,
+                    )
+                }
+            },
+        }
+    }
+
+    /// Renders the call of one semantic field value, as its [`FieldDispatch`] selects.
+    fn field_dispatch(
+        self,
+        plan: &EmissionPlan,
+        value: proc_macro2::TokenStream,
+        content_token: bool,
+        field: &FieldDispatch,
+    ) -> proc_macro2::TokenStream {
+        match field {
+            FieldDispatch::Plain => self.dispatch(plan, value, content_token),
+            FieldDispatch::Restricted(restriction) => self.restricted_dispatch(value, *restriction),
+            FieldDispatch::Followed(next) => self.followed_dispatch(value, next),
+        }
+    }
+
     /// Returns the frame the private declared-precedence helpers are assembled into.
     fn frame(self, plan: &EmissionPlan, node: &NodeParsePlan) -> PrettyFrame {
         match self {
@@ -2877,6 +2948,7 @@ fn render_pretty_element(
     behavior: &PrettyElementBehavior,
     semantic_value: Option<(proc_macro2::TokenStream, bool)>,
     access: PrettyAccess,
+    followed: Option<proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     match (&element.kind, behavior) {
         (
@@ -2938,8 +3010,14 @@ fn render_pretty_element(
                         provenance,
                     },
                 ) => {
-                    let restricted =
-                        restricted_dispatch_index(plan, *terminal_node, *restriction, wrappers);
+                    let field = match (
+                        restricted_dispatch_index(plan, *terminal_node, *restriction, wrappers),
+                        followed,
+                    ) {
+                        (Some(restriction), _) => FieldDispatch::Restricted(restriction),
+                        (None, Some(next)) if repetition.is_none() => FieldDispatch::Followed(next),
+                        (None, _) => FieldDispatch::Plain,
+                    };
                     let wrappers = &access.value_wrappers(wrappers);
                     let rendered = if let Some(attachment) = attachment {
                         render_pretty_attached_semantic(
@@ -2954,7 +3032,7 @@ fn render_pretty_element(
                             *provenance,
                             content_token,
                             access,
-                            restricted,
+                            &field,
                         )
                     } else {
                         let reference = if borrowed {
@@ -2970,7 +3048,7 @@ fn render_pretty_element(
                             *provenance,
                             content_token,
                             access,
-                            restricted,
+                            &field,
                         )
                     };
                     let reference = if borrowed { value } else { quote!(&#value) };
@@ -3015,24 +3093,40 @@ pub(super) fn render_node_pretty_for(
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Node behavior");
+    let capable = pretty_leading_level_nodes(plan);
     let elements = |elements: &[ElementParsePlan],
                     behavior: &[PrettyElementBehavior],
                     layout: PrettySequenceLayout,
                     base: proc_macro2::TokenStream| {
+        let field_value = |element: &ElementParsePlan| match &element.kind {
+            ElementParseKind::Semantic { field, .. } => Some(field_access(
+                base.clone(),
+                field.ident.as_ref(),
+                field.index,
+            )),
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
+        };
         let rendered = elements
             .iter()
             .zip(behavior)
             .enumerate()
             .map(|(index, (element, behavior))| {
-                let value = match &element.kind {
-                    ElementParseKind::Semantic { field, .. } => Some((
-                        field_access(base.clone(), field.ident.as_ref(), field.index),
-                        false,
-                    )),
-                    ElementParseKind::Fixed { .. }
-                    | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
-                };
-                render_pretty_element(plan, index, element, behavior, value, access)
+                let value = field_value(element).map(|value| (value, false));
+                let followed = render_field_follow(
+                    plan,
+                    elements,
+                    index,
+                    |holder| {
+                        let value = field_value(&elements[holder])
+                            .expect("a child leading element is semantic");
+                        quote!(&#value)
+                    },
+                    access,
+                    &capable,
+                );
+                render_pretty_element(plan, index, element, behavior, value, access, followed)
             })
             .collect::<Vec<_>>();
         render_pretty_sequence(layout, &rendered)
@@ -3077,7 +3171,17 @@ pub(super) fn render_node_pretty_for(
                             } else {
                                 None
                             };
-                            render_pretty_element(plan, index, element, behavior, value, access)
+                            let followed = render_field_follow(
+                                plan,
+                                &variant.elements,
+                                index,
+                                |holder| element_binding(&variant.elements, &bindings, holder),
+                                access,
+                                &capable,
+                            );
+                            render_pretty_element(
+                                plan, index, element, behavior, value, access, followed,
+                            )
                         })
                         .collect::<Vec<_>>();
                     let rendered = render_pretty_sequence(*layout, &rendered);
@@ -3104,12 +3208,9 @@ pub(super) fn render_pretty_semantic(
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
     access: PrettyAccess,
-    restricted: Option<u16>,
+    field: &FieldDispatch,
 ) -> proc_macro2::TokenStream {
-    let pretty = match restricted {
-        Some(restriction) => access.restricted_dispatch(value, restriction),
-        None => access.dispatch(plan, value, content_token),
-    };
+    let pretty = access.field_dispatch(plan, value, content_token, field);
     let render_value = if let Some(repetition) = repetition {
         let separator = repetition
             .separator
@@ -3516,13 +3617,10 @@ pub(super) fn render_pretty_attached_semantic(
     provenance: PrettyProvenanceBehavior,
     content_token: bool,
     access: PrettyAccess,
-    restricted: Option<u16>,
+    field: &FieldDispatch,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let semantic = match restricted {
-            Some(restriction) => access.restricted_dispatch(terminal, restriction),
-            None => access.dispatch(plan, terminal, content_token),
-        };
+        let semantic = access.field_dispatch(plan, terminal, content_token, field);
         render_pretty_attachment_unit(attachment, provenance, semantic)
     };
 
@@ -3733,6 +3831,231 @@ fn first_operand_lookahead(
     Some((element_leading(next), 1))
 }
 
+/// Returns the token the parser sees right after one field of a sequence, when the field holds
+/// a Node with declared-precedence Pretty directly, behind nothing but `Box`.
+///
+/// The values are the base, the token, and the index of the element that holds the token, for a
+/// child Node.
+fn field_follow(
+    declared: &BTreeSet<NodeId>,
+    elements: &[ElementParsePlan],
+    index: usize,
+) -> Option<(NodeId, PrettyLeading, usize)> {
+    let ElementParseKind::Semantic { projection, .. } = &elements.get(index)?.kind else {
+        return None;
+    };
+    let SemanticParseProjection::Direct {
+        terminal_node: Some(base),
+        wrappers,
+        attachment,
+        ..
+    } = projection.as_ref()
+    else {
+        return None;
+    };
+    if !wrappers
+        .iter()
+        .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed))
+        || !declared.contains(base)
+    {
+        return None;
+    }
+    if let Some(after) = attachment
+        .as_ref()
+        .and_then(|attachment| attachment.after.first())
+    {
+        return Some((*base, attached_leading(after), index));
+    }
+    let next = elements.get(index + 1)?;
+    Some((*base, element_leading(next), index + 1))
+}
+
+/// Returns the binding of the semantic element at `index` of one variant's elements.
+fn element_binding(
+    elements: &[ElementParsePlan],
+    bindings: &[Ident],
+    index: usize,
+) -> proc_macro2::TokenStream {
+    let position = elements[..index]
+        .iter()
+        .filter(|element| matches!(element.kind, ElementParseKind::Semantic { .. }))
+        .count();
+    let binding = &bindings[position];
+    quote!(#binding)
+}
+
+/// Returns the Nodes that have declared-precedence Pretty.
+fn declared_pretty_nodes(plan: &EmissionPlan) -> BTreeSet<NodeId> {
+    plan.nodes
+        .iter()
+        .zip(&plan.pretty.nodes)
+        .filter(|(_, behavior)| {
+            behavior
+                .as_ref()
+                .is_some_and(|behavior| behavior.declared.is_some())
+        })
+        .map(|(node, _)| node.node)
+        .collect()
+}
+
+/// The analysis of the tokens after operands and fields that every Pretty body of one plan
+/// reads. It is computed once for each plan, because each Node's body reads it.
+struct PrettyFollowAnalysis {
+    /// The Nodes with declared-precedence Pretty.
+    declared: BTreeSet<NodeId>,
+    /// The Nodes whose leading token a generated body reads at run time.
+    capable: BTreeSet<NodeId>,
+    /// The levels of the tokens that can continue a value of each declared Node.
+    continuation: BTreeMap<NodeId, BTreeSet<u32>>,
+}
+
+/// The key of one plan in the follow-analysis cache: its identity, and the address and the
+/// length of its Nodes.
+type PrettyFollowKey = (String, usize, usize);
+
+thread_local! {
+    /// The analysis of the last plan.
+    static PRETTY_FOLLOW_ANALYSIS: std::cell::RefCell<
+        Option<(PrettyFollowKey, std::rc::Rc<PrettyFollowAnalysis>)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Returns the follow analysis of one plan, from the cache when the plan is the last one.
+fn pretty_follow_analysis(plan: &EmissionPlan) -> std::rc::Rc<PrettyFollowAnalysis> {
+    let key = (
+        plan.identity.clone(),
+        plan.nodes.as_ptr() as usize,
+        plan.nodes.len(),
+    );
+    PRETTY_FOLLOW_ANALYSIS.with(|cache| {
+        if let Some((cached, analysis)) = cache.borrow().as_ref()
+            && *cached == key
+        {
+            return std::rc::Rc::clone(analysis);
+        }
+        let declared = declared_pretty_nodes(plan);
+        let capable = compute_pretty_leading_level_nodes(plan, &declared);
+        let continuation = declared
+            .iter()
+            .map(|base| (*base, declared_continuation_levels(plan, *base)))
+            .collect();
+        let analysis = std::rc::Rc::new(PrettyFollowAnalysis {
+            declared,
+            capable,
+            continuation,
+        });
+        *cache.borrow_mut() = Some((key, std::rc::Rc::clone(&analysis)));
+        analysis
+    })
+}
+
+/// Returns the levels of the tokens that can come after an operand of one declared base in its
+/// own rules: the tokens that the parser can shift into a value of the base.
+///
+/// A token with a level that is not in this set never continues a value, so the parser reduces
+/// the value before it, and a field before it needs no parentheses.
+fn declared_continuation_levels(plan: &EmissionPlan, base: NodeId) -> BTreeSet<u32> {
+    let mut levels = BTreeSet::new();
+    let Some(node) = plan.nodes.iter().find(|candidate| candidate.node == base) else {
+        return levels;
+    };
+    let NodeBodyPlan::Enum { variants } = &node.body else {
+        return levels;
+    };
+    let mut visited = BTreeSet::new();
+    for variant in variants {
+        for (index, element) in variant.elements.iter().enumerate() {
+            let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+                continue;
+            };
+            let SemanticParseProjection::Direct {
+                terminal_node: Some(terminal),
+                attachment,
+                ..
+            } = projection.as_ref()
+            else {
+                continue;
+            };
+            if *terminal != base {
+                continue;
+            }
+            let after = attachment
+                .as_ref()
+                .and_then(|attachment| attachment.after.first())
+                .map(attached_leading)
+                .or_else(|| variant.elements.get(index + 1).map(element_leading));
+            if let Some(after) = after {
+                collect_leading_levels(plan, after, &mut levels, &mut visited);
+            }
+        }
+    }
+    levels
+}
+
+/// Adds the levels that one leading token can have to `levels`; a child Node adds the levels of
+/// every token that one of its values can start with.
+fn collect_leading_levels(
+    plan: &EmissionPlan,
+    leading: PrettyLeading,
+    levels: &mut BTreeSet<u32>,
+    visited: &mut BTreeSet<NodeId>,
+) {
+    match leading {
+        PrettyLeading::Level(level) => {
+            levels.insert(level.ordinal);
+        }
+        PrettyLeading::Child(child) => {
+            if !visited.insert(child) {
+                return;
+            }
+            let Some(node) = plan.nodes.iter().find(|candidate| candidate.node == child) else {
+                return;
+            };
+            let firsts: Vec<&ElementParsePlan> = match &node.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.first().into_iter().collect(),
+                NodeBodyPlan::Enum { variants } => variants
+                    .iter()
+                    .filter_map(|variant| variant.elements.first())
+                    .collect(),
+            };
+            for first in firsts {
+                collect_leading_levels(plan, element_leading(first), levels, visited);
+            }
+        }
+        PrettyLeading::None => {}
+    }
+}
+
+/// Renders the bound of the token after one field that holds a declared base, or `None` when no
+/// token after it can continue a value of the base (`docs/declared-precedence.md`, "Consumers").
+///
+/// `holder` gives the expression that reaches the value of an element, by element index.
+fn render_field_follow(
+    plan: &EmissionPlan,
+    elements: &[ElementParsePlan],
+    index: usize,
+    holder: impl FnOnce(usize) -> proc_macro2::TokenStream,
+    access: PrettyAccess,
+    capable: &BTreeSet<NodeId>,
+) -> Option<proc_macro2::TokenStream> {
+    let analysis = pretty_follow_analysis(plan);
+    let (base, leading, holder_index) = field_follow(&analysis.declared, elements, index)?;
+    let levels = analysis.continuation.get(&base)?;
+    match leading {
+        PrettyLeading::Level(level) => levels
+            .contains(&level.ordinal)
+            .then(|| render_leading_level_constant(level)),
+        PrettyLeading::Child(child) if capable.contains(&child) && !levels.is_empty() => {
+            let read = render_leading(leading, || holder(holder_index), access, capable)?;
+            let levels = levels.iter();
+            Some(quote! {
+                (#read).filter(|(level, _)| matches!(*level, #(#levels)|*))
+            })
+        }
+        PrettyLeading::Child(_) | PrettyLeading::None => None,
+    }
+}
+
 /// Reports whether one Node can name a leading-level function: a Node with Pretty and no type or
 /// const parameter.
 fn leading_level_capable(plan: &EmissionPlan, node: NodeId) -> bool {
@@ -3754,6 +4077,14 @@ fn leading_level_capable(plan: &EmissionPlan, node: NodeId) -> bool {
 /// The set starts at the child Node that follows a first operand, and closes over the child Node
 /// that leads each of their variants.
 pub(super) fn pretty_leading_level_nodes(plan: &EmissionPlan) -> BTreeSet<NodeId> {
+    pretty_follow_analysis(plan).capable.clone()
+}
+
+/// Computes [`pretty_leading_level_nodes`].
+fn compute_pretty_leading_level_nodes(
+    plan: &EmissionPlan,
+    declared: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
     let mut pending = Vec::new();
     for (node, behavior) in plan.nodes.iter().zip(&plan.pretty.nodes) {
         if !behavior
@@ -3770,6 +4101,25 @@ pub(super) fn pretty_leading_level_nodes(plan: &EmissionPlan) -> BTreeSet<NodeId
                 first_operand_lookahead(variant, node.node)
             {
                 pending.push(child);
+            }
+        }
+    }
+    // A child Node after a field that holds a declared base (see [`field_follow`]).
+    for node in &plan.nodes {
+        let sequences: Vec<&[ElementParsePlan]> = match &node.body {
+            NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+            NodeBodyPlan::Enum { variants } => variants
+                .iter()
+                .map(|variant| variant.elements.as_slice())
+                .collect(),
+        };
+        for elements in sequences {
+            for index in 0..elements.len() {
+                if let Some((_, PrettyLeading::Child(child), _)) =
+                    field_follow(declared, elements, index)
+                {
+                    pending.push(child);
+                }
             }
         }
     }
@@ -4085,6 +4435,43 @@ fn render_pretty_restricted_entry(
             #method_parameters
             context: &mut #facade::PrettyContext,
             restriction: u16,
+        ) -> ::core::fmt::Result #method_where {
+            context.configure_defaults(#max_width, #indent);
+            context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
+            context.baseline_group(|context| { #body Ok(()) })
+        }
+    }
+}
+
+/// Renders the private entry a field of another Node renders this value through when a token
+/// with a level follows the field: the body of the `Pretty` implementation, with that token's
+/// bound as the right edge.
+fn render_pretty_followed_entry(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    access: PrettyAccess,
+    body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
+    let PrettyFrame {
+        method_generics,
+        method_where,
+        method_parameters,
+        ..
+    } = access.frame(plan, node);
+    quote! {
+        /// Renders this value before a token with a level, with the parentheses that keep the
+        /// parser from shifting that token into the value.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        pub(crate) fn __recursa_pretty_followed #method_generics(
+            &self,
+            #method_parameters
+            context: &mut #facade::PrettyContext,
+            next: ::core::option::Option<(u32, bool)>,
         ) -> ::core::fmt::Result #method_where {
             context.configure_defaults(#max_width, #indent);
             context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
