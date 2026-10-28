@@ -125,6 +125,18 @@ fn the_expressions_fixture_decides_every_operator_by_its_declared_level() {
     ] {
         assert!(stdout.contains(expected), "{expected}\n{stdout}");
     }
+
+    // A field of a Node with no level, before a token with a level: Pretty parenthesizes a
+    // source that the token can continue and that is below the token's level, and no other.
+    for expected in [
+        "followed \"search((a like b) escape c)\"\n",
+        "followed \"search(a + b escape c)\"\n",
+        "followed \"search(a like b using c)\"\n",
+        "followed \"find((a like b) escape c)\"\n",
+        "followed round trip ok\n",
+    ] {
+        assert!(stdout.contains(expected), "{expected}\n{stdout}");
+    }
 }
 
 #[test]

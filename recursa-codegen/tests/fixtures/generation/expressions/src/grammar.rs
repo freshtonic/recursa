@@ -15,6 +15,10 @@
 //!   `PLUS` through `#[parse(prec = PLUS)]`, as `gram.y`'s `a_expr subquery_Op sub_type
 //!   select_with_parens %prec Op` does, but the parser compares the level of its operator token,
 //!   `*` or `=`, when it decides to reduce the operand before it.
+//! - A field of a Node with no level that holds an `Expr` before a token with a level: `Search`
+//!   and `Find`. `ESCAPE` can continue an `Expr` (`LikeEscape`), so the parser shifts it into a
+//!   source below its level, as `gram.y` shifts `SIMILAR` into the source of `SUBSTRING(a ILIKE b
+//!   SIMILAR c ESCAPE d)`. `USING` cannot continue an `Expr`.
 //! - Prefix operators whose spellings the lexer joins: `@` beside `@` is `@@`, and `-` beside
 //!   `-` opens a comment, so `Pretty` writes a space between two of them.
 
@@ -33,6 +37,9 @@ recursa::tokens! {
         ESCAPE => "escape",
         NULL => "null",
         ANY => "any",
+        SEARCH => "search",
+        FIND => "find",
+        USING => "using",
     }
     punctuation {
         EQ => "=",
@@ -160,5 +167,37 @@ recursa::ast_node! {
         Multiply,
         Add,
         Subtract,
+    }
+}
+
+recursa::ast_node! {
+    /// `search(source escape name)` and `search(source using name)`: the token after the source
+    /// is the first token of a child Node.
+    #[derive(Debug, Clone)]
+    pub struct Search {
+        #[tok(SEARCH, LPAREN, this)]
+        pub source: boxed!(Expr),
+        #[tok(this, RPAREN)]
+        pub tail: SearchTail,
+    }
+}
+
+recursa::ast_node! {
+    /// The clause after the source of a `Search`.
+    #[derive(Debug, Clone)]
+    pub enum SearchTail {
+        Escape(#[tok(ESCAPE, this)] Name),
+        Using(#[tok(USING, this)] Name),
+    }
+}
+
+recursa::ast_node! {
+    /// `find(source escape name)`: the token after the source is a fixed token.
+    #[derive(Debug, Clone)]
+    pub struct Find {
+        #[tok(FIND, LPAREN, this)]
+        pub source: boxed!(Expr),
+        #[tok(ESCAPE, this, RPAREN)]
+        pub name: Name,
     }
 }

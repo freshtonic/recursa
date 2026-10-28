@@ -203,6 +203,20 @@ and by nothing else.
     (`a LIKE b [ESCAPE c]`), or another variant is the same sequence up to and
     including the operand (`LIKE` beside `LIKE ... ESCAPE`). It takes the bound
     of a last operand of that rule.
+  - A field of another Node can hold the declared Node directly, behind nothing
+    but `Box`, with a token after the field, for example `find '(' Expr ESCAPE
+    Name ')'`. The other Node has no level, but the parser still sees that
+    token after the value, and it shifts the token into the value when the
+    token can continue it. So the field renders through a generated entry of
+    the declared Node with `T`, the level of that token, as the right-edge
+    bound: a value below `T` (or equal, and `T` is not `left`) is
+    parenthesized. `T` is the level of a fixed token, or, for a child Node, the
+    level of the token that the child's value starts with, which a generated
+    function reads at run time. Only a token that can continue a value gives a
+    bound: a token whose level is the level of a token that follows an operand
+    in a rule of the declared Node. The parser reduces the value before any
+    other token. A field that names a restriction keeps the restriction's
+    entry, and a repeated or optional field keeps the ordinary `Pretty`.
 
   A parsed tree never meets the new terms, because the parser built that shape
   when the reduce or the shift won. So the rendering of a parsed tree does not
