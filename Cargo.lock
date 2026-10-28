@@ -283,7 +283,7 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "recursa"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "recursa-core",
  "recursa-macros",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "recursa-codegen"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "phf_codegen",
  "prettyplease",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "recursa-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "arbitrary",
  "bumpalo",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "recursa-diagrams"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "railroad",
  "roxmltree",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "recursa-macros"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
