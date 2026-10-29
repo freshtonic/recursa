@@ -481,6 +481,9 @@ pub(crate) struct FlatHints {
 pub(crate) struct PrettyHints {
     /// Supplies the group used to correlate authored source with normalized grammar.
     pub(crate) group: Option<PrettyGroup>,
+    /// Whether a Node opens no group of its own (`group = none`), so that its breaks belong to
+    /// the group around it.
+    pub(crate) transparent: bool,
     /// Supplies the indent used to correlate authored source with normalized grammar.
     pub(crate) indent: bool,
     /// Supplies the break before used to correlate authored source with normalized grammar.
@@ -508,6 +511,8 @@ pub(crate) enum PrettyBreak {
     Soft,
     /// Identifies the hard authored-source form.
     Hard,
+    /// Identifies the space authored-source form: one space that never breaks.
+    Space,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Classifies the pretty separator position forms retained in the source model.
@@ -530,6 +535,14 @@ impl PrettyHints {
     /// Reports whether the configured-trait selection contains no additions or omissions.
     fn is_empty(&self) -> bool {
         self == &Self::default()
+    }
+
+    /// Reports whether a break before the fragment can break inside its group and indentation.
+    pub(crate) fn has_inner_break(&self) -> bool {
+        matches!(
+            self.break_before,
+            Some(PrettyBreak::Soft | PrettyBreak::Hard)
+        )
     }
 }
 
@@ -3207,24 +3220,29 @@ fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
             })?;
         match key.as_str() {
             "group" => {
-                if hints.group.is_some() {
+                if hints.group.is_some() || hints.transparent {
                     return Err("duplicate Pretty hint `group`".to_owned());
                 }
-                hints.group = Some(match value.as_str() {
-                    "consistent" => PrettyGroup::Consistent,
-                    "inconsistent" => PrettyGroup::Inconsistent,
+                match value.as_str() {
+                    "consistent" => hints.group = Some(PrettyGroup::Consistent),
+                    "inconsistent" => hints.group = Some(PrettyGroup::Inconsistent),
+                    "none" => hints.transparent = true,
                     _ => {
                         return Err(
-                            "Pretty `group` must be `consistent` or `inconsistent`".to_owned()
+                            "Pretty `group` must be `consistent`, `inconsistent` or `none`"
+                                .to_owned(),
                         );
                     }
-                });
+                }
             }
             "break_before" | "break_after" => {
                 let parsed = match value.as_str() {
                     "soft" => PrettyBreak::Soft,
                     "hard" => PrettyBreak::Hard,
-                    _ => return Err(format!("Pretty `{key}` must be `soft` or `hard`")),
+                    "space" => PrettyBreak::Space,
+                    _ => {
+                        return Err(format!("Pretty `{key}` must be `soft`, `hard` or `space`"));
+                    }
                 };
                 let slot = if key == "break_before" {
                     &mut hints.break_before
@@ -3446,6 +3464,13 @@ impl SourceModelBuilder<'_> {
                 kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
                 sites: Vec::new(),
                 message: format!("Pretty `group` on {scope} has no soft-break opportunity"),
+            });
+        }
+        if pretty.transparent && !scope.ends_with("Node") {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                sites: Vec::new(),
+                message: format!("Pretty `group = none` applies to a Node, not to a {scope}"),
             });
         }
         if pretty.indent && !has_soft_opportunity {
@@ -3699,6 +3724,7 @@ impl SourceModelBuilder<'_> {
             }
             let has_internal_break = needs_internal_break
                 && (separator.is_some()
+                    || pretty.has_inner_break()
                     || self.field_has_repetition(*resolved_field).unwrap_or(true)
                     || attachment_has_soft_opportunity
                     || self.pretty_scope_has_soft_opportunity(
@@ -3712,6 +3738,13 @@ impl SourceModelBuilder<'_> {
                     message: "Pretty `group` on field has no soft-break opportunity".to_owned(),
                 });
             }
+            if pretty.transparent {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `group = none` applies to a Node, not to a field".to_owned(),
+                });
+            }
             if pretty.indent && !has_internal_break {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
@@ -3719,7 +3752,13 @@ impl SourceModelBuilder<'_> {
                     message: "Pretty `indent` on field has no possible break".to_owned(),
                 });
             }
-            if pretty.break_before.is_some() && attachment_start == 0 {
+            // A group or indentation holds a break before its field, so the break is the
+            // field's own, not a boundary with a preceding element.
+            if pretty.break_before.is_some()
+                && attachment_start == 0
+                && pretty.group.is_none()
+                && !pretty.indent
+            {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
                     sites: vec![site.clone()],

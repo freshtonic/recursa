@@ -48,6 +48,8 @@ pub(super) struct EmissionPlan {
     pub(super) pretty_max_width: usize,
     /// Default indentation width for generated `Pretty` implementations.
     pub(super) pretty_indent: usize,
+    /// Whether only hinted breaks can break in generated `Pretty` implementations.
+    pub(super) pretty_hinted_breaks: bool,
     /// Total grammar-local token-kind cardinality, including lexical error.
     pub(super) kind_count: usize,
     /// Private numeric kind reserved for rejected lexer ranges.
@@ -878,6 +880,9 @@ impl EmissionPlan {
             resolved.build_inputs.pretty.max_width,
             resolved.build_inputs.pretty.indent,
         ));
+        if resolved.build_inputs.pretty.hinted_breaks {
+            canonical.push_str(";pretty_breaks=hinted");
+        }
         canonical.push_str(&format!(
             ";kind_tables={:016x};atom_names={:016x}",
             plan_family_identity(&(&kind_variants, &kind_static_texts, &kind_names)),
@@ -1003,6 +1008,7 @@ impl EmissionPlan {
             grammar_name: lowered.grammar.name.clone(),
             pretty_max_width: resolved.build_inputs.pretty.max_width,
             pretty_indent: resolved.build_inputs.pretty.indent,
+            pretty_hinted_breaks: resolved.build_inputs.pretty.hinted_breaks,
             kind_count,
             lexical_error_kind,
             kind_variants,

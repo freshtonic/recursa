@@ -132,6 +132,8 @@ enum PrettyEvent {
     },
     /// Whitespace rendered flat or as a newline according to group mode.
     SoftBreak(String),
+    /// One space between two tokens that layout never breaks.
+    Space,
     /// Separator-aware break between repeated semantic values.
     RepetitionBreak {
         /// Parsed or canonical separator spelling.
@@ -250,6 +252,11 @@ impl PrettySink {
                 }
                 PrettyEvent::HardBreak => {
                     newline(&mut output, &mut column, indent, self.config.indent);
+                    boundary.separate();
+                }
+                PrettyEvent::Space => {
+                    output.push(' ');
+                    column = column.saturating_add(1);
                     boundary.separate();
                 }
                 PrettyEvent::RepetitionBreak {
@@ -461,6 +468,7 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
                 }
                 width = width.saturating_add(text.chars().count());
             }
+            PrettyEvent::Space => width = width.saturating_add(1),
             PrettyEvent::HardBreak => return None,
             PrettyEvent::RepetitionBreak {
                 separator,
@@ -529,6 +537,7 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
                         + usize::from(*space_after_separator),
                 );
             }
+            PrettyEvent::Space => width = width.saturating_add(1),
             PrettyEvent::HardBreak => break,
             PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
             PrettyEvent::EndGroup if depth == 0 => break,
@@ -551,6 +560,9 @@ pub struct PrettyContext {
     pending_repetition_break: Option<usize>,
     /// Whether the previous token was automatic punctuation.
     previous_auto_punctuation: bool,
+    /// Whether the previous token opened a delimited group or joins tightly to the next token, so
+    /// that a token with space before it stays tight after it.
+    previous_tight: bool,
     /// Whether generated policy requires spacing after the previous token.
     requested_space_after: bool,
     /// Whether any nonempty token has been emitted.
@@ -563,8 +575,10 @@ pub struct PrettyContext {
     repetition: Option<RepetitionLayout>,
     /// Nested speculative layout state for optional/present grammar shapes.
     layout_checkpoints: Vec<PrettyLayoutCheckpoint>,
-    /// Number of generated explicit group boundaries currently open.
-    explicit_group_depth: usize,
+    /// The event index just after each explicit group that is open, innermost last.
+    explicit_groups: Vec<usize>,
+    /// Whether only hinted breaks can break: the space between two tokens is then never a break.
+    hinted_breaks: bool,
 }
 
 /// A generated Pretty scope that restores its enclosing context when dropped.
@@ -629,8 +643,8 @@ struct PrettyLayoutCheckpoint {
     has_emitted_token: bool,
     /// Saved repetition policy.
     repetition: Option<RepetitionLayout>,
-    /// Saved explicit group nesting depth.
-    explicit_group_depth: usize,
+    /// Saved number of open explicit groups.
+    explicit_groups: usize,
 }
 
 #[derive(Clone)]
@@ -658,13 +672,15 @@ impl Default for PrettyContext {
             separator_supplied: false,
             pending_repetition_break: None,
             previous_auto_punctuation: false,
+            previous_tight: false,
             requested_space_after: false,
             has_emitted_token: false,
             provenance: None,
             caller_configured: false,
             repetition: None,
             layout_checkpoints: Vec::new(),
-            explicit_group_depth: 0,
+            explicit_groups: Vec::new(),
+            hinted_breaks: false,
         }
     }
 }
@@ -683,13 +699,15 @@ impl PrettyContext {
             separator_supplied: false,
             pending_repetition_break: None,
             previous_auto_punctuation: false,
+            previous_tight: false,
             requested_space_after: false,
             has_emitted_token: false,
             provenance: None,
             caller_configured: true,
             repetition: None,
             layout_checkpoints: Vec::new(),
-            explicit_group_depth: 0,
+            explicit_groups: Vec::new(),
+            hinted_breaks: false,
         }
     }
 
@@ -713,15 +731,34 @@ impl PrettyContext {
         }
     }
 
+    /// Selects the grammar's `breaks = hinted` setting: only the breaks that the grammar hints,
+    /// repetition boundaries and delimited sequences can break, and the space between two tokens
+    /// is never a break. The first grammar entry that renders sets it; later entries keep it.
+    #[doc(hidden)]
+    pub fn configure_hinted_breaks(&mut self) {
+        if !self.has_emitted_token && self.sink.events.is_empty() {
+            self.hinted_breaks = true;
+        }
+    }
+
+    /// Queues the space that separates two tokens: a soft break, or a space that never breaks
+    /// when the grammar hints its breaks.
+    fn push_token_space(&mut self) {
+        let event = if self.hinted_breaks {
+            PrettyEvent::Space
+        } else {
+            PrettyEvent::SoftBreak(" ".to_owned())
+        };
+        self.sink.events.push(event);
+    }
+
     /// Emits one semantic token using the default separating-space policy.
     pub fn token(&mut self, text: &str) -> fmt::Result {
         if (self.needs_separator || self.requested_space_after)
             && !self.separator_supplied
             && !text.is_empty()
         {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.tight_token(text)
     }
@@ -745,9 +782,7 @@ impl PrettyContext {
             && !self.separator_supplied
             && !text.is_empty()
         {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.push_text(text, self.active_source_span());
         self.needs_separator = !text.is_empty();
@@ -774,6 +809,7 @@ impl PrettyContext {
         });
         if !text.is_empty() {
             self.pending_repetition_break = None;
+            self.previous_tight = false;
         }
     }
 
@@ -784,12 +820,11 @@ impl PrettyContext {
             && !self.separator_supplied
             && !text.is_empty()
         {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.tight_token(text)?;
         self.needs_separator = false;
+        self.previous_tight = !text.is_empty();
         Ok(())
     }
 
@@ -797,6 +832,8 @@ impl PrettyContext {
     /// conservative punctuation spacing after it.
     #[doc(hidden)]
     pub fn closing_token(&mut self, text: &str) -> fmt::Result {
+        // A flat break just inside a closing delimiter writes no space.
+        self.tighten_adjacent_separator();
         self.tight_token(text)?;
         self.previous_auto_punctuation = false;
         Ok(())
@@ -808,23 +845,47 @@ impl PrettyContext {
         self.previous_auto_punctuation = false;
     }
 
+    /// Makes the space or flat break just before the next token write nothing, because that
+    /// token is tight on its left.
+    fn tighten_adjacent_separator(&mut self) {
+        if !self.separator_supplied {
+            return;
+        }
+        match self.adjacent_separator() {
+            Some(index) if matches!(self.sink.events[index], PrettyEvent::Space) => {
+                // Replaced, not removed, so that the indices other state holds stay valid.
+                self.sink.events[index] = PrettyEvent::Text {
+                    text: String::new(),
+                    source: Span::SYNTHETIC,
+                };
+                self.separator_supplied = false;
+            }
+            Some(index) => {
+                if let PrettyEvent::SoftBreak(flat) = &mut self.sink.events[index] {
+                    flat.clear();
+                }
+            }
+            None => {}
+        }
+    }
+
     /// Emits a grammar-validated token tightly on both sides.
     #[doc(hidden)]
     pub fn tight_sequence_token(&mut self, text: &str) -> fmt::Result {
+        self.tighten_adjacent_separator();
         if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.tight_token(text)?;
         self.needs_separator = false;
+        self.previous_tight = !text.is_empty();
         Ok(())
     }
 
     /// Emits a grammar-validated token with space before and tight after.
     #[doc(hidden)]
     pub fn before_token(&mut self, text: &str) -> fmt::Result {
-        if self.has_emitted_token && !text.is_empty() {
+        if self.has_emitted_token && !self.previous_tight && !text.is_empty() {
             if let Some(index) = self.pending_repetition_break
                 && let Some(PrettyEvent::RepetitionBreak {
                     space_after_separator,
@@ -839,9 +900,7 @@ impl PrettyContext {
                     flat.push(' ');
                 }
             } else {
-                self.sink
-                    .events
-                    .push(PrettyEvent::SoftBreak(" ".to_owned()));
+                self.push_token_space();
             }
         }
         self.tight_token(text)?;
@@ -853,9 +912,7 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn after_token(&mut self, text: &str) -> fmt::Result {
         if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.tight_token(text)?;
         self.requested_space_after = !text.is_empty();
@@ -876,23 +933,98 @@ impl PrettyContext {
         self.tight_token(text)
     }
 
+    /// Adds one space between two tokens that layout never breaks.
+    pub fn space(&mut self) -> fmt::Result {
+        if !self.has_emitted_token {
+            return Ok(());
+        }
+        if self.separator_supplied {
+            // A break or a space is already there; a break that is flat without a space gets one.
+            if let Some(index) = self.adjacent_separator()
+                && let PrettyEvent::SoftBreak(existing) = &mut self.sink.events[index]
+                && existing.is_empty()
+            {
+                existing.push(' ');
+            }
+            return Ok(());
+        }
+        self.sink.events.push(PrettyEvent::Space);
+        self.separator_supplied = true;
+        self.pending_repetition_break = None;
+        self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
+        Ok(())
+    }
+
+    /// Writes the space that a generated rule puts between two of its parts: a soft break, or a
+    /// space that never breaks when the grammar hints its breaks.
+    #[doc(hidden)]
+    pub fn separating_space(&mut self) -> fmt::Result {
+        if self.previous_tight {
+            return Ok(());
+        }
+        if self.hinted_breaks {
+            self.space()
+        } else {
+            self.soft_break(" ")
+        }
+    }
+
+    /// Finds the break or space that separates the last token from what comes next, looking past
+    /// the group and indentation boundaries queued after it.
+    fn adjacent_separator(&self) -> Option<usize> {
+        for (index, event) in self.sink.events.iter().enumerate().rev() {
+            match event {
+                PrettyEvent::SoftBreak(_) | PrettyEvent::HardBreak | PrettyEvent::Space => {
+                    return Some(index);
+                }
+                PrettyEvent::BeginGroup
+                | PrettyEvent::BeginInconsistentGroup
+                | PrettyEvent::EndGroup
+                | PrettyEvent::Indent
+                | PrettyEvent::Dedent => {}
+                PrettyEvent::Text { .. } | PrettyEvent::RepetitionBreak { .. } => return None,
+            }
+        }
+        None
+    }
+
     /// Adds a legal width-dependent break with `flat` text when the group fits.
+    ///
+    /// A break before the first token does nothing, so a rendering never starts with a line
+    /// break. Two breaks with no token between them are one break: the first one, which a
+    /// space becomes.
     pub fn soft_break(&mut self, flat: &str) -> fmt::Result {
+        if !self.has_emitted_token {
+            return Ok(());
+        }
         let flat = if self.requested_space_after && flat.is_empty() {
             " "
+        } else if self.previous_tight {
+            // A flat break just inside an opening delimiter writes no space.
+            ""
         } else {
             flat
         };
-        if self.separator_supplied
-            && let Some(PrettyEvent::SoftBreak(existing)) = self.sink.events.last_mut()
-        {
-            if existing.is_empty() && !flat.is_empty() {
-                *existing = flat.to_owned();
-            }
+        let adjacent = if self.separator_supplied {
+            self.adjacent_separator()
         } else {
-            self.sink
+            None
+        };
+        match adjacent.map(|index| (index, &mut self.sink.events[index])) {
+            Some((_, PrettyEvent::SoftBreak(existing))) => {
+                if existing.is_empty() && !flat.is_empty() {
+                    *existing = flat.to_owned();
+                }
+            }
+            Some((_, PrettyEvent::HardBreak)) => {}
+            Some((_, event @ PrettyEvent::Space)) => {
+                *event = PrettyEvent::SoftBreak(" ".to_owned());
+            }
+            Some(_) | None => self
+                .sink
                 .events
-                .push(PrettyEvent::SoftBreak(flat.to_owned()));
+                .push(PrettyEvent::SoftBreak(flat.to_owned())),
         }
         self.separator_supplied = true;
         self.pending_repetition_break = None;
@@ -903,16 +1035,16 @@ impl PrettyContext {
 
     /// Adds an unconditional line break.
     pub fn hard_break(&mut self) -> fmt::Result {
-        if self.separator_supplied
-            && self
-                .sink
-                .events
-                .last()
-                .is_some_and(|event| matches!(event, PrettyEvent::SoftBreak(_)))
-        {
-            *self.sink.events.last_mut().expect("checked soft break") = PrettyEvent::HardBreak;
+        let adjacent = if self.separator_supplied {
+            self.adjacent_separator()
         } else {
-            self.sink.events.push(PrettyEvent::HardBreak);
+            None
+        };
+        match adjacent.map(|index| &mut self.sink.events[index]) {
+            Some(event @ (PrettyEvent::SoftBreak(_) | PrettyEvent::Space)) => {
+                *event = PrettyEvent::HardBreak;
+            }
+            Some(_) | None => self.sink.events.push(PrettyEvent::HardBreak),
         }
         self.separator_supplied = true;
         self.pending_repetition_break = None;
@@ -923,18 +1055,31 @@ impl PrettyContext {
 
     /// Emits one consistent fit-or-break group.
     pub fn group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
-        self.sink.events.push(PrettyEvent::BeginGroup);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
+        self.begin_consistent_group();
         let result = render(self);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
-        self.sink.events.push(PrettyEvent::EndGroup);
+        self.end_group();
         result
     }
 
     /// Applies the default Node group without hiding a surrounding local group.
+    ///
+    /// When the grammar hints its breaks, the Node opens no group of its own only when a local
+    /// group has just opened around it, so that the local group decides the Node's breaks. Only
+    /// indentation may come between the two. A Node that starts later inside a local group, after
+    /// other output, gets its own group. Otherwise no Node inside a local group opens a group, so
+    /// that the local group decides every space between two tokens in it.
     #[doc(hidden)]
     pub fn baseline_group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
-        if self.explicit_group_depth > 0 {
+        let wrapped = if self.hinted_breaks {
+            self.explicit_groups.last().is_some_and(|&start| {
+                self.sink.events[start..]
+                    .iter()
+                    .all(|event| matches!(event, PrettyEvent::Indent))
+            })
+        } else {
+            !self.explicit_groups.is_empty()
+        };
+        if wrapped {
             return render(self);
         }
         self.sink.events.push(PrettyEvent::BeginGroup);
@@ -946,11 +1091,9 @@ impl PrettyContext {
     /// Emits a fill group whose soft-break opportunities decide independently.
     #[doc(hidden)]
     pub fn inconsistent_group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
-        self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
+        self.begin_inconsistent_group();
         let result = render(self);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
-        self.sink.events.push(PrettyEvent::EndGroup);
+        self.end_group();
         result
     }
 
@@ -958,20 +1101,20 @@ impl PrettyContext {
     /// Begins a consistent group for generated multi-part layouts.
     pub fn begin_consistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginGroup);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
+        self.explicit_groups.push(self.sink.events.len());
     }
 
     #[doc(hidden)]
     /// Begins an inconsistent group for independently breaking layouts.
     pub fn begin_inconsistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
-        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
+        self.explicit_groups.push(self.sink.events.len());
     }
 
     #[doc(hidden)]
     /// Ends the innermost explicit generated group.
     pub fn end_group(&mut self) {
-        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
+        self.explicit_groups.pop();
         self.sink.events.push(PrettyEvent::EndGroup);
     }
 
@@ -1000,7 +1143,7 @@ impl PrettyContext {
             requested_space_after: self.requested_space_after,
             has_emitted_token: self.has_emitted_token,
             repetition: self.repetition.clone(),
-            explicit_group_depth: self.explicit_group_depth,
+            explicit_groups: self.explicit_groups.len(),
         });
     }
 
@@ -1022,7 +1165,7 @@ impl PrettyContext {
         self.requested_space_after = checkpoint.requested_space_after;
         self.has_emitted_token = checkpoint.has_emitted_token;
         self.repetition = checkpoint.repetition;
-        self.explicit_group_depth = checkpoint.explicit_group_depth;
+        self.explicit_groups.truncate(checkpoint.explicit_groups);
     }
 
     /// Emits a document region one configured indentation level deeper.
@@ -1159,9 +1302,7 @@ impl PrettyContext {
             && !self.separator_supplied
             && self.has_emitted_token
         {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            self.push_token_space();
         }
         self.push_text(&separator.text, separator.source);
         self.needs_separator = false;
@@ -1834,5 +1975,207 @@ mod tests {
                 format!("alpha{separator}beta")
             );
         }
+    }
+
+    /// `SELECT` with an indented list whose break is inside its group, then a clause break that
+    /// belongs to the enclosing group, as a SQL grammar renders a query.
+    struct Query {
+        hinted: bool,
+        items: &'static [&'static str],
+    }
+
+    impl Pretty for Query {
+        fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+            if self.hinted {
+                context.configure_hinted_breaks();
+            }
+            context.baseline_group(|context| {
+                context.token("SELECT")?;
+                context.group(|context| {
+                    context.indented(|context| {
+                        context.soft_break(" ")?;
+                        context.with_repetition(Some(","), false, false, |context| {
+                            context.render_repeated_by(self.items.iter(), |context, item| {
+                                context.baseline_group(|context| {
+                                    for word in item.split(' ') {
+                                        context.token(word)?;
+                                    }
+                                    Ok(())
+                                })
+                            })
+                        })
+                    })
+                })?;
+                context.soft_break(" ")?;
+                context.token("FROM")?;
+                context.token("t")
+            })
+        }
+    }
+
+    #[test]
+    fn hinted_breaks_never_break_the_space_between_two_tokens() {
+        let items: &[&str] = &["a AS alpha", "b AS beta"];
+        let config = PrettyConfig::new(16, 2);
+        assert_eq!(
+            Query {
+                hinted: true,
+                items
+            }
+            .render_with(config),
+            "SELECT\n  a AS alpha,\n  b AS beta\nFROM t"
+        );
+        // By default the space between two tokens is a soft break of the group around it.
+        assert_eq!(
+            Query {
+                hinted: false,
+                items
+            }
+            .render_with(PrettyConfig::new(8, 2)),
+            "SELECT\n  a\n  AS\n  alpha,\n  b\n  AS\n  beta\nFROM\nt"
+        );
+    }
+
+    #[test]
+    fn by_default_a_local_group_decides_every_space_between_two_tokens_in_it() {
+        let items: &[&str] = &["a AS alpha", "b AS beta"];
+        assert_eq!(
+            Query {
+                hinted: false,
+                items
+            }
+            .render_with(PrettyConfig::new(16, 2)),
+            "SELECT\n  a\n  AS\n  alpha,\n  b\n  AS\n  beta\nFROM\nt"
+        );
+    }
+
+    #[test]
+    fn with_hinted_breaks_a_node_inside_a_local_group_gets_its_own_group_after_other_output() {
+        struct List;
+        impl Pretty for List {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.configure_hinted_breaks();
+                context.token("SELECT")?;
+                context.group(|context| {
+                    context.indented(|context| {
+                        context.soft_break(" ")?;
+                        context.with_repetition(Some(","), false, false, |context| {
+                            context.render_repeated_by(["alpha", "beta"].iter(), |context, word| {
+                                // An item with a break of its own, which its own group decides.
+                                context.baseline_group(|context| {
+                                    context.token("f")?;
+                                    context.soft_break(" ")?;
+                                    context.token(word)
+                                })
+                            })
+                        })
+                    })
+                })
+            }
+        }
+        assert_eq!(
+            List.render_with(PrettyConfig::new(12, 2)),
+            "SELECT\n  f alpha,\n  f beta"
+        );
+    }
+
+    #[test]
+    fn a_node_that_a_local_group_just_opened_around_has_no_group_of_its_own() {
+        struct Words;
+        impl Pretty for Words {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.baseline_group(|context| {
+                    context.token("alpha")?;
+                    context.soft_break(" ")?;
+                    context.token("beta")?;
+                    context.soft_break(" ")?;
+                    context.token("c")
+                })
+            }
+        }
+        struct Fill;
+        impl Pretty for Fill {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context
+                    .inconsistent_group(|context| context.indented(|context| Words.pretty(context)))
+            }
+        }
+        assert_eq!(
+            Fill.render_with(PrettyConfig::new(10, 2)),
+            "alpha beta\n  c"
+        );
+    }
+
+    #[test]
+    fn adjacent_breaks_are_one_break_and_a_first_break_is_none() {
+        struct Nested;
+        impl Pretty for Nested {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.configure_hinted_breaks();
+                context.soft_break(" ")?;
+                context.group(|context| {
+                    context.opening_token("(")?;
+                    context.indented(|context| {
+                        context.soft_break("")?;
+                        context.group(|context| {
+                            context.soft_break(" ")?;
+                            context.token("SELECT")?;
+                            context.token("alpha")
+                        })
+                    })?;
+                    context.soft_break(" ")?;
+                    context.closing_token(")")
+                })
+            }
+        }
+        assert_eq!(Nested.render(), "(SELECT alpha)");
+        assert_eq!(
+            Nested.render_with(PrettyConfig::new(8, 2)),
+            "(\n  SELECT alpha\n)"
+        );
+    }
+
+    #[test]
+    fn a_space_never_breaks_and_a_break_or_a_tight_token_replaces_it() {
+        struct Spaced(bool);
+        impl Pretty for Spaced {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.group(|context| {
+                    context.token("INSERT")?;
+                    context.token("t")?;
+                    context.space()?;
+                    if self.0 {
+                        context.soft_break(" ")?;
+                        context.token("VALUES")
+                    } else {
+                        context.tight_sequence_token("::")?;
+                        context.token("int")
+                    }
+                })
+            }
+        }
+        assert_eq!(Spaced(true).render(), "INSERT t VALUES");
+        assert_eq!(
+            Spaced(true).render_with(PrettyConfig::new(4, 2)),
+            "INSERT\nt\nVALUES"
+        );
+        assert_eq!(Spaced(false).render(), "INSERT t::int");
+    }
+
+    #[test]
+    fn a_word_with_space_before_it_is_tight_after_an_opening_delimiter() {
+        struct Exists;
+        impl Pretty for Exists {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.token("WHERE")?;
+                context.opening_token("(")?;
+                context.around_token("EXISTS")?;
+                context.opening_token("(")?;
+                context.token("x")?;
+                context.closing_token(")")?;
+                context.closing_token(")")
+            }
+        }
+        assert_eq!(Exists.render(), "WHERE(EXISTS (x))");
     }
 }
