@@ -1230,6 +1230,9 @@ pub(crate) struct PrettyDefaults {
     pub(crate) max_width: usize,
     /// Spaces added for each indentation level.
     pub(crate) indent: usize,
+    /// Whether only hinted breaks can break (`breaks = hinted`): the space between two tokens
+    /// is then never a break.
+    pub(crate) hinted_breaks: bool,
 }
 
 impl Default for PrettyDefaults {
@@ -1237,6 +1240,7 @@ impl Default for PrettyDefaults {
         Self {
             max_width: 88,
             indent: 2,
+            hinted_breaks: false,
         }
     }
 }
@@ -1245,9 +1249,28 @@ impl Parse for PrettyDefaults {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut max_width = None;
         let mut indent = None;
+        let mut breaks = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             input.parse::<Token![=]>()?;
+            if key == "breaks" {
+                reject_duplicate(&breaks, key.span(), "breaks Pretty")?;
+                let value: syn::Ident = input.parse()?;
+                breaks = Some(if value == "any" {
+                    false
+                } else if value == "hinted" {
+                    true
+                } else {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        "Pretty `breaks` must be `any` or `hinted`",
+                    ));
+                });
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
             let value: LitInt = input.parse()?;
             let parsed = value.base10_parse::<usize>()?;
             if key == "max_width" {
@@ -1270,6 +1293,7 @@ impl Parse for PrettyDefaults {
         Ok(Self {
             max_width: max_width.unwrap_or(defaults.max_width),
             indent: indent.unwrap_or(defaults.indent),
+            hinted_breaks: breaks.unwrap_or(defaults.hinted_breaks),
         })
     }
 }
@@ -1432,6 +1456,11 @@ mod capture_tests {
                 .expect("Pretty configuration parses");
         assert_eq!(configured.pretty.max_width, 44);
         assert_eq!(configured.pretty.indent, 4);
+        assert!(!configured.pretty.hinted_breaks);
+        let hinted: GrammarConfigSyntax = syn::parse_str("module = crate, pretty(breaks = hinted)")
+            .expect("hinted Pretty breaks parse");
+        assert!(hinted.pretty.hinted_breaks);
+        assert_eq!(hinted.pretty.max_width, 88);
     }
 
     #[test]

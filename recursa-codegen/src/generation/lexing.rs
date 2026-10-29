@@ -419,6 +419,7 @@ fn render_token_impl(
     let pretty_impl = plan.pretty.tokens[index].map(|behavior| {
         let max_width = plan.pretty_max_width;
         let indent = plan.pretty_indent;
+        let hinted_breaks = pretty_hinted_breaks(plan);
         let body = pretty_body(behavior);
         quote! {
             impl<'input> #facade::Pretty for #ident<'input> {
@@ -427,6 +428,7 @@ fn render_token_impl(
                     context: &mut #facade::PrettyContext,
                 ) -> ::core::fmt::Result {
                     context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
                     #body
                 }
             }

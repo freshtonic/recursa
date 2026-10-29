@@ -733,6 +733,10 @@ pub(super) enum PrettySequenceLayout {
     Linear,
     /// Groups a delimiter-bounded sequence for coordinated breaks.
     Delimited,
+    /// Groups the delimited part of an attachment whose fixed prefix comes before the opening
+    /// delimiter, as in `KEYWORD ( value )`: the last fixed token before the value opens the
+    /// delimiter that the first fixed token after it closes.
+    DelimitedAfterPrefix,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1440,7 +1444,21 @@ pub(super) fn pretty_attachment_layout(
             })
         });
     if delimited {
-        PrettySequenceLayout::Delimited
+        return PrettySequenceLayout::Delimited;
+    }
+    let delimited_after_prefix = before
+        .last()
+        .and_then(|open| match open {
+            PrettyAttachedSyntaxBehavior::Required(open) => delimiter_close(&open.spelling),
+            PrettyAttachedSyntaxBehavior::Optional(_) => None,
+        })
+        .is_some_and(|close| {
+            after.first().is_some_and(|fixed| {
+                matches!(fixed, PrettyAttachedSyntaxBehavior::Required(fixed) if fixed.spelling == close)
+            })
+        });
+    if delimited_after_prefix {
+        PrettySequenceLayout::DelimitedAfterPrefix
     } else {
         PrettySequenceLayout::Linear
     }
@@ -2363,9 +2381,9 @@ pub(super) fn render_declared_enum_pretty(
                                             })
                                             .collect::<Vec<_>>();
                                         let space_after_before = before_has_sibling
-                                            .then(|| quote!(context.soft_break(" ")?;));
+                                            .then(|| quote!(context.separating_space()?;));
                                         let space_before_after = after_has_sibling
-                                            .then(|| quote!(context.soft_break(" ")?;));
+                                            .then(|| quote!(context.separating_space()?;));
                                         quote! {
                                             #(#before_tokens)*
                                             #space_after_before
@@ -2375,7 +2393,7 @@ pub(super) fn render_declared_enum_pretty(
                                         }
                                     };
                                     let leading_space = before_has_sibling
-                                        .then(|| quote!(context.soft_break(" ")?;));
+                                        .then(|| quote!(context.separating_space()?;));
                                     let inner = render_pretty_context_scope(
                                         &format_ident!("child_scope"),
                                         quote!(0),
@@ -2612,7 +2630,7 @@ pub(super) fn render_declared_enum_pretty(
         )?;),
     );
     let followed_entry = render_pretty_followed_entry(plan, node, access, followed_node);
-    let trait_impl = render_pretty_trait_impl(plan, node, access, rendered_node);
+    let trait_impl = render_pretty_trait_impl(plan, node, access, &behavior.pretty, rendered_node);
     let leading = render_pretty_leading_level(plan, node, access, &capable);
     quote! {
         #leading
@@ -2905,6 +2923,7 @@ fn render_pretty_trait_impl(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     access: PrettyAccess,
+    hints: &PrettyHints,
     body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
@@ -2912,6 +2931,8 @@ fn render_pretty_trait_impl(
     let ident = access.target_ident(node);
     let max_width = plan.pretty_max_width;
     let indent = plan.pretty_indent;
+    let hinted_breaks = pretty_hinted_breaks(plan);
+    let grouped = render_pretty_baseline_group(hints, body.clone());
     match access {
         PrettyAccess::Nested => {
             let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
@@ -2922,13 +2943,14 @@ fn render_pretty_trait_impl(
                         context: &mut #facade::PrettyContext,
                     ) -> ::core::fmt::Result {
                         context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
                         context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
-                        context.baseline_group(|context| { #body Ok(()) })
+                        #grouped
                     }
                 }
             }
         }
-        PrettyAccess::Flat => flat_pretty_trait_impl(plan, node, body),
+        PrettyAccess::Flat => flat_pretty_trait_impl(plan, node, hints, body),
     }
 }
 
@@ -3194,7 +3216,7 @@ pub(super) fn render_node_pretty_for(
     let body = render_pretty_hints(&behavior.pretty, quote!(#body?;));
     let leading =
         render_pretty_leading_level(plan, node, access, &pretty_leading_level_nodes(plan));
-    let trait_impl = render_pretty_trait_impl(plan, node, access, body);
+    let trait_impl = render_pretty_trait_impl(plan, node, access, &behavior.pretty, body);
     quote!(#trait_impl #leading)
 }
 
@@ -3246,6 +3268,11 @@ pub(super) fn render_pretty_semantic(
 }
 
 /// Wraps a rendered fragment in the configured grouping and break hints.
+///
+/// A break before the fragment is inside its group and its indentation, so that the group
+/// decides it and the fragment starts one level in when it breaks. A break after the fragment is
+/// inside its group but outside its indentation, so that what follows starts at the enclosing
+/// level. Without a group or indentation, both breaks belong to the enclosing group.
 pub(super) fn render_pretty_hints(
     hints: &PrettyHints,
     body: proc_macro2::TokenStream,
@@ -3253,26 +3280,29 @@ pub(super) fn render_pretty_hints(
     let before = match hints.break_before {
         Some(PrettyBreak::Soft) => quote!(context.soft_break(" ")?;),
         Some(PrettyBreak::Hard) => quote!(context.hard_break()?;),
+        Some(PrettyBreak::Space) => quote!(context.space()?;),
         None => quote!(),
     };
     let after = match hints.break_after {
         Some(PrettyBreak::Soft) => quote!(context.soft_break(" ")?;),
         Some(PrettyBreak::Hard) => quote!(context.hard_break()?;),
+        Some(PrettyBreak::Space) => quote!(context.space()?;),
         None => quote!(),
     };
     let body = if hints.indent {
-        quote!(context.indented(|context| { #body Ok(()) })?;)
+        quote!(context.indented(|context| { #before #body Ok(()) })?;)
     } else {
-        body
+        quote!(#before #body)
     };
-    let body = match hints.group {
-        Some(PrettyGroup::Consistent) => quote!(context.group(|context| { #body Ok(()) })?;),
-        Some(PrettyGroup::Inconsistent) => {
-            quote!(context.inconsistent_group(|context| { #body Ok(()) })?;)
+    match hints.group {
+        Some(PrettyGroup::Consistent) => {
+            quote!(context.group(|context| { #body #after Ok(()) })?;)
         }
-        None => body,
-    };
-    quote!(#before #body #after)
+        Some(PrettyGroup::Inconsistent) => {
+            quote!(context.inconsistent_group(|context| { #body #after Ok(()) })?;)
+        }
+        None => quote!(#body #after),
+    }
 }
 
 /// Applies optional or non-empty guards around a semantic fragment.
@@ -3597,6 +3627,26 @@ pub(super) fn render_pretty_attachment_unit(
             context.soft_break("")?;
             #close
             context.close_delimiter();
+        }
+    } else if attachment.layout == PrettySequenceLayout::DelimitedAfterPrefix {
+        let (open, prefix) = before
+            .split_last()
+            .expect("delimited attachment has an open token");
+        let (close, suffix) = after
+            .split_first()
+            .expect("delimited attachment has a close token");
+        quote! {
+            #(#prefix)*
+            #open
+            context.indented(|context| {
+                context.soft_break("")?;
+                #semantic
+                Ok(())
+            })?;
+            context.soft_break("")?;
+            #close
+            context.close_delimiter();
+            #(#suffix)*
         }
     } else {
         quote!(#(#before)* #semantic #(#after)*)
@@ -4419,6 +4469,7 @@ fn render_pretty_restricted_entry(
     let module_anchor = &plan.module_anchor;
     let max_width = plan.pretty_max_width;
     let indent = plan.pretty_indent;
+    let hinted_breaks = pretty_hinted_breaks(plan);
     let PrettyFrame {
         method_generics,
         method_where,
@@ -4437,6 +4488,7 @@ fn render_pretty_restricted_entry(
             restriction: u16,
         ) -> ::core::fmt::Result #method_where {
             context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
             context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
             context.baseline_group(|context| { #body Ok(()) })
         }
@@ -4456,6 +4508,7 @@ fn render_pretty_followed_entry(
     let module_anchor = &plan.module_anchor;
     let max_width = plan.pretty_max_width;
     let indent = plan.pretty_indent;
+    let hinted_breaks = pretty_hinted_breaks(plan);
     let PrettyFrame {
         method_generics,
         method_where,
@@ -4474,6 +4527,7 @@ fn render_pretty_followed_entry(
             next: ::core::option::Option<(u32, bool)>,
         ) -> ::core::fmt::Result #method_where {
             context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
             context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
             context.baseline_group(|context| { #body Ok(()) })
         }
@@ -4595,9 +4649,11 @@ impl FrameRenderer<'_> {
     ) -> proc_macro2::TokenStream {
         let max_width = self.plan.pretty_max_width;
         let indent = self.plan.pretty_indent;
+        let hinted_breaks = pretty_hinted_breaks(self.plan);
         let body = render_pretty_hints(hints, quote!({ #body Ok(()) }?;));
         quote! {
             context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
             context.baseline_group(|context| { #body Ok(()) })?;
         }
     }
@@ -4710,7 +4766,7 @@ impl FrameRenderer<'_> {
                 };
                 let unit = match attachment {
                     Some(attachment) => {
-                        if atom && attachment.layout == PrettySequenceLayout::Linear {
+                        if atom && attachment.layout != PrettySequenceLayout::Delimited {
                             return None;
                         }
                         self.attachment(attachment, value)?
@@ -4937,4 +4993,26 @@ fn shadow_minimum(
         first,
         |joined, bound| quote!(#facade::__private::pretty_stricter_bound(#joined, #bound)),
     ))
+}
+
+/// Selects the grammar's `breaks = hinted` setting in a generated entry, when the grammar sets it.
+pub(super) fn pretty_hinted_breaks(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    if plan.pretty_hinted_breaks {
+        quote!(context.configure_hinted_breaks();)
+    } else {
+        proc_macro2::TokenStream::new()
+    }
+}
+
+/// Wraps one Node's rendering in its default group, unless the Node opens none (`group = none`),
+/// so that its breaks belong to the group around it.
+pub(super) fn render_pretty_baseline_group(
+    hints: &PrettyHints,
+    body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if hints.transparent {
+        quote!(#body Ok(()))
+    } else {
+        quote!(context.baseline_group(|context| { #body Ok(()) }))
+    }
 }

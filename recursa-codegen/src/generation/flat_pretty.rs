@@ -184,8 +184,10 @@ pub(super) fn flat_pretty_frame(plan: &EmissionPlan, node: &NodeParsePlan) -> Pr
 pub(super) fn flat_pretty_trait_impl(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
+    hints: &PrettyHints,
     body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
+    let grouped = render_pretty_baseline_group(hints, body);
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let ident = flat_type_ident(&node.ident);
@@ -195,6 +197,7 @@ pub(super) fn flat_pretty_trait_impl(
     let store = flat_pretty_store(plan);
     let max_width = plan.pretty_max_width;
     let indent = plan.pretty_indent;
+    let hinted_breaks = pretty_hinted_breaks(plan);
     let bounded = parameters
         .iter()
         .map(|parameter| quote!(#parameter: #facade::__private::FlatNode));
@@ -212,8 +215,9 @@ pub(super) fn flat_pretty_trait_impl(
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
                 context.configure_defaults(#max_width, #indent);
+                #hinted_breaks
                 context.configure_lexical_boundary(#module_anchor::__recursa_pretty_tokens_fuse);
-                context.baseline_group(|context| { #body Ok(()) })
+                #grouped
             }
         }
     }

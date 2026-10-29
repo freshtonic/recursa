@@ -253,7 +253,8 @@ fn assert_capture_configuration(mode: CaptureMode) {
     } else {
         "boxed"
     };
-    assert_eq!(attachment.render(), format!(".\n<:{boxed} alpha.?>\n."));
+    // The break before is inside the indentation of the same hint, and the break after is not.
+    assert_eq!(attachment.render(), format!(".\n  <:{boxed} alpha.?>\n."));
     let attachment_around = parse_spanned!(grammar::AttachmentAround, ". @ .");
     assert_eq!(attachment_around.render(), ". @ .");
     assert_eq!(

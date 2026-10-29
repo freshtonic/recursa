@@ -236,6 +236,7 @@ Recursa uses Rust edition 2024 and has a minimum supported Rust version of
 - [`recursa` API reference](https://docs.rs/recursa/latest/recursa/)
 - [`recursa-codegen` API reference](https://docs.rs/recursa-codegen/latest/recursa_codegen/)
 - [Domain vocabulary](CONTEXT.md)
+- [Pretty layout: settings and hints](docs/pretty-layout.md)
 
 The repository is under active development. Prefer the compiled examples and
 current Rustdoc over historical design material.
