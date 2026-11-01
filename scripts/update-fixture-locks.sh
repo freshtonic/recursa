@@ -42,7 +42,7 @@ fi
 
 stale=0
 while IFS= read -r -d '' lock; do
-  if ! perl -0pe "$rewrite" "$lock" | cmp -s - "$lock"; then
+  if [[ $(perl -0pe "$rewrite" "$lock") != "$(<"$lock")" ]]; then
     echo "error: $lock does not name recursa $version" >&2
     stale=1
   fi
