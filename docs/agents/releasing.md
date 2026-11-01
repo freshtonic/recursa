@@ -27,9 +27,11 @@ error: cannot update the lock file .../Cargo.lock because --locked was passed to
 - **Local release (the usual method).** Run `scripts/release.sh`. It runs
   `scripts/update-fixture-locks.sh` after `release-plz update`. You do not have to run it
   yourself.
-- **Release PR from the "Release" workflow (`release-pr`).** release-plz opens the PR, but it does
-  not run `scripts/update-fixture-locks.sh`. Before you merge the PR, check out its branch, run
-  the script, and push a signed commit with the result.
+- **Release PR from the "Release" workflow (`release-pr`).** release-plz opens the PR. Then the
+  workflow runs `scripts/commit-release-pr-fixture-locks.sh`. This script runs
+  `scripts/update-fixture-locks.sh` on the PR branch and commits the result through the GitHub
+  API, so GitHub signs the commit. If this step fails, run the script on your machine. It finds
+  the open PR that has the label `release`, and it does not change your checkout.
 - **Manual version change.** Run `scripts/update-fixture-locks.sh` after you change the version.
 
 ## CI check

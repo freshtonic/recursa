@@ -24,5 +24,5 @@ See `docs/agents/testing.md`.
 
 ### Releasing
 
-When the crate version changes, you must run `scripts/update-fixture-locks.sh`. A release PR from
-release-plz does not run it. See `docs/agents/releasing.md`.
+When the crate version changes, you must run `scripts/update-fixture-locks.sh`. For a release PR
+from release-plz, the "Release" workflow does this step. See `docs/agents/releasing.md`.

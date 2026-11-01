@@ -5,8 +5,9 @@
 # The generation fixtures under recursa-codegen/tests/fixtures/generation build with --locked, so
 # their lock files must name the current version of each recursa crate. `release-plz update`
 # changes the versions in the manifests and in the root Cargo.lock, but not in these files.
-# scripts/release.sh runs this script after `release-plz update`. A release PR that release-plz
-# opens does not run it, so run it on that PR branch and commit the result.
+# scripts/release.sh runs this script after `release-plz update`. For a release PR that release-plz
+# opens, the "Release" workflow runs scripts/commit-release-pr-fixture-locks.sh, which runs this
+# script on the PR branch.
 #
 # With --check, the script changes no file. It names each fixture lock that has a different
 # version and exits with status 1. CI runs this check.
