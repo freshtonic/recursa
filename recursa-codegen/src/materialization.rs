@@ -2121,7 +2121,9 @@ impl Materializer {
                     };
                     let (_, container) = terminal_and_container(&evaluated.closed, None);
                     let semantics = container.semantics();
+                    // A break before the field is inside its group and indentation.
                     let pretty_break_opportunity = attachment.is_some()
+                        || pretty.has_inner_break()
                         || semantics.is_some_and(|semantics| semantics.cardinality.is_repeated());
                     if (pretty.group.is_some() || pretty.indent) && !pretty_break_opportunity {
                         self.push_diagnostic(
