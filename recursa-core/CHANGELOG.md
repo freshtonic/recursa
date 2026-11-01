@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/freshtonic/recursa/compare/recursa-core-v0.1.6...recursa-core-v0.1.7) - 2026-11-01
+
+### Added
+
+- *(pretty)* hinted breaks, Nodes with no group, and breaks inside their group
+
 ## [0.1.4](https://github.com/freshtonic/recursa/compare/recursa-core-v0.1.3...recursa-core-v0.1.4) - 2026-10-27
 
 ### Added
