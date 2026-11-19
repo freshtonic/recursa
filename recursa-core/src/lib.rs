@@ -55,7 +55,10 @@ pub use parsed::{
     ArenaAstFamily, ArenaParse, ArenaParsed, DebugProvenance, ElementMetadata, ElementRole,
     ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated, RepeatedIter,
 };
-pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
+pub use pretty::{
+    CommentStyle, Pretty, PrettyConfig, PrettyConflict, PrettyConflictKind, PrettyContext,
+    PrettySink, SourceMap, SourceMapEntry,
+};
 pub use rejection::{
     Refusal, Rejection, RejectionKey, RejectionNote, RejectionPair, RejectionRule,
 };
@@ -180,12 +183,14 @@ pub mod __private {
         kind_names: &'static [&'static str],
         atom_names: &'static [&'static str],
         lexical_error_kind: TokenKind,
+        trivia_comments: &'static [Option<crate::CommentStyle>],
     ) -> GrammarInfo {
         GrammarInfo {
             name,
             kind_names,
             atom_names,
             lexical_error_kind,
+            trivia_comments,
         }
     }
 
@@ -215,7 +220,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        43,
+        44,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -323,7 +328,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp(env!("CARGO_PKG_VERSION")) },
-            43,
+            44,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

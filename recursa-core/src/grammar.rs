@@ -18,6 +18,9 @@ pub struct GrammarInfo {
     pub(crate) atom_names: &'static [&'static str],
     /// Token kind reserved for lexer failures.
     pub(crate) lexical_error_kind: TokenKind,
+    /// Declared comment form indexed by each grammar-local trivia kind; `None` is whitespace.
+    /// Retained documents copy it so provenance-aware Pretty can tell comments from whitespace.
+    pub(crate) trivia_comments: &'static [Option<crate::CommentStyle>],
 }
 
 impl GrammarInfo {

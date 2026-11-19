@@ -579,6 +579,7 @@ mod tests {
         kind_names: &["+", "*", "(", ")", "id", "lexical error"],
         atom_names: &["fixed:+", "fixed:*", "fixed:(", "fixed:)", "content:id"],
         lexical_error_kind: 5,
+        trivia_comments: &[],
     };
 
     /// An evaluated expression that counts live values, so a failed parse can prove it dropped

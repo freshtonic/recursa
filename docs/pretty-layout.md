@@ -134,3 +134,67 @@ ORDER BY e.salary DESC
 The breaks before `FROM` and `WHERE` belong to the query, because `SelectStmt` and
 `SelectTargetList` have no group. The target list has its own group, so it breaks only when it
 does not fit after `SELECT`.
+
+## Comments
+
+`render`, `render_with` and the mapped variants write no source comments. The provenance-aware
+renderers, `try_render`, `try_render_with`, `try_render_mapped` and `try_render_mapped_with`,
+keep the comments of a parsed value whose grammar declares comment trivia:
+
+```rust,ignore
+recursa::tokens! {
+    trivia {
+        Whitespace => r"[ \t\r\n]+",
+        #[comment(line)]
+        LineComment => r"--[^\n]*",
+        #[comment(block)]
+        BlockComment => nested(opener = "/*", closer = "*/"),
+    }
+}
+```
+
+They write every comment once, in source order, with its exact text, and regenerate all other
+whitespace with LF line endings. A carriage return at the end of a line comment belongs to its
+line ending, so it is not written.
+
+### Where a comment goes
+
+Each comment is written before the syntax that follows it in the source. The comments between
+two tokens belong to the outermost occurrence that starts at the right-hand token inside the
+smallest occurrence around both tokens, so they are written where that occurrence starts: after
+the breaks and groups of its field hints, and before its own group. Comments before the first
+token and after the last one belong to the parsed root, which writes them before and after its
+own layout.
+
+- A block comment has one space before it that never breaks, so it stays on the line of the text
+  before it.
+- A line comment has the same space before it and a line break after it, also at the end of the
+  rendering. A group that holds a line comment breaks. A break or a space that layout would
+  write right after that line break only sets the indentation of the new line.
+- In a boundary that layout never breaks, after a `spacing = tight` token or around a separator
+  with no space on either side, a block comment stays tight: `s./* c */t`.
+
+```text
+select a /* c */, b from t      →  select a /* c */, b from t
+select a, -- c                  →  select a,
+  b from t                         -- c
+                                   b
+                                   from t
+```
+
+A view renders the comments inside its occurrence. A value without provenance, built in code or
+taken out of its parse with `Parsed::into_ast`, renders as `render` renders it. Because a parsed
+value cannot change, a change to its shape starts with `into_ast`, and the comments do not follow
+it.
+
+### Conflicts
+
+When the layout cannot keep a comment at its anchor without moving, duplicating, dropping or
+commenting out syntax, the provenance-aware renderers return a `PrettyConflict` with its kind and
+the comment's source span instead of output:
+
+| Kind | Cause |
+|---|---|
+| `LineCommentInTightBoundary` | A line comment in a boundary that layout never breaks |
+| `UnclassifiedTrivia` | Trivia of a kind not declared a comment holds text other than whitespace |
+| `Reordered` | The rendering writes source syntax out of order around a comment, as a hand-written `Pretty` impl can |

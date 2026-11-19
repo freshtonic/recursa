@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Item, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 43;
+const PRIVATE_PROTOCOL: u32 = 44;
 
 /// Reports the retired concrete-Node authoring surface.
 ///
@@ -552,9 +552,11 @@ fn write_standalone_svg(directory: &Path, name: &str, svg: &str) {
 /// in addition to `#[node(...)]`; the analyzer ignores an inactive entry everywhere. A lexer rule
 /// that changes between configurations is two entries with opposite predicates; two active entries
 /// with the same name in these sections are an error. A `lookahead` entry may carry `#[cfg(...)]`;
-/// the analyzer ignores an inactive entry. `punctuation`, `categories`, `flags`,
-/// `admissions`, `ignore` and `trivia` entries accept no attributes. This macro emits nothing, so
-/// rustc never evaluates these attributes itself.
+/// the analyzer ignores an inactive entry. A `trivia` entry may carry `#[comment(line)]` or
+/// `#[comment(block)]`, which declares its matches comments: provenance-aware Pretty keeps them,
+/// and writes a line break after a line comment. `punctuation`, `categories`, `flags`,
+/// `admissions` and `ignore` entries accept no attributes. This macro emits nothing, so rustc
+/// never evaluates these attributes itself.
 ///
 /// Every entry that accepts `#[cfg(...)]` also accepts `#[config(since = NAME)]` and
 /// `#[config(before = NAME)]`, where `NAME` comes from the root declaration's

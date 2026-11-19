@@ -971,6 +971,22 @@ struct TriviaRootFragments {
     public_exports: Option<proc_macro2::TokenStream>,
 }
 
+/// Renders the runtime comment form of one trivia classification.
+fn trivia_comment_style(
+    facade: &syn::Ident,
+    comment: Option<crate::source_model::TriviaComment>,
+) -> proc_macro2::TokenStream {
+    match comment {
+        None => quote!(None),
+        Some(crate::source_model::TriviaComment::Line) => {
+            quote!(Some(#facade::CommentStyle::Line))
+        }
+        Some(crate::source_model::TriviaComment::Block) => {
+            quote!(Some(#facade::CommentStyle::Block))
+        }
+    }
+}
+
 /// Renders the complete opt-in trivia surface as one cohesive root-generation phase.
 fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> TriviaRootFragments {
     let retained_trivia = !plan.trivia_kinds.is_empty();
@@ -982,6 +998,11 @@ fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> Tri
             let index = index as u16;
             quote!(#index => TriviaKind::#variant,)
         });
+    let trivia_kind_comment_styles = plan
+        .trivia_comments
+        .iter()
+        .map(|comment| trivia_comment_style(facade, *comment))
+        .collect::<Vec<_>>();
     let state_initial = if retained_trivia {
         quote!(Some(Vec::new()))
     } else {
@@ -1021,6 +1042,16 @@ fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> Tri
                     #(TriviaKind::#trivia_kind_variants => {
                         TriviaKind::#trivia_kind_variants as u16
                     },)*
+                }
+            }
+
+            impl TriviaKind {
+                /// Returns the declared comment form, or `None` for whitespace that Pretty
+                /// regenerates.
+                pub const fn comment_style(self) -> Option<#facade::CommentStyle> {
+                    match self {
+                        #(TriviaKind::#trivia_kind_variants => #trivia_kind_comment_styles,)*
+                    }
                 }
             }
 
@@ -1379,6 +1410,10 @@ pub(super) fn render_root(
         }
     });
 
+    let trivia_comment_styles = plan
+        .trivia_comments
+        .iter()
+        .map(|comment| trivia_comment_style(facade, *comment));
     Ok(quote! {
         #[doc(hidden)]
         pub(crate) struct __RecursaGenerationAnchor;
@@ -1394,6 +1429,7 @@ pub(super) fn render_root(
                 &[#(#kind_names),*],
                 &[#(#atom_names),*],
                 #lexical_error_kind,
+                &[#(#trivia_comment_styles),*],
             );
         #framing_root
 

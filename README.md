@@ -145,7 +145,9 @@ Grammars that need exact whitespace or comments can opt into classified trivia
 with named `trivia { ... }` rules. Generated lexing and complete parsed-root
 views then expose immutable beginning, inter-record, and end gaps while the
 significant-token parser remains unchanged. Non-retaining grammars continue to
-discard `ignore` matches without a trivia sidecar.
+discard `ignore` matches without a trivia sidecar. A `trivia` rule marked
+`#[comment(line)]` or `#[comment(block)]` holds comments, which
+`Pretty::try_render` keeps when it formats a parsed value.
 
 Document-oriented grammars can declare generated exact-source framing under
 the `explorer` capability. Framing recognizes repeated typed islands, atomic
