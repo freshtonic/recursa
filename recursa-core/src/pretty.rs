@@ -45,6 +45,138 @@ pub(crate) struct RepetitionSeparatorProvenance {
     pub(crate) span: Span,
 }
 
+/// The form of a retained comment, declared on its trivia kind with `#[comment(line)]` or
+/// `#[comment(block)]`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CommentStyle {
+    /// A comment that ends at the end of its line, so a rendering writes a line break after it.
+    Line,
+    /// A comment closed by its own delimiter, so text may follow it on the same line.
+    Block,
+}
+
+/// Why a provenance-aware rendering refused to write a parsed value with its comments.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum PrettyConflictKind {
+    /// A line comment sits where the layout writes two texts with no whitespace between them,
+    /// such as around a `spacing = tight` token, so the line break after the comment would break
+    /// a boundary that the layout never breaks.
+    LineCommentInTightBoundary,
+    /// Retained trivia of a kind that is not declared a comment holds text that is not
+    /// whitespace, so regenerating it as whitespace would drop it.
+    UnclassifiedTrivia,
+    /// The rendering writes parsed syntax out of its source order, so the comment has no place
+    /// between the syntax that surrounds it in the source.
+    Reordered,
+}
+
+/// A comment that a layout cannot keep at its anchor without moving, duplicating, dropping or
+/// commenting out syntax.
+///
+/// The fallible renderers ([`Pretty::try_render`] and its variants) return it instead of
+/// writing output with a comment in the wrong place.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PrettyConflict {
+    /// What the layout could not do.
+    kind: PrettyConflictKind,
+    /// Source span of the comment or trivia record in conflict.
+    comment: Span,
+}
+
+impl PrettyConflict {
+    /// Returns what the layout could not do.
+    pub const fn kind(&self) -> PrettyConflictKind {
+        self.kind
+    }
+
+    /// Returns the source span of the comment or trivia record in conflict.
+    pub const fn comment(&self) -> Span {
+        self.comment
+    }
+}
+
+impl fmt::Display for PrettyConflict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self.kind {
+            PrettyConflictKind::LineCommentInTightBoundary => {
+                "a line comment needs a line break where the layout joins two texts tightly"
+            }
+            PrettyConflictKind::UnclassifiedTrivia => {
+                "retained trivia that is not declared a comment holds text other than whitespace"
+            }
+            PrettyConflictKind::Reordered => {
+                "the rendering writes parsed syntax out of source order around a comment"
+            }
+        };
+        write!(
+            formatter,
+            "{reason} (source {}..{})",
+            self.comment.start(),
+            self.comment.end()
+        )
+    }
+}
+
+impl std::error::Error for PrettyConflict {}
+
+/// One retained comment of a parsed document, as provenance-aware Pretty writes it.
+#[derive(Clone, Debug)]
+pub(crate) struct PrettyComment {
+    /// Exact comment text; a line comment excludes a carriage return before its line ending.
+    text: String,
+    /// Source span of exactly `text`.
+    source: Span,
+    /// Declared comment form.
+    style: CommentStyle,
+}
+
+impl PrettyComment {
+    /// Classifies one retained trivia record; whitespace yields `Ok(None)`.
+    ///
+    /// A line comment's trailing carriage return belongs to its CRLF line ending, which layout
+    /// regenerates as LF, so it is not part of the comment text.
+    pub(crate) fn classify(
+        text: &str,
+        source: Span,
+        style: Option<CommentStyle>,
+    ) -> Result<Option<Self>, PrettyConflict> {
+        match style {
+            None if text.chars().all(char::is_whitespace) => Ok(None),
+            None => Err(PrettyConflict {
+                kind: PrettyConflictKind::UnclassifiedTrivia,
+                comment: source,
+            }),
+            Some(style) => {
+                let text = match style {
+                    CommentStyle::Line => text.strip_suffix('\r').unwrap_or(text),
+                    CommentStyle::Block => text,
+                };
+                let source = Span::new(
+                    source.start() as usize,
+                    source.start() as usize + text.len(),
+                )
+                .expect("a comment prefix lies inside its checked trivia span");
+                Ok(Some(Self {
+                    text: text.to_owned(),
+                    source,
+                    style,
+                }))
+            }
+        }
+    }
+}
+
+/// The comments of one provenance-aware rendering and how far it has written them.
+struct CommentState {
+    /// Comments of the rendered occurrence, in source order.
+    comments: Box<[PrettyComment]>,
+    /// The first comment not yet written or covered by written text.
+    next: usize,
+    /// The first conflict found; the rendering continues so that state stays balanced.
+    conflict: Option<PrettyConflict>,
+}
+
 /// Width and indentation used by the structured Pretty renderer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrettyConfig {
@@ -77,13 +209,15 @@ impl Default for PrettyConfig {
     }
 }
 
-/// One rendered token's byte range and its originating input span.
+/// One rendered token's or comment's byte range and its originating input span.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceMapEntry {
     /// Half-open rendered byte range.
     output: Range<usize>,
     /// Originating parsed source range.
     source: Span,
+    /// Whether the entry is a retained comment rather than a token.
+    comment: bool,
 }
 
 impl SourceMapEntry {
@@ -96,9 +230,17 @@ impl SourceMapEntry {
     pub const fn source(&self) -> Span {
         self.source
     }
+
+    /// Reports whether this entry maps a retained comment rather than a token.
+    ///
+    /// Only the provenance-aware renderers ([`Pretty::try_render`] and its variants) write
+    /// comments.
+    pub const fn is_comment(&self) -> bool {
+        self.comment
+    }
 }
 
-/// Token-granular provenance for one Pretty rendering.
+/// Token- and comment-granular provenance for one Pretty rendering.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SourceMap {
     /// Token mappings in rendered output order.
@@ -149,6 +291,17 @@ enum PrettyEvent {
     },
     /// Unconditional newline.
     HardBreak,
+    /// A retained comment, written exactly and mapped to its source span.
+    Comment {
+        /// Exact comment text.
+        text: String,
+        /// Source span of the comment.
+        source: Span,
+    },
+    /// The line break after a line comment. A break or a space that layout would write before
+    /// any text on the new line merges into it, so the comment never adds a blank line or a
+    /// space at the start of a line.
+    CommentLine,
     /// Begin a group whose soft breaks are consistently flat or broken.
     BeginGroup,
     /// Begin a group whose breaks are decided independently.
@@ -202,37 +355,34 @@ impl PrettySink {
         // Scan the queued layout program once. Group decisions depend only on
         // the remaining flat width, while indentation is updated by explicit
         // balanced events emitted by generated Pretty implementations.
-        let mut output = String::new();
-        let mut source_map = Vec::new();
-        let mut column = 0_usize;
+        let mut out = Output::default();
         let mut indent = 0_usize;
         let mut groups = Vec::<GroupMode>::new();
         // The last nonempty text written and whether nothing separates it from the next text,
         // so that two texts the lexer would join get one space between them.
         let mut boundary = LexicalBoundary::new(self.lexical_boundary);
+        let width = self.config.indent;
         for (index, event) in self.events.iter().enumerate() {
             match event {
                 PrettyEvent::Text { text, source } => {
                     if boundary.guard(text) {
-                        output.push(' ');
-                        column = column.saturating_add(1);
+                        out.space();
                     }
-                    let start = output.len();
-                    output.push_str(text);
-                    if !text.is_empty() {
-                        source_map.push(SourceMapEntry {
-                            output: start..output.len(),
-                            source: *source,
-                        });
+                    out.text(text, *source, false);
+                    boundary.wrote(text);
+                }
+                PrettyEvent::Comment { text, source } => {
+                    if boundary.guard(text) {
+                        out.space();
                     }
-                    column = column_after(column, text);
+                    out.text(text, *source, true);
                     boundary.wrote(text);
                 }
                 PrettyEvent::SoftBreak(flat) => {
                     let broken = match groups.last().copied() {
                         Some(GroupMode::Consistent(broken)) => broken,
                         Some(GroupMode::Inconsistent) => {
-                            column
+                            out.column
                                 .saturating_add(flat.chars().count())
                                 .saturating_add(flat_width_to_next_break(&self.events, index + 1))
                                 > self.config.max_width
@@ -240,23 +390,25 @@ impl PrettySink {
                         None => false,
                     };
                     if broken {
-                        newline(&mut output, &mut column, indent, self.config.indent);
+                        out.newline(indent, width);
                         boundary.separate();
                     } else {
-                        output.push_str(flat);
-                        column = column_after(column, flat);
+                        out.whitespace(flat);
                         if !flat.is_empty() {
                             boundary.separate();
                         }
                     }
                 }
                 PrettyEvent::HardBreak => {
-                    newline(&mut output, &mut column, indent, self.config.indent);
+                    out.newline(indent, width);
+                    boundary.separate();
+                }
+                PrettyEvent::CommentLine => {
+                    out.comment_line(indent, width);
                     boundary.separate();
                 }
                 PrettyEvent::Space => {
-                    output.push(' ');
-                    column = column.saturating_add(1);
+                    out.space();
                     boundary.separate();
                 }
                 PrettyEvent::RepetitionBreak {
@@ -273,7 +425,7 @@ impl PrettySink {
                             || match groups.last().copied() {
                                 Some(GroupMode::Consistent(broken)) => broken,
                                 Some(GroupMode::Inconsistent) => {
-                                    column
+                                    out.column
                                         .saturating_add(usize::from(*space_before_separator))
                                         .saturating_add(usize::from(*space_after_separator))
                                         .saturating_add(
@@ -293,57 +445,34 @@ impl PrettySink {
                         if !leading && let Some(separator) = separator {
                             // A requested space, or a space the lexer needs, comes first.
                             if *space_before_separator || boundary.guard(&separator.text) {
-                                output.push(' ');
-                                column = column.saturating_add(1);
+                                out.space();
                             }
-                            let start = output.len();
-                            output.push_str(&separator.text);
-                            source_map.push(SourceMapEntry {
-                                output: start..output.len(),
-                                source: separator.source,
-                            });
-                            column = column_after(column, &separator.text);
+                            out.text(&separator.text, separator.source, false);
                         }
-                        newline(&mut output, &mut column, indent, self.config.indent);
+                        out.newline(indent, width);
                         boundary.separate();
                         if *leading && let Some(separator) = separator {
-                            let start = output.len();
-                            output.push_str(&separator.text);
-                            source_map.push(SourceMapEntry {
-                                output: start..output.len(),
-                                source: separator.source,
-                            });
-                            column = column_after(column, &separator.text);
+                            out.text(&separator.text, separator.source, false);
                             boundary.wrote(&separator.text);
                             if *space_after_separator {
-                                output.push(' ');
-                                column = column.saturating_add(1);
+                                out.space();
                                 boundary.separate();
                             }
                         }
                     } else {
                         if *space_before_separator {
-                            output.push(' ');
-                            column = column.saturating_add(1);
+                            out.space();
                             boundary.separate();
                         }
                         if let Some(separator) = separator {
                             if boundary.guard(&separator.text) {
-                                output.push(' ');
-                                column = column.saturating_add(1);
+                                out.space();
                             }
-                            let start = output.len();
-                            output.push_str(&separator.text);
-                            source_map.push(SourceMapEntry {
-                                output: start..output.len(),
-                                source: separator.source,
-                            });
-                            column = column_after(column, &separator.text);
+                            out.text(&separator.text, separator.source, false);
                             boundary.wrote(&separator.text);
                         }
                         if *space_after_separator {
-                            output.push(' ');
-                            column = column.saturating_add(1);
+                            out.space();
                             boundary.separate();
                         }
                     }
@@ -351,7 +480,7 @@ impl PrettySink {
                 PrettyEvent::BeginGroup => {
                     let flat = flat_width(&self.events, index + 1);
                     groups.push(GroupMode::Consistent(flat.is_none_or(|width| {
-                        column.saturating_add(width) > self.config.max_width
+                        out.column.saturating_add(width) > self.config.max_width
                     })));
                 }
                 PrettyEvent::BeginInconsistentGroup => groups.push(GroupMode::Inconsistent),
@@ -362,10 +491,82 @@ impl PrettySink {
                 PrettyEvent::Dedent => indent = indent.saturating_sub(1),
             }
         }
+        out.finish()
+    }
+}
+
+/// The text a layout has written so far, with its column and source map.
+#[derive(Default)]
+struct Output {
+    /// Rendered text.
+    text: String,
+    /// Display column after the rendered text.
+    column: usize,
+    /// Mappings in rendered output order.
+    source_map: Vec<SourceMapEntry>,
+    /// The byte offset just after the line break of a line comment while nothing has been
+    /// written on the new line. A line break then replaces only the indentation, and a space
+    /// writes nothing. It is never set without a comment, so it leaves other layouts unchanged.
+    fresh_line: Option<usize>,
+}
+
+impl Output {
+    /// Writes exact text, mapping it when it is nonempty.
+    fn text(&mut self, text: &str, source: Span, comment: bool) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        if !text.is_empty() {
+            self.source_map.push(SourceMapEntry {
+                output: start..self.text.len(),
+                source,
+                comment,
+            });
+            self.fresh_line = None;
+        }
+        self.column = column_after(self.column, text);
+    }
+
+    /// Writes one space, unless a line comment has just ended the line.
+    fn space(&mut self) {
+        self.whitespace(" ");
+    }
+
+    /// Writes the flat text of a break, unless a line comment has just ended the line.
+    fn whitespace(&mut self, flat: &str) {
+        if self.fresh_line.is_none() {
+            self.text.push_str(flat);
+            self.column = column_after(self.column, flat);
+        }
+    }
+
+    /// Emits one newline and the active indentation, updating the display column. Right after a
+    /// line comment's line break, only the indentation of that line changes.
+    fn newline(&mut self, indent: usize, width: usize) {
+        match self.fresh_line {
+            Some(start) => self.text.truncate(start),
+            None => self.text.push('\n'),
+        }
+        let spaces = indent.saturating_mul(width);
+        self.text.extend(std::iter::repeat_n(' ', spaces));
+        self.column = spaces;
+    }
+
+    /// Ends the line of a line comment and opens a fresh line.
+    fn comment_line(&mut self, indent: usize, width: usize) {
+        self.newline(indent, width);
+        self.fresh_line = Some(self.text.len() - indent.saturating_mul(width));
+    }
+
+    /// Returns the rendering, without the indentation of a line that a line comment opened
+    /// and nothing filled.
+    fn finish(mut self) -> (String, SourceMap) {
+        if let Some(start) = self.fresh_line {
+            self.text.truncate(start);
+        }
         (
-            output,
+            self.text,
             SourceMap {
-                entries: source_map.into_boxed_slice(),
+                entries: self.source_map.into_boxed_slice(),
             },
         )
     }
@@ -448,28 +649,22 @@ fn column_after(column: usize, text: &str) -> usize {
     )
 }
 
-/// Emits one newline and the active indentation, updating the display column.
-fn newline(output: &mut String, column: &mut usize, indent: usize, width: usize) {
-    output.push('\n');
-    let spaces = indent.saturating_mul(width);
-    output.extend(std::iter::repeat_n(' ', spaces));
-    *column = spaces;
-}
-
 /// Measures a consistent group's flat width, rejecting hard or embedded breaks.
 fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
     let mut depth = 0_usize;
     let mut width = 0_usize;
     for event in &events[start..] {
         match event {
-            PrettyEvent::Text { text, .. } | PrettyEvent::SoftBreak(text) => {
+            PrettyEvent::Text { text, .. }
+            | PrettyEvent::Comment { text, .. }
+            | PrettyEvent::SoftBreak(text) => {
                 if text.contains('\n') {
                     return None;
                 }
                 width = width.saturating_add(text.chars().count());
             }
             PrettyEvent::Space => width = width.saturating_add(1),
-            PrettyEvent::HardBreak => return None,
+            PrettyEvent::HardBreak | PrettyEvent::CommentLine => return None,
             PrettyEvent::RepetitionBreak {
                 separator,
                 hard,
@@ -512,7 +707,7 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
     let mut width = 0_usize;
     for event in &events[start..] {
         match event {
-            PrettyEvent::Text { text, .. } => {
+            PrettyEvent::Text { text, .. } | PrettyEvent::Comment { text, .. } => {
                 width = width.saturating_add(text.chars().count());
             }
             PrettyEvent::SoftBreak(_) | PrettyEvent::RepetitionBreak { .. } if depth == 0 => break,
@@ -538,7 +733,7 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
                 );
             }
             PrettyEvent::Space => width = width.saturating_add(1),
-            PrettyEvent::HardBreak => break,
+            PrettyEvent::HardBreak | PrettyEvent::CommentLine => break,
             PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
             PrettyEvent::EndGroup if depth == 0 => break,
             PrettyEvent::EndGroup => depth -= 1,
@@ -579,6 +774,14 @@ pub struct PrettyContext {
     explicit_groups: Vec<usize>,
     /// Whether only hinted breaks can break: the space between two tokens is then never a break.
     hinted_breaks: bool,
+    /// Whether the previous token joins tightly to the next one by grammar policy
+    /// (`spacing = tight`), so no whitespace, and no line comment, may follow it.
+    previous_unbreakable: bool,
+    /// Whether this rendering writes the retained comments of a parsed value it renders.
+    keep_comments: bool,
+    /// The comments of the parsed value being rendered, once a provenance-aware rendering enters
+    /// one with retained trivia.
+    comments: Option<CommentState>,
 }
 
 /// A generated Pretty scope that restores its enclosing context when dropped.
@@ -645,6 +848,8 @@ struct PrettyLayoutCheckpoint {
     repetition: Option<RepetitionLayout>,
     /// Saved number of open explicit groups.
     explicit_groups: usize,
+    /// Saved count of comments written, so that an absent shape writes none.
+    comments_written: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -681,6 +886,9 @@ impl Default for PrettyContext {
             layout_checkpoints: Vec::new(),
             explicit_groups: Vec::new(),
             hinted_breaks: false,
+            previous_unbreakable: false,
+            keep_comments: false,
+            comments: None,
         }
     }
 }
@@ -708,6 +916,9 @@ impl PrettyContext {
             layout_checkpoints: Vec::new(),
             explicit_groups: Vec::new(),
             hinted_breaks: false,
+            previous_unbreakable: false,
+            keep_comments: false,
+            comments: None,
         }
     }
 
@@ -736,7 +947,14 @@ impl PrettyContext {
     /// is never a break. The first grammar entry that renders sets it; later entries keep it.
     #[doc(hidden)]
     pub fn configure_hinted_breaks(&mut self) {
-        if !self.has_emitted_token && self.sink.events.is_empty() {
+        // Comments before the first token, which a parsed root writes before its own rendering,
+        // do not make a later entry the first.
+        if self.sink.events.iter().all(|event| {
+            matches!(
+                event,
+                PrettyEvent::Comment { .. } | PrettyEvent::CommentLine
+            )
+        }) {
             self.hinted_breaks = true;
         }
     }
@@ -754,6 +972,7 @@ impl PrettyContext {
 
     /// Emits one semantic token using the default separating-space policy.
     pub fn token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         if (self.needs_separator || self.requested_space_after)
             && !self.separator_supplied
             && !text.is_empty()
@@ -765,6 +984,7 @@ impl PrettyContext {
 
     /// Emits a token without adding stylistic whitespace.
     pub fn tight_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         self.push_text(text, self.active_source_span());
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
@@ -778,6 +998,7 @@ impl PrettyContext {
     /// a conservative lexer boundary.
     #[doc(hidden)]
     pub fn punctuation_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         if (self.previous_auto_punctuation || self.requested_space_after)
             && !self.separator_supplied
             && !text.is_empty()
@@ -810,12 +1031,17 @@ impl PrettyContext {
         if !text.is_empty() {
             self.pending_repetition_break = None;
             self.previous_tight = false;
+            self.previous_unbreakable = false;
+            if !source.is_synthetic() && text.len() == source.range().len() {
+                self.cover_comments(source);
+            }
         }
     }
 
     /// Emits an opening delimiter tightly and suppresses spacing after it.
     #[doc(hidden)]
     pub fn opening_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         if (self.previous_auto_punctuation || self.requested_space_after)
             && !self.separator_supplied
             && !text.is_empty()
@@ -832,6 +1058,7 @@ impl PrettyContext {
     /// conservative punctuation spacing after it.
     #[doc(hidden)]
     pub fn closing_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         // A flat break just inside a closing delimiter writes no space.
         self.tighten_adjacent_separator();
         self.tight_token(text)?;
@@ -872,6 +1099,10 @@ impl PrettyContext {
     /// Emits a grammar-validated token tightly on both sides.
     #[doc(hidden)]
     pub fn tight_sequence_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(true);
+        if let Some(comment) = self.preceding_line_comment() {
+            self.record_conflict(PrettyConflictKind::LineCommentInTightBoundary, comment);
+        }
         self.tighten_adjacent_separator();
         if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
             self.push_token_space();
@@ -879,12 +1110,14 @@ impl PrettyContext {
         self.tight_token(text)?;
         self.needs_separator = false;
         self.previous_tight = !text.is_empty();
+        self.previous_unbreakable = !text.is_empty();
         Ok(())
     }
 
     /// Emits a grammar-validated token with space before and tight after.
     #[doc(hidden)]
     pub fn before_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         if self.has_emitted_token && !self.previous_tight && !text.is_empty() {
             if let Some(index) = self.pending_repetition_break
                 && let Some(PrettyEvent::RepetitionBreak {
@@ -911,6 +1144,7 @@ impl PrettyContext {
     /// Emits a grammar-validated token tight before and with space after.
     #[doc(hidden)]
     pub fn after_token(&mut self, text: &str) -> fmt::Result {
+        self.write_comments_before_active(false);
         if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
             self.push_token_space();
         }
@@ -975,7 +1209,10 @@ impl PrettyContext {
     fn adjacent_separator(&self) -> Option<usize> {
         for (index, event) in self.sink.events.iter().enumerate().rev() {
             match event {
-                PrettyEvent::SoftBreak(_) | PrettyEvent::HardBreak | PrettyEvent::Space => {
+                PrettyEvent::SoftBreak(_)
+                | PrettyEvent::HardBreak
+                | PrettyEvent::CommentLine
+                | PrettyEvent::Space => {
                     return Some(index);
                 }
                 PrettyEvent::BeginGroup
@@ -983,7 +1220,9 @@ impl PrettyContext {
                 | PrettyEvent::EndGroup
                 | PrettyEvent::Indent
                 | PrettyEvent::Dedent => {}
-                PrettyEvent::Text { .. } | PrettyEvent::RepetitionBreak { .. } => return None,
+                PrettyEvent::Text { .. }
+                | PrettyEvent::Comment { .. }
+                | PrettyEvent::RepetitionBreak { .. } => return None,
             }
         }
         None
@@ -1144,6 +1383,7 @@ impl PrettyContext {
             has_emitted_token: self.has_emitted_token,
             repetition: self.repetition.clone(),
             explicit_groups: self.explicit_groups.len(),
+            comments_written: self.comments.as_ref().map(|state| state.next),
         });
     }
 
@@ -1166,6 +1406,9 @@ impl PrettyContext {
         self.has_emitted_token = checkpoint.has_emitted_token;
         self.repetition = checkpoint.repetition;
         self.explicit_groups.truncate(checkpoint.explicit_groups);
+        if let (Some(state), Some(written)) = (&mut self.comments, checkpoint.comments_written) {
+            state.next = written;
+        }
     }
 
     /// Emits a document region one configured indentation level deeper.
@@ -1272,6 +1515,23 @@ impl PrettyContext {
                 && (index + 1 < length || layout.trailing)
             {
                 let separator = self.repetition_separator(index, layout);
+                if let Some(separator) = &separator
+                    && !separator.source.is_synthetic()
+                    && self.comments.is_some()
+                {
+                    // A separator with no space on either side is never broken, so a comment
+                    // just before it stays tight and a line comment there is a conflict.
+                    let tight = !(layout.space_before_separator
+                        || self.requested_space_after
+                        || (index + 1 < length && layout.space_after_separator));
+                    self.write_comments_before(separator.source.start(), tight);
+                    if tight && let Some(comment) = self.preceding_line_comment() {
+                        self.record_conflict(
+                            PrettyConflictKind::LineCommentInTightBoundary,
+                            comment,
+                        );
+                    }
+                }
                 if index + 1 < length {
                     let space_before_separator =
                         layout.space_before_separator || self.requested_space_after;
@@ -1334,13 +1594,201 @@ impl PrettyContext {
 
     /// Runs structured rendering with one captured occurrence as provenance.
     #[doc(hidden)]
+    ///
+    /// A provenance-aware rendering of a view keeps the comments inside the view's occurrence.
     pub fn with_cursor<R>(
         &mut self,
         cursor: ViewCursor<'_>,
         render: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        self.with_document(cursor, false, render)
+    }
+
+    /// Runs structured rendering of a parsed root, which owns the comments before its first
+    /// token and after its last one as well as those inside it.
+    pub(crate) fn with_root_cursor<R>(
+        &mut self,
+        cursor: ViewCursor<'_>,
+        render: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_document(cursor, true, render)
+    }
+
+    /// Renders at one parsed occurrence. A provenance-aware rendering that enters its first
+    /// occurrence with retained trivia takes that occurrence's comments, writes each one before
+    /// the syntax that follows it in the source, and writes the rest after the occurrence.
+    fn with_document<R>(
+        &mut self,
+        cursor: ViewCursor<'_>,
+        root: bool,
+        render: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         let provenance = cursor.pretty_provenance();
-        self.with_provenance(provenance, render)
+        let comments = if self.keep_comments && self.comments.is_none() {
+            cursor.pretty_comments(root)
+        } else {
+            None
+        };
+        let Some(comments) = comments else {
+            return self.with_provenance(provenance, render);
+        };
+        self.comments = Some(match comments {
+            Ok(comments) => CommentState {
+                comments,
+                next: 0,
+                conflict: None,
+            },
+            Err(conflict) => CommentState {
+                comments: Box::new([]),
+                next: 0,
+                conflict: Some(conflict),
+            },
+        });
+        let result = self.with_provenance(provenance, render);
+        self.write_comments_before(u32::MAX, false);
+        result
+    }
+
+    /// Writes the comments that end before the occurrence just entered, which is the first
+    /// occurrence that starts after them: the gap before a token belongs to the outermost
+    /// occurrence that starts at that token inside the smallest occurrence around the gap.
+    fn write_comments_before_occurrence(&mut self) {
+        if self.comments.is_some()
+            && let Some(span) = self
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.span)
+        {
+            self.write_comments_before(span.start(), false);
+        }
+    }
+
+    /// Writes the comments that end before the token about to be written at the active
+    /// occurrence. `tight` reports that the layout joins that token to the previous text.
+    fn write_comments_before_active(&mut self, tight: bool) {
+        if self.comments.is_some() {
+            let span = self.active_source_span();
+            if !span.is_synthetic() {
+                self.write_comments_before(span.start(), tight);
+            }
+        }
+    }
+
+    /// Writes, in source order, the unwritten comments that end at or before `position`.
+    /// `tight` reports that the layout joins the syntax at `position` to the previous text.
+    fn write_comments_before(&mut self, position: u32, tight: bool) {
+        while let Some(comment) = self.comments.as_mut().and_then(|state| {
+            let comment = state
+                .comments
+                .get(state.next)
+                .filter(|comment| comment.source.end() <= position)?
+                .clone();
+            state.next += 1;
+            Some(comment)
+        }) {
+            self.write_comment(comment, tight);
+        }
+    }
+
+    /// Counts the comments inside `source` as written, because the exact text written for
+    /// `source` contains them. Comments before `source` stay unwritten.
+    fn cover_comments(&mut self, source: Span) {
+        if let Some(state) = &mut self.comments {
+            while state.comments.get(state.next).is_some_and(|comment| {
+                source.start() <= comment.source.start() && comment.source.end() <= source.end()
+            }) {
+                state.next += 1;
+            }
+        }
+    }
+
+    /// Queues one comment. A space that never breaks keeps it on the line of the text before
+    /// it, except in a tight boundary, and a line comment ends its line.
+    fn write_comment(&mut self, comment: PrettyComment, tight: bool) {
+        let tight = tight || self.previous_unbreakable || self.after_tight_separator();
+        if comment.style == CommentStyle::Line && tight {
+            self.record_conflict(
+                PrettyConflictKind::LineCommentInTightBoundary,
+                comment.source,
+            );
+        }
+        if self.has_emitted_token && !self.separator_supplied && !self.previous_tight && !tight {
+            self.sink.events.push(PrettyEvent::Space);
+        }
+        self.sink.events.push(PrettyEvent::Comment {
+            text: comment.text,
+            source: comment.source,
+        });
+        self.has_emitted_token = true;
+        self.pending_repetition_break = None;
+        self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
+        match comment.style {
+            CommentStyle::Block => {
+                self.separator_supplied = false;
+                // In a tight boundary the text after the comment stays tight too.
+                self.needs_separator = !tight;
+                if !tight {
+                    self.previous_tight = false;
+                    self.previous_unbreakable = false;
+                }
+            }
+            CommentStyle::Line => {
+                self.sink.events.push(PrettyEvent::CommentLine);
+                self.separator_supplied = true;
+                self.needs_separator = false;
+                self.previous_tight = false;
+                self.previous_unbreakable = false;
+            }
+        }
+    }
+
+    /// Reports whether the last thing queued is a repetition separator with no space on
+    /// either side, which layout never breaks.
+    fn after_tight_separator(&self) -> bool {
+        self.pending_repetition_break
+            .and_then(|index| self.sink.events.get(index))
+            .is_some_and(|event| {
+                matches!(
+                    event,
+                    PrettyEvent::RepetitionBreak {
+                        separator: Some(_),
+                        space_before_separator: false,
+                        space_after_separator: false,
+                        ..
+                    }
+                )
+            })
+    }
+
+    /// Returns the source span of a line comment that ends just before the next text, looking
+    /// past group and indentation boundaries.
+    fn preceding_line_comment(&self) -> Option<Span> {
+        let mut events = self.sink.events.iter().rev().skip_while(|event| {
+            matches!(
+                event,
+                PrettyEvent::BeginGroup
+                    | PrettyEvent::BeginInconsistentGroup
+                    | PrettyEvent::EndGroup
+                    | PrettyEvent::Indent
+                    | PrettyEvent::Dedent
+            )
+        });
+        match (events.next(), events.next()) {
+            (Some(PrettyEvent::CommentLine), Some(PrettyEvent::Comment { source, .. })) => {
+                Some(*source)
+            }
+            _ => None,
+        }
+    }
+
+    /// Keeps the first conflict of this rendering.
+    fn record_conflict(&mut self, kind: PrettyConflictKind, comment: Span) {
+        if let Some(state) = &mut self.comments {
+            state
+                .conflict
+                .get_or_insert(PrettyConflict { kind, comment });
+        }
     }
 
     /// Runs structured rendering at one source-ordered child occurrence.
@@ -1364,6 +1812,7 @@ impl PrettyContext {
             .and_then(|provenance| provenance.children.get(index))
             .cloned();
         let previous = std::mem::replace(&mut self.provenance, provenance);
+        self.write_comments_before_occurrence();
         PrettyScope {
             context: self,
             restore: PrettyScopeRestore::Provenance(previous),
@@ -1425,6 +1874,7 @@ impl PrettyContext {
         render: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let previous = std::mem::replace(&mut self.provenance, provenance);
+        self.write_comments_before_occurrence();
         let result = render(self);
         self.provenance = previous;
         result
@@ -1439,6 +1889,55 @@ impl PrettyContext {
     pub fn finish_mapped(self) -> (String, SourceMap) {
         self.sink.finish_mapped()
     }
+
+    /// Consumes a provenance-aware context and returns its rendering, or the first comment its
+    /// layout could not keep at its anchor.
+    fn try_finish_mapped(self) -> Result<(String, SourceMap), PrettyConflict> {
+        let has_comments = match &self.comments {
+            Some(CommentState {
+                conflict: Some(conflict),
+                ..
+            }) => return Err(*conflict),
+            Some(state) => !state.comments.is_empty(),
+            None => false,
+        };
+        let (text, source_map) = self.sink.finish_mapped();
+        if has_comments && let Some(conflict) = comment_order_conflict(source_map.entries()) {
+            return Err(conflict);
+        }
+        Ok((text, source_map))
+    }
+}
+
+/// Finds a comment that the rendering does not write between the source syntax around it: a
+/// token written before it that ends after it starts, or a token written after it that starts
+/// before it ends.
+fn comment_order_conflict(entries: &[SourceMapEntry]) -> Option<PrettyConflict> {
+    let reordered = |entry: &SourceMapEntry| PrettyConflict {
+        kind: PrettyConflictKind::Reordered,
+        comment: entry.source,
+    };
+    let sourced = entries
+        .iter()
+        .filter(|entry| !entry.source.is_synthetic())
+        .collect::<Vec<_>>();
+    let mut latest_end = 0;
+    for entry in &sourced {
+        if !entry.comment {
+            latest_end = latest_end.max(entry.source.end());
+        } else if latest_end > entry.source.start() {
+            return Some(reordered(entry));
+        }
+    }
+    let mut earliest_start = u32::MAX;
+    for entry in sourced.iter().rev() {
+        if !entry.comment {
+            earliest_start = earliest_start.min(entry.source.start());
+        } else if earliest_start < entry.source.end() {
+            return Some(reordered(entry));
+        }
+    }
+    None
 }
 
 /// Structured rendering shared by semantic ASTs, parsed roots, and views.
@@ -1447,6 +1946,9 @@ pub trait Pretty {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result;
 
     /// Renders with grammar-selected default layout.
+    ///
+    /// The infallible renderers write no source comments, even for a parsed value whose grammar
+    /// retains them. Use [`Pretty::try_render`] and its variants to keep them.
     fn render(&self) -> String {
         let mut context = PrettyContext::new();
         self.pretty(&mut context)
@@ -1476,6 +1978,65 @@ pub trait Pretty {
         self.pretty(&mut context)
             .expect("rendering into a structured sink cannot fail");
         context.finish_mapped()
+    }
+
+    /// Renders with grammar-selected default layout, keeping the retained comments of a parsed
+    /// value.
+    ///
+    /// A parsed value whose grammar declares comment trivia keeps every comment exactly once,
+    /// in source order, before the syntax that follows it in the source; comments before the
+    /// first token and after the last one belong to the parsed root. A line comment is followed
+    /// by a line break. Other whitespace is regenerated with LF line endings. A value with no
+    /// provenance, such as one built in code or taken out of its parse with
+    /// [`crate::Parsed::into_ast`], renders exactly as [`Pretty::render`] renders it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrettyConflict`] instead of output when the layout cannot keep a comment at
+    /// its anchor without moving, duplicating, dropping or commenting out syntax.
+    fn try_render(&self) -> Result<String, PrettyConflict> {
+        self.try_render_mapped().map(|(text, _)| text)
+    }
+
+    /// Renders with caller layout, keeping the retained comments of a parsed value as
+    /// [`Pretty::try_render`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrettyConflict`] when the layout cannot keep a comment at its anchor.
+    fn try_render_with(&self, config: PrettyConfig) -> Result<String, PrettyConflict> {
+        self.try_render_mapped_with(config).map(|(text, _)| text)
+    }
+
+    /// Renders with default layout as [`Pretty::try_render`] does and returns source provenance
+    /// for every token and comment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrettyConflict`] when the layout cannot keep a comment at its anchor.
+    fn try_render_mapped(&self) -> Result<(String, SourceMap), PrettyConflict> {
+        let mut context = PrettyContext::new();
+        context.keep_comments = true;
+        self.pretty(&mut context)
+            .expect("rendering into a structured sink cannot fail");
+        context.try_finish_mapped()
+    }
+
+    /// Renders with caller layout as [`Pretty::try_render`] does and returns source provenance
+    /// for every token and comment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrettyConflict`] when the layout cannot keep a comment at its anchor.
+    fn try_render_mapped_with(
+        &self,
+        config: PrettyConfig,
+    ) -> Result<(String, SourceMap), PrettyConflict> {
+        let mut context = PrettyContext::with_config(config);
+        context.keep_comments = true;
+        self.pretty(&mut context)
+            .expect("rendering into a structured sink cannot fail");
+        context.try_finish_mapped()
     }
 }
 
@@ -1526,8 +2087,93 @@ impl<T: Pretty> Pretty for crate::ArenaVec1<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pretty, PrettyConfig, PrettyContext, PrettyProvenance};
+    use super::{
+        CommentState, CommentStyle, Pretty, PrettyComment, PrettyConfig, PrettyConflictKind,
+        PrettyContext, PrettyProvenance,
+    };
+    use crate::Span;
     use std::fmt;
+
+    /// A provenance-aware context over `x -- c` followed by `y`: two token occurrences at
+    /// 0..1 and 7..8 with a line comment at 2..6 between them.
+    fn commented_context() -> PrettyContext {
+        let span = |start, end| Some(Span::new(start, end).unwrap());
+        let token = |text: &str, start, end| {
+            PrettyProvenance::new(
+                Some(text.to_owned()),
+                span(start, end),
+                Box::new([]),
+                Box::new([]),
+            )
+        };
+        let mut context = PrettyContext::new();
+        context.keep_comments = true;
+        context.provenance = Some(PrettyProvenance::new(
+            None,
+            span(0, 8),
+            Box::new([token("x", 0, 1), token("y", 7, 8)]),
+            Box::new([]),
+        ));
+        let comment =
+            PrettyComment::classify("-- c\r", Span::new(2, 7).unwrap(), Some(CommentStyle::Line))
+                .unwrap()
+                .unwrap();
+        context.comments = Some(CommentState {
+            comments: Box::new([comment]),
+            next: 0,
+            conflict: None,
+        });
+        context
+    }
+
+    #[test]
+    fn a_break_after_a_line_comment_reindents_its_line_without_a_blank_line() {
+        let mut context = commented_context();
+        context.child_scope(0).token("x").unwrap();
+        context
+            .indented(|context| {
+                let mut scope = context.child_scope(1);
+                scope.hard_break().unwrap();
+                scope.soft_break(" ").unwrap();
+                scope.token("y")
+            })
+            .unwrap();
+        let (text, map) = context.try_finish_mapped().unwrap();
+        // The comment's line break takes the indentation of the break after it, and the carriage
+        // return of its CRLF ending is not part of it.
+        assert_eq!(text, "x -- c\n  y");
+        let comment = &map.entries()[1];
+        assert!(comment.is_comment());
+        assert_eq!(
+            (comment.output(), comment.source()),
+            (2..6, Span::new(2, 6).unwrap())
+        );
+    }
+
+    #[test]
+    fn writing_syntax_out_of_source_order_around_a_comment_is_a_conflict() {
+        let mut context = commented_context();
+        context.child_scope(1).token("y").unwrap();
+        context.child_scope(0).token("x").unwrap();
+        let conflict = context.try_finish_mapped().unwrap_err();
+        assert_eq!(conflict.kind(), PrettyConflictKind::Reordered);
+        assert_eq!(conflict.comment(), Span::new(2, 6).unwrap());
+    }
+
+    #[test]
+    fn only_trivia_declared_a_comment_may_hold_text_other_than_whitespace() {
+        let span = Span::new(0, 3).unwrap();
+        assert!(
+            PrettyComment::classify(" \n\t", span, None)
+                .unwrap()
+                .is_none()
+        );
+        let conflict = PrettyComment::classify("#!x", span, None).unwrap_err();
+        assert_eq!(conflict.kind(), PrettyConflictKind::UnclassifiedTrivia);
+        // A block comment keeps every byte, including a carriage return.
+        let block = PrettyComment::classify("/*\r", span, Some(CommentStyle::Block));
+        assert_eq!(block.unwrap().unwrap().text, "/*\r");
+    }
 
     #[test]
     fn source_free_tokens_are_mapped_as_synthetic() {

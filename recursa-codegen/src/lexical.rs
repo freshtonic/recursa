@@ -590,6 +590,8 @@ pub(crate) enum NonTokenLexicalOutcome {
     RetainedTrivia {
         /// Authored grammar-local trivia classification.
         name: String,
+        /// Declared comment form, or `None` for whitespace.
+        comment: Option<crate::source_model::TriviaComment>,
     },
 }
 
@@ -1035,7 +1037,7 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
 fn non_token_source_outcome_key(outcome: &crate::source_model::NonTokenLexerOutcome) -> (u8, &str) {
     match outcome {
         crate::source_model::NonTokenLexerOutcome::NonEmitting => (0, ""),
-        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name } => (1, name),
+        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name, .. } => (1, name),
     }
 }
 
@@ -1047,8 +1049,8 @@ fn plan_non_token_outcome(
         crate::source_model::NonTokenLexerOutcome::NonEmitting => {
             NonTokenLexicalOutcome::NonEmitting
         }
-        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name } => {
-            NonTokenLexicalOutcome::RetainedTrivia { name }
+        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name, comment } => {
+            NonTokenLexicalOutcome::RetainedTrivia { name, comment }
         }
     }
 }

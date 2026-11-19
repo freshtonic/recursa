@@ -359,7 +359,151 @@ fn name(text: &'static str) -> declared_precedence::Expr<'static> {
     }
 "#,
     },
+    Golden {
+        fixtures: PRETTY_GOLDEN_FIXTURES,
+        fixture: "comments",
+        module: "comments",
+        root: "Script",
+        // The infallible renderer writes no comments, exactly as before comments were kept.
+        source: "-- header\nselect a /* c */, b from t",
+        expected: "select a, b from t",
+        fingerprint: COMMENTS_CHECKS,
+        repair: COMMENTS_CASES,
+    },
 ];
+
+/// Checks shared by every retained-comment case of the `comments` golden.
+const COMMENTS_CHECKS: &str = r#"
+fn fingerprint(value: &comments::Script<'_>) -> String {
+    format!("{value:?}")
+}
+
+/// The retained comments of `source`, in source order, as exact source spans.
+fn comment_spans(source: &str) -> Vec<recursa::Span> {
+    comments::lex(source)
+        .trivia_gaps()
+        .flat_map(|gap| gap.trivia().collect::<Vec<_>>())
+        .filter(|trivia| trivia.kind().comment_style().is_some())
+        .map(|trivia| {
+            let text = trivia.text().strip_suffix('\r').unwrap_or(trivia.text());
+            let start = trivia.span().start() as usize;
+            recursa::Span::new(start, start + text.len()).unwrap()
+        })
+        .collect()
+}
+
+/// Formats `source` at `config` with its comments and checks every comment contract.
+fn format(source: &str, config: recursa::PrettyConfig) -> String {
+    let parsed = parse(source);
+    let (output, map) = parsed
+        .try_render_mapped_with(config)
+        .unwrap_or_else(|conflict| panic!("{source:?} formats: {conflict}"));
+    assert_eq!(output, parsed.try_render_with(config).unwrap(), "{source:?}: mapping changes no text");
+
+    // Every retained comment is written exactly once, in source order, with its exact text, and
+    // its mapping points to its exact source span.
+    let entries = map.entries();
+    let written = entries
+        .iter()
+        .filter(|entry| entry.is_comment())
+        .map(|entry| entry.source())
+        .collect::<Vec<_>>();
+    assert_eq!(written, comment_spans(source), "{source:?}: each comment once, in order");
+    for entry in entries {
+        if !entry.source().is_synthetic() {
+            assert_eq!(&output[entry.output()], &source[entry.source().range()], "{source:?}");
+        }
+    }
+    for (index, entry) in entries.iter().enumerate().filter(|(_, entry)| entry.is_comment()) {
+        // The comment stays between the syntax around it in the source.
+        let comment = entry.source();
+        for token in entries.iter().filter(|token| !token.is_comment() && !token.source().is_synthetic()) {
+            if token.output().start < entry.output().start {
+                assert!(token.source().end() <= comment.start(), "{source:?}: syntax moved after a comment");
+            } else {
+                assert!(token.source().start() >= comment.end(), "{source:?}: syntax moved before a comment");
+            }
+        }
+        // A line comment is always followed by a line break.
+        if source[comment.range()].starts_with("--") {
+            assert_eq!(output[entry.output().end..].chars().next(), Some('\n'), "{source:?}: {index}");
+        }
+    }
+    // Whitespace is regenerated: no carriage returns, no trailing spaces, no blank lines.
+    assert!(!output.contains('\r'), "{source:?}: LF line endings only");
+    assert!(!output.lines().any(|line| line.ends_with(' ')), "{source:?}: {output:?}");
+    assert!(!output.contains("\n\n"), "{source:?}: {output:?}");
+
+    // The output parses to the same AST, and formatting it again changes nothing.
+    let reparsed = parse(&output);
+    assert_eq!(fingerprint(&reparsed.into_ast()), fingerprint(&parse(source).into_ast()), "{source:?}");
+    assert_eq!(parse(&output).try_render_with(config).unwrap(), output, "{source:?}: idempotent");
+    output
+}
+"#;
+
+/// The retained-comment cases of the `comments` golden, at a wide and a narrow width.
+const COMMENTS_CASES: &str = r#"
+    let wide = recursa::PrettyConfig::new(88, 2);
+    let narrow = recursa::PrettyConfig::new(12, 2);
+    let cases: &[(&str, &str, &str)] = &[
+        // Beginning of input: the root owns it and writes it before its own layout.
+        ("-- header\nselect a, b from t", "-- header\nselect a, b from t", "-- header\nselect a,\nb\nfrom t"),
+        // Before and after a separator.
+        ("select a /* c */, b from t", "select a /* c */, b from t", "select a /* c */,\nb\nfrom t"),
+        ("select a, -- c\n b from t", "select a,\n-- c\nb\nfrom t", "select a,\n-- c\nb\nfrom t"),
+        ("select a -- c\n; select b", "select a -- c\n;\nselect b", "select a -- c\n;\nselect b"),
+        // Before an optional occurrence that is present, and where one is absent.
+        ("select a from t /* c */ where x = y", "select a from t /* c */ where x = y", "select a\nfrom t\n/* c */\nwhere x\n= y"),
+        ("select a /* c */ where x = y", "select a /* c */ where x = y", "select a\n/* c */\nwhere x\n= y"),
+        // End of input belongs to the root, also after a trailing separator that canonical
+        // layout drops.
+        ("select a from t -- end", "select a from t -- end\n", "select a\nfrom t -- end\n"),
+        ("select a; /* end */", "select a /* end */", "select a /* end */"),
+        // Inside nested Nodes.
+        ("select f(a, /* c */ b) from t", "select f(a, /* c */ b) from t", "select f(\n  a,\n  /* c */ b\n)\nfrom t"),
+        ("select f( -- c\n a) from t", "select f(\n  -- c\n  a\n)\nfrom t", "select f(\n  -- c\n  a\n)\nfrom t"),
+        // A tight boundary keeps a block comment tight.
+        ("select s./* c */t from x", "select s./* c */t from x", "select s./* c */t\nfrom x"),
+        // Only comments.
+        ("-- only", "-- only\n", "-- only\n"),
+        ("/* one */ /* two */", "/* one */ /* two */", "/* one */ /* two */"),
+        // CRLF input renders with LF line endings.
+        ("select a, -- c\r\n b\r\nfrom t\r\n", "select a,\n-- c\nb\nfrom t", "select a,\n-- c\nb\nfrom t"),
+    ];
+    let mut report = String::new();
+    for (source, wide_expected, narrow_expected) in cases {
+        let wide_output = format(source, wide);
+        let narrow_output = format(source, narrow);
+        if wide_output != *wide_expected || narrow_output != *narrow_expected {
+            report.push_str(&format!("{source:?}\n  wide:   {wide_output:?}\n  narrow: {narrow_output:?}\n"));
+        }
+    }
+    assert!(report.is_empty(), "comment goldens differ:\n{report}");
+
+    // A line comment where the layout never breaks is a conflict, not moved or commented-out
+    // syntax.
+    for source in ["select s -- c\n.t from x", "select s. -- c\nt from x"] {
+        let conflict = parse(source).try_render().expect_err("a line comment in a tight boundary");
+        assert_eq!(conflict.kind(), recursa::PrettyConflictKind::LineCommentInTightBoundary);
+        assert_eq!(&source[conflict.comment().range()], "-- c", "{source:?}");
+    }
+
+    // A value taken out of its parse, or built in code, renders as before: no comments.
+    let source = "select a, -- c\n b from t";
+    let detached = parse(source).into_ast();
+    assert_eq!(detached.try_render().unwrap(), detached.render());
+    assert_eq!(detached.render(), "select a, b from t");
+    let synthetic = recursa::Parsed::synthetic(parse(source).into_ast());
+    assert_eq!(synthetic.try_render().unwrap(), "select a, b from t");
+
+    // Changing the shape of a parsed value needs `into_ast`, which drops its provenance, so the
+    // comment cannot land beside syntax it was never next to.
+    let mut changed = parse(source).into_ast();
+    let first = parse("select z").into_ast().statements.into_iter().next().unwrap();
+    changed.statements.insert(0, first);
+    assert_eq!(changed.try_render().unwrap(), "select z; select a, b from t");
+"#;
 
 #[test]
 fn every_representative_grammar_has_semantic_pretty_goldens() {
@@ -381,6 +525,64 @@ fn every_representative_grammar_has_semantic_pretty_goldens() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+/// An arena-backed parse keeps its comments exactly as an owned parse does.
+#[test]
+fn an_arena_ast_keeps_the_same_comments() {
+    let golden = GOLDENS
+        .iter()
+        .find(|golden| golden.fixture == "comments")
+        .expect("the comments golden");
+    let package = scaffold(golden);
+    let grammar = package.path().join("src/comments.rs");
+    let source = fs::read_to_string(&grammar).expect("read the comments grammar");
+    fs::write(
+        &grammar,
+        source.replacen(
+            "recursa::grammar! {",
+            "recursa::grammar! {\n    arena_ast,",
+            1,
+        ),
+    )
+    .expect("select arena output");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa::Pretty as _;
+use recursa_pretty_golden_comments::comments;
+
+fn main() {
+    for (source, expected) in [
+        ("-- header\nselect a, b from t", "-- header\nselect a, b from t"),
+        ("select f( -- c\n a) from t", "select f(\n  -- c\n  a\n)\nfrom t"),
+        ("select a /* c */ where x = y", "select a /* c */ where x = y"),
+        ("select a from t -- end", "select a from t -- end\n"),
+        ("-- only", "-- only\n"),
+    ] {
+        let lexed = comments::lex(source);
+        let mut input = lexed.input();
+        let parsed = comments::Script::parse_spanned(&mut input).expect("parses");
+        assert_eq!(parsed.try_render().unwrap(), expected, "{source:?}");
+        assert!(!parsed.render().contains("--"), "{source:?}: render writes no comments");
+    }
+    let lexed = comments::lex("select s -- c\n.t from x");
+    let mut input = lexed.input();
+    let parsed = comments::Script::parse_spanned(&mut input).expect("parses");
+    assert_eq!(
+        parsed.try_render().unwrap_err().kind(),
+        recursa::PrettyConflictKind::LineCommentInTightBoundary,
+    );
+}
+"#,
+    )
+    .expect("write the arena consumer");
+    let output = run(&package);
+    assert!(
+        output.status.success(),
+        "arena comments failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 fn scaffold(golden: &Golden) -> TempDir {
@@ -488,6 +690,14 @@ fn main() {{
             assert_eq!(output, &original[entry.source().range()]);
         }}
     }}
+    if {retains_no_comments} {{
+        // Without retained comments the provenance-aware renderer writes the same bytes and
+        // the same mappings as the infallible one.
+        assert_eq!(
+            parsed.try_render_mapped().expect("no comment can conflict"),
+            (mapped.clone(), source_map.clone()),
+        );
+    }}
     let meaning = fingerprint(&parsed.into_ast());
     let reparsed = parse(&formatted);
     assert_eq!(reparsed.render(), formatted, "Pretty rendering is idempotent");
@@ -506,6 +716,8 @@ fn main() {{
         expected = golden.expected,
         fingerprint = golden.fingerprint,
         repair = golden.repair,
+        // Only the `comments` grammar retains comment trivia.
+        retains_no_comments = golden.fixture != "comments",
     )
 }
 

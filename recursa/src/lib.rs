@@ -16,13 +16,14 @@ pub use recursa_core::flat_visit::{
 #[cfg(all(feature = "explorer", feature = "spans"))]
 pub use recursa_core::framing;
 pub use recursa_core::{
-    ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, Configuration,
-    DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, FlatNode, Handle,
-    HasSpan, List, List1, ListItem, Node, NodeView, OffsetOverflow, Parse, ParseError,
-    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink, Refusal, Rejection,
-    RejectionKey, RejectionNote, RejectionPair, RejectionRule, Repeated, RepeatedIter, Requirement,
-    RequirementNote, RequirementScan, Requires, SideTable, SourceMap, SourceMapEntry, Span, Text,
-    TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
+    ArenaAstFamily, ArenaBox, ArenaParse, ArenaParsed, ArenaVec, ArenaVec1, CommentStyle,
+    Configuration, DebugProvenance, ElementMetadata, ElementRole, ElementView, Elements, FlatNode,
+    Handle, HasSpan, List, List1, ListItem, Node, NodeView, OffsetOverflow, Parse, ParseError,
+    ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyConflict, PrettyConflictKind,
+    PrettyContext, PrettySink, Refusal, Rejection, RejectionKey, RejectionNote, RejectionPair,
+    RejectionRule, Repeated, RepeatedIter, Requirement, RequirementNote, RequirementScan, Requires,
+    SideTable, SourceMap, SourceMapEntry, Span, Text, TotalVisitor, TotalVisitorMut, Vec1, Visit,
+    VisitBreak, VisitMut, Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, ast_node, grammar, tokens};
 
@@ -48,7 +49,7 @@ mod compatibility_tests {
     fn facade_reexports_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp(env!("CARGO_PKG_VERSION")) },
-            43,
+            44,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

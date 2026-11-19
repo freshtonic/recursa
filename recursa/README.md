@@ -141,7 +141,8 @@ matcher accepts each match of its pattern, whatever scalar follows.
 
 Two active entries with the same name in these three sections are an error
 (`RCA3110`). A `#[lex(matcher)]` field whose matcher is inactive is also an
-error. The `ignore` and `trivia` entries accept no attributes.
+error. The `ignore` entries accept no attributes; a `trivia` entry accepts only
+`#[comment(line)]` or `#[comment(block)]`.
 
 A `lookahead` entry can also have `#[cfg(...)]` attributes. Generation ignores
 an inactive entry, so two entries with the same merged name and opposite
@@ -443,11 +444,19 @@ supported:
 recursa::tokens! {
     trivia {
         Whitespace => r"[ \t\r\n]+",
+        #[comment(line)]
         LineComment => r"--[^\n]*",
+        #[comment(block)]
         BlockComment => nested(opener = "/*", closer = "*/"),
     }
 }
 ```
+
+`#[comment(line)]` and `#[comment(block)]` declare a kind's matches comments, which
+`TriviaKind::comment_style` reports. The provenance-aware renderers,
+`Pretty::try_render` and its variants, keep every comment of a parsed value at its
+anchor and regenerate the rest of the whitespace; see
+[Pretty layout](../docs/pretty-layout.md#comments). An undeclared kind is whitespace.
 
 Retained trivia never enters significant parsing, FIRST, or dispatch. Generated
 `LexResult::trivia_gaps` and a complete parsed root view expose immutable

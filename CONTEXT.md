@@ -97,6 +97,14 @@ _Avoid_: Trivia token, ignored token
 An immutable exact source range before, between, or after non-trivia lexical records, containing zero or more ordered classified-trivia records. Retained documents always expose beginning and end gaps, including empty and trivia-only inputs.
 _Avoid_: Reconstructed whitespace, token attachment
 
+**Retained comment**:
+Classified trivia whose kind is declared `#[comment(line)]` or `#[comment(block)]`. Provenance-aware Pretty writes its exact bytes once; other classified trivia is whitespace that Pretty regenerates.
+_Avoid_: Comment token, preserved whitespace
+
+**Comment anchor**:
+The occurrence that owns a source gap's comments: the outermost occurrence that starts at the gap's right-hand record inside the smallest occurrence enclosing the gap. Beginning and end gaps belong to the parsed root. A comment is written before its anchor's syntax and never crosses it.
+_Avoid_: Leading/trailing comment heuristic, nearest token
+
 **Document framing**:
 Generated exact-source partitioning of a repeated island Node, its fixed boundary, atomic raw regions, and an optional committed-variant payload transition. It returns either a wholly strict typed partition or a rejection at the first failing island.
 _Avoid_: Statement splitter, parser callback, partially typed document
@@ -578,6 +586,14 @@ _Avoid_: Regex expansion, display override
 **Pretty context**:
 The facade-owned rendering context that combines grammar configuration with optional parsed provenance for structured Pretty emission.
 _Avoid_: Formatter state, AST metadata
+
+**Provenance-aware Pretty**:
+The fallible `try_render` path that renders a parsed value with its retained comments at their comment anchors and regenerates all other whitespace with LF line endings. A value without provenance renders as the infallible path renders it, without comments.
+_Avoid_: Comment splicing, lossless formatting
+
+**Pretty conflict**:
+The structured refusal provenance-aware Pretty returns when a layout cannot keep a comment at its anchor without moving, duplicating, dropping, or commenting out syntax.
+_Avoid_: Formatting panic, best-effort output
 
 **Recursa diagnostic**:
 A stable-coded, structured finding produced by grammar generation or its structural loaders.

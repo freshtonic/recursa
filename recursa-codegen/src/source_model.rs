@@ -315,7 +315,53 @@ pub(crate) enum NonTokenLexerOutcome {
     RetainedTrivia {
         /// Authored grammar-local trivia classification.
         name: String,
+        /// Comment form declared by `#[comment(line)]` or `#[comment(block)]`, which makes
+        /// provenance-aware Pretty keep this trivia; `None` is whitespace that Pretty regenerates.
+        comment: Option<TriviaComment>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// The comment form of one retained trivia kind.
+pub(crate) enum TriviaComment {
+    /// A comment that ends at the end of its line, so a rendering writes a line break after it.
+    Line,
+    /// A comment with its own closer, which a rendering may follow with more text on the line.
+    Block,
+}
+
+/// Reads the optional `#[comment(line)]` or `#[comment(block)]` declaration of one trivia entry.
+///
+/// It is the only attribute a `trivia` entry accepts; `ignore` entries discard their matches, so
+/// they accept none.
+fn trivia_comment(attrs: &[syn::Attribute]) -> syn::Result<Option<TriviaComment>> {
+    let mut comment = None;
+    for attr in attrs {
+        if !attr.path().is_ident("comment") {
+            return Err(syn::Error::new(
+                attr.span(),
+                "`trivia` entries accept only `#[comment(line)]` or `#[comment(block)]`",
+            ));
+        }
+        if comment.is_some() {
+            return Err(syn::Error::new(
+                attr.span(),
+                "a `trivia` entry declares its comment form once",
+            ));
+        }
+        let form: syn::Ident = attr.parse_args()?;
+        comment = Some(if form == "line" {
+            TriviaComment::Line
+        } else if form == "block" {
+            TriviaComment::Block
+        } else {
+            return Err(syn::Error::new(
+                form.span(),
+                "expected `line` or `block` in `#[comment(...)]`",
+            ));
+        });
+    }
+    Ok(comment)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -9942,16 +9988,12 @@ impl Parse for CentralTokensSyntax {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         if section == "trivia" && body.peek(LitStr) {
-                            if let Some(attr) = attrs.first() {
-                                return Err(syn::Error::new(
-                                    attr.span(),
-                                    "`trivia` entries accept no attributes",
-                                ));
-                            }
+                            let comment = trivia_comment(&attrs)?;
                             non_token_lexer_records.push(CentralNonTokenLexerRecordSyntax {
                                 pattern: body.parse()?,
                                 outcome: NonTokenLexerOutcome::RetainedTrivia {
                                     name: name.unraw().to_string(),
+                                    comment,
                                 },
                             });
                         } else {
@@ -9963,17 +10005,18 @@ impl Parse for CentralTokensSyntax {
                                     attrs,
                                 });
                             } else {
-                                if let Some(attr) = attrs.first() {
-                                    return Err(syn::Error::new(
-                                        attr.span(),
-                                        "`ignore`/`trivia` entries accept no attributes",
-                                    ));
-                                }
                                 let outcome = if section == "ignore" {
+                                    if let Some(attr) = attrs.first() {
+                                        return Err(syn::Error::new(
+                                            attr.span(),
+                                            "`ignore` entries accept no attributes",
+                                        ));
+                                    }
                                     NonTokenLexerOutcome::NonEmitting
                                 } else {
                                     NonTokenLexerOutcome::RetainedTrivia {
                                         name: name.unraw().to_string(),
+                                        comment: trivia_comment(&attrs)?,
                                     }
                                 };
                                 non_token_matchers.push(CentralNonTokenMatcherSyntax {
@@ -12576,6 +12619,22 @@ recursa::ast_node! {
             (
                 r#"lookahead { #[doc = "no"] A_LA = A before { B } }"#,
                 "`lookahead` entries accept only `#[cfg(...)]` and `#[config(...)]`",
+            ),
+            (
+                r#"trivia { #[cfg(unix)] Space => r" +" }"#,
+                "`trivia` entries accept only `#[comment(line)]` or `#[comment(block)]`",
+            ),
+            (
+                r#"trivia { #[comment(inline)] Note => r";[^\n]*" }"#,
+                "expected `line` or `block` in `#[comment(...)]`",
+            ),
+            (
+                r#"trivia { #[comment(line)] #[comment(block)] Note => nested(opener = "{", closer = "}") }"#,
+                "a `trivia` entry declares its comment form once",
+            ),
+            (
+                r#"ignore { #[comment(line)] Note => nested(opener = "{", closer = "}") }"#,
+                "`ignore` entries accept no attributes",
             ),
         ] {
             let error = syn::parse_str::<CentralTokensSyntax>(block)

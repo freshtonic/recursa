@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
 
-use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord, TriviaRecord};
+use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord};
 use crate::{FollowSet, GrammarInfo, HasSpan, ParseError, Span};
 
 #[doc(hidden)]
@@ -103,14 +103,7 @@ impl<F: ArenaAstFamily> ArenaParsed<'_, F> {
             occurrence: self.cell.borrow_dependent().root,
             source: self.source,
             bounds: self.bounds,
-            records: self
-                .document
-                .as_ref()
-                .map(|document| document.records.as_ref()),
-            trivia: self
-                .document
-                .as_ref()
-                .map(|document| document.trivia.as_ref()),
+            document: self.document.as_ref(),
         }
     }
 
@@ -206,7 +199,7 @@ where
     for<'arena> F::Ast<'arena>: crate::Pretty,
 {
     fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
-        context.with_cursor(self.view_cursor(), |context| self.ast().pretty(context))
+        context.with_root_cursor(self.view_cursor(), |context| self.ast().pretty(context))
     }
 }
 
@@ -255,7 +248,7 @@ impl<T: crate::Visit> crate::Visit for Parsed<'_, T> {
 
 impl<T: crate::Pretty> crate::Pretty for Parsed<'_, T> {
     fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
-        context.with_cursor(self.origin.view_cursor(), |context| {
+        context.with_root_cursor(self.origin.view_cursor(), |context| {
             self.ast.pretty(context)
         })
     }
@@ -301,8 +294,7 @@ impl Origin<'_> {
                 occurrence: provenance.borrow_dependent().root,
                 source: Some(*source),
                 bounds: Some(*bounds),
-                records: document.as_ref().map(|document| document.records.as_ref()),
-                trivia: document.as_ref().map(|document| document.trivia.as_ref()),
+                document: document.as_ref(),
             },
         }
     }
@@ -420,8 +412,7 @@ impl<F: ArenaAstFamily> ArenaSynthetic<F> {
                 occurrence: None,
                 source: None,
                 bounds: None,
-                records: None,
-                trivia: None,
+                document: None,
             },
         )
     }
@@ -851,6 +842,10 @@ impl<'input, T> Parsed<'input, T> {
     }
 
     /// Consumes the wrapper and discards all occurrence provenance.
+    ///
+    /// This is the explicit lossy step before changing a parsed value: the retained comments do
+    /// not follow the AST, so [`crate::Pretty::try_render`] renders the result as it renders a
+    /// value built in code, canonically and without source comments.
     pub fn into_ast(self) -> T {
         self.ast
     }
@@ -1057,10 +1052,8 @@ pub struct ViewCursor<'view> {
     source: Option<&'view str>,
     /// Exact source window bounding retained document gaps.
     bounds: Option<Span>,
-    /// Significant and rejected lexical records retained for opted-in gap views.
-    records: Option<&'view [TokenRecord]>,
-    /// Classified trivia retained for opted-in gap views.
-    trivia: Option<&'view [TriviaRecord]>,
+    /// Lexical records and classified trivia retained for opted-in gap views and comments.
+    document: Option<&'view RetainedDocument>,
 }
 
 /// Preserves one absent generated child ordinal in copied Pretty provenance.
@@ -1083,8 +1076,7 @@ impl<'view> ViewCursor<'view> {
             occurrence: None,
             source: None,
             bounds: None,
-            records: None,
-            trivia: None,
+            document: None,
         }
     }
 
@@ -1102,8 +1094,7 @@ impl<'view> ViewCursor<'view> {
                 .and_then(|occurrence| occurrence.node),
             source: self.source,
             bounds: self.bounds,
-            records: self.records,
-            trivia: self.trivia,
+            document: self.document,
         }
     }
 
@@ -1128,8 +1119,7 @@ impl<'view> ViewCursor<'view> {
                     occurrence: child.node,
                     source: self.source,
                     bounds: self.bounds,
-                    records: self.records,
-                    trivia: self.trivia,
+                    document: self.document,
                 }
                 .pretty_provenance()
                 .unwrap_or_else(empty_pretty_provenance)
@@ -1169,9 +1159,56 @@ impl<'view> ViewCursor<'view> {
         }
     }
 
+    /// Collects the retained comments that provenance-aware Pretty writes for this occurrence:
+    /// every comment of the document window for a parsed root, otherwise the comments inside the
+    /// occurrence.
+    ///
+    /// Returns `None` when no comment can be anchored: the document retains no trivia, or the
+    /// parse captured no spans while the window holds syntax. Fails when retained trivia that is
+    /// not declared a comment holds text other than whitespace.
+    pub(crate) fn pretty_comments(
+        self,
+        root: bool,
+    ) -> Option<Result<Box<[crate::pretty::PrettyComment]>, crate::PrettyConflict>> {
+        let document = self.document?;
+        let source = self.source?;
+        let extent = match self.span() {
+            Some(span) => span,
+            None if root && document.records.is_empty() => self.bounds?,
+            None => return None,
+        };
+        Some(
+            document
+                .trivia
+                .iter()
+                .filter(|record| {
+                    root || (extent.start() <= record.span.start()
+                        && record.span.end() <= extent.end())
+                })
+                .filter_map(|record| {
+                    let text = source
+                        .get(record.span.range())
+                        .expect("retained trivia spans are validated against their source");
+                    let style = document
+                        .trivia_comments
+                        .get(usize::from(record.kind))
+                        .copied()
+                        .flatten();
+                    crate::pretty::PrettyComment::classify(text, record.span, style).transpose()
+                })
+                .collect(),
+        )
+    }
+
     /// Projects immutable beginning, inter-record, and end gaps for an opted-in document.
     pub fn source_gaps(self) -> Option<SourceGaps<'view>> {
-        SourceGaps::new(self.source?, self.records?, self.trivia?, self.bounds?)
+        let document = self.document?;
+        SourceGaps::new(
+            self.source?,
+            &document.records,
+            &document.trivia,
+            self.bounds?,
+        )
     }
 }
 
@@ -2164,12 +2201,14 @@ mod tests {
         kind_names: &["word", "lexical error"],
         atom_names: &["word"],
         lexical_error_kind: LEXICAL_ERROR,
+        trivia_comments: &[],
     };
     static OTHER_GRAMMAR: GrammarInfo = GrammarInfo {
         name: "other-parsed-tests",
         kind_names: &["word", "lexical error"],
         atom_names: &["word"],
         lexical_error_kind: LEXICAL_ERROR,
+        trivia_comments: &[],
     };
     static WORD_START: FollowSet = FollowSet::from_static(2, &[1 << WORD], &[ExpectedAtomId(0)]);
     static WORD_TABLES: crate::lr::LrTables = crate::lr::LrTables::new(

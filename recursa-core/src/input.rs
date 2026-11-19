@@ -252,6 +252,7 @@ impl<'i, A> Input<'i, A> {
         self.trivia.as_ref().map(|trivia| RetainedDocument {
             records: self.records.to_vec().into_boxed_slice(),
             trivia: trivia.to_vec().into_boxed_slice(),
+            trivia_comments: self.grammar.trivia_comments,
         })
     }
 }
@@ -262,6 +263,8 @@ pub(crate) struct RetainedDocument {
     pub(crate) records: Box<[TokenRecord]>,
     /// Classified trivia records ordered within the gaps.
     pub(crate) trivia: Box<[TriviaRecord]>,
+    /// The grammar's declared comment form of each trivia kind, indexed by its raw kind.
+    pub(crate) trivia_comments: &'static [Option<crate::CommentStyle>],
 }
 
 /// Iterator over immutable source gaps around non-trivia lexical records.

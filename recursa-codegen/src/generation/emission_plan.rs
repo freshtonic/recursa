@@ -72,6 +72,9 @@ pub(super) struct EmissionPlan {
     pub(super) lexical_rules: Vec<LexRulePlan>,
     /// Generated typed trivia classifications in numeric kind order.
     pub(super) trivia_kinds: Vec<Ident>,
+    /// Declared comment form of each trivia classification, positionally aligned with
+    /// `trivia_kinds`; `None` is whitespace.
+    pub(super) trivia_comments: Vec<Option<crate::source_model::TriviaComment>>,
     /// Keyword-carrier reclassification plans in declaration order.
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
     /// Kind set eligible for word-shaped fixed-token classification.
@@ -648,15 +651,23 @@ impl EmissionPlan {
                 lexical_rules.push(planned);
             }
         }
-        let trivia_names = lowered
-            .lexical_plan
-            .non_token_rules
-            .iter()
-            .filter_map(|rule| match &rule.outcome {
-                NonTokenLexicalOutcome::NonEmitting => None,
-                NonTokenLexicalOutcome::RetainedTrivia { name } => Some(name.clone()),
-            })
+        // One comment form per classification: rules that share a trivia name must agree.
+        let mut trivia_comment_forms =
+            BTreeMap::<String, Option<crate::source_model::TriviaComment>>::new();
+        for rule in &lowered.lexical_plan.non_token_rules {
+            if let NonTokenLexicalOutcome::RetainedTrivia { name, comment } = &rule.outcome
+                && *trivia_comment_forms.entry(name.clone()).or_insert(*comment) != *comment
+            {
+                return Err(format!(
+                    "trivia kind `{name}` declares different comment forms on its rules"
+                ));
+            }
+        }
+        let trivia_names = trivia_comment_forms
+            .keys()
+            .cloned()
             .collect::<BTreeSet<_>>();
+        let trivia_comments = trivia_comment_forms.into_values().collect::<Vec<_>>();
         if trivia_names.len() > u16::MAX as usize {
             return Err("generated trivia-kind plan exceeds runtime width".to_owned());
         }
@@ -685,7 +696,7 @@ impl EmissionPlan {
             };
             let trivia_kind = match &rule.outcome {
                 NonTokenLexicalOutcome::NonEmitting => None,
-                NonTokenLexicalOutcome::RetainedTrivia { name } => {
+                NonTokenLexicalOutcome::RetainedTrivia { name, .. } => {
                     Some(*trivia_kind_indexes.get(name).ok_or_else(|| {
                         "retained trivia rule lacks a generated classification".to_owned()
                     })?)
@@ -951,7 +962,7 @@ impl EmissionPlan {
         }
         canonical.push_str(&format!(";word_candidates={word_candidate_kinds:?}"));
         canonical.push_str(&format!(
-            ";trivia_kinds={:?}",
+            ";trivia_kinds={:?};trivia_comments={trivia_comments:?}",
             trivia_kinds
                 .iter()
                 .map(ToString::to_string)
@@ -1020,6 +1031,7 @@ impl EmissionPlan {
             token_bindings,
             lexical_rules,
             trivia_kinds,
+            trivia_comments,
             word_classifiers,
             word_candidate_kinds,
             root_configured_traits,
